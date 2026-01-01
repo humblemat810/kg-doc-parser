@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "graph-knowledge-doc-parser"
+version = "0.1.0"
+description = "doc parser using llm driven engine with graph knowledge awareness"
+authors = ["humblemat810 <67593116+humblemat810@users.noreply.github.com>"]
+readme = "README.md"
+packages = [
+    { include = "utils", from = "src" }
+]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+pytest = "^9.0.2"
+pydantic = "^2.12.5"
+joblib = "^1.5.3"
+pdf2image = "^1.17.0"
+pypdf = "^6.5.0"
+pathspec = "^0.12.1"
+pikepdf = "^10.1.0"
+langchain-core = "^1.2.5"
+langchain-google-genai = "^4.1.2"
+pydantic-extension = "^0.0.6"
+rapidfuzz = "^3.14.3"
+mcp = "^1.25.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
