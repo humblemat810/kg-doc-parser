@@ -76,11 +76,11 @@ def test_batch_pdf_to_png_tree_with_filter():
     allowed_file_list = []
     from utils.file_loaders import RawFileLoader, find_folders_two_levels_from_leaves_mem_optimized
     loader = RawFileLoader(env_flist_path=None, #'split_raw_file_list', 
-                           walk_root=os.path.join('..', 'doc_data', 'split_pages', 'Samples - 9 Oct 2025'),
+                           walk_root=os.path.join('..', 'doc_data', 'split_pages', 'jds'),
                            compare_root = os.path.join('..', 'doc_data', 'split_pages'),
                            include = ['dirs'],
-                           filtering_callbacks = [filter_callback],
-                           file_walker_callback = find_folders_two_levels_from_leaves_mem_optimized
+                        #    filtering_callbacks = [filter_callback],
+                        #    file_walker_callback = find_folders_two_levels_from_leaves_mem_optimized
                            )
     # allowed_file_list.extend(allowed_relative_paths)
     list(loader)

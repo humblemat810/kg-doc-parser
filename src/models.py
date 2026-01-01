@@ -47,7 +47,8 @@ class NonTextCluster(ModeSlicingMixin, BaseModel):
     cluster_number: int = Field(description="per page unique number of the cluster, starting from 0")
 
 class OCRClusterResponse(ModeSlicingMixin, BaseModel):
-    """id/ cluster number must be all unique, for example, one of the ocr boxes_2d used id='1', the first image box id (cluster numebr) will be '2', the next signature will be '3' """
+    """id/ cluster number must be all unique, for example, one of the ocr boxes_2d used id='1', 
+       the first image box id (cluster numebr) will be '2', the next signature will be '3' """
     OCR_text_clusters: DtoType[list[TextCluster]] = Field(description="the OCR text results. Share cluster number uniqueness with non-OCR objects. ")
     non_text_objects:  DtoType[list[NonTextCluster]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
     is_empty_page: DtoType[Optional[bool]] = Field(default = False, description="true if the whole page is empty without recognisable text.")
@@ -72,8 +73,9 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
     @model_validator(mode='after')
     def check_cluster_meaningful_ordering_agreement(self):
         assert bool(self.is_empty_page) ^ (len(self.OCR_text_clusters) > 0), f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters len={len(self.OCR_text_clusters)}"
-        if not len([i.cluster_number for i in (self.non_text_objects + self.OCR_text_clusters)]) == len(set(i.cluster_number for i in self.non_text_objects + self.OCR_text_clusters)):
-            raise ValueError("cluster number from non_text_objects block and ocr text blocks must be ALL distinct. ")
+        overlap_id = set(i.cluster_number for i in self.OCR_text_clusters).intersection(set(i.cluster_number for i in self.non_text_objects))
+        if overlap_id:
+            raise ValueError(f"cluster number from non_text_objects block and ocr text blocks must be ALL distinct. Overlapped ids: {list(overlap_id)}")
         try:
             if not (len(self.meaningful_ordering) == len(set(self.meaningful_ordering))): # <= len(self.OCR_text_clusters)):
                 raise ValueError("meaningful_order must cover each text cluster at most once")
@@ -104,10 +106,10 @@ class SplitPage(OCRClusterResponseBc):
     refined_version: Optional[OCRClusterResponse[DtoField]] = Field(default = None, description = "refined processed/ grouped/ merged version of ocr text clusters. ")
     def model_dump(self, *arg, **kwarg):
         return self.to_doc()
-    def dump_raw(self):
-        return super(SplitPage, self).model_dump(exclude = ["refined_version"])
-    def dump_supercede_parse(self):
-        return super(SplitPage, self).model_dump(exclude = ["refined_version", "metadata"])
+    def dump_raw(self, *arg, **kwarg):
+        return super(SplitPage, self).model_dump(exclude = ["refined_version"], *arg, **kwarg)
+    def dump_supercede_parse(self, *arg, **kwarg):
+        return super(SplitPage, self).model_dump(exclude = ["refined_version", "metadata"], *arg, **kwarg)
     @model_validator(mode="after")
     def roundtrip_invariant(self, info: ValidationInfo) -> "SplitPage":
         # Context may be None if caller didn't pass it
@@ -121,7 +123,7 @@ class SplitPage(OCRClusterResponseBc):
         nested_ctx = dict(ctx)
         nested_ctx["_roundtrip_active"] = True
 
-        dumped = self.model_dump(mode="json")
+        dumped = self.dump_raw()
 
         # IMPORTANT: pass context so nested validation sees the flag
         again = self.__class__.model_validate(dumped, context=nested_ctx)

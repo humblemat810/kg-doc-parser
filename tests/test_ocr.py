@@ -35,7 +35,7 @@ def test_batch_ocr_one_by_one(gemini_key):
 def test_batch_ocr_one_by_one_tree(gemini_key):
     from utils.file_loaders import filter_folder
     from src.utils.bounded_threadpool_executor import BoundedExecutor
-    bounded_executor = BoundedExecutor(max_workers= 3, max_pending= 12)
+    bounded_executor = None# BoundedExecutor(max_workers= 3, max_pending= 12)
     from utils.file_loaders import RawFileLoader
     def _temp_check(x: str):
         tf = x.endswith('.png') and not os.path.exists(str(x)[:-len(pathlib.Path(x).suffix)] + '.json')
@@ -43,15 +43,15 @@ def test_batch_ocr_one_by_one_tree(gemini_key):
     def filter_callback(file_path):
         import pathlib
         # use_folder = pathlib.Path(file_path).parts[-3].startswith("VIC") or pathlib.Path(file_path).parts[-3].startswith("QLD")
-        use_folder = int(pathlib.Path(file_path).parts[-3].rsplit('.')[-1]) <= 4 
+        use_folder = int(pathlib.Path(file_path).parts[-3].rsplit('.')[-1]) <= 4 # have a grouper folder such as company name
         return use_folder
     loader = RawFileLoader(env_flist_path=None, #'ocr_file_list', 
-                            walk_root=os.path.join('..', 'doc_data', 'split_pages', 'Samples - 9 Oct 2025'),
+                            walk_root=os.path.join('..', 'doc_data', 'split_pages', 'jds'),
                             compare_root = os.path.join('..', 'doc_data', 'split_pages'),
                             include = ['files'], allow_startwith_relative_paths=True,
                             filtering_callbacks = [
                                 _temp_check,
-                                filter_callback,
+                                # filter_callback,
                                 #lambda x : (not os.path.exists(str(x)[:-3] + 'json'))
                             ]
                             )

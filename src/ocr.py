@@ -65,9 +65,11 @@ class box_2d(BaseModel):
     label : str = Field(description = 'text in the box')
     id: int  = Field(description = 'id of the text box in the page, autoincrement from 0')   
 class RawOCRResponse(BaseModel):
-    """id/ cluster number must be all unique, for example, one of the ocr boxes_2d used id='1', the first image box id (cluster numebr) will be '2', the next signature will be '3' """
-    boxes_2d : list[box_2d] = Field(description = 'description of x min, y min, xmax and y max. Share id uniqueness with signature blocks. ')
-    non_text_objects:  DtoType[list[NonText_box_2d]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
+    """id/ cluster number must be all unique, for example, one of the ocr boxes_2d used id='1', 
+    the first image box id (cluster numebr) will be '2', the next signature will be '3' """
+    boxes_2d : list[box_2d] = Field(description = 'ocr text response, description of x min, y min, xmax and y max. Share id uniqueness with all non-ocr blocs')
+    non_text_objects:  DtoType[list[NonText_box_2d]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts in box2d. "
+                                                             "For example, if box2d list takes id 1, 2, 4, 5, non_text_objects will take up 3, 6... etc")
     is_empty_page: DtoType[Optional[bool]] = Field(default = False, description="true if the whole page is empty without recognisable text.")
     printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
@@ -95,8 +97,9 @@ class RawOCRResponse(BaseModel):
     @model_validator(mode='after')
     def check_cluster_meaningful_ordering_agreement(self):
         assert bool(self.is_empty_page) ^ (len(self.boxes_2d) > 0), f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters len={len(self.boxes_2d)}"
+        overlap_id = set(i.id for i in self.non_text_objects).union(set(i.id for i in self.boxes_2d))
         if not len([i.id for i in (self.non_text_objects + self.boxes_2d)]) == len(set(i.id for i in self.non_text_objects + self.boxes_2d)):
-            raise ValueError("cluster number from non_text_objects block and ocr text blocks must be ALL distinct. ")
+            raise ValueError(f"cluster number from non_text_objects block and ocr text blocks must be ALL distinct. overlap ids {overlap_id}")
         try:
             if not (len(self.meaningful_ordering) == len(set(self.meaningful_ordering))): # <= len(self.OCR_text_clusters)):
                 raise ValueError("meaningful_order must cover each text cluster at most once")
@@ -241,12 +244,13 @@ def RawOCRResponse_to_OCRClusterResponse(raw_response: RawOCRResponse | RawOCRRe
                                                              "bb_y_max" : i['box_2d'][2],
                                                              "bb_x_max" : i['box_2d'][3],
                                                              "cluster_number" : i['id']}) for i in boxes_2d]
+    non_text_objects = temp.pop('non_text_objects')
     temp['non_text_objects'] = [NonTextCluster.model_validate({"description" : i['label'], 
                                                              "bb_y_min" : i['box_2d'][0],
                                                              "bb_x_min" : i['box_2d'][1],
                                                              "bb_y_max" : i['box_2d'][2],
                                                              "bb_x_max" : i['box_2d'][3],
-                                                             "cluster_number" : i['id']}) for i in boxes_2d]
+                                                             "cluster_number" : i['id']}) for i in non_text_objects]
     return OCRClusterResponse.model_validate(temp)
 def final_resort(draft_responses: dict, messages, page_file_name, model_name, image_file_path):
                         """
@@ -346,7 +350,7 @@ def final_resort(draft_responses: dict, messages, page_file_name, model_name, im
                                         raise Exception("Validation error response_dict cannot be validate into SplitPage")
                                 except:
                                     raise(ValueError(f"All LLM failed and coercing final resort fail, file name = {image_file_path}"))
-def TextBoxResponse_to_OCRClusterResponse(raw_response: TextBoxResponse, meta_response: OCRMetaResponse) -> OCRClusterResponse:
+def TextBoxResponsePlusMetaResponse_to_OCRClusterResponse(raw_response: TextBoxResponse, meta_response: OCRMetaResponse) -> OCRClusterResponse:
 
         
     temp = meta_response.model_dump()
@@ -358,8 +362,15 @@ def TextBoxResponse_to_OCRClusterResponse(raw_response: TextBoxResponse, meta_re
                                                              "bb_y_max" : i['bounding_box'][2],
                                                              "bb_x_max" : i['bounding_box'][3],
                                                              "cluster_number" : i['id']}) for i in text_blocks]
+    non_text_blocks = temp.pop('non_text_blocks')
+    temp['non_text_objects'] = [TextCluster.model_validate({"text" : i['text'], 
+                                                             "bb_y_min" : i['bounding_box'][0],
+                                                             "bb_x_min" : i['bounding_box'][1],
+                                                             "bb_y_max" : i['bounding_box'][2],
+                                                             "bb_x_max" : i['bounding_box'][3],
+                                                             "cluster_number" : i['id']}) for i in non_text_blocks]
     return OCRClusterResponse.model_validate(temp)
-from .utils.langchain import GeminiCostCallbackHandler
+from src.utils.langchain import GeminiCostCallbackHandler
 def refine_image_response(ok2, response_dict, outfile_name, image_file_path, model_names, cb: GeminiCostCallbackHandler):
     
         # if allow_page_refine and (not preexisting):
@@ -401,7 +412,7 @@ def refine_image_response(ok2, response_dict, outfile_name, image_file_path, mod
                     refined = refine_table_ocr(response_dict, llm = llm, cb = cb, error_messages=error_messages)
                     ok2 = True
                 except Exception as e:
-                    from .utils.log import safe_format_exception
+                    from src.utils.log import safe_format_exception
                     e_prompt = safe_format_exception(e)
                     error_message = SystemMessage("post process error raised:\n"
                                                     f"{e_prompt[-10000:]}"
@@ -509,7 +520,7 @@ def ocr_single_image(gemini_key: str, page_file_name, file_name,
                     sp = validate_response(response, response_dict, image_file_path, model_name, page_file_name)
                     # chain_new_raw = llm.with_structured_output(RawOCRResponse, include_raw = True)
                 except Exception as e:
-                    from .utils.log import safe_format_exception
+                    from src.utils.log import safe_format_exception
                     e_prompt = safe_format_exception(e)
                     error_message = SystemMessage("post process error raised:\n"
                                                     f"{e_prompt[-10000:]}"
@@ -714,3 +725,6 @@ def batch_gemini_ocr_image(gemini_key, folder = "split_pages", exist_behavior: L
                                         folder=pdf_folder, 
                                         exist_behavior=exist_behavior)
             time.sleep(2)
+    if bounded_executor:
+        bounded_executor.wait_for_all()
+        bounded_executor.shutdown()
