@@ -987,7 +987,7 @@ def _soft_exact_positions(
     fuzzy_threshold: Optional[float] = None,   # 0..100 if rapidfuzz; 0..1 with difflib (we normalize to 0..100)
     fuzzy_len_stretch: float = 0.25,          # allow window length to vary ±25%
     fuzzy_stride_frac: float = 0.10,          # stride as a fraction of |verbatim|
-) -> List[Tuple[int, int]]:
+) -> Tuple[List[Tuple[int, int]], Dict | None]:
     """Exact match with minimal sanitation; optional fuzzy fallback.
     Returns list of candidate (start, end_incl) positions.
     """
@@ -1027,7 +1027,7 @@ def _soft_exact_positions(
         mapped: List[Tuple[int, int]] = []
         for s_idx, e_idx in occ2:
             mapped.append((spans[s_idx][0], spans[e_idx][1]))
-        return mapped
+        return mapped, {"name": "exact", "collapsed": True}
 
     # 3) Optional fuzzy fallback on collapsed_text
     if fuzzy_threshold is None:
@@ -1039,7 +1039,7 @@ def _soft_exact_positions(
 
     Lq = len(v2)
     if Lq == 0 or len(collapsed_text) == 0:
-        return []
+        return [], None
 
     # Normalize threshold to 0..100
     thr = float(fuzzy_threshold)
@@ -1069,7 +1069,7 @@ def _soft_exact_positions(
 
     if best_span and best_score >= thr:
         orig_s, orig_e = _map_back(*best_span)
-        return [(orig_s, orig_e)]
+        return [(orig_s, orig_e)], {"name" : "LCSseq.normalized_similarity", "threshold": thr, "collapsed": True}
     # --- True RapidFuzz path (fast): use LCS ratio as a cheap, positionable proxy ---
     import difflib
     def locate_span(query: str, text: str):
@@ -1088,15 +1088,15 @@ def _soft_exact_positions(
         best_score = fuzz.ratio(verbatim, collapsed_text[best_span[0]: best_span[1]])
     if best_span and best_score >= thr:
         orig_s, orig_e = _map_back(*best_span)
-        return [(orig_s, orig_e)]
+        return [(orig_s, orig_e)], {"name" : "difflib.SequenceMatcher", "threshold": thr, "collapsed": True}
     best_span = locate_span(verbatim, source_text)
     from rapidfuzz import fuzz
     if best_span:
         best_score = fuzz.ratio(verbatim, collapsed_text[best_span[0]: best_span[1]])
     if best_span and best_score >= thr:
-        return [best_span]
+        return [best_span], {"name" : "difflib.SequenceMatcher", "threshold": thr, "collapsed": False}
 
-    return []
+    return [], None
 
 
 # ============================================================================
@@ -1118,8 +1118,10 @@ def correct_and_validate_pointer(
     ids_same_page, id_dif_page = partition(ids, predicate = lambda x: x.split("_")[0] == proposed_pointer.source_cluster_id.split('_')[0])
     _, ids_same_page_dif_cluster =  partition(ids_same_page, predicate = lambda x: x == proposed_pointer.source_cluster_id)
     # Try some heuristic possible hallucinated cluster ids
+    verification_method = None
     for _i_source_cluster, source_cluster in enumerate([source_map.get(proposed_pointer.source_cluster_id)] + \
             [source_map.get(i) for i in ids_same_page_dif_cluster + id_dif_page]):
+        validation_method = None
         if not source_cluster:
             # print(
             #     f"⚠️ REJECTED: Pointer references non‑existent cluster '{proposed_pointer.source_cluster_id}'."
@@ -1149,7 +1151,9 @@ def correct_and_validate_pointer(
                 except:
                     continue
                 if verbatim in source_cluster['text']:
-                    candidates = _soft_exact_positions(source_text, verbatim)
+                    candidates, verification_method = _soft_exact_positions(source_text, verbatim)
+                    if candidates:
+                        validation_method = verification_method
                     pass
         except:
             pass
@@ -1169,8 +1173,9 @@ def correct_and_validate_pointer(
                     fuzzy_threshold = 0.90
                 case _:
                     fuzzy_threshold = 0.85
-            candidates = _soft_exact_positions(source_text, verbatim, fuzzy_threshold = fuzzy_threshold)
-            
+            candidates, verification_method = _soft_exact_positions(source_text, verbatim, fuzzy_threshold = fuzzy_threshold)
+            if candidates:
+                validation_method = verification_method
         if candidates:
             best = _best_occurrence_by_proximity(candidates, proposed_pointer.start_char)
             if best:
@@ -1180,6 +1185,7 @@ def correct_and_validate_pointer(
                     start_char=s,
                     end_char=e,
                     verbatim_text=_safe_slice(source_text, s, e),
+                    validation_method = json.dumps(validation_method if verification_method else None)
                 )
 
     print(
@@ -2241,12 +2247,23 @@ def _extract_pointers_from_references(refs: List[Dict[str, Any]]):
         # fallback
         if not source_cluster_id:
             source_cluster_id = "p1_c0"
+        r_mentions = r.get('mentions', [])
+        if len(r_mentions) == 0:
+            r_mention_verification = None
+        else:
+            if len(r_mentions) > 1 :
+                # unsupported multiple mentions, possibly try load from wrong doc parsing results
+                raise Exception("UnsupportedDocumentParsingFormat")
+            else:
+                r_mention_verification = r_mentions[0].get('verification')
+        
         results.append(
             HydratedTextPointer(
                 source_cluster_id=source_cluster_id,
                 start_char=r.get("start_char", 0),
                 end_char=( -1 if r.get("end_char") == 10**9 else r.get("end_char", -1) ),
                 verbatim_text=r.get("snippet", ""),
+                validation_method=r_mention_verification,
             )
         )
     return results

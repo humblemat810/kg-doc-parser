@@ -12,7 +12,7 @@ R = TypeVar("R")
 def cached(memory: Memory, fn: Callable[P, R]) -> Callable[P, R]:
     return cast(Callable[P, R], memory.cache(fn))
 
-def test_semantic_contract_splitting(gemini_key):
+def test_semantic_document_splitting(gemini_key):
     from src.utils.file_loaders import RawFileLoader, find_folders_two_levels_from_leaves_mem_optimized
     import os
     def filter_callback (file_path):
@@ -34,7 +34,7 @@ def test_semantic_contract_splitting(gemini_key):
                            filtering_callbacks = [filter_callback],
                            include = ['dirs']
                            )
-    from src.semantic_contract_splitting_layerwise_edits import (parse_doc, 
+    from src.semantic_document_splitting_layerwise_edits import (parse_doc, 
                                                                  semantic_tree_to_kge_payload, 
                                                                  kge_payload_to_semantic_tree,
                                                                  build_index_terms_for_semantic_node,
@@ -51,7 +51,7 @@ def test_semantic_contract_splitting(gemini_key):
         reconstrcted_root = kge_payload_to_semantic_tree(graph_to_persist)
         assert reconstrcted_root.model_dump() == document_tree.model_dump()
         import requests
-        res = requests.post("http://127.0.0.1:28110/api/contract.validate_graph", json = graph_to_persist)
+        res = requests.post("http://127.0.0.1:28110/api/document.validate_graph", json = graph_to_persist)
         res.raise_for_status()
         nodes = all_child_from_root(reconstrcted_root)
         batch_index_list = build_index_terms_for_semantic_node(nodes)        
@@ -66,12 +66,12 @@ def test_semantic_contract_splitting(gemini_key):
         res.raise_for_status()
         @memory.cache
         def get_upsert_result(graph_to_persist):
-            res = requests.post("http://127.0.0.1:28110/api/contract.upsert_tree", json = graph_to_persist)
+            res = requests.post("http://127.0.0.1:28110/api/document.upsert_tree", json = graph_to_persist)
             return res
         res = get_upsert_result(graph_to_persist)
         res.raise_for_status()
         # search using index
-        # sample visualization call http://localhost:28110/viz/d3?doc_id={document_tree.node_id}&mode=reify&insertion_method=contract_parser_v1
+        # sample visualization call http://localhost:28110/viz/d3?doc_id={document_tree.node_id}&mode=reify&insertion_method=document_parser_v1
         res = requests.get("http://127.0.0.1:28110/api/search_index_hybrid", 
                             params = {'q' : '"6.7"'})
         res.raise_for_status()
@@ -79,7 +79,7 @@ def test_semantic_contract_splitting(gemini_key):
                             params = {'q' : '"6.7"', "resolve_node": True})
         res.raise_for_status()
         return
-def test_semantic_contract_splitting_pdf_indexed(gemini_key):
+def test_semantic_document_splitting_pdf_indexed(gemini_key):
     from pdf2png import batch_split_pdf
     from src.utils.file_loaders import RawFileLoader#, find_folders_two_levels_from_leaves_mem_optimized
     import os
@@ -115,7 +115,7 @@ def test_semantic_contract_splitting_pdf_indexed(gemini_key):
                         #    file_walker_callback = find_folders_two_levels_from_leaves_mem_optimized
                            )
     
-    from src.semantic_contract_splitting_layerwise_edits import parse_doc, semantic_tree_to_kge_payload, kge_payload_to_semantic_tree,build_index_terms_for_semantic_node,all_child_from_root
+    from semantic_document_splitting_layerwise_edits import parse_doc, semantic_tree_to_kge_payload, kge_payload_to_semantic_tree,build_index_terms_for_semantic_node,all_child_from_root
     from src.ocr import regen_doc_group
     from joblib import Memory
     memory = Memory(location = '.joblib')
@@ -124,7 +124,7 @@ def test_semantic_contract_splitting_pdf_indexed(gemini_key):
         doc_group = regen_doc_group
         parse_doc(file_loader = loader, outfolder_path = splitted_folder, exists_ok='skip')
     
-def test_semantic_contract_splitting_doc_group(gemini_key):
+def test_semantic_document_splitting_doc_group(gemini_key):
     from src.utils.file_loaders import RawFileLoader#, find_folders_two_levels_from_leaves_mem_optimized
     import os
     from functools import lru_cache
@@ -160,7 +160,7 @@ def test_semantic_contract_splitting_doc_group(gemini_key):
                         #    file_walker_callback = find_folders_two_levels_from_leaves_mem_optimized
                            )
     
-    from src.semantic_contract_splitting_layerwise_edits import parse_doc, semantic_tree_to_kge_payload, kge_payload_to_semantic_tree,build_index_terms_for_semantic_node,all_child_from_root
+    from semantic_document_splitting_layerwise_edits import parse_doc, semantic_tree_to_kge_payload, kge_payload_to_semantic_tree,build_index_terms_for_semantic_node,all_child_from_root
     from src.ocr import regen_doc_group
     from joblib import Memory
     memory = Memory(location = '.joblib')
@@ -174,7 +174,7 @@ def test_semantic_contract_splitting_doc_group(gemini_key):
         reconstrcted_root = kge_payload_to_semantic_tree(graph_to_persist)
         assert reconstrcted_root.model_dump() == document_tree.model_dump()
         import requests
-        res = requests.post("http://127.0.0.1:28110/api/contract.validate_graph", json = graph_to_persist)
+        res = requests.post("http://127.0.0.1:28110/api/document.validate_graph", json = graph_to_persist)
         res.raise_for_status()
         nodes = all_child_from_root(reconstrcted_root)
         batch_index_list = build_index_terms_for_semantic_node(nodes)        
@@ -189,7 +189,7 @@ def test_semantic_contract_splitting_doc_group(gemini_key):
         res.raise_for_status()
         @memory.cache
         def get_upsert_result(graph_to_persist):
-            res = requests.post("http://127.0.0.1:28110/api/contract.upsert_tree", json = graph_to_persist)
+            res = requests.post("http://127.0.0.1:28110/api/document.upsert_tree", json = graph_to_persist)
             return res
         res = get_upsert_result(graph_to_persist)
         res.raise_for_status()
