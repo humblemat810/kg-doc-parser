@@ -7,6 +7,9 @@ if True:
     ocr_json_version = "0.1"
 import time
 import base64
+
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.runnables import Runnable
 from models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
 from typing import Any, Iterable, cast, Callable, Optional,  Literal, TypeAlias, Union
 import json
@@ -130,7 +133,7 @@ class OCRMetaResponse(BaseModel):
 class OCRClusterResponseMetaless(ModeSlicingMixin, BaseModel):
     "response of OCR once meta is quickly skimmed/ determined in separate run"
     OCR_text_clusters: DtoType[list[TextCluster]] = Field(description="the OCR text results.")
-    non_text_objects:  DtoType[list[NonTextCluster]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
+    non_text_objects:  DtoType[list[NonText_box_2d]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
     printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
@@ -145,11 +148,12 @@ class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
                                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
     meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of the identified text clusters. Must cover all OCR_text_clusters once and only once. ")
 
-def get_first_round_response(draft_responses, llm, model_name, cb, messages, sys_message, img_message, usage_metadata):
+def get_first_round_response(draft_responses, llm: BaseChatModel, model_name: str, cb: BaseCallbackHandler, 
+                             messages: list[BaseMessage], sys_message, img_message, usage_metadata) -> OCRClusterResponse | None:
     
                     chain = llm.with_structured_output(RawOCRResponse, include_raw = True)
-                    before_parse = chain.steps[0]
-                    after_parse = chain.steps[1]
+                    before_parse: Runnable = chain.steps[0]
+                    after_parse: Runnable = chain.steps[1]
                     raw_response = before_parse.invoke(messages, config={"callbacks": [cb]}
                                             )
                     
@@ -161,8 +165,16 @@ def get_first_round_response(draft_responses, llm, model_name, cb, messages, sys
                     response_with_raw: dict[str, RawOCRResponse] = after_parse.invoke(raw_response)
                     response: RawOCRResponse | OCRClusterResponse | None
                     response1 : RawOCRResponse | None = response_with_raw.get('parsed')
-                    raw = response_with_raw.get('raw')
                     parsing_error = response_with_raw.get('parsing_error')
+                    if response1 is None:
+                        
+                        try:
+                            raw = response_with_raw.get('raw')
+                            temp = json.loads(raw.content[0]['text'])
+                            response1 = RawOCRResponse.model_validate(temp)
+                            
+                        except:
+                            pass
                     if response1 is not None:
                         response = RawOCRResponse_to_OCRClusterResponse(response1)
                     else:
@@ -183,13 +195,20 @@ def get_first_round_response(draft_responses, llm, model_name, cb, messages, sys
                         response_with_raw = cast(dict[str, RawOCRResponse], llm.with_structured_output(RawOCRResponse, include_raw = True).invoke(
                             [sys_message, img_message]
                         ))
-                        raw_ocr_response = cast(RawOCRResponse, response_with_raw.get('parsed'))
+                        raw_ocr_response : None | RawOCRResponse= None
+                        if response_with_raw.get('parsed'):
+                            raw_ocr_response = cast(RawOCRResponse, response_with_raw.get('parsed'))
+                        else:
+                            try:
+                                raw_ocr_response = RawOCRResponse.model_validate(json.loads(response_with_raw.get('raw').content))
+                            except:
+                                pass
                         if raw_ocr_response is not None:
                             response = RawOCRResponse_to_OCRClusterResponse(raw_ocr_response)
-                        raw = response_with_raw.get('raw')
+                        _raw = response_with_raw.get('raw')
                         parsing_error = response_with_raw.get('parsing_error')
                     return response
-def validate_response(response: OCRClusterResponse | None, response_dict: dict,  image_file_path, model_name, page_file_name):
+def validate_response_mutate_inplace(response: OCRClusterResponse | None, response_dict: dict,  image_file_path, model_name, page_file_name):
     
                     if response is None:
                         logger.error(f"LLM returned None as response, file name = {image_file_path}, {model_name=}")
@@ -245,7 +264,7 @@ def RawOCRResponse_to_OCRClusterResponse(raw_response: RawOCRResponse | RawOCRRe
                                                              "bb_x_max" : i['box_2d'][3],
                                                              "cluster_number" : i['id']}) for i in boxes_2d]
     non_text_objects = temp.pop('non_text_objects')
-    temp['non_text_objects'] = [NonTextCluster.model_validate({"description" : i['label'], 
+    temp['non_text_objects'] = [NonTextCluster.model_validate({"description" : i.get('label', i['description']), 
                                                              "bb_y_min" : i['box_2d'][0],
                                                              "bb_x_min" : i['box_2d'][1],
                                                              "bb_y_max" : i['box_2d'][2],
@@ -285,7 +304,7 @@ def final_resort(draft_responses: dict, messages, page_file_name, model_name, im
                                 has_error = True
                             else:
                                 response = RawOCRResponse_to_OCRClusterResponse(response2)
-                        except:
+                        except Exception as _e:
                             has_error = True
                         if has_error:
                             # retry only
@@ -312,7 +331,7 @@ def final_resort(draft_responses: dict, messages, page_file_name, model_name, im
                                                     
                                                     **response.model_dump()
                                                 )
-                            except Exception as e:
+                            except Exception as _e:
                                 try:
                                     coered_response = OCRClusterResponse(
                                                 OCR_text_clusters = [TextCluster(text = earlier_partial_ocr, 
@@ -346,9 +365,9 @@ def final_resort(draft_responses: dict, messages, page_file_name, model_name, im
                                     try:
                                         sp.to_doc()
                                         ok = True
-                                    except:
+                                    except Exception as _e:
                                         raise Exception("Validation error response_dict cannot be validate into SplitPage")
-                                except:
+                                except  Exception as _e:
                                     raise(ValueError(f"All LLM failed and coercing final resort fail, file name = {image_file_path}"))
 def TextBoxResponsePlusMetaResponse_to_OCRClusterResponse(raw_response: TextBoxResponse, meta_response: OCRMetaResponse) -> OCRClusterResponse:
 
@@ -467,6 +486,7 @@ def get_messages(image_file_path):
             return sys_message, img_message
 def ocr_single_image(gemini_key: str, page_file_name, file_name, 
                      folder, # out folder
+                     model_retry_priority_list : None | list[str],
                      exist_behavior: Literal["ok", "skip", "raise", 'rerun']  = 'skip'):
     ok2 = False # stage 2 ok
     outfile_name = os.path.join(folder,file_name, page_file_name.rsplit('.',1)[0] + '.json')
@@ -480,7 +500,8 @@ def ocr_single_image(gemini_key: str, page_file_name, file_name,
             raise( PermissionError(f"output file {outfile_name} exists"))
 
     assert gemini_key.startswith("AIza") # gcp keys
-    model_names = [# "gemini-2.0-flash", "gemini-2.0-flash-lite", 
+    model_names = model_retry_priority_list or [# "gemini-2.0-flash", "gemini-2.0-flash-lite", 
+                   "gemini-3-flash-preview", 
                    "gemini-2.5-flash", 
                    "gemini-2.5-flash-lite", "gemini-2.5-pro",
                 #    "gemini-1.5-pro",
@@ -516,8 +537,9 @@ def ocr_single_image(gemini_key: str, page_file_name, file_name,
                         max_retries=2,
                         
                     )
-                    response = get_first_round_response(draft_responses, llm, model_name, cb, messages, sys_message, img_message, usage_metadata)
-                    sp = validate_response(response, response_dict, image_file_path, model_name, page_file_name)
+                    response: OCRClusterResponse | None = get_first_round_response(draft_responses, llm, model_name, cb, messages, sys_message, img_message, usage_metadata)
+                    _sp = validate_response_mutate_inplace(response, response_dict, image_file_path, model_name, page_file_name)
+                    ok = True
                     # chain_new_raw = llm.with_structured_output(RawOCRResponse, include_raw = True)
                 except Exception as e:
                     from src.utils.log import safe_format_exception
@@ -574,7 +596,6 @@ def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
             oc_refined_result: OCRRefineResponse
             raw: str
             parsing_error: Exception
-            from typing import Dict
             temp: dict = cast(dict, llm.with_structured_output(schema = OCRRefineResponse, include_raw = True).invoke(messages, config={"callbacks": [cb]}))
             (raw, oc_refined_result, parsing_error) = (temp['raw'], temp['parsed'], temp['parsing_error'])
             if parsing_error:
@@ -648,20 +669,10 @@ def regen_doc_group(folder_path, use_raw = False):
 
 from utils.bounded_threadpool_executor import BoundedExecutor
 
-def batch_gemini_ocr_image(gemini_key, folder = "split_pages", exist_behavior: Literal["ok","skip","raise", 'rerun']  = 'skip',
-                           bounded_executor: Optional[BoundedExecutor] = None,
-                           allowed_relative_paths = None,
-                           loader : RawFileLoader | None= None,
-                           ocr_callback : Callable| None= None):
-    # page_file_name = "page_1.png"
-    # file_name = "EXL-00-HI-MSA01-2017.PDF"
 
-    if loader:
-        pdf_folder = loader.compare_root
-        legacy_mode = False
-        loader2 = loader
-    else:
-        legacy_mode = True
+def get_legacy_loader_like(folder: str, allowed_relative_paths: str | Any):
+    
+        
         # useful for old flat entry only
         directories = [entry for entry in os.listdir(folder) if os.path.isdir(os.path.join(folder, entry))]
         if allowed_relative_paths is None:
@@ -694,8 +705,24 @@ def batch_gemini_ocr_image(gemini_key, folder = "split_pages", exist_behavior: L
                     else:
                         continue
                     yield page_file_name
+        return local_loader()
+
+def batch_gemini_ocr_image(gemini_key, folder = "split_pages", exist_behavior: Literal["ok","skip","raise", 'rerun']  = 'skip',
+                           bounded_executor: Optional[BoundedExecutor] = None,
+                           allowed_relative_paths = None,
+                           loader : RawFileLoader | None= None,
+                           ocr_callback : Callable| None= None):
+    # page_file_name = "page_1.png"
+    # file_name = "EXL-00-HI-MSA01-2017.PDF"
+
+    if loader:
+        pdf_folder = loader.compare_root
+        legacy_mode = False
+        loader2 = loader
+    else:
+        legacy_mode = True
         
-        loader2: Iterable = local_loader()
+        loader2: Iterable = get_legacy_loader_like(folder, allowed_relative_paths)
     for f in loader2:
         import pathlib
         #print(f'start inspecting processing {f}')
@@ -716,7 +743,8 @@ def batch_gemini_ocr_image(gemini_key, folder = "split_pages", exist_behavior: L
             (ocr_callback or ocr_single_image)(gemini_key, page_file_name, 
                                 file_name=pdf_fname, 
                                 folder=pdf_folder, 
-                                exist_behavior=exist_behavior)
+                                exist_behavior=exist_behavior,
+                                model_retry_priority_list=None)
         else:
             bounded_executor.submit(ocr_callback or ocr_single_image, 
                                         gemini_key, 

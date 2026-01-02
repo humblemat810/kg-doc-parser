@@ -18,14 +18,14 @@ JsonPrimitive = Union[str, int, float, bool, None]
 #========================= OCR DOC
 
 # pre-validation model
-class box_2d(BaseModel):
+class box_2d(BaseModel): # text box for ocr, the id here is not a database unique id but a unique id for identified object
     box_2d: list[int] = Field(description = 'box y min, x min, y max and x max')
     label : str = Field(description = 'text in the box')
     id: int  = Field(description = 'id of the text box in the page, autoincrement from 0')
-class NonText_box_2d(ModeSlicingMixin, BaseModel):
+class NonText_box_2d(BaseModel): # text box for ocr, the id here is not a database unique id but a unique id for identified object
     """Recognised meaningful objects other than OCR characters, include image, figures. """
-    description: DtoType[str] = Field(description='the description or summary of the non-OCR object')
-    box_2d: DtoType[list[int]] = Field(description = 'box y min, x min, y max and x max')
+    description: str = Field(description='the description or summary of the non-OCR object')
+    box_2d: list[int] = Field(description = 'box y min, x min, y max and x max')
     id: int = Field(description="per page unique number of the cluster, starting from 0")
 
 # post validation model
@@ -49,7 +49,7 @@ class NonTextCluster(ModeSlicingMixin, BaseModel):
 class OCRClusterResponse(ModeSlicingMixin, BaseModel):
     """id/ cluster number must be all unique, for example, one of the ocr boxes_2d used id='1', 
        the first image box id (cluster numebr) will be '2', the next signature will be '3' """
-    OCR_text_clusters: DtoType[list[TextCluster]] = Field(description="the OCR text results. Share cluster number uniqueness with non-OCR objects. ")
+    OCR_text_clusters: DtoType[list[TextCluster]] = Field(description="the OCR text results. Share cluster number uniqueness with non-OCR objects. Include emoji or unicode text")
     non_text_objects:  DtoType[list[NonTextCluster]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
     is_empty_page: DtoType[Optional[bool]] = Field(default = False, description="true if the whole page is empty without recognisable text.")
     printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
@@ -171,21 +171,24 @@ class SplitPage(OCRClusterResponseBc):
             expected_next = 0
             i_ocr = 0
             # i_sig = 0
+            i_non_ocr = 0
             ocr_clus_nums = sorted([i.cluster_number for i in ocr_cluster])
             non_clus_nums = sorted([i.cluster_number for i in non_ocr_cluster])
             # sig_clus_nums = sorted([i.cluster_number for i in target.signature_blocks])
             # expected_next = min(ocr_clus_nums + sig_clus_nums)
             if ocr_clus_nums:
-                start_num = min(ocr_clus_nums)
+                start_num = min(ocr_clus_nums + non_clus_nums)
                 assert start_num in [0, 1], "only allow 0-indexed based or 1-indexed based cluster numbers"
                 expected_next = start_num
                 while expected_next < start_num + (len(ocr_clus_nums) + len(non_clus_nums)):
                     if (i_ocr <len(ocr_cluster)) and expected_next == ocr_cluster[i_ocr].cluster_number:
                         i_ocr += 1
                     # elif (i_sig < len(target.signature_blocks)) and expected_next == target.signature_blocks[i_sig].cluster_number:
-                    #     i_sig += 1
+                        # i_sig += 1
+                    elif (i_non_ocr < len(non_ocr_cluster)) and expected_next == non_ocr_cluster[i_non_ocr].cluster_number:
+                        i_non_ocr += 1
                     else:
-                        raise Exception('expected index {expected_next} not found in both ocr_cluster nor signature_blocks')
+                        raise Exception(f'expected index {expected_next} not found in both ocr_cluster nor signature_blocks')
                     expected_next += 1
 
             
