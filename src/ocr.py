@@ -10,7 +10,7 @@ import base64
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import Runnable
-from models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
+from src.models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
 from typing import Any, Iterable, cast, Callable, Optional,  Literal, TypeAlias, Union
 import json
 from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, FrontendField, BackendField, LLMField,
@@ -25,7 +25,7 @@ from langchain_core.messages import SystemMessage, BaseMessage, HumanMessage
 from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from pdf2png import RawFileLoader
+from .pdf2png import RawFileLoader
 PastCompatibleSplitPage: TypeAlias = SplitPage
 def get_page_json(folder_path, page_num):
     with open(os.path.join(folder_path, 'page_'+str(page_num)+'.json'), 'r') as f:
@@ -667,7 +667,7 @@ def regen_doc_group(folder_path, use_raw = False):
         doc_group[d] = doc
     return DocumentGroup(**{"documents": doc_group})
 
-from utils.bounded_threadpool_executor import BoundedExecutor
+from .utils.bounded_threadpool_executor import BoundedExecutor
 
 
 def get_legacy_loader_like(folder: str, allowed_relative_paths: str | Any):

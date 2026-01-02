@@ -11,7 +11,7 @@ from pdf2image import convert_from_path
 import platform
 import pathlib
 from pypdf import PdfReader, PdfWriter
-from utils.file_loaders import RawFileLoader
+from .utils.file_loaders import RawFileLoader
 import threading
 import pikepdf
 

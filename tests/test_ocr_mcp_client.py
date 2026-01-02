@@ -33,7 +33,7 @@ async def test_regen_doc_group_and_send_to_engine_for_storing():
 
     from ocr import regen_doc_group
     graph_rag_port = 28110
-    folder_path = os.path.join("..","doc_data","split_pages","Contract Samples - cleaned","Samples for sending","Contract 2 - Ficticious")
+    folder_path = os.path.join("..","doc_data","split_pages","Document Samples - cleaned","Samples for sending","Document 2 - Ficticious")
     
     location = os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "test_regen_doc_group_and_send_to_engine_for_indexing", "test_regen_doc_group")
     os.makedirs(exist_ok = True, name = location)
@@ -72,7 +72,7 @@ async def test_regen_doc_group_and_send_to_engine_for_kg_extract():
 
     from ocr import regen_doc_group
     graph_rag_port = 28110
-    folder_path = os.path.join("..","doc_data","split_pages","Contract Samples - cleaned","Samples for sending","Contract 2 - Ficticious")
+    folder_path = os.path.join("..","doc_data","split_pages","Document Samples - cleaned","Samples for sending","Document 2 - Ficticious")
     
     location = os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "test_regen_doc_group_and_send_to_engine_for_indexing", "test_regen_doc_group")
     os.makedirs(exist_ok = True, name = location)
