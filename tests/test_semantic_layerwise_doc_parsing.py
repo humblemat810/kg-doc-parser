@@ -22,8 +22,6 @@ def test_semantic_document_splitting(gemini_key):
                 return True
         else:
             return False
-        pass
-
 
     # memory = Memory(".cache", verbose=0)
     # compute_cached = cached(memory, compute)
@@ -41,11 +39,12 @@ def test_semantic_document_splitting(gemini_key):
                                                                  all_child_from_root)
     from src.ocr import regen_doc
     from joblib import Memory
+    import uuid
     memory = Memory(location = '.joblib')
     for f in loader:
         f_name = pathlib.Path(f).name
         doc = {f_name : regen_doc(os.path.join(compare_root, f), use_raw = True)}
-        document_tree, source_map = parse_doc(doc)
+        document_tree, source_map = parse_doc(doc_id=f_name, raw_doc_dict=doc)
         cached_semantic_tree_to_kge_payload = cached(memory, semantic_tree_to_kge_payload)
         graph_to_persist = cached_semantic_tree_to_kge_payload(document_tree)
         reconstrcted_root = kge_payload_to_semantic_tree(graph_to_persist)
@@ -54,7 +53,7 @@ def test_semantic_document_splitting(gemini_key):
         res = requests.post("http://127.0.0.1:28110/api/document.validate_graph", json = graph_to_persist)
         res.raise_for_status()
         nodes = all_child_from_root(reconstrcted_root)
-        batch_index_list = build_index_terms_for_semantic_node(nodes)        
+        batch_index_list = build_index_terms_for_semantic_node(nodes, doc_id=f_name)        
         payload = {"index": [i.model_dump(mode='json') for i in batch_index_list]}
         for k in payload['index']:
             k.update({'doc_id': str(reconstrcted_root.node_id)})
