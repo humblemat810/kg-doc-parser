@@ -36,7 +36,8 @@ def test_semantic_document_splitting(gemini_key):
                                                                  semantic_tree_to_kge_payload, 
                                                                  kge_payload_to_semantic_tree,
                                                                  build_index_terms_for_semantic_node,
-                                                                 all_child_from_root)
+                                                                 all_child_from_root,
+                                                                 SemanticNode)
     from src.ocr import regen_doc
     from joblib import Memory
     import uuid
@@ -48,12 +49,15 @@ def test_semantic_document_splitting(gemini_key):
         cached_semantic_tree_to_kge_payload = cached(memory, semantic_tree_to_kge_payload)
         graph_to_persist = cached_semantic_tree_to_kge_payload(document_tree)
         reconstrcted_root = kge_payload_to_semantic_tree(graph_to_persist)
-        assert reconstrcted_root.model_dump() == document_tree.model_dump()
+        assert reconstrcted_root.model_dump() == document_tree.model_dump() #document_tree.model_dump() # SemanticNode.model_validate(document_tree.model_dump()).model_dump()
         import requests
         res = requests.post("http://127.0.0.1:28110/api/document.validate_graph", json = graph_to_persist)
         res.raise_for_status()
-        nodes = all_child_from_root(reconstrcted_root)
-        batch_index_list = build_index_terms_for_semantic_node(nodes, doc_id=f_name)        
+        all_child_nodes = all_child_from_root(reconstrcted_root)
+        all_nodes = all_child_nodes + [reconstrcted_root]
+        model_names = ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-pro", 
+                   "gemini-2.5-flash-lite", ]
+        batch_index_list = build_index_terms_for_semantic_node(all_nodes, doc_id=f_name, model_names=model_names, mode="bottom_up_digest")
         payload = {"index": [i.model_dump(mode='json') for i in batch_index_list]}
         for k in payload['index']:
             k.update({'doc_id': str(reconstrcted_root.node_id)})
@@ -63,9 +67,19 @@ def test_semantic_document_splitting(gemini_key):
             return res
         res = get_index_entries(payload)
         res.raise_for_status()
-        @memory.cache
+        import json
+        def upsert_doc(doc, doc_id):
+            res = requests.post("http://127.0.0.1:28110/api/document", json = {"doc_id" : doc_id, 
+                                                                                "doc_type" : "ocr_document", 
+                                                                                "insertion_method" : "document_parser",
+                                                                                "content" : doc})
+            res.raise_for_status()
+            return res
+        res = upsert_doc(json.dumps(doc), str(reconstrcted_root.node_id))
+        res.raise_for_status()
         def get_upsert_result(graph_to_persist):
             res = requests.post("http://127.0.0.1:28110/api/document.upsert_tree", json = graph_to_persist)
+            res.raise_for_status()
             return res
         res = get_upsert_result(graph_to_persist)
         res.raise_for_status()

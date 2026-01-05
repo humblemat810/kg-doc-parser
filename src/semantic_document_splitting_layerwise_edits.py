@@ -4,7 +4,11 @@
 # ==============================================================================
 import json
 import re
+
+from dataclasses import dataclass
+from enum import Enum
 from typing import Annotated, List, TypeAlias, Union, Literal, Dict, Any, Tuple, Optional
+from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field, ValidationError, validator, field_validator
 from typing import ClassVar
 from uuid import UUID, uuid1
@@ -17,6 +21,16 @@ from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory
 from .document_ingester_logger import DocumentIngestSQLiteCallback
 
+def get_llm(model_name:str):
+    if model_name.lower().startswith("gemini"):
+        return ChatGoogleGenerativeAI(
+                        model=model_name,
+                        temperature=0.1,
+                        callbacks=[cb],
+                    )
+    else:
+        raise Exception("unknown model")
+    
 cb = DocumentIngestSQLiteCallback(db_path="logs/document_ingest.sqlite",
         log_prompts = True,
         log_chat_messages = True,
@@ -53,8 +67,8 @@ class HydratedTextPointer(ModeSlicingMixin, BaseModel):
     
     @model_validator(mode="after")
     def end_char_minus_1_to_ending_index(self):
-        if self.ending_char == -1:
-            self.ending_char += len(self.verbatim_text)
+        if self.end_char == -1:
+            self.end_char += len(self.verbatim_text)
         return self
     # --------------------------
     # pointer -> ref dict
@@ -186,7 +200,7 @@ class SemanticNode(BaseModel):
     title: str
     total_content_pointers: List[HydratedTextPointer]
     child_nodes: List['SemanticNode'] = Field([])
-
+    level_from_root: int
     # -------------------------------------------------
     # 🔍 Search descriptor builder (unchanged)
     # -------------------------------------------------
@@ -601,10 +615,55 @@ $parent_sections_json
 # ```
 # """
 
-
+from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage
 from joblib import Memory
 memory = Memory(location = '.joblib')
-
+@joblib_memory_cached(memory, ignore = ['model_names', 'event_name'])
+def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set):
+        
+        from langchain_google_genai import ChatGoogleGenerativeAI    
+        i_model = 0
+        while True:
+            model_name = model_names[i_model]
+            try:    
+                print(f"\n--- Calling LLM ({model_name}) for {len(nodes_at_level)} nodes at this level ---")
+                llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.1, callbacks=[cb])
+                import inspect
+                cf = inspect.currentframe()
+                line_no = cf.f_lineno if cf else None
+                max_retry = 2
+                # Use with_structured_output with our new batch response model
+                for retries in range(max_retry):
+                    try:
+                        response: dict = llm.with_structured_output(LLMLevelResponse["llm"], include_raw=True).invoke(messages,
+                                                config={
+                                                        "metadata": {
+                                                        "document_id": doc_id,
+                                                        "event_name": event_name,
+                                                        "source_filename": __file__,
+                                                        "line_number": line_no
+                                                        }
+                                                        }) # type: ignore) # type: ignore
+                        
+                        if response.get('parsing_error'):
+                            raise response['parsing_error']
+                        parsed: LLMLevelResponse["llm"] = response['parsed']
+                        assert all(i.parent_node_id in parent_node_id_set for i in parsed.children), "llm generated non existed parent id"
+                        return response['parsed'].model_dump()
+                    except Exception as e:
+                        err_msg = str(e)
+                        messages.append(SystemMessage((("error: " + err_msg[:10000] + '...' + err_msg[-2000:]) if len(err_msg)>=12000 else err_msg)))
+                        if retries == max_retry -1 :
+                            messages.append(SystemMessage("retry"))
+                        else:
+                            raise Exception ("retried too many times single model, switching to next llm model")
+            except Exception as e:
+                print(f"⚠️ Model {model_name} failed: {e}")
+                i_model += 1
+                err_msg = str(e)
+                messages.append(SystemMessage((("error: " + err_msg[:10000] + '...' + err_msg[-2000:]) if len(err_msg)>=12000 else err_msg)))
+                if i_model >= len(model_names):
+                    raise Exception(f"All models ({model_names}) failed for this batch.") from e
 # @memory.cache(ignore = ['model_names'])
 @joblib_memory_cached(memory, ignore = ['model_names', 'event_name'])
 def level_node_llm_parsing(
@@ -647,46 +706,13 @@ def level_node_llm_parsing(
         ], indent=2)
         )
     # 3. Use your robust LangChain invoker
-    from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage
-    from langchain_google_genai import ChatGoogleGenerativeAI
-
+    
     messages: list[BaseMessage] = [HumanMessage(final_prompt)]
-    i_model = 0
-    while True:
-        model_name = model_names[i_model]
-        try:    
-            print(f"\n--- Calling LLM ({model_name}) for {len(nodes_at_level)} nodes at this level ---")
-            llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.1, callbacks=[cb])
-            import inspect
-            cf = inspect.currentframe()
-            line_no = cf.f_lineno if cf else None
-                
-            # Use with_structured_output with our new batch response model
-            response: dict = llm.with_structured_output(LLMLevelResponse["llm"], include_raw=True).invoke(messages,
-                                    config={
-                                            "metadata": {
-                                            "document_id": doc_id,
-                                            "event_name": event_name,
-                                            "source_filename": __file__,
-                                            "line_number": line_no
-                                            }
-                                            }) # type: ignore) # type: ignore
-            
-            if response.get('parsing_error'):
-                raise response['parsing_error']
-            assert all(i.parent_node_id in parent_node_id_set for i in response['parsed'].children), "llm generated non existed parent id"
-            return response['parsed'].model_dump()
+    return retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set)
 
-        except Exception as e:
-            print(f"⚠️ Model {model_name} failed: {e}")
-            i_model += 1
-            err_msg = str(e)
-            messages.append(SystemMessage((("error: " + err_msg[:10000] + '...' + err_msg[-2000:]) if len(err_msg)>=12000 else err_msg)))
-            if i_model >= len(model_names):
-                raise Exception(f"All models ({model_names}) failed for this batch.") from e
 from functools import lru_cache
 @memory.cache
-def get_node(pid, child_def):
+def get_node(pid, child_def, parent_level: int):
     # child_def: Union[LLMChildNodeResponse, LLMChildNodeResponseBE].model_dump()
     child_def_obj: LLMChildNodeResponseBE = LLMChildNodeResponseBE.model_validate(child_def)
     absolute_pointers = child_def_obj.pointers
@@ -696,7 +722,8 @@ def get_node(pid, child_def):
         title=child_def_obj.title,
         node_type=child_def_obj.node_type,
         total_content_pointers=absolute_pointers,
-        child_nodes = []
+        child_nodes = [],
+        level_from_root = parent_level +1,
         # value_pointers=None # You would add logic to handle this
     )
     return child_node.model_dump()            
@@ -720,7 +747,8 @@ def get_root_node(title, source_map):
                 validation_method = None
             ) for cid in sorted(source_map.keys())
         ],
-        child_nodes = []
+        child_nodes = [],
+        level_from_root = 0,
     )
     return root_node.model_dump()
 
@@ -811,7 +839,8 @@ def build_document_tree(
             ch: LLMChildNodeResponseBE
             child_def = ch.model_dump()
             child_def.pop("id")
-            child_node = SemanticNode.model_validate(get_node(pid = ch.parent_node_id, child_def = child_def))
+            node_dict = get_node(pid = ch.parent_node_id, child_def = child_def, parent_level = current_depth)
+            child_node = SemanticNode.model_validate(node_dict)
             parent_node = node_this_level_lookup_by_id[str(ch.parent_node_id)]
             parent_node.child_nodes.append(child_node)
             if child_node.node_type == 'KEY_VALUE_PAIR':
@@ -953,7 +982,7 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
         be_children = []
         for ch in fe_children:
             temp = ch.model_dump()
-            temp['node_id'] = get_node(pid = ch.parent_node_id, child_def = ch.model_dump())['node_id']
+            temp['node_id'] = get_node(pid = ch.parent_node_id, child_def = ch.model_dump(), parent_level= current_depth)['node_id']
             be_children.append(LLMChildNodeResponseBE.model_validate(temp))
         corrected_level_response2 : LLMLevelResponseBE= LLMLevelResponseBE.model_validate({'children': be_children})
         # corrected_level_response2 : LLMLevelResponseBE= LLMLevelResponseBE.model_validate(get_level_response(llm_response_json))
@@ -1302,7 +1331,7 @@ class StructuredLLMCaller(Protocol):
         self, 
         prompt: str, 
         model_names: List[str], 
-        schema: Type[T] | dict[str, Any], 
+        schema: Type[T], 
         doc_id: str,
         model_json_schema: dict, 
         event_name: str,
@@ -2330,13 +2359,16 @@ def semantic_tree_to_kge_payload(
                 "parent_id": str(node.parent_id) if node.parent_id else None,
                 "pointers": pointers_payload,
                 "insertion_method": insertion_method,
+                "level_from_root": node.level_from_root
             },
             "mentions": _spans_to_groundings_to_mentions(_pointers_to_spans(ptrs)), 
+            
             # "references": _pointers_to_references(ptrs),
         }
         nodes.append(node_dict)
 
         for child in node.child_nodes:
+            child.level_from_root = node.level_from_root + 1
             edge_ptr_refs = _pointers_to_references(ptrs)  # parent’s pointers as provenance
             edge_ptr_mentions= _spans_to_groundings_to_mentions(_pointers_to_spans(ptrs))
             edge_dict = {
@@ -2356,8 +2388,9 @@ def semantic_tree_to_kge_payload(
                 },
             }
             edges.append(edge_dict)
+            
             walk(child)
-
+    root.level_from_root = 0
     walk(root)
     nodes[0].update({"properties": {"kind": "document_root"}}) # document root
     return {
@@ -2438,6 +2471,9 @@ def kge_payload_to_semantic_tree(payload: Dict[str, Any]) -> "SemanticNode":
         # new path (MCP-style references)
         # if not pointers and n.get("references"):
         # pointers = _extract_pointers_from_references(n["references"])
+        level_from_root = md.get("level_from_root")
+        if level_from_root is None:
+            raise Exception("Data corruption error, level_from_root information is lost")
         mentions = _extract_pointers_from_mentions(n["mentions"])
         sem = SemanticNode(
             node_id=UUID(n["id"]),
@@ -2446,6 +2482,7 @@ def kge_payload_to_semantic_tree(payload: Dict[str, Any]) -> "SemanticNode":
             title=n.get("label") or "",
             total_content_pointers=mentions,
             child_nodes=[],
+            level_from_root=level_from_root
         )
         sem_nodes[n["id"]] = sem
 
@@ -2522,9 +2559,10 @@ class BatchIndexResponse(BaseModel):
     #     node_set = available_node_ids.get()
     #     assert (set(str(i.node_id) for i in self.index) == node_set)
     #     return self    
-class IdMapping():
-    forward_map = {}
-    backward_map = {}
+class IdMapping:
+    def __init__(self):
+        self.forward_map = {}
+        self.backward_map = {}
     def to_uuid(self, short_id):
         return self.backward_map.get(short_id)
     def to_short_id(self, id, title):
@@ -2534,77 +2572,358 @@ class IdMapping():
         
         return self.forward_map[id]
     pass
-def build_index_terms_for_semantic_node(
-    sem_nodes: list["SemanticNode"], doc_id: str
-) -> list[IndexingResponse]:
-    from langchain_core.messages import HumanMessage, SystemMessage
-    # reconstruct text for better indexing
-    # text = reconstruct_text_from_pointers(sem_node.total_content_pointers, source_map)
-    # title = sem_node.title
-    
+
+class IndexMode(str, Enum):
+    FLAT_VERBATIM = "flat_verbatim"
+    BOTTOM_UP_DIGEST = "bottom_up_digest"
+    BOTH = "both"
+
+
+def _default_token_estimate(text: str) -> int:
+    return max(1, (len(text) + 3) // 4)
+
+
+def _json_compact(obj: Any) -> str:
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _render_nodes_payload(nodes_payload: list[dict[str, Any]] | dict[str, Any]) -> str:
+    return _json_compact({"nodes": nodes_payload})
+
+
+def batch_nodes(
+    items: list[dict[str, Any]],
+    *,
+    max_nodes: Optional[int] = None,
+    max_input_tokens: Optional[int] = None,
+    token_estimator: Callable[[str], int] = _default_token_estimate,
+    base_prompt_tokens: int = 450,
+    per_node_overhead_tokens: int = 15,
+    render_item_for_estimate: Callable[[dict[str, Any]], str] = _json_compact,
+) -> Iterable[list[dict[str, Any]]]:
+    if max_nodes is None and max_input_tokens is None:
+        max_nodes = 25
+
+    batch: list[dict[str, Any]] = []
+    batch_tokens = base_prompt_tokens
+
+    def flush():
+        nonlocal batch, batch_tokens
+        if batch:
+            yield batch
+        batch = []
+        batch_tokens = base_prompt_tokens
+
+    for item in items:
+        item_text = render_item_for_estimate(item)
+        item_tokens = token_estimator(item_text) + per_node_overhead_tokens
+
+        would_exceed_tokens = (
+            max_input_tokens is not None
+            and batch
+            and (batch_tokens + item_tokens) > max_input_tokens
+        )
+        would_exceed_nodes = (
+            max_nodes is not None
+            and batch
+            and (len(batch) + 1) > max_nodes
+        )
+
+        if would_exceed_tokens or would_exceed_nodes:
+            yield from flush()
+
+        # best-effort: allow single oversized item
+        batch.append(item)
+        batch_tokens += item_tokens
+
+    yield from flush()
+
+
+@dataclass
+class _Prepared:
+    id_map: IdMapping
+    dumped: list[dict[str, Any]]              # full dumped nodes with short ids
+    node_by_id: dict[str, dict[str, Any]]     # short_id -> dumped node
+
+
+def _prepare_nodes(sem_nodes: list["SemanticNode"]) -> _Prepared:
     id_map = IdMapping()
-    dumped = []
+    # ensure instance-local maps
+    id_map.forward_map = {}
+    id_map.backward_map = {}
+
+    dumped: list[dict[str, Any]] = []
     for n in sem_nodes:
-        temp = n.model_dump()
-        temp['node_id'] = id_map.to_short_id(temp['node_id'], temp['title'])
-        dumped.append(temp)
-    for dumped_n in dumped:
-        dumped_n['parent_id'] = id_map.to_short_id(dumped_n['parent_id'], dumped_n['title'])
-    
-    llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1, callbacks=[cb])
-    def iter_minibatches(data, batch_size):
-        for i in range(0, len(data), batch_size):
-            yield data[i : i + batch_size]
-    def get_node_verbatim(node_dict):
-        return {"node_id":node_dict["node_id"], "contents": [i["verbatim_text"] for i in node_dict["total_content_pointers"]] }
-    batch_result = []
-    @memory.cache
-    def get_minibatch_result(messages, doc_id):
+        d = n.model_dump()
+        d["node_id"] = id_map.to_short_id(d["node_id"], d.get("title"))
+        dumped.append(d)
+
+    for d in dumped:
+        pid = d.get("parent_id")
+        if pid is not None:
+            d["parent_id"] = id_map.to_short_id(pid, d.get("title"))
+
+    node_by_id = {str(d["node_id"]): d for d in dumped}
+    return _Prepared(id_map=id_map, dumped=dumped, node_by_id=node_by_id)
+
+
+def _leaf_payload(node_dict: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "node_id": node_dict["node_id"],
+        "title": node_dict.get("title"),
+        "kind": "LEAF",
+        "contents": [
+            p.get("verbatim_text")
+            for p in (node_dict.get("total_content_pointers") or [])
+            if p and p.get("verbatim_text")
+        ],
+    }
+
+def digest_lite(r: IndexingResponse) -> dict[str, Any]:
+    return {
+        "node_id": str(r.node_id),
+        "t": (r.canonical_title or "")[:120],
+        "k": (r.keywords or [])[:12],
+        # omit aliases/provision by default
+    }
+def _digest_from_index(r: "IndexingResponse") -> dict[str, Any]:
+    # compact, bounded; used only for parent prompts
+    return {
+        "node_id": str(r.node_id),
+        "canonical_title": (r.canonical_title or "")[:160],
+        "keywords": (r.keywords or [])[:12],
+        "aliases": (r.aliases or [])[:5],
+        "provision": (r.provision or "")[:120],
+    }
+
+
+def _parent_payload(node_dict: dict[str, Any], child_digests: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "node_id": node_dict["node_id"],
+        "title": node_dict.get("title"),
+        "kind": "PARENT",
+        "children": child_digests,
+    }
+
+@memory.cache(ignore=["model_names"])
+def build_index_terms_for_semantic_node(
+    sem_nodes: list["SemanticNode"],
+    doc_id: str,
+    model_names: list[str],
+    *,
+    mode: IndexMode = IndexMode.FLAT_VERBATIM,
+    max_nodes_per_batch: int | None = None,
+    max_input_tokens_per_batch: int | None = 13500,
+    token_estimator: Callable[[str], int] | None = None,
+) -> List[IndexingResponse] | Dict[str, List[IndexingResponse]]:
+    from langchain_core.messages import HumanMessage, SystemMessage
+    import inspect
+
+    if token_estimator is None:
+        token_estimator = _default_token_estimate
+
+    prepared = _prepare_nodes(sem_nodes)
+    id_map, dumped, node_by_id = prepared.id_map, prepared.dumped, prepared.node_by_id
+
+    system_flat = SystemMessage(
+        "You will be sent nodes to index as JSON under key 'nodes'.\n"
+        "Each element has node_id, title, kind=LEAF, contents=[verbatim strings].\n"
+        "Return BatchIndexResponse.index with EXACTLY one IndexingResponse per input node_id."
+    )
+
+    system_bottomup = SystemMessage(
+        "You will be sent nodes to index as JSON under key 'nodes'.\n"
+        "Each element has node_id, title, kind and either:\n"
+        " - kind=LEAF: contents=[verbatim strings]\n"
+        " - kind=PARENT: children=[digests of already-indexed child nodes]\n"
+        "Return BatchIndexResponse.index with EXACTLY one IndexingResponse per input node_id.\n"
+        "Rules:\n"
+        " - LEAF: use only verbatim contents.\n"
+        " - PARENT: use only children digests; do not hallucinate verbatim.\n"
+        'In the payload:\n'
+        '- "t" means canonical title\n'
+        '- "k" means keywords\n'
+
+    )
+
+    @memory.cache(ignore=["model_names"])
+    def get_minibatch_result(messages, doc_id: str, model_names: list[str], all_ids: tuple[str, ...]):
         retries = 0
         retry_max = 3
-        
+        i_model = 0
+        cur_messages = list(messages)
+
         while True:
             token = available_node_ids.set(set(all_ids))
-            import inspect
             cf = inspect.currentframe()
             line_no = cf.f_lineno if cf else None
+
+            model_name = model_names[i_model]
+            llm: BaseChatModel = get_llm(model_name)
+
             try:
-                res: dict = llm.with_structured_output(BatchIndexResponse, include_raw = True).invoke(messages,
-                                    config={
-                                            "metadata": {
-                                            "document_id": doc_id,
-                                            "event_name": "get_minibatch_result",
-                                            "source_filename": __file__,
-                                            "line_number": line_no, 
-                                            "n_try": retries
-                                            }
-                                            }) # type: ignore
-                if not res.get('parsing_error'):
-                    break
-                else:
-                    messages.append(SystemMessage(f'Result Parsing error: {str(res.get("parsing_error"))}'))
-                out_node_set = set(str(i.node_id) for i in res['parsed'].index)
+                res: dict = llm.with_structured_output(BatchIndexResponse, include_raw=True).invoke(
+                    cur_messages,
+                    config={
+                        "metadata": {
+                            "document_id": doc_id,
+                            "event_name": "get_minibatch_result",
+                            "source_filename": __file__,
+                            "line_number": line_no,
+                            "n_try": retries,
+                            "model_name": model_name,
+                        }
+                    },
+                )  # type: ignore
+
+                parsing_error = res.get("parsing_error")
+                if parsing_error:
+                    cur_messages = cur_messages + [SystemMessage(f"Result Parsing error: {str(parsing_error)}")]
+                    continue
+
+                out_node_set = set(str(i.node_id) for i in res["parsed"].index)
                 in_node_set = set(all_ids)
-                if not (in_node_set == out_node_set):
-                    raise Exception (f"Extra output nodes: {(out_node_set - in_node_set) or None}, unsatisfied input nodes: {(in_node_set- out_node_set) or None}")
+                if out_node_set != in_node_set:
+                    raise Exception(
+                        f"Extra output nodes: {(out_node_set - in_node_set) or None}, "
+                        f"unsatisfied input nodes: {(in_node_set - out_node_set) or None}"
+                    )
+                return res
+
+            except Exception as e:
+                cur_messages = cur_messages + [SystemMessage(str(e))]
+
             finally:
                 available_node_ids.reset(token)
                 retries += 1
                 if retries > retry_max:
-                    raise Exception(f"Retry max {retry_max} reached")
-        return res
-    for batch in iter_minibatches(dumped, 25):
-        print(batch)
-        all_ids = [str(n["node_id"]) for n in batch]
-        
-        messages = [SystemMessage("""You will be sent some nodes data. Generate some search terms for them. Need not go too deep to investigate the nodes relationship.
-this is a superficial task. Each node must return an index
-"""), HumanMessage(f"""
-Nodes to index:
-{[get_node_verbatim(i) for i in batch]}
-""")]
-        res = get_minibatch_result(messages, doc_id)
-        batch_result.extend(res['parsed'].index)
-    for n in batch_result:
-        n.node_id = id_map.to_uuid(n.node_id)
-    return batch_result
+                    i_model += 1
+                    retries = 0
+                    cur_messages = cur_messages + [
+                        SystemMessage(f"model {model_name} failed too many times, switch to next model")
+                    ]
+                    if i_model >= len(model_names):
+                        raise Exception(f"All models failed; last model={model_name}")
+
+    def run_flat() -> list[IndexingResponse]:
+        payload_nodes = [_leaf_payload(d) for d in dumped]  # everything treated as leaf/verbatim
+        out: list[IndexingResponse] = []
+
+        for batch in batch_nodes(
+            payload_nodes,
+            max_nodes=max_nodes_per_batch,
+            max_input_tokens=max_input_tokens_per_batch,
+            token_estimator=token_estimator,
+            render_item_for_estimate=_json_compact,
+        ):
+            all_ids = tuple(str(n["node_id"]) for n in batch)
+            messages = [system_flat, HumanMessage(_render_nodes_payload(batch))]
+            res = get_minibatch_result(messages, doc_id, model_names, all_ids)
+            out.extend(res["parsed"].index)
+
+        for r in out:
+            r.node_id = str(id_map.to_uuid(r.node_id))
+        return out
+
+    def run_bottom_up() -> list[IndexingResponse]:
+        # build adjacency
+        children_by_parent: dict[str, list[str]] = defaultdict(list)
+        parent_by_node: dict[str, str] = {}
+        for nid, d in node_by_id.items():
+            pid = d.get("parent_id")
+            if pid is None:
+                continue
+            pid = str(pid)
+            parent_by_node[nid] = pid
+            children_by_parent[pid].append(nid)
+
+        remaining_children = {nid: 0 for nid in node_by_id}
+        for pid, kids in children_by_parent.items():
+            remaining_children[pid] = len(kids)
+
+        ready = deque([nid for nid in node_by_id if remaining_children.get(nid, 0) == 0])
+
+        digest_by_id: dict[str, dict[str, Any]] = {}
+        index_by_id: dict[str, IndexingResponse] = {}
+        order: list[str] = []
+        seen = 0
+        total = len(node_by_id)
+
+        while ready:
+            wave = []
+            while ready:
+                wave.append(ready.popleft())
+            if not wave and seen < total:
+                raise RuntimeError("Deadlock: no ready nodes but unprocessed nodes remain (cycle/missing parent)")
+            wave_payload: list[dict[str, Any]] = []
+            for nid in wave:
+                kids = children_by_parent.get(nid, [])
+                if not kids:
+                    wave_payload.append(_leaf_payload(node_by_id[nid]))
+                else:
+                    try:
+                        verb_payload = _leaf_payload(node_by_id[nid])
+                        child_digests = [digest_by_id[cid] for cid in kids if cid in digest_by_id]
+                        digest_payload = _parent_payload(node_by_id[nid], child_digests)
+                        if (token_estimator(_render_nodes_payload(verb_payload)) >
+                            token_estimator(_render_nodes_payload(digest_payload))):
+                            payload = digest_payload
+                        else:
+                            payload = verb_payload
+                        
+                        wave_payload.append(payload)
+                    except Exception as _e:
+                        raise
+                        
+
+            for batch in batch_nodes(
+                wave_payload,
+                max_nodes=max_nodes_per_batch,
+                max_input_tokens=max_input_tokens_per_batch,
+                token_estimator=token_estimator,
+                render_item_for_estimate=_json_compact,
+            ):
+                all_ids = tuple(str(n["node_id"]) for n in batch)
+                messages = [system_bottomup, HumanMessage(_render_nodes_payload(batch))]
+                res = get_minibatch_result(messages, doc_id, model_names, all_ids)
+
+                for r in res["parsed"].index:
+                    sid = str(r.node_id)
+                    index_by_id[sid] = r
+                    digest_by_id[sid] = digest_lite(r)# _digest_from_index(r)
+
+                order.extend([str(n["node_id"]) for n in batch])
+
+            for nid in wave:
+                seen += 1
+                pid = parent_by_node.get(nid)
+                if pid:
+                    remaining_children[pid] -= 1
+                    if remaining_children[pid] == 0:
+                        ready.append(pid)
+
+            if seen > total:
+                raise Exception("Bottom-up indexing did not finish; possible cycle or missing parent nodes.")
+        if seen != total:
+            raise RuntimeError(
+                f"Did not finish topo pass: processed {seen}/{total}. "
+                "Likely cycle or missing parent nodes."
+            )    
+        out = []
+        for sid in order:
+            r = index_by_id[sid]
+            r.node_id = str(id_map.to_uuid(r.node_id))
+            out.append(r)
+        return out
+
+    if mode == IndexMode.FLAT_VERBATIM:
+        return run_flat()
+    if mode == IndexMode.BOTTOM_UP_DIGEST:
+        return run_bottom_up()
+    if mode == IndexMode.BOTH:
+        return {
+            "flat_verbatim": run_flat(),
+            "bottom_up_digest": run_bottom_up(),
+        }
+
+    raise ValueError(f"Unknown mode: {mode}")
