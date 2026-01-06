@@ -71,7 +71,7 @@ def test_semantic_document_splitting(gemini_key):
         def upsert_doc(doc, doc_id):
             res = requests.post("http://127.0.0.1:28110/api/document", json = {"doc_id" : doc_id, 
                                                                                 "doc_type" : "ocr_document", 
-                                                                                "insertion_method" : "document_parser",
+                                                                                "insertion_method" : "document_parser_v1",
                                                                                 "content" : doc})
             res.raise_for_status()
             return res
