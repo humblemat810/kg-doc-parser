@@ -54,6 +54,12 @@ Data Structures
 2. HydratedTextPointer:
    - A specific span of text in the original OCR output.
    - Links Semantic Nodes back to `TextCluster`s in `src.models`.
+
+3. Source Map Structure:
+   - A lookup dictionary mapping unique cluster IDs to their original OCR data.
+   - Format: `Dict[str, TextClusterDict]`
+   - Key format: `"p{page_num}_c{cluster_index}"` (e.g., "p1_c0")
+   - Value: Dictionary representation of `TextCluster` (including text and bbox).
 """
 '''
 parsedoc pipeline:
@@ -127,13 +133,17 @@ class HydratedTextPointer(ModeSlicingMixin, BaseModel):
     source_cluster_id: Annotated[str, FrontendField(), BackendField(), DtoField(), LLMField()] = Field(description="The unique ID of the source text block (e.g., 'p1_c0').")
     start_char: Annotated[int, FrontendField(), BackendField(), DtoField(), LLMField()] = Field(description="The starting character index within the source text block.")
     end_char: Annotated[int, FrontendField(), BackendField(), DtoField(), LLMField()] = Field(description="The inclusive ending character index. Use -1 for 'to the end'.")
-    verbatim_text: Annotated[str, FrontendField(), BackendField(), DtoField(), LLMField()] = Field(description="The exact text of this fragment. This MUST match the text at the specified pointer location.")
+    verbatim_text: Annotated[Optional[str], FrontendField(), BackendField(), DtoField(), LLMField()] = Field(None, description="The exact text of this fragment. This MUST match the text at the specified pointer location. Required if delimiters are not provided.")
+    
+    start_delimiter: Annotated[Optional[str], FrontendField(), BackendField(), DtoField(), LLMField()] = Field(None, description="Start delimiter to locate the text")
+    end_delimiter: Annotated[Optional[str], FrontendField(), BackendField(), DtoField(), LLMField()] = Field(None, description="End delimiter to locate the text")
+
     validation_method: Optional[Annotated[str, BackendField(), LLMField(), ExcludeMode("llm")]] = Field(None, description="The exact text of this fragment. This MUST match the text at the specified pointer location.")
     # backend and llm used, default to dump include, but ExcludeMode("llm") specified must be excluded when dumping to llm mode
     
     @model_validator(mode="after")
     def end_char_minus_1_to_ending_index(self):
-        if self.end_char == -1:
+        if self.end_char == -1 and self.verbatim_text:
             self.end_char += len(self.verbatim_text)
         return self
     # --------------------------
@@ -271,7 +281,7 @@ class SemanticNode(BaseModel):
     # 🔍 Search descriptor builder (unchanged)
     # -------------------------------------------------
     def _build_search_descriptors(self, source_map: Dict[str, Dict]) -> Dict[str, Any]:
-        text = "".join(p.verbatim_text for p in self.total_content_pointers)
+        text = "".join((p.verbatim_text or "") for p in self.total_content_pointers)
         title = self.title or ""
         lowered = title.lower()
         tokens = re.findall(r"[a-zA-Z0-9_/.-]+", lowered)
@@ -333,7 +343,7 @@ class SemanticNode(BaseModel):
         # metadata.update(self._build_search_descriptors(source_map))
 
         # 3 Text summary
-        display_text = "".join(p.verbatim_text for p in self.total_content_pointers)[:1000]
+        display_text = "".join((p.verbatim_text or "") for p in self.total_content_pointers)[:1000]
 
         # 4 Compose Node dict (aligned with your KGE models)
         return {
@@ -566,6 +576,62 @@ from string import Template
 import json
 from uuid import UUID
 
+PROMPT_BATCH_SUBDIVIDER_DELIMITER = Template(
+r"""
+**ROLE:**
+You are a meticulous AI document analyst. Your task is to identify the immediate children of the parent sections provided by finding unique start and end delimiters in the text.
+
+**TASK:**
+For EACH parent section in the list, identify its IMMEDIATE children. 
+Instead of extracting the full text, provide a `start_delimiter` and `end_delimiter` for each child.
+- `start_delimiter`: A unique short phrase (5-20 words) that marks the beginning of the child section.
+- `end_delimiter`: A unique short phrase (5-20 words) that marks the end of the child section (inclusive).
+
+**RULES:**
+1. **Uniqueness**: The delimiters MUST be unique within the parent's context. If a phrase appears multiple times, include enough surrounding context words to make it unique.
+2. **Coverage**: The combination of children should cover the parent's content meaningfully.
+3. **Granularity**: Break down into logical sections (e.g. clauses, paragraphs). Do not break down too finely (sentences) unless they are independent items.
+4. **Pointers**: You do NOT need to provide `start_char`, `end_char` or full `verbatim_text`. Just the delimiters.
+
+**OUTPUT FORMAT:**
+Output a valid JSON object conforming to `LLMLevelResponse`.
+For each child in `pointers`:
+- `source_cluster_id`: (Optional/Implied) The ID of the text block.
+- `start_delimiter`: The start phrase.
+- `end_delimiter`: The end phrase.
+- `verbatim_text`: (Optional) Can be empty or a short summary.
+
+**EXAMPLE:**
+```json
+{
+  "parent_node_id": "...",
+  "node_type": "TEXT_FLOW",
+  "title": "Section 1.1",
+  "pointers": [
+    {
+      "source_cluster_id": "p1_c0",
+      "start_delimiter": "1.1 Scope of Services The Provider shall",
+      "end_delimiter": "specifications listed in Exhibit A."
+    }
+  ]
+}
+```
+
+FULL DOCUMENT JSON (for context):
+
+```json
+
+$full_document_json
+```
+PARENT SECTIONS TO PROCESS:
+
+```json
+
+$parent_sections_json
+```
+"""
+)
+
 PROMPT_BATCH_SUBDIVIDER = Template(
 r"""
 **ROLE:**
@@ -738,7 +804,8 @@ def level_node_llm_parsing(
     full_document_json_str: str,
     doc_id: str,
     model_names: List[str],
-    event_name: str
+    event_name: str,
+    parsing_mode: Literal["snippet", "delimiter"] = "snippet"
 ) -> LLMLevelResponse:
     """
     Processes an entire level of parent nodes in a single, batched, context-aware LLM call.
@@ -757,14 +824,12 @@ def level_node_llm_parsing(
     parent_node_id_set = set(str(i.node_id) for i in nodes_at_level)
 
     # 2. Construct the full, context-aware prompt
-    # final_prompt = PROMPT_BATCH_SUBDIVIDER.format(
-    #     full_document_json=full_document_json_str,
-    #     parent_sections_json=json.dumps([
-    #         {k: str(v) if isinstance(v, UUID) else v for k, v in p.items()} 
-    #         for p in parent_sections_for_prompt
-    #     ], indent=2)
-    # )
-    final_prompt = PROMPT_BATCH_SUBDIVIDER.substitute(
+    if parsing_mode == "delimiter":
+        prompt_template = PROMPT_BATCH_SUBDIVIDER_DELIMITER
+    else:
+        prompt_template = PROMPT_BATCH_SUBDIVIDER
+
+    final_prompt = prompt_template.substitute(
         full_document_json=full_document_json_str,
         parent_sections_json=json.dumps([
             {k: str(v) if isinstance(v, UUID) else v for k, v in p.items()} 
@@ -834,7 +899,8 @@ def build_document_tree(
                 llm_input_dict: Dict,
                 source_map: Dict,
                 max_depth: int = 10,
-                allow_review = True
+                allow_review = True,
+                parsing_mode: Literal["snippet", "delimiter"] = "snippet"
                 ) -> SemanticNode:
     """Builds the hierarchy using an efficient, batched, layer-wise (BFS) approach.
     Initial breakdown -> check pointers/ spans validated
@@ -870,7 +936,8 @@ def build_document_tree(
             full_document_json_str,
             doc_id,
             model_names,
-            "level_parsing"
+            "level_parsing",
+            parsing_mode=parsing_mode
         )
         @joblib_memory_cached(memory)
         def get_level_response(llm_response_json) -> Dict[str, Any]:
@@ -1250,6 +1317,66 @@ def _soft_exact_positions(
 # Pointer correction — deterministic tier
 # ============================================================================
 
+def resolve_delimiter_pointer(
+    pointer: HydratedTextPointer,
+    source_map: Dict,
+) -> Optional[HydratedTextPointer]:
+    """
+    Resolves a pointer using start/end delimiters.
+    Raises ValueError if delimiters are ambiguous or not found.
+    Returns a NEW pointer with start_char/end_char/verbatim_text populated.
+    """
+    if not pointer.start_delimiter or not pointer.end_delimiter:
+        return None
+        
+    cluster = source_map.get(pointer.source_cluster_id)
+    if not cluster:
+        # Fallback logic for cluster ID resolution could go here if needed
+        return None
+    
+    text = cluster['text']
+    
+    # Find start
+    start_matches = _all_exact_occurrences(text, pointer.start_delimiter)
+    if not start_matches:
+        # Try soft match? For now strict as per requirements "unique".
+        # Maybe "let llm select multiple given longer context" implies we need to handle non-unique by failing?
+        raise ValueError(f"Start delimiter '{pointer.start_delimiter}' not found in cluster '{pointer.source_cluster_id}'")
+    if len(start_matches) > 1:
+        raise ValueError(f"Start delimiter '{pointer.start_delimiter}' is not unique (found {len(start_matches)} times)")
+    
+    start_idx = start_matches[0][0] # start of start_delimiter
+    
+    # Find end
+    # We search for end delimiter AFTER start index? 
+    # Or globally unique? Requirement says "unique within the parent's context".
+    # Assuming unique globally in the cluster for safety.
+    end_matches = _all_exact_occurrences(text, pointer.end_delimiter)
+    if not end_matches:
+        raise ValueError(f"End delimiter '{pointer.end_delimiter}' not found in cluster '{pointer.source_cluster_id}'")
+    if len(end_matches) > 1:
+        # If multiple, pick the first one after start_idx? 
+        # But requirements say "raise error if the delimiter is not unique". 
+        # This usually applies to the delimiter string itself.
+        raise ValueError(f"End delimiter '{pointer.end_delimiter}' is not unique (found {len(end_matches)} times)")
+    
+    end_idx = end_matches[0][1] # end (inclusive) of end_delimiter
+    
+    if end_idx < start_idx:
+        raise ValueError(f"End delimiter occurs before Start delimiter")
+        
+    verbatim_text = _safe_slice(text, start_idx, end_idx)
+    
+    return HydratedTextPointer(
+        source_cluster_id=pointer.source_cluster_id,
+        start_char=start_idx,
+        end_char=end_idx,
+        verbatim_text=verbatim_text,
+        start_delimiter=pointer.start_delimiter,
+        end_delimiter=pointer.end_delimiter,
+        validation_method="delimiter_exact"
+    )
+
 def correct_and_validate_pointer(
     proposed_pointer: HydratedTextPointer,
     source_map: Dict,
@@ -1257,10 +1384,28 @@ def correct_and_validate_pointer(
     """Deterministic multi‑step correction. Returns fixed pointer or None.
 
     Steps:
+      TIER 0: Delimiter resolution if applicable.
       TIER 1: Trust‑but‑verify using proposed indices.
       TIER 2: Exact search for verbatim (raw, then whitespace‑collapsed).
                If multiple matches, pick the one closest to proposed start.
     """
+    
+    # --- TIER 0: Delimiter Mode ---
+    if proposed_pointer.start_delimiter and proposed_pointer.end_delimiter:
+        try:
+            resolved = resolve_delimiter_pointer(proposed_pointer, source_map)
+            if resolved:
+                return resolved
+        except ValueError as e:
+            print(f"🚨 Delimiter Resolution Error: {e}")
+            return None # Or propagate error? Returning None causes it to be added to "unresolved" which triggers LLM retry.
+    
+    # Ensure verbatim_text is present for legacy logic
+    if not proposed_pointer.verbatim_text:
+        # If no delimiters and no verbatim text, we can't do anything
+        print("🚨 REJECTED: Pointer missing both delimiters and verbatim_text.")
+        return None
+        
     ids = list(source_map.keys())
     ids_same_page, id_dif_page = partition(ids, predicate = lambda x: x.split("_")[0] == proposed_pointer.source_cluster_id.split('_')[0])
     _, ids_same_page_dif_cluster =  partition(ids_same_page, predicate = lambda x: x == proposed_pointer.source_cluster_id)
@@ -1283,7 +1428,8 @@ def correct_and_validate_pointer(
             actual = _safe_slice(
                 source_text, proposed_pointer.start_char, proposed_pointer.end_char
             )
-            if normalize_text(actual) == normalize_text(proposed_pointer.verbatim_text):
+            # Safe access to verbatim_text (we checked it's not None above)
+            if normalize_text(actual) == normalize_text(proposed_pointer.verbatim_text or ""):
                 return proposed_pointer
         except Exception:
             pass
@@ -1294,7 +1440,7 @@ def correct_and_validate_pointer(
             quotes = ["'''", "'", '"""', '"']
             for quote in quotes:
                 try:
-                    verbatim =ast.literal_eval(quote + proposed_pointer.verbatim_text + quote)
+                    verbatim =ast.literal_eval(quote + (proposed_pointer.verbatim_text or "") + quote)
                 except:
                     continue
                 if verbatim in source_cluster['text']:
@@ -1306,7 +1452,7 @@ def correct_and_validate_pointer(
             pass
         # --- TIER 2: search for verbatim (raw then WS‑collapsed)
         if not candidates:
-            verbatim = proposed_pointer.verbatim_text
+            verbatim = proposed_pointer.verbatim_text or ""
             # case len(verbatim):
             vlen = len(verbatim)
             match vlen:
@@ -1336,7 +1482,7 @@ def correct_and_validate_pointer(
                 )
 
     print(
-        f"🚨 REJECTED: Unrecoverable pointer in cluster '{proposed_pointer.source_cluster_id}' for text '{proposed_pointer.verbatim_text[:140]}...'"
+        f"🚨 REJECTED: Unrecoverable pointer in cluster '{proposed_pointer.source_cluster_id}' for text '{(proposed_pointer.verbatim_text or '')[:140]}...'"
     )
     return None
 
@@ -2317,12 +2463,12 @@ def reconstruct_text_from_pointers(pointers: List[HydratedTextPointer], source_m
 
 def print_tree(node: SemanticNode, indent=""):
     """Visualizes the hydrated tree. No longer needs source_map."""
-    reconstructed_text = "".join([p.verbatim_text for p in node.total_content_pointers])
+    reconstructed_text = "".join([(p.verbatim_text or "") for p in node.total_content_pointers])
     print(f"{indent} L- {node.title} ({node.node_type}) | Text: '{reconstructed_text[:150].strip()}...'")
     for child in node.child_nodes:
         print_tree(child, indent + "  ")
 @memory.cache()
-def parse_doc(doc_id: str, raw_doc_dict):
+def parse_doc(doc_id: str, raw_doc_dict, parsing_mode: Literal["snippet", "delimiter"] = "snippet", max_depth: int = 10):
     
     
     try:
@@ -2330,7 +2476,7 @@ def parse_doc(doc_id: str, raw_doc_dict):
         llm_input_dict, source_map = prepare_document_for_llm(raw_doc_dict)
 
         print("\n--- Phase 3: Building Document Tree (Layer-wise) ---")
-        document_tree = build_document_tree(doc_id, llm_input_dict, source_map)
+        document_tree = build_document_tree(doc_id, llm_input_dict, source_map, parsing_mode=parsing_mode, max_depth=max_depth)
         cov: CoverageResponse = compute_pointer_coverage(document_tree, source_map)
         print("Overall coverage:", cov.overall)
         for cid, r in cov.per_cluster.items():
@@ -2741,7 +2887,7 @@ def _leaf_payload(node_dict: dict[str, Any]) -> dict[str, Any]:
         "contents": [
             p.get("verbatim_text")
             for p in (node_dict.get("total_content_pointers") or [])
-            if p and p.get("verbatim_text")
+            if p and (p.get("verbatim_text") or p.get("start_delimiter"))
         ],
     }
 

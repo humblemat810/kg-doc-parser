@@ -10,6 +10,9 @@ Physical Layer (OCR)
 - SplitPage: Represents a single page of a document.
 - OCRClusterResponse: Contains detected text clusters and non-text objects.
 - TextCluster: A bounding box with text content.
+  - text: str (The recognized text content)
+  - cluster_number: int (Unique ID on the page)
+  - bb_x_min, bb_x_max, bb_y_min, bb_y_max: float (Bounding box coordinates)
 
     [PDF/Image] -> [OCR Service] -> [SplitPage] -> [TextCluster]
 
