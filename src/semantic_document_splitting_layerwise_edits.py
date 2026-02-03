@@ -1,3 +1,69 @@
+"""
+Semantic Document Splitting & Layer-wise Parsing Pipeline
+=========================================================
+
+This module implements a layer-wise document parsing strategy using LLMs to construct
+a semantic hierarchy (Knowledge Graph) from raw OCR data.
+
+Usage
+-----
+>>> from src.semantic_document_splitting_layerwise_edits import parse_doc
+>>> # doc_data = {"file.pdf": [page1_ocr, page2_ocr...]}
+>>> document_tree, source_map = parse_doc(doc_id="my_doc", raw_doc_dict=doc_data)
+>>> # Convert to KGE Payload
+>>> from src.semantic_document_splitting_layerwise_edits import semantic_tree_to_kge_payload
+>>> graph_payload = semantic_tree_to_kge_payload(document_tree)
+
+Pipeline Flow
+-------------
+                                        [Raw OCR Data]
+                                              |
+                                              v
+                                  [prepare_document_for_llm]
+                                              |
+                                              v
+                                     [Root SemanticNode]
+                                              |
+                                              v
+           +----------------------- [Layer-wise BFS Loop] -----------------------+
+           |                                                                     |
+           |   [LLM: Breakdown Node] -> [LLM: Correction (CUD)] -> [Next Level]  |
+           |             ^                            |                          |
+           |             |____________________________|                          |
+           |                                                                     |
+           +---------------------------------------------------------------------+
+                                              |
+                                              v
+                                   [Tree Reconstruction]
+                                              |
+                                              v
+                                [Validation & Coverage Check]
+                                              |
+                                              v
+                                [Final SemanticNode Tree]
+                                       /         \
+                                      v           v
+                            [KGE Payload]       [Index Terms]
+
+Data Structures
+---------------
+1. SemanticNode:
+   - Represents a logical section (e.g., "Section 1", "Clause 2.1").
+   - Contains a list of `HydratedTextPointer`s mapping to source text.
+
+2. HydratedTextPointer:
+   - A specific span of text in the original OCR output.
+   - Links Semantic Nodes back to `TextCluster`s in `src.models`.
+"""
+'''
+parsedoc pipeline:
+entry func : build_document_tree
+
+
+
+
+'''
+
 
 # ==============================================================================
 # PHASE 1: SETUP - MODELS AND IMPORTS

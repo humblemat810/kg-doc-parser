@@ -1,3 +1,47 @@
+"""
+Data Models & Schema Definitions
+================================
+
+This module defines the core data models for the Optical Character Recognition (OCR) layer
+and documents the implicit schema of the Resultant Knowledge Graph.
+
+Physical Layer (OCR)
+--------------------
+- SplitPage: Represents a single page of a document.
+- OCRClusterResponse: Contains detected text clusters and non-text objects.
+- TextCluster: A bounding box with text content.
+
+    [PDF/Image] -> [OCR Service] -> [SplitPage] -> [TextCluster]
+
+Resultant Knowledge Graph Structure
+-----------------------------------
+The semantic parsing pipeline (`src.semantic_document_splitting_layerwise_edits`) transforms
+these physical models into a Knowledge Graph.
+
+    [SemanticNode] (Entity)
+          |
+          +--- mentions ---+
+          |                |
+          |        [TextCluster] (Grounding)
+          |
+          +--- HAS_CHILD --> [SemanticNode] (Sub-entity)
+
+Graph Schema (Nodes & Edges)
+----------------------------
+Nodes (Entities):
+  - id: UUID
+  - label: Title/Heading
+  - type: "entity"
+  - subtype: "TEXT_FLOW" | "KEY_VALUE_PAIR" | "TABLE"
+  - mentions: Link to source `TextCluster`s (provenance)
+
+Edges (Relationships):
+  - id: UUID
+  - source_id: Parent Node UUID
+  - target_id: Child Node UUID
+  - relation: "HAS_CHILD"
+  - type: "relationship"
+"""
 if True:
     import logging
     import os
