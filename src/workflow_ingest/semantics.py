@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from uuid import uuid4
 
 from pydantic import BaseModel, Field
+from pydantic import model_validator
+
+from kogwistar.id_provider import stable_id
 
 
 def _normalize_text(text: str) -> str:
@@ -19,13 +21,33 @@ class HydratedTextPointer(BaseModel):
 
 
 class SemanticNode(BaseModel):
-    node_id: str = Field(default_factory=lambda: str(uuid4()))
+    node_id: str | None = None
     parent_id: str | None = None
     node_type: str = "TEXT_FLOW"
     title: str
     total_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
     child_nodes: list["SemanticNode"] = Field(default_factory=list)
     level_from_root: int = 0
+
+    @model_validator(mode="after")
+    def _ensure_stable_node_id(self) -> "SemanticNode":
+        if self.node_id:
+            return self
+        pointer_fp = "|".join(
+            f"{ptr.source_cluster_id}:{ptr.start_char}:{ptr.end_char}:{ptr.verbatim_text}"
+            for ptr in self.total_content_pointers
+        )
+        self.node_id = str(
+            stable_id(
+                "workflow_ingest.semantic_node",
+                str(self.parent_id or "root"),
+                str(self.node_type),
+                str(self.title),
+                str(self.level_from_root),
+                pointer_fp,
+            )
+        )
+        return self
 
 
 SemanticNode.model_rebuild()
@@ -147,7 +169,7 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
                 "insertion_method": "workflow_ingest",
                 "page_number": 1,
                 "start_char": p.start_char,
-                "end_char": p.end_char + 1,
+                "end_char": max(p.end_char + 1, p.start_char + max(len(p.verbatim_text), 1)),
                 "excerpt": p.verbatim_text,
                 "context_before": "",
                 "context_after": "",
@@ -176,7 +198,15 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
         for child in node.child_nodes:
             edges.append(
                 {
-                    "id": str(uuid4()),
+                    "id": str(
+                        stable_id(
+                            "workflow_ingest.edge",
+                            "HAS_CHILD",
+                            str(node.node_id),
+                            str(child.node_id),
+                            str(doc_id),
+                        )
+                    ),
                     "label": "parent-child",
                     "type": "relationship",
                     "summary": f"{node.node_id}->{child.node_id}",

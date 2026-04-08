@@ -59,6 +59,40 @@ pytest -q
 
 If you only want to work on isolated units, review the test files first and run a narrower subset.
 
+## Demo Harness
+
+There is now a manual workflow-ingest demo harness that can run the end-to-end flow against:
+
+- an in-process isolated FastAPI server
+- a subprocess-hosted local server
+- an already running external Kogwistar server
+
+Example:
+
+```powershell
+.venv\Scripts\python.exe scripts\run_workflow_ingest_demo.py --output-dir logs\workflow_ingest_demo
+```
+
+External live server example:
+
+```powershell
+.venv\Scripts\python.exe scripts\run_workflow_ingest_demo.py --server-mode external_http --external-base-url http://127.0.0.1:28110
+```
+
+Demo artifacts are written into the chosen output directory:
+
+- `probe-events.jsonl`: demo-friendly step and lifecycle probe events
+- `demo-summary.json`: run summary, persistence result, and artifact pointers
+- `llm-cache/`: workflow-native cached proposal/review call results
+- `engines/`: local workflow and conversation graph storage for the run
+- `server-data/`: isolated server-side persistence directory when the harness boots its own server
+
+Notes:
+
+- The workflow-native layer proposal/review path uses deterministic file-backed caching to reduce repeated token cost and compute time.
+- The legacy parser path also supports a redirected `joblib` cache via `KG_DOC_PARSER_JOBLIB_CACHE_DIR`.
+- Probe logging is separate from CDC and conversation graph traces, so demos can show a short readable event trail without digging into runtime internals.
+
 ## Notes
 
 - `README.md`, env handling, and ingestion boundaries are still being cleaned up as part of the ongoing refactor.

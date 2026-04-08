@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic_extension.model_slicing import BackendField, FrontendField
 from pydantic_extension.model_slicing.mixin import DtoField, ExcludeMode, LLMField, ModeSlicingMixin
 
+from .semantics import HydratedTextPointer
+
 
 class BoundingBox(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
@@ -195,6 +197,139 @@ class ValidationReport(ModeSlicingMixin, BaseModel):
     per_cluster_coverage: Annotated[dict[str, float], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=dict)
     corrected_pointer_count: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     validation_notes: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
+
+
+class ParseSessionState(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    collection_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    root_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    current_depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
+    max_depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 10
+    allow_review: Annotated[bool, DtoField(), BackendField(), FrontendField(), LLMField()] = True
+    mode: Annotated[
+        Literal["workflow_layered", "legacy_compat"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = "workflow_layered"
+    layer_attempts: Annotated[
+        dict[str, int],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default_factory=dict)
+    compat_full_tree: Annotated[
+        Optional[dict[str, Any]],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
+    metadata: Annotated[
+        dict[str, Any],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default_factory=dict)
+
+
+class LayerFrontierItem(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    parent_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
+    order: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
+
+
+class LayerChildCandidate(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    parent_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    title: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    node_type: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    total_content_pointers: Annotated[
+        list[HydratedTextPointer],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = Field(default_factory=list)
+    expandable: Annotated[bool, DtoField(), BackendField(), FrontendField(), LLMField()] = True
+    metadata: Annotated[
+        dict[str, Any],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default_factory=dict)
+
+
+class CurrentLayerContext(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
+    parent_node_ids: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
+    parent_titles: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
+    retry_count: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
+    max_retries: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 3
+    metadata: Annotated[
+        dict[str, Any],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default_factory=dict)
+
+
+class CurrentLayerResult(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    children: Annotated[list[LayerChildCandidate], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
+    satisfied: Annotated[Optional[bool], DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    reasoning_history: Annotated[list[dict[str, Any]], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
+    review_rounds: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
+    metadata: Annotated[
+        dict[str, Any],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default_factory=dict)
+
+
+class CurrentLayerReview(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    updated_result: Annotated[
+        Optional[CurrentLayerResult],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = None
+    coverage_ok: Annotated[Optional[bool], DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    satisfied: Annotated[Optional[bool], DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    review_notes: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
+        default_factory=list
+    )
+    metadata: Annotated[
+        dict[str, Any],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default_factory=dict)
 
 
 class CanonicalGraphWriteResult(ModeSlicingMixin, BaseModel):

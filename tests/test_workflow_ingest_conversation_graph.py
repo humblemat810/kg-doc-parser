@@ -173,7 +173,7 @@ def test_conversation_graph_persists_trace_and_checkpoints_for_success():
 
     assert "normalized_input" in state
     assert "export_bundle" in state
-    assert "parse_semantic" in ops
+    assert "propose_layer_breakdown" in ops
     assert "export_graph" in ops
 
 
@@ -246,11 +246,16 @@ def test_conversation_graph_resume_from_suspended_checkpoint():
             "graph_persistence_client": _LocalDebugPersistenceClient(knowledge_engine),
             "persistence_mode": "local_debug",
             "kg_authority": "local",
+            "propose_layer_fn": lambda **kwargs: {
+                "children": [],
+                "satisfied": True,
+                "reasoning_history": [],
+            },
         }
     )
 
-    @resolver.register("parse_semantic")
-    def _suspend_parse_semantic(ctx):
+    @resolver.register("propose_layer_breakdown")
+    def _suspend_propose_layer_breakdown(ctx):
         return RunSuspended(
             conversation_node_id=None,
             state_update=[],
@@ -307,7 +312,35 @@ def test_conversation_graph_resume_from_suspended_checkpoint():
         suspended_token_id=suspended_step.metadata["token_id"],
         client_result=RunSuccess(
             conversation_node_id=None,
-            state_update=[("u", {"semantic_tree": resumed_tree.model_dump(mode="json")})],
+            state_update=[
+                (
+                    "u",
+                    {
+                        "current_layer_result": {
+                            "children": [
+                                {
+                                    "node_id": child.node_id,
+                                    "parent_node_id": child.parent_id or resumed_tree.node_id,
+                                    "title": child.title,
+                                    "node_type": child.node_type,
+                                    "total_content_pointers": [
+                                        pointer.model_dump(mode="json")
+                                        for pointer in child.total_content_pointers
+                                    ],
+                                    "expandable": True,
+                                    "metadata": {},
+                                }
+                                for child in resumed_tree.child_nodes
+                            ],
+                            "satisfied": True,
+                            "reasoning_history": [],
+                            "review_rounds": 0,
+                            "metadata": {},
+                        }
+                    },
+                )
+            ],
+            _route_next=["review_cud_proposal"],
         ),
         workflow_id=DEFAULT_WORKFLOW_ID,
         conversation_id=conversation_id,

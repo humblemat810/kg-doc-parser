@@ -87,15 +87,17 @@ except ImportError:  # pragma: no cover
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field, ValidationError, validator, field_validator
 from typing import ClassVar
-from uuid import UUID, uuid1
+from uuid import UUID
 from collections import deque
 from pydantic import BaseModel, Field, model_validator
 import math
+import os
 from rapidfuzz.distance import LCSseq
 from datetime import datetime
 from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory
 from .document_ingester_logger import DocumentIngestSQLiteCallback
+from kogwistar.id_provider import stable_id
 
 def get_llm(model_name:str):
     if model_name.lower().startswith("gemini"):
@@ -251,7 +253,7 @@ class LLMChildNodeResponseBE(ModeSlicingMixin, BaseModel):
     default_include_modes:  ClassVar= {"dto", "backend", "frontend"}
     default_exclude_modes: ClassVar = set()
     include_unmarked_for_modes: ClassVar = {"dto", "frontend", "backend"}
-    id: Annotated[UUID, BackendField()] = Field(default_factory = uuid1, description="The UUID string of the child belongs to.") # no Field to avoid being accidentally passed to LLM
+    id: Annotated[UUID | None, BackendField()] = Field(default=None, description="Deterministic id for the child candidate.") # no Field to avoid being accidentally passed to LLM
     parent_node_id: Annotated[str, DtoField(), BackendField()] = Field(description="The UUID string of the parent node this child belongs to.")
     node_type: Annotated[Literal["TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"], DtoField(), BackendField()] = Field(description="The semantic type of the child node.")
     title: Annotated[str, DtoField(), BackendField()] = Field(description="The title, key, or a concise summary of the child section.")
@@ -274,13 +276,31 @@ class LLMLevelResponseBE(ModeSlicingMixin, BaseModel):
 
 
 class SemanticNode(BaseModel):
-    node_id: UUID = Field(default_factory=uuid1)
+    node_id: UUID | None = None
     parent_id: Optional[UUID] = None
     node_type: Literal["DOCUMENT_ROOT", "TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"] = Field("TEXT_FLOW")
     title: str
     total_content_pointers: List[HydratedTextPointer]
     child_nodes: List['SemanticNode'] = Field([])
     level_from_root: int
+
+    @model_validator(mode="after")
+    def _ensure_stable_node_id(self):
+        if self.node_id is not None:
+            return self
+        pointer_fp = "|".join(
+            f"{p.source_cluster_id}:{p.start_char}:{p.end_char}:{p.verbatim_text or ''}"
+            for p in self.total_content_pointers
+        )
+        self.node_id = stable_id(
+            "legacy.semantic_node",
+            str(self.parent_id or "root"),
+            str(self.node_type),
+            str(self.title),
+            str(self.level_from_root),
+            pointer_fp,
+        )
+        return self
     # -------------------------------------------------
     # 🔍 Search descriptor builder (unchanged)
     # -------------------------------------------------
@@ -436,7 +456,16 @@ class SemanticNode(BaseModel):
                 )
                 edges.append(
                     {
-                        "id": str(uuid1()),
+                        "id": str(
+                            stable_id(
+                                "legacy.edge",
+                                "HAS_CHILD",
+                                str(node.node_id),
+                                str(child.node_id),
+                                str(doc_id),
+                                str(namespace),
+                            )
+                        ),
                         "subject_id": str(node.node_id),
                         "predicate": "HAS_CHILD",
                         "object_id": str(child.node_id),
@@ -753,7 +782,7 @@ $parent_sections_json
 
 from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage
 from joblib import Memory
-memory = Memory(location = '.joblib')
+memory = Memory(location = os.getenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", ".joblib"))
 @joblib_memory_cached(memory, ignore = ['model_names', 'event_name'])
 def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set):
         
@@ -851,8 +880,19 @@ def get_node(pid, child_def, parent_level: int):
     # child_def: Union[LLMChildNodeResponse, LLMChildNodeResponseBE].model_dump()
     child_def_obj: LLMChildNodeResponseBE = LLMChildNodeResponseBE.model_validate(child_def)
     absolute_pointers = child_def_obj.pointers
+    pointer_fp = "|".join(
+        f"{p.source_cluster_id}:{p.start_char}:{p.end_char}:{p.verbatim_text or ''}"
+        for p in absolute_pointers
+    )
     child_node = SemanticNode(
-        node_id=uuid1(), # App-generated UUID
+        node_id=child_def_obj.id or stable_id(
+            "legacy.get_node",
+            str(pid),
+            str(child_def_obj.node_type),
+            str(child_def_obj.title),
+            str(parent_level + 1),
+            pointer_fp,
+        ),
         parent_id=pid,
         title=child_def_obj.title,
         node_type=child_def_obj.node_type,
@@ -870,7 +910,11 @@ def get_root_node(title, source_map):
     #     total_content_pointers=[TextPointer(source_cluster_id=cid, start_char=0, end_char=-1) for cid in sorted(source_map.keys())]
     #     )
     root_node = SemanticNode(
-        node_id=uuid1(),
+        node_id=stable_id(
+            "legacy.root_node",
+            str(title),
+            "|".join(sorted(str(cid) for cid in source_map.keys())),
+        ),
         title=title,
         node_type="DOCUMENT_ROOT",
         total_content_pointers=[
@@ -2517,7 +2561,13 @@ def semantic_tree_to_kge_payload(
     insertion_method: str = "semantic_document_parser_v1",
 ) -> Dict[str, Any]:
     if doc_id is None:
-        doc_id = str(uuid1())
+        doc_id = str(
+            stable_id(
+                "legacy.semantic_tree_doc",
+                str(root.node_id),
+                str(insertion_method),
+            )
+        )
 
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
@@ -2587,7 +2637,16 @@ def semantic_tree_to_kge_payload(
             edge_ptr_refs = _pointers_to_references(ptrs)  # parent’s pointers as provenance
             edge_ptr_mentions= _spans_to_groundings_to_mentions(_pointers_to_spans(ptrs))
             edge_dict = {
-                "id": str(uuid1()),
+                "id": str(
+                    stable_id(
+                        "legacy.semantic_tree_edge",
+                        "HAS_CHILD",
+                        str(node.node_id),
+                        str(child.node_id),
+                        str(doc_id),
+                        str(insertion_method),
+                    )
+                ),
                 "label": "parent-child",
                 "type": "relationship",
                 "summary": f"{node.node_id} -> {child.node_id} (HAS_CHILD)",
