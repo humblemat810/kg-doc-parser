@@ -19,9 +19,10 @@ pathspec = "^0.12.1"
 pikepdf = "^10.1.0"
 langchain-core = "^1.2.5"
 langchain-google-genai = "^4.1.2"
-pydantic-extension = "^0.0.6"
+pydantic-extension = "^0.0.7"
 rapidfuzz = "^3.14.3"
 mcp = "^1.25.0"
+kogwistar = { path = "./kogwistar", develop = true }
 
 
 [build-system]

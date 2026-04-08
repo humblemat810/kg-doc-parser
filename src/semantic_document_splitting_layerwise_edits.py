@@ -79,7 +79,11 @@ import re
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Annotated, List, TypeAlias, Union, Literal, Dict, Any, Tuple, Optional
+from typing import Annotated, List, Union, Literal, Dict, Any, Tuple, Optional
+try:
+    from typing import TypeAlias
+except ImportError:  # pragma: no cover
+    from typing_extensions import TypeAlias
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field, ValidationError, validator, field_validator
 from typing import ClassVar
@@ -1455,17 +1459,16 @@ def correct_and_validate_pointer(
             verbatim = proposed_pointer.verbatim_text or ""
             # case len(verbatim):
             vlen = len(verbatim)
-            match vlen:
-                case _ if 0 <= vlen <= 10:
-                    fuzzy_threshold = None
-                case _ if 11 <= vlen <= 20:
-                    fuzzy_threshold = 0.99
-                case _ if 21 <= vlen <= 50:
-                    fuzzy_threshold = 0.95
-                case _ if 51 <= vlen <= 100:
-                    fuzzy_threshold = 0.90
-                case _:
-                    fuzzy_threshold = 0.85
+            if 0 <= vlen <= 10:
+                fuzzy_threshold = None
+            elif 11 <= vlen <= 20:
+                fuzzy_threshold = 0.99
+            elif 21 <= vlen <= 50:
+                fuzzy_threshold = 0.95
+            elif 51 <= vlen <= 100:
+                fuzzy_threshold = 0.90
+            else:
+                fuzzy_threshold = 0.85
             candidates, verification_method = _soft_exact_positions(source_text, verbatim, fuzzy_threshold = fuzzy_threshold)
             if candidates:
                 validation_method = verification_method

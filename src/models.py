@@ -51,7 +51,11 @@ if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
-from typing import List, Literal, Optional, Dict, Any, Type, TypeAlias, Union, Annotated, ClassVar
+from typing import List, Literal, Optional, Dict, Any, Type, Union, Annotated, ClassVar
+try:
+    from typing import TypeAlias
+except ImportError:  # pragma: no cover
+    from typing_extensions import TypeAlias
 from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo
 
 from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, FrontendField, BackendField, LLMField,
