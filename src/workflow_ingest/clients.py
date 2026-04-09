@@ -32,7 +32,7 @@ def _jsonable_payload(value: Any) -> Any:
         try:
             return value.model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return value.model_dump(mode="json")
+            return value.model_dump()
     if isinstance(value, dict):
         return {str(k): _jsonable_payload(v) for k, v in value.items()}
     if isinstance(value, list):

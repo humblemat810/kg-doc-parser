@@ -212,6 +212,28 @@ class ParseSessionState(ModeSlicingMixin, BaseModel):
     current_depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     max_depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 10
     allow_review: Annotated[bool, DtoField(), BackendField(), FrontendField(), LLMField()] = True
+    split_strategy: Annotated[
+        Literal["excerpt_first", "boundary_first"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = "excerpt_first"
+    fallback_split_strategy: Annotated[
+        Literal["excerpt_first", "boundary_first"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = "boundary_first"
+    strategy_history: Annotated[
+        list[Literal["excerpt_first", "boundary_first"]],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default_factory=lambda: ["excerpt_first"])
+    strategy_switch_count: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     mode: Annotated[
         Literal["workflow_layered", "legacy_compat"],
         DtoField(),
@@ -251,6 +273,48 @@ class LayerFrontierItem(ModeSlicingMixin, BaseModel):
     order: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
 
 
+class LayerSpanConflict(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    parent_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    left_child_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    right_child_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    source_cluster_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    left_span: Annotated[HydratedTextPointer, DtoField(), BackendField(), FrontendField(), LLMField()]
+    right_span: Annotated[HydratedTextPointer, DtoField(), BackendField(), FrontendField(), LLMField()]
+    overlap_start: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
+    overlap_end: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
+    conflict_kind: Annotated[
+        Literal["overlap", "duplicate"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = "overlap"
+
+
+class LayerCoverageGap(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    parent_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    source_cluster_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    gap_start: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
+    gap_end: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
+    expected_text: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()] = ""
+
+
+class LayerDuplicateChildNote(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    parent_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    child_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    duplicate_of_child_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    reason: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+
+
 class LayerChildCandidate(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
@@ -283,6 +347,20 @@ class CurrentLayerContext(ModeSlicingMixin, BaseModel):
     depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
     parent_node_ids: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     parent_titles: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
+    parent_content_pointers_by_id: Annotated[
+        dict[str, list[HydratedTextPointer]],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = Field(default_factory=dict)
+    split_strategy: Annotated[
+        Literal["excerpt_first", "boundary_first"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = "excerpt_first"
     retry_count: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     max_retries: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 3
     metadata: Annotated[
@@ -324,6 +402,26 @@ class CurrentLayerReview(ModeSlicingMixin, BaseModel):
     ] = None
     coverage_ok: Annotated[Optional[bool], DtoField(), BackendField(), FrontendField(), LLMField()] = None
     satisfied: Annotated[Optional[bool], DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    strategy_used: Annotated[
+        Literal["excerpt_first", "boundary_first"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = "excerpt_first"
+    overlap_conflicts: Annotated[list[LayerSpanConflict], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
+        default_factory=list
+    )
+    coverage_gap_notes: Annotated[list[LayerCoverageGap], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
+        default_factory=list
+    )
+    duplicate_child_notes: Annotated[
+        list[LayerDuplicateChildNote],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = Field(default_factory=list)
     review_notes: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
         default_factory=list
     )

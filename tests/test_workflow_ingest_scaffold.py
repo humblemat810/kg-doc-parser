@@ -361,6 +361,7 @@ def test_workflow_design_matches_expected_step_sequence():
         "apply_cud_update",
         "check_layer_coverage",
         "check_layer_satisfaction",
+        "switch_split_strategy",
         "repair_layer_pointers",
         "dedupe_and_filter_layer",
         "commit_layer_children",

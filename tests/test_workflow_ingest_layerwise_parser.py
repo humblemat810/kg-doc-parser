@@ -4,8 +4,20 @@ from pathlib import Path
 from uuid import uuid4
 
 from _kogwistar_test_helpers import load_kogwistar_fake_backend
-from src.workflow_ingest.models import CurrentLayerResult, CurrentLayerReview, LayerChildCandidate, WorkflowIngestInput
-from src.workflow_ingest.parser_core import initialize_parse_session, prepare_layer_frontier
+from src.workflow_ingest.models import (
+    CurrentLayerContext,
+    CurrentLayerResult,
+    CurrentLayerReview,
+    LayerChildCandidate,
+    ParseSessionState,
+    WorkflowIngestInput,
+)
+from src.workflow_ingest.parser_core import (
+    initialize_parse_session,
+    prepare_layer_frontier,
+    review_layer,
+    switch_split_strategy,
+)
 from src.workflow_ingest.semantics import HydratedTextPointer
 from src.workflow_ingest.service import build_default_engines, run_ingest_workflow
 
@@ -88,6 +100,99 @@ def test_prepare_layer_frontier_pulls_one_bfs_depth_group():
     assert context.parent_node_ids == [root.node_id]
     assert len(remaining) == 2
     assert updated.current_depth == 0
+
+
+def test_review_layer_reports_overlap_and_gap_conflicts():
+    inp = WorkflowIngestInput.from_text(
+        document_id="conflict-doc",
+        text="Alpha clause\nBeta clause\nGamma clause",
+        title="Conflict Doc",
+    )
+    collection = inp.collections[0]
+    parser_source_map = {
+        "conflict-doc|p1_t0": {
+            "id": "conflict-doc|p1_t0",
+            "text": "Alpha clause\nBeta clause\nGamma clause",
+            "participates_in_semantic_text": True,
+        }
+    }
+    session, frontier, root = initialize_parse_session(
+        collection=collection,
+        parser_input_dict={"document_filename": "Conflict Doc", "pages": []},
+        parser_source_map=parser_source_map,
+        parse_semantic_fn=None,
+    )
+    context, _, _ = prepare_layer_frontier(
+        parse_session=session,
+        frontier_queue=frontier,
+        semantic_tree=root,
+    )
+    unit_id = "conflict-doc|p1_t0"
+    text = parser_source_map[unit_id]["text"]
+    result = CurrentLayerResult(
+        children=[
+            LayerChildCandidate(
+                node_id="node-a",
+                parent_node_id=context.parent_node_ids[0],
+                title="Alpha",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[_segment_pointer(unit_id, text, "Alpha clause\nBeta clause")],
+                expandable=False,
+            ),
+            LayerChildCandidate(
+                node_id="node-b",
+                parent_node_id=context.parent_node_ids[0],
+                title="Beta",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[_segment_pointer(unit_id, text, "Beta clause")],
+                expandable=False,
+            ),
+        ],
+        satisfied=True,
+        reasoning_history=[],
+    )
+
+    reviewed, _ = review_layer(
+        parse_session=session,
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map=parser_source_map,
+    )
+
+    assert reviewed.satisfied is False
+    assert reviewed.overlap_conflicts
+    assert reviewed.overlap_conflicts[0].parent_node_id == context.parent_node_ids[0]
+    assert reviewed.coverage_ok is False
+    assert reviewed.coverage_gap_notes
+
+
+def test_switch_split_strategy_updates_session_and_context():
+    session = ParseSessionState(
+        collection_id="doc",
+        root_node_id="doc|root",
+        split_strategy="excerpt_first",
+        fallback_split_strategy="boundary_first",
+        strategy_history=["excerpt_first"],
+    )
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Doc"],
+        split_strategy="excerpt_first",
+        retry_count=1,
+        max_retries=1,
+    )
+
+    updated_session, updated_context = switch_split_strategy(
+        parse_session=session,
+        current_layer_context=context,
+    )
+
+    assert updated_session.split_strategy == "boundary_first"
+    assert updated_session.strategy_history == ["excerpt_first", "boundary_first"]
+    assert updated_session.strategy_switch_count == 1
+    assert updated_context.split_strategy == "boundary_first"
+    assert updated_context.retry_count == 0
 
 
 def test_layerwise_workflow_retries_same_layer_then_enqueues_next_layer():
@@ -181,6 +286,93 @@ def test_layerwise_workflow_retries_same_layer_then_enqueues_next_layer():
     assert {"Section A", "Section B", "Alpha", "Beta"}.issubset(labels)
 
 
+def test_layerwise_workflow_switches_strategy_after_overlap_retry_exhaustion():
+    scratch = _scratch("layer_strategy_switch")
+    fake_backend = load_kogwistar_fake_backend()
+    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
+        scratch / "engines",
+        backend_factory=fake_backend,
+    )
+    inp = WorkflowIngestInput.from_text(
+        document_id="layer-strategy-doc",
+        text="Alpha clause\nBeta clause\nGamma clause",
+        title="Layer Strategy Doc",
+    )
+    unit_id = f"{inp.request_id}|p1_t0"
+    text = inp.collections[0].pages[0].units[0].text or ""
+
+    def _propose_layer_fn(*, current_layer_context, **kwargs):
+        if current_layer_context.split_strategy == "excerpt_first":
+            return CurrentLayerResult(
+                children=[
+                    LayerChildCandidate(
+                        node_id="node-section-a",
+                        parent_node_id=current_layer_context.parent_node_ids[0],
+                        title="Section A",
+                        node_type="TEXT_FLOW",
+                        total_content_pointers=[_segment_pointer(unit_id, text, "Alpha clause\nBeta clause")],
+                        expandable=False,
+                    ),
+                    LayerChildCandidate(
+                        node_id="node-section-b",
+                        parent_node_id=current_layer_context.parent_node_ids[0],
+                        title="Section B",
+                        node_type="TEXT_FLOW",
+                        total_content_pointers=[_segment_pointer(unit_id, text, "Beta clause\nGamma clause")],
+                        expandable=False,
+                    ),
+                ],
+                satisfied=True,
+                reasoning_history=[],
+            )
+        return CurrentLayerResult(
+            children=[
+                LayerChildCandidate(
+                    node_id="node-alpha",
+                    parent_node_id=current_layer_context.parent_node_ids[0],
+                    title="Alpha",
+                    node_type="TEXT_FLOW",
+                    total_content_pointers=[_segment_pointer(unit_id, text, "Alpha clause\n")],
+                    expandable=False,
+                ),
+                LayerChildCandidate(
+                    node_id="node-beta",
+                    parent_node_id=current_layer_context.parent_node_ids[0],
+                    title="Beta",
+                    node_type="TEXT_FLOW",
+                    total_content_pointers=[_segment_pointer(unit_id, text, "Beta clause\n")],
+                    expandable=False,
+                ),
+                LayerChildCandidate(
+                    node_id="node-gamma",
+                    parent_node_id=current_layer_context.parent_node_ids[0],
+                    title="Gamma",
+                    node_type="TEXT_FLOW",
+                    total_content_pointers=[_segment_pointer(unit_id, text, "Gamma clause")],
+                    expandable=False,
+                ),
+            ],
+            satisfied=True,
+            reasoning_history=[],
+        )
+
+    run, bundle = run_ingest_workflow(
+        inp=inp,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        deps={
+            "propose_layer_fn": _propose_layer_fn,
+            "max_review_retries": 1,
+        },
+    )
+
+    assert run.status == "succeeded"
+    assert bundle is not None
+    assert run.final_state["parse_session"]["strategy_history"] == ["excerpt_first", "boundary_first"]
+    assert run.final_state["parse_session"]["strategy_switch_count"] == 1
+
+
 def test_layerwise_workflow_fails_when_satisfaction_retries_exhaust():
     scratch = _scratch("layer_fail")
     fake_backend = load_kogwistar_fake_backend()
@@ -249,6 +441,21 @@ def test_layerwise_workflow_retries_when_cud_coverage_check_fails():
     review_calls = {"count": 0}
 
     def _propose_layer_fn(*, current_layer_context, **kwargs):
+        if review_calls["count"] == 0:
+            return CurrentLayerResult(
+                children=[
+                    LayerChildCandidate(
+                        node_id="node-section-a",
+                        parent_node_id=current_layer_context.parent_node_ids[0],
+                        title="Section A",
+                        node_type="TEXT_FLOW",
+                        total_content_pointers=[_segment_pointer(unit_id, text, "Alpha clause")],
+                        expandable=False,
+                    ),
+                ],
+                satisfied=True,
+                reasoning_history=[],
+            )
         return CurrentLayerResult(
             children=[
                 LayerChildCandidate(
@@ -268,13 +475,6 @@ def test_layerwise_workflow_retries_when_cud_coverage_check_fails():
 
     def _review_layer_fn(*, current_layer_result, **kwargs):
         review_calls["count"] += 1
-        if review_calls["count"] == 1:
-            return CurrentLayerReview(
-                updated_result=current_layer_result,
-                coverage_ok=False,
-                satisfied=True,
-                review_notes=["coverage not yet good enough"],
-            )
         return CurrentLayerReview(
             updated_result=current_layer_result,
             coverage_ok=True,

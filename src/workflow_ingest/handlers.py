@@ -35,6 +35,7 @@ from .parser_core import (
     propose_layer_breakdown,
     repair_layer_candidates,
     review_layer,
+    switch_split_strategy,
 )
 from .probe import emit_probe_event
 from .semantics import (
@@ -64,10 +65,13 @@ def _probe_snapshot(state_view: dict[str, Any]) -> dict[str, Any]:
     if isinstance(current_layer_context, dict):
         snapshot["current_depth"] = current_layer_context.get("depth")
         snapshot["retry_count"] = current_layer_context.get("retry_count")
+        snapshot["split_strategy"] = current_layer_context.get("split_strategy")
     parse_session = state_view.get("parse_session")
     if isinstance(parse_session, dict):
         snapshot["parse_mode"] = parse_session.get("mode")
         snapshot["session_depth"] = parse_session.get("current_depth")
+        snapshot["session_strategy"] = parse_session.get("split_strategy")
+        snapshot["strategy_switch_count"] = parse_session.get("strategy_switch_count")
     return snapshot
 
 
@@ -163,6 +167,8 @@ def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: d
             parser_source_map=ctx.state_view["parser_source_map"],
             max_depth=int(runtime_deps.get("max_depth", 10)),
             allow_review=bool(runtime_deps.get("allow_review", True)),
+            split_strategy=str(runtime_deps.get("split_strategy", "excerpt_first")),
+            fallback_split_strategy=str(runtime_deps.get("fallback_split_strategy", "boundary_first")),
             parse_semantic_fn=parse_semantic_fn if propose_layer_fn is None else None,
         )
         with ctx.state_write as st:
@@ -170,7 +176,7 @@ def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: d
             st["layer_frontier_queue"] = [
                 item.model_dump(field_mode="backend", dump_format="json") for item in frontier
             ]
-            st["semantic_tree"] = root.model_dump(mode="json")
+        st["semantic_tree"] = root.model_dump()
         return _success("check_frontier_remaining")
 
 
@@ -233,6 +239,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
             parse_session=parse_session,
             current_layer_context=current_layer_context,
             current_layer_result=current_layer_result,
+            parser_source_map=ctx.state_view["parser_source_map"],
             review_layer_fn=runtime_deps.get("review_layer_fn"),
             llm_cache=runtime_deps.get("llm_cache"),
         )
@@ -296,24 +303,56 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         current_layer_review = CurrentLayerReview.model_validate(ctx.state_view["current_layer_review"])
         coverage_ok = current_layer_review.coverage_ok is not False
-        if current_layer_result.satisfied is False or not coverage_ok:
+        has_conflicts = bool(
+            current_layer_review.overlap_conflicts
+            or current_layer_review.coverage_gap_notes
+            or current_layer_review.duplicate_child_notes
+        )
+        if current_layer_result.satisfied is False or not coverage_ok or has_conflicts:
             if current_layer_context.retry_count >= current_layer_context.max_retries:
                 reasons = list(current_layer_review.review_notes)
                 if current_layer_result.satisfied is False:
                     reasons.append("layer marked unsatisfied")
                 if not coverage_ok:
                     reasons.append("layer coverage check failed")
+                if has_conflicts:
+                    reasons.append(
+                        f"layer has {len(current_layer_review.overlap_conflicts)} overlap conflicts, "
+                        f"{len(current_layer_review.coverage_gap_notes)} coverage gaps, "
+                        f"{len(current_layer_review.duplicate_child_notes)} duplicates"
+                    )
+                parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
+                if (
+                    current_layer_context.split_strategy != parse_session.fallback_split_strategy
+                    and parse_session.strategy_switch_count == 0
+                ):
+                    return _success("switch_split_strategy")
                 error_message = (
-                    f"layer satisfaction retries exhausted at depth {current_layer_context.depth}"
+                    f"layer satisfaction retries exhausted at depth {current_layer_context.depth} "
+                    f"using strategy {current_layer_context.split_strategy}"
                 )
                 return RunFailure(
                     conversation_node_id=None,
                     state_update=[],
                     update={"workflow_errors": [error_message, *reasons]},
-                errors=[error_message],
-            )
+                    errors=[error_message],
+                )
             return _success("propose_layer_breakdown")
         return _success("repair_layer_pointers")
+
+    @_register_step(resolver, step_name="switch_split_strategy", runtime_deps=runtime_deps)
+    def _switch_split_strategy(ctx):
+        parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
+        current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
+        updated_session, updated_context = switch_split_strategy(
+            parse_session=parse_session,
+            current_layer_context=current_layer_context,
+        )
+        with ctx.state_write as st:
+            st["parse_session"] = updated_session.model_dump(field_mode="backend", dump_format="json")
+            st["current_layer_context"] = updated_context.model_dump(field_mode="backend", dump_format="json")
+            st["current_layer_review"] = None
+        return _success("propose_layer_breakdown")
 
     @_register_step(resolver, step_name="repair_layer_pointers", runtime_deps=runtime_deps)
     def _repair_layer_pointers(ctx):
@@ -351,7 +390,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
             current_depth=current_layer_context.depth,
         )
         with ctx.state_write as st:
-            st["semantic_tree"] = updated_tree.model_dump(mode="json")
+            st["semantic_tree"] = updated_tree.model_dump()
         return _success("check_children_expandable")
 
     @_register_step(resolver, step_name="check_children_expandable", runtime_deps=runtime_deps)
@@ -389,7 +428,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
     def _finalize_semantic_tree(ctx):
         tree = finalize_semantic_tree(SemanticNode.model_validate(ctx.state_view["semantic_tree"]))
         with ctx.state_write as st:
-            st["semantic_tree"] = tree.model_dump(mode="json")
+            st["semantic_tree"] = tree.model_dump()
         return _success("validate_tree")
 
 

@@ -1,5 +1,7 @@
 # Kogwistar-docparser 
 
+If you want the shortest path into the project, start with [QUICKSTART.md](QUICKSTART.md).
+
 ## Graph Knowledge Doc Parser
 
 Utilities and experiments for document ingestion, PDF splitting, OCR, and page-level parsing. Refactored from the kogwistar project as a stand alone ingestor.
