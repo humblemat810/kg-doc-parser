@@ -10,6 +10,7 @@ from .clients import DirectRuntimeIngestClient
 from .design import DEFAULT_WORKFLOW_ID
 from .handlers import build_ingest_step_resolver
 from .models import IngestRunResult, WorkflowIngestInput
+from .providers import WorkflowProviderSettings, build_embedding_function
 
 
 class _TinyEmbeddingFunction:
@@ -32,9 +33,14 @@ def build_default_engines(
     *,
     embedding_function=None,
     backend_factory=None,
+    provider_settings: WorkflowProviderSettings | None = None,
 ):
     base_dir = Path(base_dir)
-    embedding = embedding_function or _TinyEmbeddingFunction()
+    provider_settings = provider_settings or WorkflowProviderSettings.from_env()
+    # One embedding function is still wired per engine instance. The workflow
+    # can carry embedding-space metadata, but engine-level routing is a future
+    # Kogwistar concern.
+    embedding = embedding_function or build_embedding_function(provider_settings.embedding)
     workflow_engine = GraphKnowledgeEngine(
         persist_directory=str(base_dir / "workflow"),
         kg_graph_type="workflow",

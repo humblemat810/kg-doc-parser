@@ -37,6 +37,8 @@ class SourceUnit(ModeSlicingMixin, BaseModel):
     description: Annotated[Optional[str], DtoField(), BackendField(), FrontendField(), LLMField()] = None
     bbox: Annotated[Optional[BoundingBox], DtoField(), BackendField(), FrontendField(), LLMField()] = None
     source_uri: Annotated[Optional[str], DtoField(), BackendField(), FrontendField()] = None
+    # This is a logical embedding-space label, not a guarantee that a separate
+    # embedder is already wired for the unit.
     embedding_space: Annotated[str, DtoField(), BackendField(), FrontendField(), ExcludeMode("llm")] = "default_text"
     parser_hint_text: Annotated[
         Optional[str],
@@ -171,6 +173,8 @@ class GroundedSourceRecord(ModeSlicingMixin, BaseModel):
     text: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     parser_text: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     source_uri: Annotated[Optional[str], DtoField(), BackendField(), FrontendField()] = None
+    # This is carried for future routing / projection. The current engine still
+    # uses one configured embedding function per engine instance.
     embedding_space: Annotated[str, DtoField(), BackendField(), FrontendField(), ExcludeMode("llm")] = "default_text"
     participates_in_semantic_text: Annotated[
         bool,

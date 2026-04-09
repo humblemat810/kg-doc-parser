@@ -16,6 +16,7 @@ from typing import Any, Literal
 from .cache import WorkflowLLMCallCache
 from .clients import DocumentTreeApiPersistenceClient, ServerCanonicalKgClient
 from .models import CurrentLayerResult, CurrentLayerReview, LayerChildCandidate, WorkflowIngestInput
+from .providers import WorkflowProviderSettings
 from .probe import WorkflowProbe, emit_probe_event
 from .semantics import HydratedTextPointer
 from .service import build_default_engines
@@ -32,6 +33,7 @@ class DemoHarnessConfig:
     server_mode: Literal["testclient", "subprocess_http", "external_http"] = "testclient"
     external_base_url: str | None = None
     backend_factory: Any | None = None
+    provider_settings: WorkflowProviderSettings | None = None
     enable_sys_monitoring: bool = True
     probe_filename: str = "probe-events.jsonl"
     summary_filename: str = "demo-summary.json"
@@ -324,6 +326,7 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
         workflow_engine, conversation_engine, _knowledge_engine = build_default_engines(
             artifacts.engine_dir,
             backend_factory=config.backend_factory,
+            provider_settings=config.provider_settings,
         )
         persistence_client = DocumentTreeApiPersistenceClient(
             client=server_ctx.client,

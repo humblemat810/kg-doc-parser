@@ -35,6 +35,15 @@ from .models import (
     WorkflowExportBundle,
     WorkflowIngestInput,
 )
+from .providers import (
+    EmbeddingProviderConfig,
+    FakeChatModel,
+    ProviderEndpointConfig,
+    WorkflowProviderSettings,
+    build_chat_model,
+    build_chat_model_for_role,
+    build_embedding_function,
+)
 from .probe import WorkflowProbe, emit_probe_event
 from .parser_core import (
     apply_cud_update,
@@ -60,8 +69,10 @@ __all__ = [
     "DemoHarnessConfig",
     "DocumentTreeApiPersistenceClient",
     "DirectRuntimeIngestClient",
+    "EmbeddingProviderConfig",
     "GroundedSourceRecord",
     "HydratedTextPointer",
+    "FakeChatModel",
     "IngestExecutionClient",
     "IngestRunHandle",
     "IngestRunResult",
@@ -70,6 +81,7 @@ __all__ = [
     "NormalizedPage",
     "NormalizedSourceCollection",
     "ParseSessionState",
+    "ProviderEndpointConfig",
     "SemanticNode",
     "ServerCanonicalKgClient",
     "SourceUnit",
@@ -77,9 +89,13 @@ __all__ = [
     "ValidationReport",
     "WorkflowLLMCallCache",
     "WorkflowProbe",
+    "WorkflowProviderSettings",
     "WorkflowExportBundle",
     "WorkflowIngestInput",
     "DEFAULT_WORKFLOW_ID",
+    "build_chat_model",
+    "build_chat_model_for_role",
+    "build_embedding_function",
     "apply_cud_update",
     "check_layer_coverage",
     "default_parse_semantic_fn",

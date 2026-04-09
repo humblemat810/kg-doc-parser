@@ -96,18 +96,20 @@ from rapidfuzz.distance import LCSseq
 from datetime import datetime
 from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory
-from .document_ingester_logger import DocumentIngestSQLiteCallback
+try:
+    from document_ingester_logger import DocumentIngestSQLiteCallback
+except ImportError:  # pragma: no cover
+    from src.document_ingester_logger import DocumentIngestSQLiteCallback
 from kogwistar.id_provider import stable_id
+try:
+    from workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+except ImportError:  # pragma: no cover
+    from src.workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 
 def get_llm(model_name:str):
-    if model_name.lower().startswith("gemini"):
-        return ChatGoogleGenerativeAI(
-                        model=model_name,
-                        temperature=0.1,
-                        callbacks=[cb],
-                    )
-    else:
-        raise Exception("unknown model")
+    settings = WorkflowProviderSettings.from_env()
+    spec = settings.parser.model_copy(update={"model": model_name})
+    return build_chat_model(spec, callbacks=[cb])
     
 cb = DocumentIngestSQLiteCallback(db_path="logs/document_ingest.sqlite",
         log_prompts = True,
@@ -786,13 +788,12 @@ memory = Memory(location = os.getenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", ".joblib"
 @joblib_memory_cached(memory, ignore = ['model_names', 'event_name'])
 def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set):
         
-        from langchain_google_genai import ChatGoogleGenerativeAI    
         i_model = 0
         while True:
             model_name = model_names[i_model]
             try:    
                 print(f"\n--- Calling LLM ({model_name}) for {len(nodes_at_level)} nodes at this level ---")
-                llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.1, callbacks=[cb])
+                llm = get_llm(model_name)
                 import inspect
                 cf = inspect.currentframe()
                 line_no = cf.f_lineno if cf else None
@@ -1606,7 +1607,6 @@ def _default_call_llm_structured(
     Swap this out if you prefer OpenAI or another provider.
     """
     from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
-    from langchain_google_genai import ChatGoogleGenerativeAI
 
     messages: List[BaseMessage] = [HumanMessage(prompt)]
     last_err = None
@@ -1617,7 +1617,7 @@ def _default_call_llm_structured(
             cf = inspect.currentframe()
             line_no = cf.f_lineno if cf else None
             try:
-                llm = ChatGoogleGenerativeAI(model=name, temperature=0.1, callbacks=[cb])
+                llm = get_llm(name)
                 resp: dict = llm.with_structured_output(schema, include_raw=True).invoke(messages, 
                                     config={
                                             "metadata": {
@@ -2799,8 +2799,6 @@ def kge_payload_to_semantic_tree(payload: Dict[str, Any]) -> "SemanticNode":
         root_ids = list(all_ids - all_child_ids)
         return sem_nodes[root_ids[0]] if root_ids else list(sem_nodes.values())[0]
     
-from langchain_google_genai import ChatGoogleGenerativeAI
-
 def all_child_from_root(root: SemanticNode, results = None):
     if results is None:
         results = []

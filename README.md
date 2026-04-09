@@ -47,6 +47,96 @@ The project currently expects or optionally uses:
 
 An example template is provided in [`.env.example`](/c:/Users/chanh/Documents/kg_doc_parser/.env.example).
 
+## Provider Guide
+
+The workflow layer is vendor-neutral, but the concrete OCR, parser, and embedding
+backends are selected by config.
+
+### OCR Provider Examples
+
+- Google GenAI OCR:
+  - `KG_DOC_OCR_PROVIDER=gemini`
+  - `KG_DOC_OCR_MODEL=gemini-2.5-flash`
+- Ollama OCR or vision-capable local model:
+  - `KG_DOC_OCR_PROVIDER=ollama`
+  - `KG_DOC_OCR_MODEL=llava:latest`
+  - `KG_DOC_OCR_BASE_URL=http://127.0.0.1:11434`
+- Vertex AI OCR:
+  - `KG_DOC_OCR_PROVIDER=vertex`
+  - `KG_DOC_OCR_MODEL=gemini-2.5-pro`
+  - `KG_DOC_OCR_PROJECT=my-project`
+  - `KG_DOC_OCR_LOCATION=us-central1`
+
+### Parser / LLM Provider Examples
+
+The parser provider is the chat model used for semantic parsing, layer review,
+and structured extraction.
+
+- LangChain Google GenAI:
+  - `KG_DOC_PARSER_PROVIDER=gemini`
+  - `KG_DOC_PARSER_MODEL=gemini-2.5-flash`
+- ChatGPT / OpenAI REST:
+  - `KG_DOC_PARSER_PROVIDER=openai`
+  - `KG_DOC_PARSER_MODEL=gpt-4.1-mini`
+  - `KG_DOC_PARSER_API_KEY_ENV=OPENAI_API_KEY`
+- LangChain Ollama:
+  - `KG_DOC_PARSER_PROVIDER=ollama`
+  - `KG_DOC_PARSER_MODEL=llama3.1`
+  - `KG_DOC_PARSER_BASE_URL=http://127.0.0.1:11434`
+- LangChain Vertex AI:
+  - `KG_DOC_PARSER_PROVIDER=vertex`
+  - `KG_DOC_PARSER_MODEL=gemini-2.5-pro`
+  - `KG_DOC_PARSER_PROJECT=my-project`
+  - `KG_DOC_PARSER_LOCATION=us-central1`
+
+### Recipe Parsing Example
+
+If you are parsing a cooking recipe, one practical split is:
+
+- OCR on Gemini or another vision model
+- parser on OpenAI, Ollama, or Vertex AI
+
+For example:
+
+```powershell
+KG_DOC_OCR_PROVIDER=gemini
+KG_DOC_OCR_MODEL=gemini-2.5-flash
+KG_DOC_PARSER_PROVIDER=openai
+KG_DOC_PARSER_MODEL=gpt-4.1-mini
+KG_DOC_PARSER_API_KEY_ENV=OPENAI_API_KEY
+KG_DOC_EMBED_PROVIDER=fake
+```
+
+That setup can extract a recipe into structured graph data such as:
+- ingredients
+- steps
+- tools
+- timers
+- inferred sections like `prep`, `cook`, and `serve`
+
+### Embedding Examples
+
+- Fake deterministic CI embedding:
+  - `KG_DOC_EMBED_PROVIDER=fake`
+- OpenAI embeddings:
+  - `KG_DOC_EMBED_PROVIDER=openai`
+  - `KG_DOC_EMBED_MODEL=text-embedding-3-small`
+- Vertex AI embeddings:
+  - `KG_DOC_EMBED_PROVIDER=vertex`
+  - `KG_DOC_EMBED_MODEL=text-embedding-004`
+- Ollama embeddings:
+  - `KG_DOC_EMBED_PROVIDER=ollama`
+  - `KG_DOC_EMBED_MODEL=nomic-embed-text`
+
+Note:
+
+- `embedding_space` in the workflow ingest models is currently a metadata and
+  routing-intent label.
+- It does not yet imply that the engine is using a separate embedder per space.
+- The current engine bootstrap still wires one embedding function per engine
+  instance, while the multi-space routing proposal remains a future Kogwistar
+  core concern.
+
 ## Running Tests
 
 Some tests are integration-style and expect local document folders and API credentials to exist. That means not every test is portable in a clean checkout.

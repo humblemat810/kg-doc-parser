@@ -18,6 +18,12 @@ def normalize_ocr_pages(
     title: str,
     pages: list[dict[str, Any]],
 ) -> WorkflowIngestInput:
+    """Normalize raw OCR JSON into workflow ingest models.
+
+    OCR text clusters and non-text regions are both preserved with page and
+    cluster metadata. `embedding_space="image"` is an intent label here; it
+    does not imply a separate image embedder is already wired at runtime.
+    """
     normalized_pages: list[NormalizedPage] = []
     for raw_page in pages:
         page_number = int(raw_page["pdf_page_num"])
@@ -53,6 +59,8 @@ def normalize_ocr_pages(
                     cluster_number=obj.get("cluster_number"),
                     description=obj.get("description"),
                     bbox=bbox,
+                    # Keep the "image" space label for future routing; the
+                    # current engine still embeds through a single function.
                     embedding_space="image",
                     metadata={"participates_in_semantic_text": False},
                 )
