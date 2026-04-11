@@ -16,6 +16,28 @@ from .cache import WorkflowLLMCallCache
 from .design import DEFAULT_WORKFLOW_ID, build_ingest_workflow_design, ensure_ingest_workflow_design
 from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
 from .handlers import build_ingest_step_resolver
+from .ocr_pipeline import (
+    OCRImagePayload,
+    OCRWorkflowArtifacts,
+    OCRWorkflowStateStore,
+    prepare_ocr_workflow_input,
+    run_ocr_ingest_workflow,
+)
+from .runners import (
+    LayerwiseWorkflowCommandResult,
+    OcrWorkflowCommandResult,
+    PageIndexWorkflowCommandResult,
+    WorkflowCommandResult,
+    discover_input_files,
+    run_demo_harness_workflow,
+    run_layerwise_batch_workflow,
+    run_layerwise_source_workflow,
+    run_ocr_batch_workflow,
+    run_ocr_source_workflow,
+    run_page_index_batch_workflow,
+    run_page_index_source_workflow,
+)
+from .smoke_assets import generate_ocr_smoke_assets
 from .page_index import PageIndexBlockSpec, PageIndexParseResult, build_page_index_workflow_input, parse_page_index_document
 from .models import (
     BoundingBox,
@@ -87,6 +109,9 @@ __all__ = [
     "LayerSpanConflict",
     "NormalizedPage",
     "NormalizedSourceCollection",
+    "OCRImagePayload",
+    "OCRWorkflowArtifacts",
+    "OCRWorkflowStateStore",
     "ParseSessionState",
     "ProviderEndpointConfig",
     "PageIndexBlockSpec",
@@ -101,6 +126,10 @@ __all__ = [
     "WorkflowProviderSettings",
     "WorkflowExportBundle",
     "WorkflowIngestInput",
+    "WorkflowCommandResult",
+    "OcrWorkflowCommandResult",
+    "PageIndexWorkflowCommandResult",
+    "LayerwiseWorkflowCommandResult",
     "DEFAULT_WORKFLOW_ID",
     "build_chat_model",
     "build_chat_model_for_role",
@@ -125,6 +154,17 @@ __all__ = [
     "emit_probe_event",
     "normalize_ocr_pages",
     "parse_page_index_document",
+    "prepare_ocr_workflow_input",
     "run_demo_harness",
+    "run_demo_harness_workflow",
     "run_ingest_workflow",
+    "discover_input_files",
+    "run_layerwise_batch_workflow",
+    "run_layerwise_source_workflow",
+    "run_ocr_batch_workflow",
+    "run_ocr_source_workflow",
+    "run_page_index_batch_workflow",
+    "run_page_index_source_workflow",
+    "generate_ocr_smoke_assets",
+    "run_ocr_ingest_workflow",
 ]

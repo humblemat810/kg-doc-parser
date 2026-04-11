@@ -1,6 +1,7 @@
 # Quickstart
 
-This project has a workflow-native ingest demo path with fake-first tests and optional real-server modes.
+This repo now exposes the workflow-ingest pipelines as reusable Python APIs,
+thin CLI commands, and composable subworkflows.
 
 ## 1. Use The Workspace Venv
 
@@ -10,35 +11,96 @@ Make sure you are using:
 .venv\Scripts\python.exe
 ```
 
-## 2. Run The Fast Tests
+If you installed the project with Poetry, you can also use:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/test_workflow_ingest_contracts.py tests/test_workflow_ingest_resolver_invariants.py tests/test_workflow_ingest_layerwise_parser.py -q
+poetry run workflow-ingest --help
 ```
 
-These cover:
+## 2. Learn The Command Surface
+
+The CLI family is:
+
+```powershell
+workflow-ingest ocr --help
+workflow-ingest page-index --help
+workflow-ingest layerwise --help
+workflow-ingest demo --help
+workflow-ingest ocr-smoke-assets --help
+```
+
+Common commands:
+
+```powershell
+workflow-ingest ocr-smoke-assets --output-dir tests\.tmp_workflow_ingest_ocr\generated_smoke_assets
+workflow-ingest ocr tests\.tmp_workflow_ingest_ocr\generated_smoke_assets\ocr_smoke_document.pdf --output-dir logs\ocr_run
+workflow-ingest ocr tests\.tmp_workflow_ingest_ocr\generated_smoke_assets --output-dir logs\ocr_batch
+workflow-ingest page-index tests\fixtures\page_index\sample_page_index.txt --output-dir logs\page_index
+workflow-ingest layerwise tests\.tmp_workflow_ingest_ocr\manual_cases\ollama\glm-ocr_latest\image\artifacts\legacy_split_pages\ocr-manual-ollama-image --output-dir logs\layerwise
+```
+
+## 3. Inspect The Outputs
+
+Each workflow keeps inspectable artifacts on disk:
+
+- `workflow-events.jsonl`
+  - human-readable orchestration step trail
+- `ocr-state.sqlite`
+  - authoritative OCR/render resume state
+- `ocr-progress.json`
+  - readable mirror of the OCR state store
+- `ocr-summary.json`
+  - final OCR run summary
+- `legacy_split_pages/<document>/page_N.json`
+  - legacy-compatible OCR page artifacts
+- `rendered_pages/<document>/page_N.png`
+  - rasterized pages for OCR reruns and inspection
+- `page-index-summary.json`
+  - page-index parser summary
+- `layerwise-summary.json`
+  - legacy recursive parser summary
+- `layerwise-graph.json`
+  - legacy recursive graph payload
+
+## 4. Run The Fast Tests
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests/test_workflow_ingest_contracts.py tests/test_workflow_ingest_resolver_invariants.py tests/test_workflow_ingest_layerwise_parser.py tests/test_workflow_ingest_cli.py -q
+```
+
+This covers:
+
 - workflow contracts
 - resolver retries
-- overlap and coverage conflicts
 - strategy switching
-- fake parser and review behavior
+- reusable CLI wiring
+- reusable runner wiring
 
-## 3. Recommended Test Split
+## 5. Run The Workflow Pipelines Directly From Python
 
-Use these tiers depending on how much you want to exercise:
+The main reusable APIs live in `src.workflow_ingest`:
+
+- `run_ocr_source_workflow(...)`
+- `run_ocr_batch_workflow(...)`
+- `parse_page_index_document(...)`
+- `run_page_index_source_workflow(...)`
+- `run_layerwise_source_workflow(...)`
+- `run_demo_harness_workflow(...)`
+
+Those are the same helpers the CLI calls under the hood.
+
+## 6. Recommended Test Split
 
 Fast local loop:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/test_workflow_ingest_contracts.py tests/test_workflow_ingest_resolver_invariants.py tests/test_workflow_ingest_layerwise_parser.py tests/test_workflow_ingest_conversation_graph.py tests/test_workflow_ingest_provider_adapters.py -q
+.venv\Scripts\python.exe -m pytest tests/test_workflow_ingest_contracts.py tests/test_workflow_ingest_resolver_invariants.py tests/test_workflow_ingest_layerwise_parser.py tests/test_workflow_ingest_conversation_graph.py tests/test_workflow_ingest_provider_adapters.py tests/test_workflow_ingest_cli.py -q
 ```
-
-This tier now uses Kogwistar's in-memory backend for the workflow-facing engine tests.
 
 Normal workflow/demo CI:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/test_workflow_ingest_contracts.py tests/test_workflow_ingest_resolver_invariants.py tests/test_workflow_ingest_layerwise_parser.py tests/test_workflow_ingest_conversation_graph.py tests/test_workflow_ingest_provider_adapters.py tests/test_workflow_ingest_demo_harness.py -q
+.venv\Scripts\python.exe -m pytest tests/test_workflow_ingest_contracts.py tests/test_workflow_ingest_resolver_invariants.py tests/test_workflow_ingest_layerwise_parser.py tests/test_workflow_ingest_conversation_graph.py tests/test_workflow_ingest_provider_adapters.py tests/test_workflow_ingest_demo_harness.py tests/test_workflow_ingest_cli.py -q
 ```
 
 Full backend / server CI:
@@ -47,28 +109,7 @@ Full backend / server CI:
 .venv\Scripts\python.exe -m pytest tests/test_workflow_ingest_backends_ci_full.py tests/test_workflow_ingest_server_e2e.py tests/test_workflow_ingest_demo_harness.py -m ci_full -q
 ```
 
-This tier keeps the persisted backend matrix and server-backed coverage.
-
-## 4. Run The Demo Harness
-
-```powershell
-.venv\Scripts\python.exe scripts\run_workflow_ingest_demo.py --output-dir logs\workflow_ingest_demo
-```
-
-This writes:
-- `probe-events.jsonl`
-- `demo-summary.json`
-- `llm-cache/`
-- `engines/`
-- `server-data/` when the harness starts its own server
-
-## 5. Run Against A Live Server
-
-```powershell
-.venv\Scripts\python.exe scripts\run_workflow_ingest_demo.py --server-mode external_http --external-base-url http://127.0.0.1:28110
-```
-
-## 6. Read Next
+## 7. Read Next
 
 - [README.md](README.md)
 - [workflow_ingest_resolver_orchestration.md](workflow_ingest_resolver_orchestration.md)
@@ -76,7 +117,9 @@ This writes:
 
 ## Mental Model
 
-- Parsing is owned locally in this repo.
-- Canonical KG persistence is server-canonical.
-- The workflow can run directly in-process for development and tests.
-- `embedding_space` is a metadata label for now, not proof of a separate embedding pipeline.
+- The API is the primary contract.
+- The CLI is a thin adapter over the API.
+- OCR prep resumes from `ocr-state.sqlite`.
+- Page-index parsing has heuristic and Ollama-backed modes.
+- Recursive layerwise parsing stays reusable as a subworkflow boundary.
+- Canonical KG persistence is still server-canonical.

@@ -20,6 +20,69 @@ The document ingestion pipeline is currently being extracted and consolidated in
 - File discovery and filtering helpers in `src/utils/file_loaders.py`
 - Experimental and regression-style tests under `tests/`
 
+## Workflow Surface
+
+The reusable workflow-ingest code now has three layers:
+
+- Python APIs, which are the primary contract for tests and orchestration
+- CLI entrypoints, which are thin wrappers around those APIs
+- composable subworkflows for OCR, page-index parsing, and recursive layerwise parsing
+
+The reusable helpers live under `src/workflow_ingest/` and are designed so the
+same core logic can be called from tests, scripts, and higher-level workflow
+code without duplicating orchestration.
+
+### CLI Commands
+
+After `poetry install`, the repo exposes a `workflow-ingest` command family:
+
+```powershell
+workflow-ingest --help
+workflow-ingest ocr --help
+workflow-ingest page-index --help
+workflow-ingest layerwise --help
+workflow-ingest demo --help
+workflow-ingest ocr-smoke-assets --help
+```
+
+Typical examples:
+
+```powershell
+workflow-ingest ocr tests\.tmp_workflow_ingest_ocr\generated_smoke_assets\ocr_smoke_document.pdf --output-dir logs\ocr_run
+workflow-ingest ocr tests\.tmp_workflow_ingest_ocr\generated_smoke_assets --output-dir logs\ocr_batch
+workflow-ingest page-index tests\fixtures\page_index\sample_page_index.txt --output-dir logs\page_index
+workflow-ingest layerwise tests\.tmp_workflow_ingest_ocr\manual_cases\ollama\glm-ocr_latest\image\artifacts\legacy_split_pages\ocr-manual-ollama-image --output-dir logs\layerwise
+workflow-ingest ocr-smoke-assets --output-dir tests\.tmp_workflow_ingest_ocr\generated_smoke_assets
+```
+
+### Reusable Artifacts
+
+The workflow outputs are intentionally inspectable on disk:
+
+- `workflow-events.jsonl`: readable step trail for the outer orchestration layer
+- `ocr-state.sqlite`: authoritative OCR/render resume state
+- `ocr-progress.json`: human-readable mirror of the current OCR state
+- `ocr-summary.json`: final OCR run summary
+- `legacy_split_pages/<document>/page_N.json`: legacy-compatible OCR page artifacts
+- `rendered_pages/<document>/page_N.png`: rasterized page images
+- `page-index-summary.json`: page-index run summary
+- `layerwise-summary.json`: recursive layerwise parser summary
+- `layerwise-graph.json`: legacy recursive layerwise graph payload
+
+### Python APIs
+
+If you want to embed the pipelines directly, the main helpers are:
+
+- `src.workflow_ingest.run_ocr_source_workflow(...)`
+- `src.workflow_ingest.run_ocr_batch_workflow(...)`
+- `src.workflow_ingest.parse_page_index_document(...)`
+- `src.workflow_ingest.run_page_index_source_workflow(...)`
+- `src.workflow_ingest.run_layerwise_source_workflow(...)`
+- `src.workflow_ingest.run_demo_harness_workflow(...)`
+
+Those helpers are meant to stay stable and are what the CLI layer calls under
+the hood.
+
 ## Setup
 
 1. Create and activate a Python 3.13 environment.
@@ -184,6 +247,24 @@ Notes:
 - The workflow-native layer proposal/review path uses deterministic file-backed caching to reduce repeated token cost and compute time.
 - The legacy parser path also supports a redirected `joblib` cache via `KG_DOC_PARSER_JOBLIB_CACHE_DIR`.
 - Probe logging is separate from CDC and conversation graph traces, so demos can show a short readable event trail without digging into runtime internals.
+
+## OCR And Parsing Workflows
+
+The newer workflow-first paths are designed as reusable subworkflows:
+
+- OCR image/PDF ingest
+  - resumable via `ocr-state.sqlite`
+  - emits `workflow-events.jsonl`
+  - keeps legacy OCR page artifacts on disk
+- page-index parsing
+  - heuristic mode for deterministic structure extraction
+  - Ollama mode for local parser-backed parsing
+- recursive layerwise parsing
+  - wraps the legacy recursive parser in a reusable workflow runner
+
+These can be invoked from Python directly or through the `workflow-ingest`
+CLI family, depending on whether you want reusable orchestration or a quick
+shell command.
 
 ## Notes
 
