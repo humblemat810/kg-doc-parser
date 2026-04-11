@@ -68,7 +68,7 @@ def test_chat_model_provider_matrix_skips_if_backend_missing(
 ) -> None:
     _require_module(module_name)
 
-    if provider == "gemini":
+    if provider == "gemini" or role == "ocr":
         monkeypatch.setenv("GOOGLE_API_KEY", "dummy-key")
 
     settings = WorkflowProviderSettings(

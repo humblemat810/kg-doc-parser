@@ -16,6 +16,7 @@ from .cache import WorkflowLLMCallCache
 from .design import DEFAULT_WORKFLOW_ID, build_ingest_workflow_design, ensure_ingest_workflow_design
 from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
 from .handlers import build_ingest_step_resolver
+from .page_index import PageIndexBlockSpec, PageIndexParseResult, build_page_index_workflow_input, parse_page_index_document
 from .models import (
     BoundingBox,
     CanonicalGraphWriteResult,
@@ -88,6 +89,8 @@ __all__ = [
     "NormalizedSourceCollection",
     "ParseSessionState",
     "ProviderEndpointConfig",
+    "PageIndexBlockSpec",
+    "PageIndexParseResult",
     "SemanticNode",
     "ServerCanonicalKgClient",
     "SourceUnit",
@@ -115,11 +118,13 @@ __all__ = [
     "build_ingest_workflow_design",
     "build_ingest_step_resolver",
     "build_parser_input_dict",
+    "build_page_index_workflow_input",
     "build_parser_source_map",
     "build_runtime",
     "ensure_ingest_workflow_design",
     "emit_probe_event",
     "normalize_ocr_pages",
+    "parse_page_index_document",
     "run_demo_harness",
     "run_ingest_workflow",
 ]
