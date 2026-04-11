@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+"""Execution clients for the workflow ingest pipeline.
+
+This module keeps the execution surface explicit and testable:
+- `DirectRuntimeIngestClient` runs the local workflow engine end-to-end.
+- `ServerCanonicalKgClient` runs the workflow but hands canonical graph
+  persistence to an external server client.
+- `DocumentTreeApiPersistenceClient` adapts the export bundle into the server
+  tree-upsert API payload.
+
+The classes here are intentionally thin wrappers around the workflow runtime so
+tests can swap transport and persistence behavior without changing workflow
+logic.
+"""
+
 from abc import ABC, abstractmethod
 from typing import Any
 from uuid import uuid4
@@ -18,10 +32,14 @@ from .probe import emit_probe_event
 
 
 class UnsupportedClientOperation(RuntimeError):
+    """Raised when a client path is intentionally not implemented."""
+
     pass
 
 
 class CanonicalGraphPersistenceClient(ABC):
+    """Protocol for persisting an exported workflow graph bundle."""
+
     @abstractmethod
     def persist_graph_payload(self, bundle: WorkflowExportBundle) -> CanonicalGraphWriteResult:
         raise NotImplementedError
@@ -42,7 +60,49 @@ def _jsonable_payload(value: Any) -> Any:
     return value
 
 
+def _to_temp_id_graph_payload(graph_payload: dict[str, Any]) -> dict[str, Any]:
+    """Adapt a canonical export bundle into the server's batch-temp-id contract."""
+
+    nodes = [_jsonable_payload(node) for node in graph_payload.get("nodes", [])]
+    edges = [_jsonable_payload(edge) for edge in graph_payload.get("edges", [])]
+
+    node_id_map: dict[str, str] = {}
+    for idx, node in enumerate(nodes, start=1):
+        original_id = str(node.get("id") or "")
+        temp_id = f"nn:{idx}"
+        if original_id:
+            node_id_map[original_id] = temp_id
+        node["id"] = temp_id
+
+    edge_id_map: dict[str, str] = {}
+    for idx, edge in enumerate(edges, start=1):
+        original_id = str(edge.get("id") or "")
+        temp_id = f"ne:{idx}"
+        if original_id:
+            edge_id_map[original_id] = temp_id
+        edge["id"] = temp_id
+
+    for edge in edges:
+        edge["source_ids"] = [node_id_map.get(str(x), str(x)) for x in edge.get("source_ids", [])]
+        edge["target_ids"] = [node_id_map.get(str(x), str(x)) for x in edge.get("target_ids", [])]
+        edge["source_edge_ids"] = [
+            edge_id_map.get(str(x), str(x)) for x in edge.get("source_edge_ids", []) or []
+        ]
+        edge["target_edge_ids"] = [
+            edge_id_map.get(str(x), str(x)) for x in edge.get("target_edge_ids", []) or []
+        ]
+
+    return {
+        "doc_id": str(graph_payload.get("doc_id") or "workflow-ingest-doc"),
+        "insertion_method": str(graph_payload.get("insertion_method") or "workflow_ingest"),
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
 class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
+    """Bridge an export bundle to the server document-tree upsert endpoint."""
+
     def __init__(
         self,
         *,
@@ -59,14 +119,7 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
         self.server_parser_used = server_parser_used
 
     def persist_graph_payload(self, bundle: WorkflowExportBundle) -> CanonicalGraphWriteResult:
-        payload = {
-            "doc_id": str(bundle.graph_payload.get("doc_id") or "workflow-ingest-doc"),
-            "insertion_method": str(
-                bundle.graph_payload.get("insertion_method") or "workflow_ingest"
-            ),
-            "nodes": _jsonable_payload(bundle.graph_payload.get("nodes", [])),
-            "edges": _jsonable_payload(bundle.graph_payload.get("edges", [])),
-        }
+        payload = _to_temp_id_graph_payload(bundle.graph_payload)
         endpoint = self.endpoint
         if self.base_url and not endpoint.startswith("http://") and not endpoint.startswith("https://"):
             endpoint = f"{self.base_url}{endpoint}"
@@ -99,6 +152,8 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
 
 
 class IngestExecutionClient(ABC):
+    """Shared ingest client contract used by direct and server-backed flows."""
+
     @abstractmethod
     def run_ingest(
         self,
@@ -127,6 +182,8 @@ class IngestExecutionClient(ABC):
 
 
 class DirectRuntimeIngestClient(IngestExecutionClient):
+    """Run ingest entirely against the local workflow and knowledge engines."""
+
     def __init__(
         self,
         *,
@@ -294,6 +351,8 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
 
 
 class ServerCanonicalKgClient(IngestExecutionClient):
+    """Run ingest locally but delegate canonical graph persistence to a server."""
+
     def __init__(
         self,
         *,

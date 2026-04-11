@@ -290,7 +290,9 @@ def initialize_parse_session(
                 source_cluster_id=unit_id,
                 start_char=0,
                 end_char=-1,
-                verbatim_text="",
+                # The canonical persistence path validates excerpts against the
+                # stored document content, so the root pointers need real text.
+                verbatim_text=str(record.get("text") or ""),
             )
             for unit_id, record in sorted(parser_source_map.items())
             if record.get("participates_in_semantic_text", True)

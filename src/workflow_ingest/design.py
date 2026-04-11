@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Iterable
 
 from kogwistar.engine_core.models import Grounding, Span
@@ -7,6 +8,14 @@ from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
 
 DEFAULT_WORKFLOW_ID = "kg_doc_parser.ingest.v1"
+_LOGGER = logging.getLogger(__name__)
+
+
+def _progress_bar(done: int, total: int, width: int = 20) -> str:
+    if total <= 0:
+        return "?" * width
+    filled = min(width, max(0, round((done / total) * width)))
+    return ("█" * filled) + ("░" * (width - filled))
 
 
 def _grounding(workflow_id: str) -> Grounding:
@@ -158,11 +167,42 @@ def build_ingest_workflow_design(
 
 def ensure_ingest_workflow_design(workflow_engine, workflow_id: str = DEFAULT_WORKFLOW_ID) -> None:
     nodes, edges = build_ingest_workflow_design(workflow_id)
-    for node in nodes:
+    total = len(nodes) + len(edges)
+    done = 0
+    _LOGGER.info(
+        "⏳ workflow design | 0/%s |   0%% | %s | bootstrap %s nodes + %s edges",
+        total,
+        _progress_bar(0, total),
+        len(nodes),
+        len(edges),
+    )
+    for node_idx, node in enumerate(nodes, start=1):
         node_id = node.safe_get_id()
         if not workflow_engine.persist.exists_node(node_id):
             workflow_engine.write.add_node(node)
-    for edge in edges:
+        done += 1
+        _LOGGER.info(
+            "⏳ workflow design | %s/%s | %3s%% | %s | node %s/%s | %s",
+            done,
+            total,
+            round((done / total) * 100),
+            _progress_bar(done, total),
+            node_idx,
+            len(nodes),
+            node.label,
+        )
+    for edge_idx, edge in enumerate(edges, start=1):
         edge_id = edge.safe_get_id()
         if not workflow_engine.persist.exists_edge(edge_id):
             workflow_engine.write.add_edge(edge)
+        done += 1
+        _LOGGER.info(
+            "⏳ workflow design | %s/%s | %3s%% | %s | edge %s/%s | %s",
+            done,
+            total,
+            round((done / total) * 100),
+            _progress_bar(done, total),
+            edge_idx,
+            len(edges),
+            edge.label,
+        )

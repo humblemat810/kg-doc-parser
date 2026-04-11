@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-from _kogwistar_test_helpers import load_kogwistar_fake_backend
+import pytest
+
+from _kogwistar_test_helpers import build_workflow_engine_triplet
 from src.workflow_ingest.models import (
     CurrentLayerContext,
     CurrentLayerResult,
@@ -19,7 +21,20 @@ from src.workflow_ingest.parser_core import (
     switch_split_strategy,
 )
 from src.workflow_ingest.semantics import HydratedTextPointer
-from src.workflow_ingest.service import build_default_engines, run_ingest_workflow
+from src.workflow_ingest.service import run_ingest_workflow
+
+
+pytestmark = [pytest.mark.workflow]
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("in_memory", id="in_memory", marks=pytest.mark.ci),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+    ]
+)
+def workflow_backend_kind(request):
+    return request.param
 
 
 def _scratch(name: str) -> Path:
@@ -40,6 +55,7 @@ def _segment_pointer(unit_id: str, text: str, fragment: str) -> HydratedTextPoin
     )
 
 
+@pytest.mark.ci
 def test_initialize_parse_session_seeds_root_frontier_in_workflow_mode():
     inp = WorkflowIngestInput.from_text(
         document_id="layer-doc",
@@ -69,6 +85,7 @@ def test_initialize_parse_session_seeds_root_frontier_in_workflow_mode():
     assert frontier[0].depth == 0
 
 
+@pytest.mark.ci
 def test_prepare_layer_frontier_pulls_one_bfs_depth_group():
     inp = WorkflowIngestInput.from_text(
         document_id="layer-doc",
@@ -102,6 +119,7 @@ def test_prepare_layer_frontier_pulls_one_bfs_depth_group():
     assert updated.current_depth == 0
 
 
+@pytest.mark.ci
 def test_review_layer_reports_overlap_and_gap_conflicts():
     inp = WorkflowIngestInput.from_text(
         document_id="conflict-doc",
@@ -166,6 +184,7 @@ def test_review_layer_reports_overlap_and_gap_conflicts():
     assert reviewed.coverage_gap_notes
 
 
+@pytest.mark.ci
 def test_switch_split_strategy_updates_session_and_context():
     session = ParseSessionState(
         collection_id="doc",
@@ -195,12 +214,10 @@ def test_switch_split_strategy_updates_session_and_context():
     assert updated_context.retry_count == 0
 
 
-def test_layerwise_workflow_retries_same_layer_then_enqueues_next_layer():
+def test_layerwise_workflow_retries_same_layer_then_enqueues_next_layer(workflow_backend_kind):
     scratch = _scratch("layer_retry")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", workflow_backend_kind
     )
     inp = WorkflowIngestInput.from_text(
         document_id="layer-retry-doc",
@@ -286,12 +303,12 @@ def test_layerwise_workflow_retries_same_layer_then_enqueues_next_layer():
     assert {"Section A", "Section B", "Alpha", "Beta"}.issubset(labels)
 
 
-def test_layerwise_workflow_switches_strategy_after_overlap_retry_exhaustion():
+def test_layerwise_workflow_switches_strategy_after_overlap_retry_exhaustion(
+    workflow_backend_kind,
+):
     scratch = _scratch("layer_strategy_switch")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", workflow_backend_kind
     )
     inp = WorkflowIngestInput.from_text(
         document_id="layer-strategy-doc",
@@ -373,12 +390,10 @@ def test_layerwise_workflow_switches_strategy_after_overlap_retry_exhaustion():
     assert run.final_state["parse_session"]["strategy_switch_count"] == 1
 
 
-def test_layerwise_workflow_fails_when_satisfaction_retries_exhaust():
+def test_layerwise_workflow_fails_when_satisfaction_retries_exhaust(workflow_backend_kind):
     scratch = _scratch("layer_fail")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", workflow_backend_kind
     )
     inp = WorkflowIngestInput.from_text(
         document_id="layer-fail-doc",
@@ -424,12 +439,10 @@ def test_layerwise_workflow_fails_when_satisfaction_retries_exhaust():
     assert any("layer satisfaction retries exhausted" in err for err in run.final_state["workflow_errors"])
 
 
-def test_layerwise_workflow_retries_when_cud_coverage_check_fails():
+def test_layerwise_workflow_retries_when_cud_coverage_check_fails(workflow_backend_kind):
     scratch = _scratch("layer_coverage_retry")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", workflow_backend_kind
     )
     inp = WorkflowIngestInput.from_text(
         document_id="layer-coverage-doc",
@@ -498,12 +511,10 @@ def test_layerwise_workflow_retries_when_cud_coverage_check_fails():
     assert review_calls["count"] == 2
 
 
-def test_legacy_compat_and_layerwise_paths_produce_equivalent_labels():
+def test_legacy_compat_and_layerwise_paths_produce_equivalent_labels(workflow_backend_kind):
     scratch = _scratch("layer_equivalent")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", workflow_backend_kind
     )
     inp = WorkflowIngestInput.from_text(
         document_id="layer-equiv-doc",

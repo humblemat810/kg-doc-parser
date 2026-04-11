@@ -4,15 +4,33 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 from kogwistar.runtime.models import RunSuccess, RunSuspended
 from kogwistar.runtime.runtime import WorkflowRuntime
 
-from _kogwistar_test_helpers import load_kogwistar_fake_backend
+from _kogwistar_test_helpers import (
+    build_workflow_engine_triplet,
+    drain_phase1_indexes_until_idle,
+)
 from src.workflow_ingest.design import DEFAULT_WORKFLOW_ID, ensure_ingest_workflow_design
 from src.workflow_ingest.handlers import build_ingest_step_resolver
 from src.workflow_ingest.models import WorkflowIngestInput
 from src.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-from src.workflow_ingest.service import build_default_engines, run_ingest_workflow
+from src.workflow_ingest.service import run_ingest_workflow
+
+
+pytestmark = [pytest.mark.workflow]
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("in_memory", id="in_memory", marks=pytest.mark.ci),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+    ]
+)
+def workflow_backend_kind(request):
+    return request.param
 
 
 def _scratch(name: str) -> Path:
@@ -123,12 +141,12 @@ class _LocalDebugPersistenceClient:
         }
 
 
-def test_conversation_graph_persists_trace_and_checkpoints_for_success():
+def test_conversation_graph_persists_trace_and_checkpoints_for_success(
+    workflow_backend_kind,
+):
     scratch_dir = _scratch("success")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch_dir / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", workflow_backend_kind
     )
     inp = WorkflowIngestInput.from_text(
         document_id="conv-success",
@@ -143,6 +161,7 @@ def test_conversation_graph_persists_trace_and_checkpoints_for_success():
         knowledge_engine=knowledge_engine,
         deps={"parse_semantic_fn": _fake_semantic_tree},
     )
+    drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
 
     assert run.status == "succeeded"
     assert bundle is not None
@@ -177,12 +196,10 @@ def test_conversation_graph_persists_trace_and_checkpoints_for_success():
     assert "export_graph" in ops
 
 
-def test_conversation_graph_keeps_checkpoint_snapshot_for_failure():
+def test_conversation_graph_keeps_checkpoint_snapshot_for_failure(workflow_backend_kind):
     scratch_dir = _scratch("failure")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch_dir / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", workflow_backend_kind
     )
     inp = WorkflowIngestInput.from_text(
         document_id="conv-failure",
@@ -200,6 +217,7 @@ def test_conversation_graph_keeps_checkpoint_snapshot_for_failure():
             "coverage_threshold": 0.99,
         },
     )
+    drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
 
     assert run.status in {"failed", "failure"}
     assert bundle is None
@@ -231,12 +249,10 @@ def test_conversation_graph_keeps_checkpoint_snapshot_for_failure():
     assert failed_steps[-1].metadata["op"] == "validate_tree"
 
 
-def test_conversation_graph_resume_from_suspended_checkpoint():
+def test_conversation_graph_resume_from_suspended_checkpoint(workflow_backend_kind):
     scratch_dir = _scratch("resume")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch_dir / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", workflow_backend_kind
     )
     ensure_ingest_workflow_design(workflow_engine, workflow_id=DEFAULT_WORKFLOW_ID)
 

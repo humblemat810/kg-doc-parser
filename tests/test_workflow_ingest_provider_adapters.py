@@ -13,6 +13,9 @@ from src.workflow_ingest import (
 )
 
 
+pytestmark = [pytest.mark.workflow, pytest.mark.ci]
+
+
 def _require_module(module_name: str) -> None:
     if importlib.util.find_spec(module_name) is None:
         pytest.skip(f"{module_name} is not installed")
@@ -121,4 +124,5 @@ def test_embedding_provider_matrix_skips_if_backend_missing(
 
     assert emb is not None, case_name
     assert len(vectors) == 2, case_name
-    assert len(vectors[0]) == 3, case_name
+    assert len(vectors[0]) > 0, case_name
+    assert len(vectors[1]) == len(vectors[0]), case_name

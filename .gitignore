@@ -13,6 +13,11 @@ env/
 
 logs/
 *.sqlite
+*.log
+tmp_*.log
+collected_tests.json
+tests/.tmp_*/
+tests/.tmp_*.log
 
 src.zip
 

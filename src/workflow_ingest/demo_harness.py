@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+"""Demo harness for running workflow ingest in a controlled end-to-end setup.
+
+The harness is intentionally explicit about its moving parts:
+- it builds a fake or legacy parser input path
+- it starts either an in-process or subprocess server
+- it wires a workflow client through a canonical graph persistence adapter
+- it emits probe events and summary artifacts so the run can be inspected later
+
+This file is closer to a reproducible scenario runner than a minimal test helper,
+so the extra structure helps readers understand where the runtime boundaries are.
+"""
+
 import importlib
 import json
 import os
@@ -24,6 +36,8 @@ from .service import build_default_engines
 
 @dataclass
 class DemoHarnessConfig:
+    """Configuration knobs for a demo ingest run."""
+
     output_dir: Path
     document_id: str = "demo-doc"
     title: str = "Workflow Ingest Demo"
@@ -43,6 +57,8 @@ class DemoHarnessConfig:
 
 @dataclass
 class DemoHarnessArtifacts:
+    """Outputs captured from a demo ingest run."""
+
     output_dir: Path
     probe_path: Path
     summary_path: Path
@@ -57,6 +73,8 @@ class DemoHarnessArtifacts:
 
 
 class _ServerContext(AbstractContextManager):
+    """Wrapper for server transports so shutdown behavior stays explicit."""
+
     def __init__(self, *, client: Any, transport: str, base_url: str = "", cleanup=None) -> None:
         self.client = client
         self.transport = transport
@@ -70,6 +88,7 @@ class _ServerContext(AbstractContextManager):
 
 
 def _load_isolated_server_app(server_data_dir: Path) -> _ServerContext:
+    """Start an isolated in-process server for demo runs."""
     from fastapi.testclient import TestClient
 
     os.environ["GKE_BACKEND"] = "chroma"
@@ -95,12 +114,14 @@ def _load_isolated_server_app(server_data_dir: Path) -> _ServerContext:
 
 
 def _pick_free_port() -> int:
+    """Reserve a local TCP port for the subprocess server."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return int(s.getsockname()[1])
 
 
 def _start_subprocess_server(server_data_dir: Path) -> _ServerContext:
+    """Launch the demo server as a subprocess and wait for health."""
     import requests
 
     host = "127.0.0.1"
@@ -168,6 +189,7 @@ def _start_subprocess_server(server_data_dir: Path) -> _ServerContext:
 
 
 def _connect_external_server(base_url: str) -> _ServerContext:
+    """Connect to an already-running external demo server."""
     import requests
 
     base_url = str(base_url).rstrip("/")
@@ -183,6 +205,7 @@ def _connect_external_server(base_url: str) -> _ServerContext:
 
 
 def _shutdown_subprocess_server(proc: subprocess.Popen[str], session: Any | None) -> None:
+    """Terminate the subprocess server and close its HTTP session."""
     if session is not None:
         session.close()
     if proc.poll() is None:
@@ -195,6 +218,7 @@ def _shutdown_subprocess_server(proc: subprocess.Popen[str], session: Any | None
 
 
 def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, Any]:
+    """Build deterministic proposal/review hooks for the fake layered demo mode."""
     text = inp.collections[0].pages[0].units[0].text or ""
     unit_id = f"{inp.request_id}|p1_t0"
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -256,6 +280,7 @@ def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, Any]:
 
 
 def _configure_legacy_cache(cache_dir: Path, probe: WorkflowProbe | None) -> None:
+    """Initialize the legacy parser cache used by the cached demo mode."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     os.environ["KG_DOC_PARSER_JOBLIB_CACHE_DIR"] = str(cache_dir)
     module_name = "src.semantic_document_splitting_layerwise_edits"
@@ -266,7 +291,27 @@ def _configure_legacy_cache(cache_dir: Path, probe: WorkflowProbe | None) -> Non
         emit_probe_event(probe, "demo.cache_configured", module=module_name, cache_dir=str(cache_dir))
 
 
+def _seed_demo_document(server_ctx: _ServerContext, *, document_id: str, text: str) -> None:
+    """Create the source document in the demo server before graph persistence.
+
+    The generic tree-upsert route validates span excerpts against stored document
+    content, so the demo must seed the raw document first.
+    """
+    payload = {
+        "doc_id": document_id,
+        "doc_type": "text",
+        "insertion_method": "demo_harness",
+        "content": text,
+    }
+    response = server_ctx.client.post(f"{server_ctx.base_url}/api/document", json=payload)
+    status_code = int(getattr(response, "status_code", 500))
+    if status_code >= 400:
+        body = getattr(response, "text", "")
+        raise RuntimeError(f"demo document seed failed: {body}")
+
+
 def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
+    """Run the ingest demo and persist probe and summary artifacts."""
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     probe = WorkflowProbe(output_dir / config.probe_filename)
@@ -323,6 +368,11 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
         base_url=server_ctx.base_url,
     )
     try:
+        _seed_demo_document(
+            server_ctx,
+            document_id=config.document_id,
+            text=config.text,
+        )
         workflow_engine, conversation_engine, _knowledge_engine = build_default_engines(
             artifacts.engine_dir,
             backend_factory=config.backend_factory,

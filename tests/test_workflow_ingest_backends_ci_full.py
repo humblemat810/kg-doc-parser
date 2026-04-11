@@ -10,8 +10,10 @@ import pytest
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 from _kogwistar_test_helpers import load_kogwistar_fake_backend
+from _kogwistar_test_helpers import drain_phase1_indexes_until_idle
 from src.workflow_ingest.models import WorkflowIngestInput
 from src.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
+from src.workflow_ingest.providers import WorkflowProviderSettings, build_embedding_function
 from src.workflow_ingest.service import _TinyEmbeddingFunction, run_ingest_workflow
 
 
@@ -54,12 +56,21 @@ def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):
     return root
 
 
+def _real_embedding_function_for_chroma():
+    settings = WorkflowProviderSettings.from_env()
+    if settings.embedding.provider == "fake":
+        pytest.skip(
+            "set KG_DOC_EMBED_PROVIDER to a real backend to run chroma ci_full workflow tests"
+        )
+    return build_embedding_function(settings.embedding)
+
+
 def _build_engine_triplet(base_dir: Path, backend_kind: str):
-    emb = _TinyEmbeddingFunction()
     if backend_kind == "fake":
         build_fake_backend = load_kogwistar_fake_backend()
         backend_factory = build_fake_backend
         backend = None
+        emb = _TinyEmbeddingFunction()
     elif backend_kind == "chroma":
         if os.getenv("KG_DOC_ENABLE_CHROMA_CI_FULL", "").strip().lower() not in {
             "1",
@@ -70,6 +81,7 @@ def _build_engine_triplet(base_dir: Path, backend_kind: str):
             pytest.skip("set KG_DOC_ENABLE_CHROMA_CI_FULL=1 to run chroma ci_full workflow tests")
         backend_factory = None
         backend = None
+        emb = _real_embedding_function_for_chroma()
     elif backend_kind == "pg":
         pytest.importorskip("sqlalchemy")
         dsn = os.getenv("KG_DOC_PG_DSN")
@@ -80,6 +92,7 @@ def _build_engine_triplet(base_dir: Path, backend_kind: str):
 
         engine = create_engine(dsn)
         schema_prefix = f"kgdoc_{uuid4().hex[:8]}"
+        emb = _TinyEmbeddingFunction()
         return (
             GraphKnowledgeEngine(
                 persist_directory=str(base_dir / "workflow_meta"),
@@ -149,6 +162,7 @@ def test_workflow_ingest_runs_on_ci_full_backends(backend_kind: str):
         knowledge_engine=knowledge_engine,
         deps={"parse_semantic_fn": _fake_semantic_tree},
     )
+    drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
 
     assert run.status == "succeeded"
     assert bundle is not None
@@ -175,6 +189,7 @@ def test_workflow_ingest_pgvector_ci_full():
         knowledge_engine=knowledge_engine,
         deps={"parse_semantic_fn": _fake_semantic_tree},
     )
+    drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
 
     assert run.status == "succeeded"
     assert bundle is not None

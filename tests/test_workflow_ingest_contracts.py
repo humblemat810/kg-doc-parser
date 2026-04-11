@@ -3,7 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-from _kogwistar_test_helpers import load_kogwistar_fake_backend
+import pytest
+
+from _kogwistar_test_helpers import (
+    build_workflow_engine_triplet,
+    drain_phase1_indexes_until_idle,
+    drain_phase1_indexes_with_workers_until_idle,
+)
 from src.workflow_ingest.clients import ServerCanonicalKgClient, UnsupportedClientOperation
 from src.workflow_ingest.adapters import (
     build_authoritative_source_map,
@@ -12,7 +18,30 @@ from src.workflow_ingest.adapters import (
 from src.workflow_ingest.design import build_ingest_workflow_design
 from src.workflow_ingest.models import GroundedSourceRecord, SourceUnit, WorkflowExportBundle, WorkflowIngestInput
 from src.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-from src.workflow_ingest.service import build_default_engines, run_ingest_workflow
+from src.workflow_ingest.service import run_ingest_workflow
+
+
+pytestmark = [pytest.mark.workflow]
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("in_memory", id="in_memory", marks=pytest.mark.ci),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+    ]
+)
+def workflow_backend_kind(request):
+    return request.param
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("eager", id="eager", marks=pytest.mark.ci),
+        pytest.param("worker", id="worker", marks=pytest.mark.ci),
+    ]
+)
+def workflow_index_mode(request):
+    return request.param
 
 
 def _local_scratch_dir(name: str) -> Path:
@@ -104,6 +133,7 @@ class _FakeServerPersistenceClient:
         }
 
 
+@pytest.mark.ci
 def test_workflow_input_from_text_and_llm_slicing():
     inp = WorkflowIngestInput.from_text(document_id="doc-1", text="hello world", title="Doc 1")
     assert inp.collections[0].pages[0].units[0].text == "hello world"
@@ -125,6 +155,7 @@ def test_workflow_input_from_text_and_llm_slicing():
     assert backend_view["metadata"]["internal"] is True
 
 
+@pytest.mark.ci
 def test_normalize_ocr_and_source_map_contract():
     inp = normalize_ocr_pages(
         document_id="ocr-doc",
@@ -167,13 +198,19 @@ def test_normalize_ocr_and_source_map_contract():
     assert any(unit_id.endswith("_i0") for unit_id in source_map)
 
 
-def test_fake_workflow_run_text_success_and_knowledge_persist():
+def test_fake_workflow_run_text_success_and_knowledge_persist(
+    workflow_backend_kind,
+    workflow_index_mode,
+    monkeypatch,
+):
     scratch_dir = _local_scratch_dir("text_success")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch_dir / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", workflow_backend_kind
     )
+    if workflow_index_mode == "worker":
+        monkeypatch.setattr(workflow_engine, "reconcile_indexes", lambda *a, **k: 0)
+        monkeypatch.setattr(conversation_engine, "reconcile_indexes", lambda *a, **k: 0)
+        monkeypatch.setattr(knowledge_engine, "reconcile_indexes", lambda *a, **k: 0)
     inp = WorkflowIngestInput.from_text(
         document_id="wf-doc",
         text="Alpha clause\nBeta clause",
@@ -187,6 +224,14 @@ def test_fake_workflow_run_text_success_and_knowledge_persist():
         knowledge_engine=knowledge_engine,
         deps={"parse_semantic_fn": _fake_semantic_tree},
     )
+    if workflow_index_mode == "worker":
+        drain_phase1_indexes_with_workers_until_idle(
+            workflow_engine, conversation_engine, knowledge_engine
+        )
+    else:
+        drain_phase1_indexes_until_idle(
+            workflow_engine, conversation_engine, knowledge_engine
+        )
 
     assert run.status == "succeeded"
     assert bundle is not None
@@ -198,12 +243,10 @@ def test_fake_workflow_run_text_success_and_knowledge_persist():
     assert knowledge_engine.persist.exists_node(bundle.graph_payload["nodes"][0]["id"])
 
 
-def test_fake_workflow_run_ocr_success():
+def test_fake_workflow_run_ocr_success(workflow_backend_kind):
     scratch_dir = _local_scratch_dir("ocr_success")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch_dir / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", workflow_backend_kind
     )
     inp = normalize_ocr_pages(
         document_id="ocr-workflow",
@@ -252,6 +295,7 @@ def test_fake_workflow_run_ocr_success():
         knowledge_engine=knowledge_engine,
         deps={"parse_semantic_fn": _fake_semantic_tree},
     )
+    drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
 
     assert run.status == "succeeded"
     assert bundle is not None
@@ -259,12 +303,10 @@ def test_fake_workflow_run_ocr_success():
     assert bundle.authoritative_source_map
 
 
-def test_fake_workflow_validation_failure_is_structured():
+def test_fake_workflow_validation_failure_is_structured(workflow_backend_kind):
     scratch_dir = _local_scratch_dir("validation_failure")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch_dir / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", workflow_backend_kind
     )
     inp = WorkflowIngestInput(
         request_id="bad-doc",
@@ -287,12 +329,14 @@ def test_fake_workflow_validation_failure_is_structured():
             "coverage_threshold": 0.99,
         },
     )
+    drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
 
     assert bundle is None
     assert run.status in {"failed", "failure"}
     assert any("text coverage below threshold" in err for err in run.final_state["workflow_errors"])
 
 
+@pytest.mark.ci
 def test_source_map_preserves_explicit_unit_ids_and_cluster_identity():
     inp = WorkflowIngestInput(
         request_id="stable-doc",
@@ -337,6 +381,7 @@ def test_source_map_preserves_explicit_unit_ids_and_cluster_identity():
     assert record.metadata["source"] == "explicit"
 
 
+@pytest.mark.ci
 def test_invalid_source_unit_payload_fails_cleanly():
     try:
         SourceUnit(modality="image_region", page_number=1, cluster_number=0)
@@ -346,6 +391,7 @@ def test_invalid_source_unit_payload_fails_cleanly():
         raise AssertionError("expected validation error for incomplete image_region payload")
 
 
+@pytest.mark.ci
 def test_workflow_design_matches_expected_step_sequence():
     nodes, edges = build_ingest_workflow_design()
 
@@ -377,6 +423,7 @@ def test_workflow_design_matches_expected_step_sequence():
     assert edges[-1].target_ids[0].endswith("|end")
 
 
+@pytest.mark.ci
 def test_export_bundle_llm_slicing_excludes_backend_grounding_data():
     bundle = WorkflowExportBundle(
         graph_payload={"nodes": [{"id": "n1"}], "edges": []},
@@ -406,12 +453,10 @@ def test_export_bundle_llm_slicing_excludes_backend_grounding_data():
     assert backend_view["authoritative_source_map"]["u1"]["parser_text"] == "Alpha"
 
 
-def test_pointer_correction_is_applied_before_validation():
+def test_pointer_correction_is_applied_before_validation(workflow_backend_kind):
     scratch_dir = _local_scratch_dir("pointer_repair")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch_dir / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", workflow_backend_kind
     )
     inp = WorkflowIngestInput.from_text(
         document_id="repair-doc",
@@ -452,18 +497,17 @@ def test_pointer_correction_is_applied_before_validation():
         knowledge_engine=knowledge_engine,
         deps={"parse_semantic_fn": _misaligned_tree},
     )
+    drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
 
     assert run.status == "succeeded"
     assert bundle is not None
     assert run.final_state["corrected_pointer_count"] == 1
 
 
-def test_server_canonical_client_uses_server_write_and_not_local_kg():
+def test_server_canonical_client_uses_server_write_and_not_local_kg(workflow_backend_kind):
     scratch_dir = _local_scratch_dir("server_canonical")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
-        scratch_dir / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", workflow_backend_kind
     )
     server_client = _FakeServerPersistenceClient()
     client = ServerCanonicalKgClient(
@@ -489,6 +533,7 @@ def test_server_canonical_client_uses_server_write_and_not_local_kg():
         ),
         deps={"parse_semantic_fn": _tracking_parse},
     )
+    drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
 
     assert result.status == "succeeded"
     assert result.bundle is not None
@@ -502,12 +547,12 @@ def test_server_canonical_client_uses_server_write_and_not_local_kg():
     assert not knowledge_engine.persist.exists_node(result.bundle.graph_payload["nodes"][0]["id"])
 
 
-def test_server_canonical_persistence_failure_keeps_exported_bundle_in_state():
+def test_server_canonical_persistence_failure_keeps_exported_bundle_in_state(
+    workflow_backend_kind,
+):
     scratch_dir = _local_scratch_dir("server_canonical_failure")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, _knowledge_engine = build_default_engines(
-        scratch_dir / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, _knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", workflow_backend_kind
     )
     client = ServerCanonicalKgClient(
         workflow_engine=workflow_engine,
@@ -523,6 +568,7 @@ def test_server_canonical_persistence_failure_keeps_exported_bundle_in_state():
         ),
         deps={"parse_semantic_fn": _fake_semantic_tree},
     )
+    drain_phase1_indexes_until_idle(workflow_engine, conversation_engine)
 
     assert result.status in {"failed", "failure"}
     assert result.bundle is not None
@@ -532,12 +578,10 @@ def test_server_canonical_persistence_failure_keeps_exported_bundle_in_state():
     assert "canonical_write_result" not in result.final_state
 
 
-def test_server_canonical_resume_and_trace_are_explicitly_unsupported():
+def test_server_canonical_resume_and_trace_are_explicitly_unsupported(workflow_backend_kind):
     scratch_dir = _local_scratch_dir("server_unsupported")
-    fake_backend = load_kogwistar_fake_backend()
-    workflow_engine, conversation_engine, _knowledge_engine = build_default_engines(
-        scratch_dir / "engines",
-        backend_factory=fake_backend,
+    workflow_engine, conversation_engine, _knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", workflow_backend_kind
     )
     client = ServerCanonicalKgClient(
         workflow_engine=workflow_engine,

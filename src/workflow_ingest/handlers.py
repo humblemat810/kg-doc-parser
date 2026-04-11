@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from kogwistar.runtime import MappingStepResolver
@@ -45,6 +46,8 @@ from .semantics import (
     semantic_tree_to_kge_payload,
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 
 def _success(next_step: str | None = None) -> RunSuccess:
     return RunSuccess(
@@ -75,6 +78,44 @@ def _probe_snapshot(state_view: dict[str, Any]) -> dict[str, Any]:
     return snapshot
 
 
+def _progress_bar(done: int, total: int, width: int = 20) -> str:
+    if total <= 0:
+        return "?" * width
+    filled = min(width, max(0, round((done / total) * width)))
+    return ("█" * filled) + ("░" * (width - filled))
+
+
+def _log_runtime_progress(*, step_name: str, state_view: dict[str, Any]) -> None:
+    current_layer_context = state_view.get("current_layer_context")
+    parse_session = state_view.get("parse_session")
+    if not isinstance(current_layer_context, dict) or not isinstance(parse_session, dict):
+        return
+    depth = int(current_layer_context.get("depth", 0))
+    max_depth = int(parse_session.get("max_depth", 10) or 10)
+    layer_num = depth + 1
+    retry_count = int(current_layer_context.get("retry_count", 0))
+    max_retries = int(current_layer_context.get("max_retries", 3) or 3)
+    strategy = str(current_layer_context.get("split_strategy", "excerpt_first"))
+    fallback_strategy = str(parse_session.get("fallback_split_strategy", "boundary_first"))
+    strategy_idx = 2 if strategy == fallback_strategy else 1
+    strategy_cap = 2
+    phase = step_name.replace("_", " ")
+    pct = round((layer_num / max_depth) * 100) if max_depth > 0 else 0
+    _LOGGER.info(
+        "⏳ layer %s/%s | %3s%% | %s | iter %s/%s | strategy %s/%s %s | %s",
+        layer_num,
+        max_depth,
+        pct,
+        _progress_bar(layer_num, max_depth),
+        retry_count + 1,
+        max_retries,
+        strategy_idx,
+        strategy_cap,
+        strategy,
+        phase,
+    )
+
+
 def _register_step(
     resolver: MappingStepResolver,
     *,
@@ -86,6 +127,7 @@ def _register_step(
     def decorator(fn):
         @resolver.register(step_name)
         def _wrapped(ctx):
+            _log_runtime_progress(step_name=step_name, state_view=dict(ctx.state_view))
             emit_probe_event(
                 probe,
                 "workflow.step_started",
