@@ -8,21 +8,22 @@ workflow code can also reuse the same wrappers directly.
 """
 
 import json
+import os
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Literal, Sequence
 
 from kogwistar.engine_core.models import Edge, Node
 
-from src.semantic_document_splitting_layerwise_edits import parse_doc as legacy_parse_doc
-from src.semantic_document_splitting_layerwise_edits import semantic_tree_to_kge_payload as legacy_semantic_tree_to_kge_payload
-
 from .demo_harness import DemoHarnessConfig, run_demo_harness
 from .ocr_pipeline import OCRImagePayload, OCRWorkflowArtifacts, prepare_ocr_workflow_input, run_ocr_ingest_workflow
 from .page_index import PageIndexParseResult, PageIndexSourceFormat, parse_page_index_document
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
+from .parser_core import default_parse_semantic_fn
 from .service import build_default_engines, run_ingest_workflow
+from .semantics import HydratedTextPointer, SemanticNode
 
 SupportedOCRInput = Literal["image", "pdf"]
 SupportedPageIndexInput = Literal["text", "markdown"]
@@ -57,6 +58,119 @@ class LayerwiseWorkflowCommandResult(WorkflowCommandResult):
     tree: Any | None = None
     source_map: dict[str, Any] | None = None
     graph_payload: dict[str, Any] | None = None
+
+
+def _fallback_parse_semantic_fn(*, collection, parser_input_dict: dict[str, Any], parser_source_map: dict[str, dict[str, Any]]):
+    root = SemanticNode(
+        title=collection.title,
+        node_type="DOCUMENT_ROOT",
+        total_content_pointers=[],
+        child_nodes=[],
+        level_from_root=0,
+    )
+    for page in collection.pages:
+        page_text_parts: list[str] = []
+        page_node = SemanticNode(
+            title=f"Page {page.page_number}",
+            node_type="PAGE",
+            total_content_pointers=[],
+            child_nodes=[],
+            level_from_root=1,
+            parent_id=root.node_id,
+        )
+        for unit in page.units:
+            if not getattr(unit, "text", None):
+                continue
+            text = str(unit.text)
+            page_text_parts.append(text)
+            page_node.child_nodes.append(
+                SemanticNode(
+                    title=(text.splitlines()[0].strip()[:80] or f"Unit {unit.cluster_number or 0}"),
+                    node_type="TEXT_FLOW",
+                    total_content_pointers=[
+                        HydratedTextPointer(
+                            source_cluster_id=unit.unit_id or f"{collection.collection_id}|p{page.page_number}",
+                            start_char=0,
+                            end_char=max(0, len(text) - 1),
+                            verbatim_text=text,
+                        )
+                    ],
+                    child_nodes=[],
+                    level_from_root=2,
+                    parent_id=page_node.node_id,
+                )
+            )
+        if not page_node.child_nodes:
+            page_node.child_nodes.append(
+                SemanticNode(
+                    title=f"Page {page.page_number} Empty",
+                    node_type="TEXT_FLOW",
+                    total_content_pointers=[],
+                    child_nodes=[],
+                    level_from_root=2,
+                    parent_id=page_node.node_id,
+                )
+            )
+        if page_text_parts:
+            page_node.total_content_pointers = [
+                HydratedTextPointer(
+                    source_cluster_id=page.units[0].unit_id or f"{collection.collection_id}|p{page.page_number}",
+                    start_char=0,
+                    end_char=max(0, len("\n".join(page_text_parts)) - 1),
+                    verbatim_text="\n".join(page_text_parts),
+                )
+            ]
+        root.child_nodes.append(page_node)
+    return root
+
+
+@contextmanager
+def _temporary_env(overrides: dict[str, str | None]):
+    previous: dict[str, str | None] = {}
+    try:
+        for key, value in overrides.items():
+            previous[key] = os.environ.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def build_legacy_parse_semantic_fn(
+    *,
+    provider_settings: WorkflowProviderSettings,
+    model_names: Sequence[str] | None = None,
+):
+    parser_spec = provider_settings.parser
+    parser_model_names = list(model_names) if model_names else [parser_spec.model]
+
+    def _parse_semantic_fn(*, collection, parser_input_dict: dict[str, Any], parser_source_map: dict[str, dict[str, Any]]):
+        env_overrides = {
+            "KG_DOC_PARSER_PROVIDER": parser_spec.provider,
+            "KG_DOC_PARSER_MODEL": parser_spec.model,
+            "KG_DOC_PARSER_TEMPERATURE": str(parser_spec.temperature),
+            "KG_DOC_PARSER_BASE_URL": parser_spec.base_url,
+            "KG_DOC_PARSER_API_KEY_ENV": parser_spec.api_key_env,
+            "KG_DOC_PARSER_PROJECT": parser_spec.project,
+            "KG_DOC_PARSER_LOCATION": parser_spec.location,
+            "KG_DOC_PARSER_MAX_RETRIES": str(parser_spec.max_retries),
+        }
+        with _temporary_env(env_overrides):
+            return default_parse_semantic_fn(
+                collection=collection,
+                parser_input_dict=parser_input_dict,
+                parser_source_map=parser_source_map,
+                model_names=parser_model_names,
+            )
+
+    return _parse_semantic_fn
 
 
 def _ensure_probe(output_dir: Path, probe: WorkflowProbe | None = None) -> WorkflowProbe:
@@ -101,6 +215,7 @@ def run_ocr_source_workflow(
     conversation_engine=None,
     knowledge_engine=None,
     probe: WorkflowProbe | None = None,
+    deps: dict[str, Any] | None = None,
     document_id: str | None = None,
     title: str | None = None,
 ) -> OcrWorkflowCommandResult:
@@ -128,6 +243,13 @@ def run_ocr_source_workflow(
         image_payloads = [
             OCRImagePayload(page_number=1, image_path=str(source_path)),
         ]
+    if workflow_engine is None or conversation_engine is None:
+        workflow_engine, conversation_engine, default_knowledge_engine = build_default_engines(
+            output_dir / "engines",
+            provider_settings=provider_settings,
+        )
+        if knowledge_engine is None:
+            knowledge_engine = default_knowledge_engine
     run, bundle, artifacts = run_ocr_ingest_workflow(
         document_id=document_id,
         title=title,
@@ -141,7 +263,7 @@ def run_ocr_source_workflow(
         ocr_runner=ocr_runner,
         pdf_rasterizer=pdf_rasterizer,
         ocr_candidate_models=ocr_candidate_models,
-        deps={"probe": probe},
+        deps={"probe": probe, **(deps or {})},
         probe=probe,
     )
     _emit(
@@ -163,7 +285,7 @@ def run_ocr_source_workflow(
         summary_path=artifacts.summary_path,
         extra={
             "run_id": run.run_id,
-            "bundle": bundle.model_dump(mode="json") if bundle is not None else None,
+            "bundle": bundle.model_dump(field_mode="backend", dump_format="json") if bundle is not None else None,
             "state_db_path": str(artifacts.state_db_path),
             "legacy_dir": str(artifacts.legacy_dir),
             "rendered_dir": str(artifacts.rendered_dir),
@@ -184,6 +306,7 @@ def run_ocr_batch_workflow(
     conversation_engine=None,
     knowledge_engine=None,
     probe: WorkflowProbe | None = None,
+    deps: dict[str, Any] | None = None,
 ) -> list[OcrWorkflowCommandResult]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +327,7 @@ def run_ocr_batch_workflow(
             conversation_engine=conversation_engine,
             knowledge_engine=knowledge_engine,
             probe=probe,
+            deps=deps,
             document_id=source_path.stem,
             title=source_path.stem,
         )
@@ -338,6 +462,10 @@ def run_layerwise_source_workflow(
     if not source_path.is_dir():
         raise ValueError("layerwise workflow expects a directory of legacy OCR page artifacts")
     from src.ocr import regen_doc
+    from src.semantic_document_splitting_layerwise_edits import (
+        parse_doc as legacy_parse_doc,
+        semantic_tree_to_kge_payload as legacy_semantic_tree_to_kge_payload,
+    )
 
     raw_doc = {source_path.name: regen_doc(str(source_path), use_raw=True)}
     tree, source_map = legacy_parse_doc(

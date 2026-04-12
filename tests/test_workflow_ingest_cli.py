@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
+from types import SimpleNamespace
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
-from src.workflow_ingest import OCRWorkflowArtifacts
+from src.workflow_ingest import OCRWorkflowArtifacts, ProviderEndpointConfig, WorkflowProviderSettings
 from src.workflow_ingest import cli as workflow_cli
 from src.workflow_ingest import runners
 
@@ -69,6 +71,100 @@ def test_ocr_source_workflow_emits_probe_steps(monkeypatch: pytest.MonkeyPatch) 
     kinds = [event["kind"] for event in events]
     assert "workflow.file_started" in kinds
     assert "workflow.file_finished" in kinds
+
+
+def test_build_legacy_parse_semantic_fn_uses_requested_model_and_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_default_parse_semantic_fn(*, collection, parser_input_dict, parser_source_map, model_names=None):
+        captured["collection"] = collection
+        captured["parser_input_dict"] = parser_input_dict
+        captured["parser_source_map"] = parser_source_map
+        captured["model_names"] = list(model_names) if model_names is not None else None
+        captured["env"] = {
+            "KG_DOC_PARSER_PROVIDER": os.getenv("KG_DOC_PARSER_PROVIDER"),
+            "KG_DOC_PARSER_MODEL": os.getenv("KG_DOC_PARSER_MODEL"),
+        }
+        return {"ok": True}
+
+    monkeypatch.setattr(runners, "default_parse_semantic_fn", _fake_default_parse_semantic_fn)
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(
+            provider="ollama",
+            model="gemma4:e2b",
+            base_url="http://127.0.0.1:11434",
+        )
+    )
+    parse_fn = runners.build_legacy_parse_semantic_fn(provider_settings=settings, model_names=["gemma4:e2b"])
+    result = parse_fn(
+        collection=SimpleNamespace(collection_id="doc", title="Doc"),
+        parser_input_dict={"document_filename": "Doc", "pages": []},
+        parser_source_map={"doc|p1_t0": {"text": "Alpha", "participates_in_semantic_text": True}},
+    )
+
+    assert result == {"ok": True}
+    assert captured["model_names"] == ["gemma4:e2b"]
+    assert captured["env"]["KG_DOC_PARSER_PROVIDER"] == "ollama"
+    assert captured["env"]["KG_DOC_PARSER_MODEL"] == "gemma4:e2b"
+
+
+def test_cli_ocr_parser_override_builds_legacy_parse_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+    scratch = _scratch("ocr_parser_override")
+    source = scratch / "sample.png"
+    source.write_bytes(b"fake image")
+    output_dir = scratch / "out"
+    captured: dict[str, object] = {}
+
+    def _fake_build_legacy_parse_semantic_fn(*, provider_settings, model_names=None):
+        captured["provider_settings"] = provider_settings
+        captured["model_names"] = list(model_names) if model_names is not None else None
+
+        def _parse_semantic_fn(**kwargs):
+            captured["parse_semantic_fn_called"] = True
+            return {"ok": True}
+
+        return _parse_semantic_fn
+
+    def _fake_run_ocr_source_workflow(source_path, **kwargs):
+        captured["source_path"] = Path(source_path)
+        captured["deps"] = kwargs.get("deps")
+
+        @dataclass
+        class _Result:
+            kind: str = "ocr"
+            input_path: Path = Path(source_path)
+            output_dir: Path = Path(kwargs["output_dir"])
+            status: str = "succeeded"
+            probe_path: Path = Path(kwargs["output_dir"]) / "workflow-events.jsonl"
+            summary_path: Path = Path(kwargs["output_dir"]) / "ocr-summary.json"
+            extra: dict[str, object] = None  # type: ignore[assignment]
+
+        return _Result(extra={"kind": "ocr"})
+
+    monkeypatch.setattr(workflow_cli, "build_legacy_parse_semantic_fn", _fake_build_legacy_parse_semantic_fn)
+    monkeypatch.setattr(workflow_cli, "run_ocr_source_workflow", _fake_run_ocr_source_workflow)
+
+    exit_code = workflow_cli.main(
+        [
+            "ocr",
+            str(source),
+            "--output-dir",
+            str(output_dir),
+            "--parser-provider",
+            "ollama",
+            "--parser-model",
+            "gemma4:e2b",
+            "--parser-base-url",
+            "http://127.0.0.1:11434",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["source_path"] == source
+    assert captured["model_names"] == ["gemma4:e2b"]
+    assert captured["provider_settings"].parser.provider == "ollama"
+    assert captured["provider_settings"].parser.model == "gemma4:e2b"
+    assert captured["deps"]["parse_semantic_fn"] is not None
 
 
 def test_ocr_batch_workflow_emits_one_output_root_per_file(monkeypatch: pytest.MonkeyPatch) -> None:

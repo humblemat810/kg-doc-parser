@@ -86,6 +86,106 @@ def test_initialize_parse_session_seeds_root_frontier_in_workflow_mode():
 
 
 @pytest.mark.ci
+def test_initialize_parse_session_normalizes_legacy_uuid_tree():
+    inp = WorkflowIngestInput.from_text(
+        document_id="legacy-uuid-doc",
+        text="Alpha clause\nBeta clause",
+        title="Legacy UUID Doc",
+    )
+    legacy_root_id = uuid4()
+    legacy_child_id = uuid4()
+    legacy_pointer_id = "p1_c0"
+    class _LegacyLikeNode:
+        def __init__(
+            self,
+            *,
+            node_id,
+            parent_id,
+            node_type,
+            title,
+            child_nodes,
+            total_content_pointers,
+            level_from_root,
+        ):
+            self.node_id = node_id
+            self.parent_id = parent_id
+            self.node_type = node_type
+            self.title = title
+            self.child_nodes = child_nodes
+            self.total_content_pointers = total_content_pointers
+            self.level_from_root = level_from_root
+
+        def model_dump(self, mode: str = "json"):
+            def _stringify(value):
+                if hasattr(value, "hex") and getattr(value, "version", None) is not None:
+                    return str(value)
+                if isinstance(value, list):
+                    return [_stringify(item) for item in value]
+                if isinstance(value, dict):
+                    return {key: _stringify(item) for key, item in value.items()}
+                return value
+
+            return {
+                "node_id": _stringify(self.node_id) if mode == "json" else self.node_id,
+                "parent_id": _stringify(self.parent_id) if mode == "json" else self.parent_id,
+                "node_type": self.node_type,
+                "title": self.title,
+                "total_content_pointers": [pointer.model_dump(mode=mode) for pointer in self.total_content_pointers],
+                "child_nodes": [child.model_dump(mode=mode) for child in self.child_nodes],
+                "level_from_root": self.level_from_root,
+            }
+
+    legacy_tree = _LegacyLikeNode(
+        node_id=legacy_root_id,
+        parent_id=None,
+        node_type="DOCUMENT_ROOT",
+        title="Legacy UUID Doc",
+        total_content_pointers=[],
+        child_nodes=[
+            _LegacyLikeNode(
+                node_id=legacy_child_id,
+                parent_id=legacy_root_id,
+                node_type="TEXT_FLOW",
+                title="Legacy Child",
+                child_nodes=[],
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id=legacy_pointer_id,
+                        start_char=0,
+                        end_char=11,
+                        verbatim_text="Alpha clause",
+                    )
+                ],
+                level_from_root=1,
+            )
+        ],
+        level_from_root=0,
+    )
+
+    session, frontier, root = initialize_parse_session(
+        collection=inp.collections[0],
+        parser_input_dict={"document_filename": "Legacy UUID Doc", "pages": []},
+        parser_source_map={
+            "legacy-uuid-doc|p1_t0": {
+                "id": "legacy-uuid-doc|p1_t0",
+                "text": "Alpha clause\nBeta clause",
+                "page_number": 1,
+                "cluster_number": 0,
+                "participates_in_semantic_text": True,
+            }
+        },
+        parse_semantic_fn=lambda **kwargs: legacy_tree,
+    )
+
+    assert session.mode == "legacy_compat"
+    assert isinstance(root.node_id, str)
+    assert frontier[0].parent_node_id == root.node_id
+    assert root.child_nodes == []
+    assert session.compat_full_tree is not None
+    assert session.compat_full_tree["child_nodes"][0]["total_content_pointers"][0]["source_cluster_id"] == "legacy-uuid-doc|p1_t0"
+
+
+@pytest.mark.ci
 def test_prepare_layer_frontier_pulls_one_bfs_depth_group():
     inp = WorkflowIngestInput.from_text(
         document_id="layer-doc",

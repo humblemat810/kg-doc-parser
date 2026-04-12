@@ -107,6 +107,46 @@ flowchart TD
     K --> L["run_ingest_workflow(...)"]
 ```
 
+Mermaid overview: reusable CLI and subworkflow surface
+------------------------------------------------------
+
+```mermaid
+flowchart TD
+    A["workflow-ingest CLI"] --> B["cli.py"]
+    B --> C["runner helpers"]
+
+    C --> D["run_ocr_source_workflow(...)"]
+    C --> E["run_ocr_batch_workflow(...)"]
+    C --> F["run_page_index_source_workflow(...)"]
+    C --> G["run_page_index_batch_workflow(...)"]
+    C --> H["run_layerwise_source_workflow(...)"]
+    C --> I["run_layerwise_batch_workflow(...)"]
+    C --> J["run_demo_harness_workflow(...)"]
+
+    D --> K["prepare_ocr_workflow_input(...)"]
+    E --> K
+    K --> L["ocr-state.sqlite"]
+    K --> M["workflow-events.jsonl"]
+    K --> N["legacy_split_pages/page_N.json"]
+    K --> O["normalize_ocr_pages(...)"]
+    O --> P["run_ingest_workflow(...)"]
+
+    F --> Q["parse_page_index_document(...)"]
+    G --> Q
+    Q --> R["page-index-summary.json"]
+    Q --> S["workflow-events.jsonl"]
+
+    H --> T["legacy parse_doc(...)"]
+    I --> T
+    T --> U["layerwise-graph.json"]
+    T --> V["layerwise-summary.json"]
+    T --> W["workflow-events.jsonl"]
+
+    J --> X["demo harness artifacts"]
+    X --> Y["probe-events.jsonl"]
+    X --> Z["demo-summary.json"]
+```
+
 This diagram focuses on the bridge layer:
 
 - `page_N.json` is the legacy-style OCR artifact written to disk

@@ -949,7 +949,8 @@ def build_document_tree(
                 source_map: Dict,
                 max_depth: int = 10,
                 allow_review = True,
-                parsing_mode: Literal["snippet", "delimiter"] = "snippet"
+                parsing_mode: Literal["snippet", "delimiter"] = "snippet",
+                model_names: List[str] | None = None,
                 ) -> SemanticNode:
     """Builds the hierarchy using an efficient, batched, layer-wise (BFS) approach.
     Initial breakdown -> check pointers/ spans validated
@@ -967,8 +968,12 @@ def build_document_tree(
     nodes_for_next_level: list[SemanticNode] = [root_node]
     current_depth = 0
     fixed_children: list[LLMChildNodeResponseBE]
-    model_names = ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-pro", 
-                   "gemini-2.5-flash-lite", ] # Example models
+    model_names = model_names or [
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+    ]
     full_document_json_str = json.dumps(llm_input_dict)
     while nodes_for_next_level and current_depth < max_depth:
         
@@ -2515,7 +2520,13 @@ def print_tree(node: SemanticNode, indent=""):
     for child in node.child_nodes:
         print_tree(child, indent + "  ")
 @memory.cache()
-def parse_doc(doc_id: str, raw_doc_dict, parsing_mode: Literal["snippet", "delimiter"] = "snippet", max_depth: int = 10):
+def parse_doc(
+    doc_id: str,
+    raw_doc_dict,
+    parsing_mode: Literal["snippet", "delimiter"] = "snippet",
+    max_depth: int = 10,
+    model_names: List[str] | None = None,
+):
     
     
     try:
@@ -2523,7 +2534,14 @@ def parse_doc(doc_id: str, raw_doc_dict, parsing_mode: Literal["snippet", "delim
         llm_input_dict, source_map = prepare_document_for_llm(raw_doc_dict)
 
         print("\n--- Phase 3: Building Document Tree (Layer-wise) ---")
-        document_tree = build_document_tree(doc_id, llm_input_dict, source_map, parsing_mode=parsing_mode, max_depth=max_depth)
+        document_tree = build_document_tree(
+            doc_id,
+            llm_input_dict,
+            source_map,
+            parsing_mode=parsing_mode,
+            max_depth=max_depth,
+            model_names=model_names,
+        )
         cov: CoverageResponse = compute_pointer_coverage(document_tree, source_map)
         print("Overall coverage:", cov.overall)
         for cid, r in cov.per_cluster.items():

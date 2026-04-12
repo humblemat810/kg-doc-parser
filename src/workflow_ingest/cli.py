@@ -19,11 +19,13 @@ from .runners import (
     run_demo_harness_workflow,
     run_layerwise_batch_workflow,
     run_layerwise_source_workflow,
+    build_legacy_parse_semantic_fn,
     run_ocr_batch_workflow,
     run_ocr_source_workflow,
     run_page_index_batch_workflow,
     run_page_index_source_workflow,
 )
+from .runners import _fallback_parse_semantic_fn
 from .probe import WorkflowProbe
 from .smoke_assets import generate_ocr_smoke_assets
 
@@ -126,6 +128,22 @@ def _ocr_command(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     probe = _build_probe(output_dir, command="ocr")
+    deps: dict[str, object] = {"parse_semantic_fn": _fallback_parse_semantic_fn}
+    if any(
+        value is not None
+        for value in (
+            args.parser_provider,
+            args.parser_model,
+            args.parser_base_url,
+            args.parser_api_key_env,
+        )
+    ):
+        deps = {
+            "parse_semantic_fn": build_legacy_parse_semantic_fn(
+                provider_settings=provider_settings,
+                model_names=[args.parser_model] if args.parser_model else None,
+            )
+        }
     try:
         inputs = [Path(item) for item in args.inputs]
         if len(inputs) == 1 and inputs[0].is_file():
@@ -135,6 +153,7 @@ def _ocr_command(args: argparse.Namespace) -> int:
                 provider_settings=provider_settings,
                 ocr_candidate_models=args.ocr_candidate_model or None,
                 probe=probe,
+                deps=deps,
             )
             _emit_result(result)
         else:
@@ -144,6 +163,7 @@ def _ocr_command(args: argparse.Namespace) -> int:
                 provider_settings=provider_settings,
                 ocr_candidate_models=args.ocr_candidate_model or None,
                 probe=probe,
+                deps=deps,
             )
             _emit_result_list(result)
         probe.emit("cli.command_finished", status="ok")

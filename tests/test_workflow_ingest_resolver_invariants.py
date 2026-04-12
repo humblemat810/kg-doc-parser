@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from src.workflow_ingest.models import (
@@ -210,7 +212,7 @@ def test_repair_layer_candidates_applies_fake_pointer_repair_and_counts_changes(
     assert repaired.children[1].total_content_pointers[0].verbatim_text == "Beta"
 
 
-def test_repair_layer_candidates_raises_on_unrecoverable_pointer():
+def test_repair_layer_candidates_raises_on_unrecoverable_pointer(caplog):
     result = CurrentLayerResult(
         children=[
             _child(
@@ -228,16 +230,17 @@ def test_repair_layer_candidates_raises_on_unrecoverable_pointer():
     def _correct(pointer, source_map):
         return None
 
-    try:
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(ValueError, match="unrecoverable pointer"):
         repair_layer_candidates(
             current_layer_result=result,
             parser_source_map={"doc|p1_t0": {"text": "Alpha"}},
             correct_pointer_fn=_correct,
         )
-    except ValueError as exc:
-        assert "unrecoverable pointer" in str(exc)
-    else:
-        raise AssertionError("expected unrecoverable pointer failure")
+
+    assert any("repair_layer_candidates failed" in record.message for record in caplog.records)
+    assert any("source_cluster_id='doc|p1_t0'" in record.message for record in caplog.records)
+    assert any("parent='doc|root'" in record.message for record in caplog.records)
 
 
 def test_check_layer_coverage_emits_conflict_notes_from_review():

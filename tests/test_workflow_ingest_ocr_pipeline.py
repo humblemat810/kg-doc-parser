@@ -146,7 +146,7 @@ def _fake_ocr_response(page_number: int, text: str) -> OCRClusterResponse:
     )
 
 
-def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):
+def _grounded_semantic_tree(*, collection, parser_input_dict, parser_source_map):
     root = SemanticNode(
         title=collection.title,
         node_type="DOCUMENT_ROOT",
@@ -515,11 +515,12 @@ def test_workflow_first_ocr_manual_matrix(provider: str, model: str, input_kind:
     2. per-page OCR model invocation
     3. legacy-compatible page artifact write
     4. workflow-ingest normalization
-    5. workflow ingest execution with deterministic fake semantic parsing
+    5. workflow ingest execution with deterministic grounded semantic parsing
 
-    The fake semantic parse is intentional here: it keeps the downstream ingest
-    deterministic so manual inspection can focus on the OCR and source-map
-    quality rather than mixed OCR + parser variability.
+    The grounded semantic parse is intentional here: it keeps the downstream
+    ingest deterministic while still asserting real span grounding against the
+    OCR source map, so manual inspection can focus on the OCR and span quality
+    rather than mixed OCR + parser variability.
     """
 
     if provider == "gemini" and not os.getenv("GOOGLE_API_KEY"):
@@ -564,7 +565,7 @@ def test_workflow_first_ocr_manual_matrix(provider: str, model: str, input_kind:
             image_payloads=image_payloads if input_kind == "image" else None,
             pdf_path=pdf_path if input_kind == "pdf" else None,
             provider_settings=settings,
-            deps={"parse_semantic_fn": _fake_semantic_tree},
+            deps={"parse_semantic_fn": _grounded_semantic_tree},
         )
         drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
     except Exception as exc:  # noqa: BLE001
@@ -573,11 +574,14 @@ def test_workflow_first_ocr_manual_matrix(provider: str, model: str, input_kind:
 
     assert run.status == "succeeded"
     assert bundle is not None
+    semantic_tree = SemanticNode.model_validate(run.final_state["semantic_tree"])
     assert artifacts.summary_path.exists()
     assert artifacts.progress_path.exists()
     assert artifacts.state_db_path.exists()
     assert artifacts.legacy_dir.exists()
     assert len(list(artifacts.legacy_dir.glob("page_*.json"))) >= 2
+    assert semantic_tree.child_nodes
+    assert all(node.total_content_pointers for node in semantic_tree.child_nodes)
 
     _LOGGER.info("OCR manual case completed")
     _LOGGER.info("  input_kind=%s provider=%s model=%s", input_kind, provider, model)
@@ -588,3 +592,74 @@ def test_workflow_first_ocr_manual_matrix(provider: str, model: str, input_kind:
     _LOGGER.info("  progress_path=%s", artifacts.progress_path)
     _LOGGER.info("  summary_path=%s", artifacts.summary_path)
     _LOGGER.info("  completed_pages=%s reused_pages=%s", artifacts.completed_pages, artifacts.reused_pages)
+
+
+@pytest.mark.ci
+def test_ocr_workflow_reuses_cached_pages_but_regenerates_grounded_parse_tree() -> None:
+    scratch = _scratch("ocr_grounded_cache")
+    images_dir = scratch / "images"
+    image_paths = [images_dir / "page_1.png", images_dir / "page_2.png"]
+    _draw_test_image(image_paths[0], lines=["Grounded cache page one", "Alpha clause"])
+    _draw_test_image(image_paths[1], lines=["Grounded cache page two", "Beta clause"])
+    payloads = [
+        OCRImagePayload(page_number=1, image_path=str(image_paths[0])),
+        OCRImagePayload(page_number=2, image_path=str(image_paths[1])),
+    ]
+    calls = {"ocr": 0, "parse": 0}
+
+    def _runner(image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings):
+        calls["ocr"] += 1
+        return _fake_ocr_response(page_number, f"Grounded page {page_number}")
+
+    def _parse_semantic_fn(*, collection, parser_input_dict, parser_source_map):
+        calls["parse"] += 1
+        return _grounded_semantic_tree(
+            collection=collection,
+            parser_input_dict=parser_input_dict,
+            parser_source_map=parser_source_map,
+        )
+
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines",
+        "in_memory",
+    )
+
+    first_run, first_bundle, first_artifacts = run_ocr_ingest_workflow(
+        document_id="ocr-grounded-cache-doc",
+        title="OCR Grounded Cache Doc",
+        output_dir=scratch / "artifacts",
+        image_payloads=payloads,
+        provider_settings=settings,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        ocr_runner=_runner,
+        deps={"parse_semantic_fn": _parse_semantic_fn},
+    )
+    second_run, second_bundle, second_artifacts = run_ocr_ingest_workflow(
+        document_id="ocr-grounded-cache-doc",
+        title="OCR Grounded Cache Doc",
+        output_dir=scratch / "artifacts",
+        image_payloads=payloads,
+        provider_settings=settings,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        ocr_runner=_runner,
+        deps={"parse_semantic_fn": _parse_semantic_fn},
+    )
+
+    assert first_run.status == "succeeded"
+    assert second_run.status == "succeeded"
+    assert first_bundle is not None
+    assert second_bundle is not None
+    assert calls["ocr"] == 2
+    assert calls["parse"] == 2
+    assert second_artifacts.reused_pages == [1, 2]
+    assert second_artifacts.state_db_path.exists()
+    assert SemanticNode.model_validate(second_run.final_state["semantic_tree"]).child_nodes
+    assert second_run.final_state["semantic_tree"]["child_nodes"][0]["total_content_pointers"]

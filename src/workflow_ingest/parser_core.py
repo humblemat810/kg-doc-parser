@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import re
 from typing import Any, Callable
 
 from .cache import WorkflowLLMCallCache
@@ -16,12 +18,16 @@ from .models import (
 )
 from .semantics import HydratedTextPointer, SemanticNode
 
+_LOGGER = logging.getLogger(__name__)
+_LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
+
 
 def default_parse_semantic_fn(
     *,
     collection,
     parser_input_dict: dict[str, Any],
     parser_source_map: dict[str, dict[str, Any]],
+    model_names: list[str] | None = None,
 ):
     from ..semantic_document_splitting_layerwise_edits import build_document_tree
 
@@ -29,21 +35,71 @@ def default_parse_semantic_fn(
         doc_id=collection.collection_id,
         llm_input_dict=parser_input_dict,
         source_map=parser_source_map,
+        model_names=model_names,
     )
 
 
 def _coerce_semantic_tree(tree: Any) -> SemanticNode:
     if isinstance(tree, tuple):
         tree = tree[0]
+    if hasattr(tree, "model_dump"):
+        tree = tree.model_dump(mode="json")
     if isinstance(tree, dict):
         tree = SemanticNode.model_validate(tree)
     return tree
 
 
 def _root_only(tree: SemanticNode) -> SemanticNode:
-    payload = tree.model_dump()
+    payload = tree.model_dump(mode="json")
     payload["child_nodes"] = []
     return SemanticNode.model_validate(payload)
+
+
+def _legacy_pointer_aliases(parser_source_map: dict[str, dict[str, Any]]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for unit_id, record in parser_source_map.items():
+        page_number = record.get("page_number")
+        cluster_number = record.get("cluster_number")
+        if page_number is None or cluster_number is None:
+            continue
+        alias = f"p{int(page_number)}_c{int(cluster_number)}"
+        aliases.setdefault(alias, unit_id)
+    return aliases
+
+
+def _canonicalize_legacy_pointer_tree(
+    tree: SemanticNode,
+    *,
+    parser_source_map: dict[str, dict[str, Any]],
+) -> SemanticNode:
+    aliases = _legacy_pointer_aliases(parser_source_map)
+    if not aliases:
+        return tree
+
+    def _canonicalize_source_cluster_id(source_cluster_id: str) -> str:
+        alias_match = _LEGACY_POINTER_ID_RE.match(source_cluster_id)
+        if alias_match is None:
+            return source_cluster_id
+        return aliases.get(
+            source_cluster_id,
+            source_cluster_id,
+        )
+
+    def _remap_pointer(pointer: HydratedTextPointer) -> HydratedTextPointer:
+        canonical_id = _canonicalize_source_cluster_id(pointer.source_cluster_id)
+        if canonical_id == pointer.source_cluster_id:
+            return pointer
+        return pointer.model_copy(update={"source_cluster_id": canonical_id})
+
+    def _remap_node(node: SemanticNode) -> SemanticNode:
+        return node.model_copy(
+            update={
+                "total_content_pointers": [_remap_pointer(pointer) for pointer in node.total_content_pointers],
+                "child_nodes": [_remap_node(child) for child in node.child_nodes],
+            }
+        )
+
+    return _remap_node(tree)
 
 
 def _pointer_end(pointer: HydratedTextPointer, source_map: dict[str, dict[str, Any]] | None = None) -> int:
@@ -264,6 +320,10 @@ def initialize_parse_session(
                 parser_input_dict=parser_input_dict,
                 parser_source_map=parser_source_map,
             )
+        )
+        full_tree = _canonicalize_legacy_pointer_tree(
+            full_tree,
+            parser_source_map=parser_source_map,
         )
         root = _root_only(full_tree)
         session = ParseSessionState(
@@ -664,6 +724,19 @@ def repair_layer_candidates(
     parser_source_map: dict[str, dict[str, Any]],
     correct_pointer_fn: Callable[[HydratedTextPointer, dict[str, dict[str, Any]]], HydratedTextPointer | None],
 ) -> tuple[CurrentLayerResult, int]:
+    def _pointer_context(pointer: HydratedTextPointer) -> str:
+        source = parser_source_map.get(pointer.source_cluster_id, {})
+        text = str(source.get("text", ""))
+        preview = text.replace("\n", "\\n").replace("\t", "\\t")
+        if len(preview) > 120:
+            preview = preview[:117] + "..."
+        return (
+            f"source_cluster_id={pointer.source_cluster_id!r}, "
+            f"span=({pointer.start_char},{pointer.end_char}), "
+            f"verbatim_text={pointer.verbatim_text!r}, "
+            f"source_text={preview!r}"
+        )
+
     repaired_children: list[LayerChildCandidate] = []
     repaired_count = 0
     for child in current_layer_result.children:
@@ -671,7 +744,13 @@ def repair_layer_candidates(
         for pointer in child.total_content_pointers:
             fixed = correct_pointer_fn(pointer, parser_source_map)
             if fixed is None:
-                raise ValueError(f"unrecoverable pointer for child {child.title!r}")
+                message = (
+                    f"unrecoverable pointer for child {child.title!r} "
+                    f"(parent={child.parent_node_id!r}, node_id={child.node_id!r}); "
+                    f"{_pointer_context(pointer)}"
+                )
+                _LOGGER.warning("repair_layer_candidates failed: %s", message)
+                raise ValueError(message)
             if fixed.model_dump() != pointer.model_dump():
                 repaired_count += 1
             repaired_ptrs.append(fixed)
