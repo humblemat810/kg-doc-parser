@@ -138,7 +138,7 @@ def test_gemini_ocr_pages(gemini_key):
     from langchain_core.messages import HumanMessage, SystemMessage
     # Replace 'image.png' with the path to your image file.
     page_file_name = "page_1.png"
-    file_name = "AVA-00-ME-ORD01-2021.PDF"
+    file_name = "TIA-00-ME-ORD01-2021.PDF"
     image_file_path = os.path.join("split_pages", file_name, page_file_name)
 
     # Open the image in binary mode and read its content.

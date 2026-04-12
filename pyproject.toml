@@ -5,6 +5,7 @@ description = "doc parser using llm driven engine with graph knowledge awareness
 authors = ["humblemat810 <67593116+humblemat810@users.noreply.github.com>"]
 readme = "README.md"
 packages = [
+    { include = "src" },
     { include = "utils", from = "src" }
 ]
 
@@ -19,9 +20,14 @@ pathspec = "^0.12.1"
 pikepdf = "^10.1.0"
 langchain-core = "^1.2.5"
 langchain-google-genai = "^4.1.2"
-pydantic-extension = "^0.0.6"
+pydantic-extension = "^0.0.7"
 rapidfuzz = "^3.14.3"
 mcp = "^1.25.0"
+kogwistar = { path = "./kogwistar", develop = true }
+fastmcp = "^3.2.3"
+
+[tool.poetry.scripts]
+workflow-ingest = "src.workflow_ingest.cli:main"
 
 
 [build-system]

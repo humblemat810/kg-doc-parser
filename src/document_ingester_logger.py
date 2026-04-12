@@ -16,15 +16,16 @@ Why this design:
 --------------------------------------------------------------------------------
 RECOMMENDED USAGE (per-document metadata; safe for concurrency)
 
-from langchain_google_genai import ChatGoogleGenerativeAI
+try:
+    from workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+except ImportError:  # pragma: no cover
+    from src.workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 from document_ingest_logger import DocumentIngestSQLiteCallback
 
 cb = DocumentIngestSQLiteCallback(db_path="logs/document_ingest.sqlite")
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    # You may attach callback here OR per-call.
-    # Attaching here is fine, but metadata (document_id) still comes per-call.
+llm = build_chat_model(
+    WorkflowProviderSettings.from_env().parser,
     callbacks=[cb],
 )
 

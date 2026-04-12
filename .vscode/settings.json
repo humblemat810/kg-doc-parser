@@ -1,15 +1,15 @@
 {
+    "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+    "python.testing.pytestPath": "${workspaceFolder}\\.venv\\Scripts\\pytest.exe",
     "python.testing.pytestArgs": [
-        "tests", "-s"
+        "tests"
     ],
-    
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true,
-    "python-envs.defaultEnvManager": "ms-python.python:venv",
-    "python-envs.defaultPackageManager": "ms-python.python:pip",
-    "python-envs.pythonProjects": [],
+    "python-envs.defaultEnvManager": "ms-python.python:poetry",
+    "python-envs.defaultPackageManager": "ms-python.python:poetry",
     "python.analysis.extraPaths": [
-      "./src",         
+        "./src"
     ],
     "files.watcherExclude": {
         "**/node_modules": true,
@@ -17,21 +17,25 @@
         "**/__pycache__": true,
         "**/venv": true,
         "**/.venv": true,
+        "**/.venv.bak": true,
         "**/env": true,
         "/answers": true,
         "/split_pages": true,
         "/rubbish": true,
-        "/test/test_documents: true"
-      },
-      "python.analysis.exclude": [
+        "/test/test_documents": true
+    },
+    "files.exclude": {
+        "**/.venv.bak": true
+    },
+    "python.analysis.exclude": [
         "**/__pycache__",
         "**/venv",
         "**/.venv",
+        "**/.venv.bak",
         "**/env",
         "/answers",
         "/split_pages",
         "/rubbish",
         "/test/test_documents"
-      ]
-
+    ]
 }

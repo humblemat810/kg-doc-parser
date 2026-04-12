@@ -11,13 +11,16 @@ from pdf2image import convert_from_path
 import platform
 import pathlib
 from pypdf import PdfReader, PdfWriter
-from .utils.file_loaders import RawFileLoader
 import threading
 import pikepdf
 
+try:
+    from .utils.file_loaders import RawFileLoader
+except ImportError:  # pragma: no cover - supports top-level test imports
+    from src.utils.file_loaders import RawFileLoader
+
 def batch_split_pdf(document_folder: pathlib.Path | str | None = None, outfolder_path: str | pathlib.Path = "split_pages", exists_ok = 'skip', allowed_relative_paths: list[str] | None= None,
                     file_loader : RawFileLoader | None = None):
-    from pdf2png import split_pdf
     cnt = 0
     assert not ((document_folder is None) and (file_loader is None))
     class old_walker_inplace(RawFileLoader):

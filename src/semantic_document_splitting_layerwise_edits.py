@@ -79,29 +79,37 @@ import re
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Annotated, List, TypeAlias, Union, Literal, Dict, Any, Tuple, Optional
+from typing import Annotated, List, Union, Literal, Dict, Any, Tuple, Optional
+try:
+    from typing import TypeAlias
+except ImportError:  # pragma: no cover
+    from typing_extensions import TypeAlias
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, Field, ValidationError, validator, field_validator
 from typing import ClassVar
-from uuid import UUID, uuid1
+from uuid import UUID
 from collections import deque
 from pydantic import BaseModel, Field, model_validator
 import math
+import os
 from rapidfuzz.distance import LCSseq
 from datetime import datetime
 from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory
-from .document_ingester_logger import DocumentIngestSQLiteCallback
+try:
+    from document_ingester_logger import DocumentIngestSQLiteCallback
+except ImportError:  # pragma: no cover
+    from src.document_ingester_logger import DocumentIngestSQLiteCallback
+from kogwistar.id_provider import stable_id
+try:
+    from workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+except ImportError:  # pragma: no cover
+    from src.workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 
 def get_llm(model_name:str):
-    if model_name.lower().startswith("gemini"):
-        return ChatGoogleGenerativeAI(
-                        model=model_name,
-                        temperature=0.1,
-                        callbacks=[cb],
-                    )
-    else:
-        raise Exception("unknown model")
+    settings = WorkflowProviderSettings.from_env()
+    spec = settings.parser.model_copy(update={"model": model_name})
+    return build_chat_model(spec, callbacks=[cb])
     
 cb = DocumentIngestSQLiteCallback(db_path="logs/document_ingest.sqlite",
         log_prompts = True,
@@ -247,7 +255,7 @@ class LLMChildNodeResponseBE(ModeSlicingMixin, BaseModel):
     default_include_modes:  ClassVar= {"dto", "backend", "frontend"}
     default_exclude_modes: ClassVar = set()
     include_unmarked_for_modes: ClassVar = {"dto", "frontend", "backend"}
-    id: Annotated[UUID, BackendField()] = Field(default_factory = uuid1, description="The UUID string of the child belongs to.") # no Field to avoid being accidentally passed to LLM
+    id: Annotated[UUID | None, BackendField()] = Field(default=None, description="Deterministic id for the child candidate.") # no Field to avoid being accidentally passed to LLM
     parent_node_id: Annotated[str, DtoField(), BackendField()] = Field(description="The UUID string of the parent node this child belongs to.")
     node_type: Annotated[Literal["TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"], DtoField(), BackendField()] = Field(description="The semantic type of the child node.")
     title: Annotated[str, DtoField(), BackendField()] = Field(description="The title, key, or a concise summary of the child section.")
@@ -270,13 +278,31 @@ class LLMLevelResponseBE(ModeSlicingMixin, BaseModel):
 
 
 class SemanticNode(BaseModel):
-    node_id: UUID = Field(default_factory=uuid1)
+    node_id: UUID | None = None
     parent_id: Optional[UUID] = None
     node_type: Literal["DOCUMENT_ROOT", "TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"] = Field("TEXT_FLOW")
     title: str
     total_content_pointers: List[HydratedTextPointer]
     child_nodes: List['SemanticNode'] = Field([])
     level_from_root: int
+
+    @model_validator(mode="after")
+    def _ensure_stable_node_id(self):
+        if self.node_id is not None:
+            return self
+        pointer_fp = "|".join(
+            f"{p.source_cluster_id}:{p.start_char}:{p.end_char}:{p.verbatim_text or ''}"
+            for p in self.total_content_pointers
+        )
+        self.node_id = stable_id(
+            "legacy.semantic_node",
+            str(self.parent_id or "root"),
+            str(self.node_type),
+            str(self.title),
+            str(self.level_from_root),
+            pointer_fp,
+        )
+        return self
     # -------------------------------------------------
     # 🔍 Search descriptor builder (unchanged)
     # -------------------------------------------------
@@ -432,7 +458,16 @@ class SemanticNode(BaseModel):
                 )
                 edges.append(
                     {
-                        "id": str(uuid1()),
+                        "id": str(
+                            stable_id(
+                                "legacy.edge",
+                                "HAS_CHILD",
+                                str(node.node_id),
+                                str(child.node_id),
+                                str(doc_id),
+                                str(namespace),
+                            )
+                        ),
                         "subject_id": str(node.node_id),
                         "predicate": "HAS_CHILD",
                         "object_id": str(child.node_id),
@@ -749,17 +784,16 @@ $parent_sections_json
 
 from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage
 from joblib import Memory
-memory = Memory(location = '.joblib')
+memory = Memory(location = os.getenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", ".joblib"))
 @joblib_memory_cached(memory, ignore = ['model_names', 'event_name'])
 def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set):
         
-        from langchain_google_genai import ChatGoogleGenerativeAI    
         i_model = 0
         while True:
             model_name = model_names[i_model]
             try:    
                 print(f"\n--- Calling LLM ({model_name}) for {len(nodes_at_level)} nodes at this level ---")
-                llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.1, callbacks=[cb])
+                llm = get_llm(model_name)
                 import inspect
                 cf = inspect.currentframe()
                 line_no = cf.f_lineno if cf else None
@@ -847,8 +881,19 @@ def get_node(pid, child_def, parent_level: int):
     # child_def: Union[LLMChildNodeResponse, LLMChildNodeResponseBE].model_dump()
     child_def_obj: LLMChildNodeResponseBE = LLMChildNodeResponseBE.model_validate(child_def)
     absolute_pointers = child_def_obj.pointers
+    pointer_fp = "|".join(
+        f"{p.source_cluster_id}:{p.start_char}:{p.end_char}:{p.verbatim_text or ''}"
+        for p in absolute_pointers
+    )
     child_node = SemanticNode(
-        node_id=uuid1(), # App-generated UUID
+        node_id=child_def_obj.id or stable_id(
+            "legacy.get_node",
+            str(pid),
+            str(child_def_obj.node_type),
+            str(child_def_obj.title),
+            str(parent_level + 1),
+            pointer_fp,
+        ),
         parent_id=pid,
         title=child_def_obj.title,
         node_type=child_def_obj.node_type,
@@ -866,7 +911,11 @@ def get_root_node(title, source_map):
     #     total_content_pointers=[TextPointer(source_cluster_id=cid, start_char=0, end_char=-1) for cid in sorted(source_map.keys())]
     #     )
     root_node = SemanticNode(
-        node_id=uuid1(),
+        node_id=stable_id(
+            "legacy.root_node",
+            str(title),
+            "|".join(sorted(str(cid) for cid in source_map.keys())),
+        ),
         title=title,
         node_type="DOCUMENT_ROOT",
         total_content_pointers=[
@@ -900,7 +949,8 @@ def build_document_tree(
                 source_map: Dict,
                 max_depth: int = 10,
                 allow_review = True,
-                parsing_mode: Literal["snippet", "delimiter"] = "snippet"
+                parsing_mode: Literal["snippet", "delimiter"] = "snippet",
+                model_names: List[str] | None = None,
                 ) -> SemanticNode:
     """Builds the hierarchy using an efficient, batched, layer-wise (BFS) approach.
     Initial breakdown -> check pointers/ spans validated
@@ -918,8 +968,12 @@ def build_document_tree(
     nodes_for_next_level: list[SemanticNode] = [root_node]
     current_depth = 0
     fixed_children: list[LLMChildNodeResponseBE]
-    model_names = ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-pro", 
-                   "gemini-2.5-flash-lite", ] # Example models
+    model_names = model_names or [
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+    ]
     full_document_json_str = json.dumps(llm_input_dict)
     while nodes_for_next_level and current_depth < max_depth:
         
@@ -1455,17 +1509,16 @@ def correct_and_validate_pointer(
             verbatim = proposed_pointer.verbatim_text or ""
             # case len(verbatim):
             vlen = len(verbatim)
-            match vlen:
-                case _ if 0 <= vlen <= 10:
-                    fuzzy_threshold = None
-                case _ if 11 <= vlen <= 20:
-                    fuzzy_threshold = 0.99
-                case _ if 21 <= vlen <= 50:
-                    fuzzy_threshold = 0.95
-                case _ if 51 <= vlen <= 100:
-                    fuzzy_threshold = 0.90
-                case _:
-                    fuzzy_threshold = 0.85
+            if 0 <= vlen <= 10:
+                fuzzy_threshold = None
+            elif 11 <= vlen <= 20:
+                fuzzy_threshold = 0.99
+            elif 21 <= vlen <= 50:
+                fuzzy_threshold = 0.95
+            elif 51 <= vlen <= 100:
+                fuzzy_threshold = 0.90
+            else:
+                fuzzy_threshold = 0.85
             candidates, verification_method = _soft_exact_positions(source_text, verbatim, fuzzy_threshold = fuzzy_threshold)
             if candidates:
                 validation_method = verification_method
@@ -1559,7 +1612,6 @@ def _default_call_llm_structured(
     Swap this out if you prefer OpenAI or another provider.
     """
     from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
-    from langchain_google_genai import ChatGoogleGenerativeAI
 
     messages: List[BaseMessage] = [HumanMessage(prompt)]
     last_err = None
@@ -1570,7 +1622,7 @@ def _default_call_llm_structured(
             cf = inspect.currentframe()
             line_no = cf.f_lineno if cf else None
             try:
-                llm = ChatGoogleGenerativeAI(model=name, temperature=0.1, callbacks=[cb])
+                llm = get_llm(name)
                 resp: dict = llm.with_structured_output(schema, include_raw=True).invoke(messages, 
                                     config={
                                             "metadata": {
@@ -2468,7 +2520,13 @@ def print_tree(node: SemanticNode, indent=""):
     for child in node.child_nodes:
         print_tree(child, indent + "  ")
 @memory.cache()
-def parse_doc(doc_id: str, raw_doc_dict, parsing_mode: Literal["snippet", "delimiter"] = "snippet", max_depth: int = 10):
+def parse_doc(
+    doc_id: str,
+    raw_doc_dict,
+    parsing_mode: Literal["snippet", "delimiter"] = "snippet",
+    max_depth: int = 10,
+    model_names: List[str] | None = None,
+):
     
     
     try:
@@ -2476,7 +2534,14 @@ def parse_doc(doc_id: str, raw_doc_dict, parsing_mode: Literal["snippet", "delim
         llm_input_dict, source_map = prepare_document_for_llm(raw_doc_dict)
 
         print("\n--- Phase 3: Building Document Tree (Layer-wise) ---")
-        document_tree = build_document_tree(doc_id, llm_input_dict, source_map, parsing_mode=parsing_mode, max_depth=max_depth)
+        document_tree = build_document_tree(
+            doc_id,
+            llm_input_dict,
+            source_map,
+            parsing_mode=parsing_mode,
+            max_depth=max_depth,
+            model_names=model_names,
+        )
         cov: CoverageResponse = compute_pointer_coverage(document_tree, source_map)
         print("Overall coverage:", cov.overall)
         for cid, r in cov.per_cluster.items():
@@ -2514,7 +2579,13 @@ def semantic_tree_to_kge_payload(
     insertion_method: str = "semantic_document_parser_v1",
 ) -> Dict[str, Any]:
     if doc_id is None:
-        doc_id = str(uuid1())
+        doc_id = str(
+            stable_id(
+                "legacy.semantic_tree_doc",
+                str(root.node_id),
+                str(insertion_method),
+            )
+        )
 
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
@@ -2584,7 +2655,16 @@ def semantic_tree_to_kge_payload(
             edge_ptr_refs = _pointers_to_references(ptrs)  # parent’s pointers as provenance
             edge_ptr_mentions= _spans_to_groundings_to_mentions(_pointers_to_spans(ptrs))
             edge_dict = {
-                "id": str(uuid1()),
+                "id": str(
+                    stable_id(
+                        "legacy.semantic_tree_edge",
+                        "HAS_CHILD",
+                        str(node.node_id),
+                        str(child.node_id),
+                        str(doc_id),
+                        str(insertion_method),
+                    )
+                ),
                 "label": "parent-child",
                 "type": "relationship",
                 "summary": f"{node.node_id} -> {child.node_id} (HAS_CHILD)",
@@ -2737,8 +2817,6 @@ def kge_payload_to_semantic_tree(payload: Dict[str, Any]) -> "SemanticNode":
         root_ids = list(all_ids - all_child_ids)
         return sem_nodes[root_ids[0]] if root_ids else list(sem_nodes.values())[0]
     
-from langchain_google_genai import ChatGoogleGenerativeAI
-
 def all_child_from_root(root: SemanticNode, results = None):
     if results is None:
         results = []

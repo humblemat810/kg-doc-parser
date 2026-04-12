@@ -11,7 +11,11 @@ import base64
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import Runnable
 from src.models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
-from typing import Any, Iterable, cast, Callable, Optional,  Literal, TypeAlias, Union
+from typing import Any, Iterable, cast, Callable, Optional,  Literal, Union
+try:
+    from typing import TypeAlias
+except ImportError:  # pragma: no cover
+    from typing_extensions import TypeAlias
 import json
 from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, FrontendField, BackendField, LLMField,
                 DtoType,
@@ -23,10 +27,24 @@ from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
 from pydantic import BaseModel, Field, model_validator, field_validator, field_serializer
 from langchain_core.messages import SystemMessage, BaseMessage, HumanMessage
 from langchain_core.language_models import BaseChatModel
-from langchain_google_genai import ChatGoogleGenerativeAI
+try:
+    from workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+except ImportError:  # pragma: no cover
+    from src.workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 
-from .pdf2png import RawFileLoader
+try:
+    from pdf2png import RawFileLoader
+except ImportError:  # pragma: no cover
+    from src.pdf2png import RawFileLoader
 PastCompatibleSplitPage: TypeAlias = SplitPage
+
+
+def _build_ocr_llm(model_name: str, *, callbacks=None):
+    settings = WorkflowProviderSettings.from_env()
+    spec = settings.ocr.model_copy(update={"model": model_name})
+    return build_chat_model(spec, callbacks=callbacks)
+
+
 def get_page_json(folder_path, page_num):
     with open(os.path.join(folder_path, 'page_'+str(page_num)+'.json'), 'r') as f:
         file_json_raw = json.load(f)
@@ -282,15 +300,7 @@ def final_resort(draft_responses: dict, messages, page_file_name, model_name, im
                                 max_k = k,
                                 max_v = v
                         earlier_partial_ocr = draft_responses.get("gemini-2.5-pro") or draft_responses.get("gemini-2.5-flash") or max_v
-                        llm = ChatGoogleGenerativeAI(
-                                    model="gemini-2.5-pro",
-                                    temperature=0.1,
-                                    max_tokens=None,
-                                    timeout=None,
-                                    max_retries=2,
-                                    
-                                    # other params...
-                                )
+                        llm = _build_ocr_llm("gemini-2.5-pro", callbacks=[cb])
 
                         ocr_meta_response: OCRMetaResponse| None =cast (OCRMetaResponse | None , llm.with_structured_output(OCRMetaResponse).invoke(messages[:2]))
                         if ocr_meta_response is None:
@@ -418,15 +428,7 @@ def refine_image_response(ok2, response_dict, outfile_name, image_file_path, mod
                             logger.error(f"All LLM returned None as response, file name = {image_file_path}")
                             raise(ValueError(f"All LLM returned None as response, file name = {image_file_path}"))
                         continue
-                    llm = ChatGoogleGenerativeAI(
-                        model=model_name,
-                        temperature=0.1,
-                        max_tokens=None,
-                        timeout=None,
-                        max_retries=2,
-                        
-                        # other params...
-                    )
+                    llm = _build_ocr_llm(model_name, callbacks=[cb])
 
                     refined = refine_table_ocr(response_dict, llm = llm, cb = cb, error_messages=error_messages)
                     ok2 = True
@@ -529,14 +531,7 @@ def ocr_single_image(gemini_key: str, page_file_name, file_name,
                 model_name = model_names[i_model]
                 try:
                     
-                    llm = ChatGoogleGenerativeAI(
-                        model=model_name,
-                        temperature=0.1,
-                        max_tokens=None,
-                        timeout=None,
-                        max_retries=2,
-                        
-                    )
+                    llm = _build_ocr_llm(model_name, callbacks=[cb])
                     response: OCRClusterResponse | None = get_first_round_response(draft_responses, llm, model_name, cb, messages, sys_message, img_message, usage_metadata)
                     _sp = validate_response_mutate_inplace(response, response_dict, image_file_path, model_name, page_file_name)
                     ok = True
@@ -667,7 +662,10 @@ def regen_doc_group(folder_path, use_raw = False):
         doc_group[d] = doc
     return DocumentGroup(**{"documents": doc_group})
 
-from .utils.bounded_threadpool_executor import BoundedExecutor
+try:
+    from utils.bounded_threadpool_executor import BoundedExecutor
+except ImportError:  # pragma: no cover
+    from src.utils.bounded_threadpool_executor import BoundedExecutor
 
 
 def get_legacy_loader_like(folder: str, allowed_relative_paths: str | Any):
