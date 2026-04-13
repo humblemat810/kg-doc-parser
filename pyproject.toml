@@ -23,7 +23,7 @@ langchain-google-genai = "^4.1.2"
 pydantic-extension = "^0.0.7"
 rapidfuzz = "^3.14.3"
 mcp = "^1.25.0"
-kogwistar = { path = "./kogwistar", develop = true }
+kogwistar = { git = "https://github.com/humblemat810/kogwistar.git", branch = "main" }
 fastmcp = "^3.2.3"
 
 [tool.poetry.scripts]

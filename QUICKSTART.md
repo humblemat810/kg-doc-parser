@@ -17,6 +17,16 @@ If you installed the project with Poetry, you can also use:
 poetry run workflow-ingest --help
 ```
 
+If you want the local `./kogwistar` subtree to be used for development instead
+of the GitHub dependency, run:
+
+```powershell
+bash ./scripts/bootstrap-dev.sh
+```
+
+If the helper is not run, the install will keep using the GitHub dependency
+declared in `pyproject.toml`.
+
 ## 2. Learn The Command Surface
 
 The CLI family is:

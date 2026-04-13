@@ -45,6 +45,21 @@ workflow-ingest demo --help
 workflow-ingest ocr-smoke-assets --help
 ```
 
+If you want the local checked-out `./kogwistar` subtree to win over the GitHub
+dependency during development, run the Bash bootstrap helper after install:
+
+```powershell
+bash ./scripts/bootstrap-dev.sh
+```
+
+That script does two things:
+
+- runs `poetry install`
+- if `./kogwistar` exists, installs it editable into the active environment
+
+If you do not run the bootstrap helper, the repo keeps using the GitHub-sourced
+`kogwistar` dependency declared in `pyproject.toml`.
+
 Typical examples:
 
 ```powershell
