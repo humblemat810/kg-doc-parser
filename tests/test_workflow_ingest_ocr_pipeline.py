@@ -75,6 +75,7 @@ from src.workflow_ingest import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
+from src.workflow_ingest.ocr_pipeline import _compute_input_fingerprint, _resolve_ocr_source_plan
 from src.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 
 
@@ -444,6 +445,97 @@ def test_prepare_ocr_workflow_input_exhausts_candidate_models_until_success() ->
         ("backup-model", "completed"),
     ]
     assert artifacts.workflow_input.collections[0].pages[0].units[0].text == "winner:backup-model"
+
+
+@pytest.mark.ci
+def test_resolve_ocr_source_plan_uses_document_fingerprint_for_pdf_source() -> None:
+    scratch = _scratch("ocr_fingerprint_plan")
+    pdf_path = scratch / "sample.pdf"
+    page_1 = scratch / "page_1.png"
+    page_2 = scratch / "page_2.png"
+    _draw_test_image(page_1, lines=["Fingerprint page one"])
+    _draw_test_image(page_2, lines=["Fingerprint page two"])
+    _write_two_page_pdf([page_1, page_2], pdf_path)
+
+    output_dir = scratch / "artifacts"
+    plan = _resolve_ocr_source_plan(
+        document_id="ocr-fingerprint-doc",
+        output_dir=output_dir,
+        image_payloads=None,
+        pdf_path=pdf_path,
+        pdf_rasterizer=lambda source_pdf, rendered_dir: [page_1, page_2],
+    )
+
+    assert plan.source_kind == "pdf"
+    assert plan.pdf_source == pdf_path
+    assert plan.input_fingerprint == _compute_input_fingerprint(pdf_path=pdf_path)
+    assert plan.input_fingerprint != _compute_input_fingerprint(page_sources=[(1, page_1)])
+
+
+@pytest.mark.ci
+def test_prepare_ocr_workflow_input_keeps_document_fingerprint_stable_in_state_db() -> None:
+    scratch = _scratch("ocr_fingerprint_state")
+    page_1 = scratch / "images" / "page_1.png"
+    page_2 = scratch / "images" / "page_2.png"
+    _draw_test_image(page_1, lines=["Fingerprint state page one"])
+    _draw_test_image(page_2, lines=["Fingerprint state page two"])
+    payloads = [
+        OCRImagePayload(page_number=1, image_path=str(page_1)),
+        OCRImagePayload(page_number=2, image_path=str(page_2)),
+    ]
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+
+    def _runner(image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings):
+        return _fake_ocr_response(page_number, f"Fingerprint page {page_number}")
+
+    artifacts = prepare_ocr_workflow_input(
+        document_id="ocr-fingerprint-doc",
+        title="OCR Fingerprint Doc",
+        output_dir=scratch / "artifacts",
+        image_payloads=payloads,
+        provider_settings=settings,
+        ocr_runner=_runner,
+    )
+
+    expected_fingerprint = _compute_input_fingerprint(page_sources=[(1, page_1), (2, page_2)])
+    with sqlite3.connect(artifacts.state_db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT input_fingerprint, total_pages, source_kind, is_completed
+            FROM document_state
+            WHERE document_id = ?
+            """,
+            ("ocr-fingerprint-doc",),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == expected_fingerprint
+    assert int(row[1]) == 2
+    assert row[2] == "image"
+    assert int(row[3]) == 1
+
+    second = prepare_ocr_workflow_input(
+        document_id="ocr-fingerprint-doc",
+        title="OCR Fingerprint Doc",
+        output_dir=scratch / "artifacts",
+        image_payloads=payloads,
+        provider_settings=settings,
+        ocr_runner=_runner,
+    )
+    assert second.reused_pages == [1, 2]
+    with sqlite3.connect(second.state_db_path) as conn:
+        row2 = conn.execute(
+            """
+            SELECT input_fingerprint
+            FROM document_state
+            WHERE document_id = ?
+            """,
+            ("ocr-fingerprint-doc",),
+        ).fetchone()
+    assert row2 is not None
+    assert row2[0] == expected_fingerprint
 
 
 # Manual examples with explicit parametrized node ids:

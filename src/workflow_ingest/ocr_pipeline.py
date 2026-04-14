@@ -2,15 +2,32 @@ from __future__ import annotations
 
 """Workflow-first OCR ingest helpers for image and PDF sources.
 
-This module bridges the older OCR artifact layout with the newer
-``workflow_ingest`` orchestration layer:
+This module sits at the boundary between raw OCR and the reusable workflow
+ingest pipeline. It is responsible for three ideas that are easy to conflate:
 
-- accept page images directly, or render PDFs page-by-page into images
-- run OCR through the configured OCR provider
-- write legacy-compatible ``page_N.json`` artifacts for manual inspection
-- persist page-level progress in ``ocr-state.sqlite`` so reruns can resume
-  from completed pages and rebuild state if the DB is missing
-- normalize the OCR output into ``WorkflowIngestInput`` for workflow ingest
+1. **Page materialization**
+   - Accept already-rendered page images, or render a PDF into page images.
+   - Keep the page images around on disk so humans can inspect what was OCR'd.
+
+2. **OCR execution and resume state**
+   - Run one OCR provider call per page through a pluggable callable hook.
+   - Persist page-level progress in ``ocr-state.sqlite`` so reruns can skip
+     completed pages and rebuild state if the DB is missing.
+   - Save legacy-compatible ``page_N.json`` artifacts alongside the images.
+
+3. **Workflow normalization**
+   - Convert the serialized OCR pages into ``WorkflowIngestInput``.
+   - Hand that normalized input to the downstream semantic workflow parser.
+
+Important concepts used throughout the file:
+
+- ``OCRRunner``: a callable that OCRs exactly one page image and returns one
+  structured OCR page response.
+- ``PDFRasterizer``: a callable that turns a PDF into a list of page image paths.
+- ``OCRWorkflowStateStore``: the SQLite-backed resume store for page render/OCR
+  state.
+- ``OCRWorkflowArtifacts``: the inspectable bundle returned after OCR prep so
+  tests and manual runs can open the generated files.
 
 The public entrypoints are intentionally explicit so tests and manual runs can
 inspect intermediate folders without needing to understand the legacy OCR code.
@@ -35,7 +52,7 @@ from pypdf import PdfReader
 
 from src.models import OCRClusterResponse, SplitPage, SplitPageMeta
 
-from .adapters import normalize_ocr_pages
+from .adapters import OCRPageJSON, normalize_ocr_pages
 from .models import WorkflowIngestInput
 from .providers import ProviderEndpointConfig, WorkflowProviderSettings, build_chat_model_for_role
 from .probe import WorkflowProbe, emit_probe_event
@@ -76,8 +93,14 @@ class OCRWorkflowProgress(BaseModel):
 
 @dataclass(slots=True)
 class OCRWorkflowArtifacts:
+    """Inspectable result bundle produced by the OCR preparation phase.
+
+    This is the bridge object between the OCR world and the workflow ingest
+    world. It keeps both the normalized workflow input and the on-disk
+    artifacts that were used to produce it.
+    """
     workflow_input: WorkflowIngestInput
-    ocr_pages: list[dict[str, Any]]
+    ocr_pages: list[OCRPageJSON]
     legacy_dir: Path
     rendered_dir: Path
     state_db_path: Path
@@ -87,7 +110,11 @@ class OCRWorkflowArtifacts:
     reused_pages: list[int]
 
 
+# Pluggable hook for "OCR one page image and return the structured OCR model".
+# Signature: (image_path, page_number, provider_settings) -> OCRClusterResponse
 OCRRunner = Callable[[Path, int, WorkflowProviderSettings], OCRClusterResponse]
+# Pluggable hook for "render a PDF into page image paths inside a destination dir".
+# Signature: (pdf_path, rendered_dir) -> list[Path]
 PDFRasterizer = Callable[[Path, Path], list[Path]]
 
 _OCR_STATE_SCHEMA_VERSION = 1
@@ -95,6 +122,7 @@ _OCR_STATE_SCHEMA_VERSION = 1
 
 @dataclass(slots=True)
 class OCRPageStateSnapshot:
+    """One page/stage snapshot from the SQLite resume store."""
     page_number: int
     stage: str
     attempt_count: int
@@ -104,6 +132,348 @@ class OCRPageStateSnapshot:
     last_error: str | None
     last_model: str | None
     last_attempted_ts: float | None
+
+
+@dataclass(slots=True)
+class OCRSourcePlan:
+    """Resolved file-system plan for one OCR ingest run.
+
+    This captures the immutable inputs needed to process a document:
+    where the pages live, where legacy JSON should be written, and how the
+    page sources should be iterated.
+    """
+
+    pdf_source: Path | None
+    rendered_dir: Path
+    legacy_dir: Path
+    page_sources: list[tuple[int, Path]]
+    source_kind: str
+    input_fingerprint: str
+
+
+@dataclass(slots=True)
+class OCRPageProcessingContext:
+    """Immutable per-run OCR processing context.
+
+    This groups the values that every page in a run needs so the per-page loop
+    can stay focused on the page-specific state rather than carrying a very
+    long parameter list.
+    """
+
+    document_id: str
+    title: str
+    source_kind: str
+    total_pages: int
+    input_fingerprint: str
+    candidate_models: list[str]
+    provider_settings: WorkflowProviderSettings
+    ocr_page_runner: OCRRunner
+    state_store: OCRWorkflowStateStore
+    probe: WorkflowProbe | None
+
+
+def _resolve_ocr_source_plan(
+    *,
+    document_id: str,
+    output_dir: Path,
+    image_payloads: Sequence[OCRImagePayload] | None,
+    pdf_path: Path | None,
+    pdf_rasterizer: PDFRasterizer | None,
+) -> OCRSourcePlan:
+    rendered_root = output_dir / "rendered_pages"
+    legacy_root = output_dir / "legacy_split_pages"
+
+    pdf_source = Path(pdf_path) if pdf_path is not None else None
+    if pdf_source is not None:
+        # Render once per PDF so downstream OCR can work page-by-page against
+        # stable page image files and the state store can resume individual pages.
+        rendered_dir = rendered_root / pdf_source.stem
+        pdf_page_rasterizer = pdf_rasterizer or _render_pdf_to_images
+        rendered_paths = pdf_page_rasterizer(pdf_source, rendered_dir)
+        page_sources = list(enumerate(rendered_paths, start=1))
+        source_kind = "pdf"
+        input_fingerprint = _compute_input_fingerprint(pdf_path=pdf_source)
+    else:
+        rendered_dir = rendered_root / document_id
+        page_sources = _materialize_image_payloads(list(image_payloads or []), rendered_dir)
+        source_kind = "image"
+        input_fingerprint = _compute_input_fingerprint(page_sources=page_sources)
+
+    legacy_dir = legacy_root / _legacy_folder_name(document_id=document_id, pdf_path=pdf_source)
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    return OCRSourcePlan(
+        pdf_source=pdf_source,
+        rendered_dir=rendered_dir,
+        legacy_dir=legacy_dir,
+        page_sources=page_sources,
+        source_kind=source_kind,
+        input_fingerprint=input_fingerprint,
+    )
+
+
+def _process_ocr_page(
+    *,
+    context: OCRPageProcessingContext,
+    done_count: int,
+    page_number: int,
+    image_path: Path,
+    image_sha256: str,
+    page_json_path: Path,
+    page_image_path: Path,
+    raw_pages: list[OCRPageJSON],
+    completed_pages: list[int],
+    reused_pages: list[int],
+    page_failures: list[int],
+) -> None:
+    """Process one page image, either by resuming or by running OCR models."""
+
+    state_store = context.state_store
+    document_id = context.document_id
+    title = context.title
+    source_kind = context.source_kind
+    total_pages = context.total_pages
+    probe = context.probe
+
+    state_store.ensure_document(
+        document_id=document_id,
+        title=title,
+        source_kind=source_kind,
+        total_pages=total_pages,
+        input_fingerprint=context.input_fingerprint,
+    )
+    if not state_store.should_skip_page(
+        document_id=document_id,
+        page_number=page_number,
+        stage="render",
+        content_hash=image_sha256,
+        artifact_path=image_path,
+    ):
+        _emit_ocr_event(
+            probe,
+            "ocr.render_started",
+            document_id=document_id,
+            page_number=page_number,
+            image_path=str(image_path),
+        )
+        state_store.record_attempt(
+            document_id=document_id,
+            page_number=page_number,
+            stage="render",
+            content_hash=image_sha256,
+            model_name="local-materialize",
+            artifact_path=image_path,
+        )
+        state_store.record_page_completed(
+            document_id=document_id,
+            page_number=page_number,
+            stage="render",
+            content_hash=image_sha256,
+            artifact_path=image_path,
+            model_name="local-materialize",
+            attempt_index=1 if state_store.get_page_state(document_id=document_id, page_number=page_number, stage="render") else None,
+        )
+        _emit_ocr_event(
+            probe,
+            "ocr.render_completed",
+            document_id=document_id,
+            page_number=page_number,
+            image_path=str(image_path),
+        )
+
+    # Resume boundary: if the OCR page artifact already matches the image,
+    # reuse the serialized page instead of calling the model again.
+    if state_store.should_skip_page(
+        document_id=document_id,
+        page_number=page_number,
+        stage="ocr",
+        content_hash=image_sha256,
+        artifact_path=page_json_path,
+    ):
+        split_page = SplitPage.model_validate(json.loads(page_json_path.read_text(encoding="utf-8")))
+        raw_pages.append(split_page.dump_supercede_parse())
+        completed_pages.append(page_number)
+        reused_pages.append(page_number)
+        _emit_ocr_event(
+            probe,
+            "ocr.page_reused",
+            document_id=document_id,
+            page_number=page_number,
+            page_json_path=str(page_json_path),
+        )
+        _LOGGER.info(
+            "ocr resume | %s/%s | %s | reused page %s",
+            done_count,
+            total_pages,
+            _progress_bar(done_count, total_pages),
+            page_number,
+        )
+        return
+
+    last_exc: Exception | None = None
+    page_completed = False
+    _emit_ocr_event(
+        probe,
+        "ocr.page_started",
+        document_id=document_id,
+        page_number=page_number,
+        page_json_path=str(page_json_path),
+    )
+    # Try candidate OCR models one-by-one for this page; the first grounded
+    # success wins and gets persisted as the canonical page artifact.
+    for candidate_model in context.candidate_models:
+        candidate_settings: WorkflowProviderSettings = context.provider_settings.model_copy(
+            update={
+                "ocr": context.provider_settings.ocr.model_copy(update={"model": candidate_model}),
+            }
+        )
+        _emit_ocr_event(
+            probe,
+            "ocr.candidate_started",
+            document_id=document_id,
+            page_number=page_number,
+            model_name=candidate_model,
+        )
+        attempt_index = state_store.record_attempt(
+            document_id=document_id,
+            page_number=page_number,
+            stage="ocr",
+            content_hash=image_sha256,
+            model_name=candidate_model,
+            artifact_path=page_json_path,
+        )
+        try:
+            response = context.ocr_page_runner(image_path, page_number, candidate_settings)
+            split_page: SplitPage = SplitPage(
+                pdf_page_num=page_number,
+                metadata=SplitPageMeta(
+                    ocr_model_name=candidate_model,
+                    ocr_datetime=0.0,
+                    ocr_json_version="workflow_ingest_v1",
+                ),
+                **response.model_dump(dump_format="python"),
+            )
+            shutil.copy2(image_path, page_image_path)
+            page_json_path.write_text(
+                json.dumps(split_page.dump_raw(dump_format="json"), indent=2),
+                encoding="utf-8",
+            )
+            state_store.record_page_completed(
+                document_id=document_id,
+                page_number=page_number,
+                stage="ocr",
+                content_hash=image_sha256,
+                artifact_path=page_json_path,
+                model_name=candidate_model,
+                attempt_index=attempt_index,
+            )
+            # The adapter consumes plain dict pages, not the Pydantic page
+            # model, so we serialize the page into the legacy-compatible shape here.
+            raw_pages.append(split_page.dump_supercede_parse())
+            completed_pages.append(page_number)
+            page_completed = True
+            _emit_ocr_event(
+                probe,
+                "ocr.candidate_completed",
+                document_id=document_id,
+                page_number=page_number,
+                model_name=candidate_model,
+                page_json_path=str(page_json_path),
+            )
+            _LOGGER.info(
+                "ocr progress | %s/%s | %s | completed page %s | model=%s",
+                done_count,
+                total_pages,
+                _progress_bar(done_count, total_pages),
+                page_number,
+                candidate_model,
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            state_store.record_page_failed(
+                document_id=document_id,
+                page_number=page_number,
+                stage="ocr",
+                content_hash=image_sha256,
+                error_message=str(exc),
+                model_name=candidate_model,
+                attempt_index=attempt_index,
+            )
+            _LOGGER.warning(
+                "ocr candidate failed | page=%s model=%s attempt=%s error=%s",
+                page_number,
+                candidate_model,
+                attempt_index,
+                exc,
+            )
+            _emit_ocr_event(
+                probe,
+                "ocr.candidate_failed",
+                document_id=document_id,
+                page_number=page_number,
+                model_name=candidate_model,
+                attempt_index=attempt_index,
+                error=str(exc),
+            )
+    if not page_completed:
+        page_failures.append(page_number)
+        _emit_ocr_event(
+            probe,
+            "ocr.page_failed",
+            document_id=document_id,
+            page_number=page_number,
+            candidate_models=list(context.candidate_models),
+        )
+        _LOGGER.warning(
+            "ocr progress | %s/%s | %s | failed page %s after %s candidate(s)",
+            done_count,
+            total_pages,
+            _progress_bar(done_count, total_pages),
+            page_number,
+            len(context.candidate_models),
+        )
+        if last_exc is not None:
+            _LOGGER.warning("last ocr error for page %s: %s", page_number, last_exc)
+
+
+def _finalize_ocr_workflow_artifacts(
+    *,
+    document_id: str,
+    title: str,
+    raw_pages: list[OCRPageJSON],
+    completed_pages: list[int],
+    reused_pages: list[int],
+    rendered_dir: Path,
+    legacy_dir: Path,
+    state_db_path: Path,
+    progress_path: Path,
+    summary_path: Path,
+    provider_settings: WorkflowProviderSettings,
+    state_store: OCRWorkflowStateStore,
+) -> OCRWorkflowArtifacts:
+    workflow_input: WorkflowIngestInput = normalize_ocr_pages(
+        document_id=document_id,
+        title=title,
+        pages=raw_pages,
+    )
+    artifacts = OCRWorkflowArtifacts(
+        workflow_input=workflow_input,
+        ocr_pages=raw_pages,
+        legacy_dir=legacy_dir,
+        rendered_dir=rendered_dir,
+        state_db_path=state_db_path,
+        progress_path=progress_path,
+        summary_path=summary_path,
+        completed_pages=completed_pages,
+        reused_pages=reused_pages,
+    )
+    _write_summary(
+        artifacts,
+        document_id=document_id,
+        provider_settings=provider_settings,
+        state_store=state_store,
+    )
+    return artifacts
 
 
 class OCRWorkflowStateStore:
@@ -793,6 +1163,7 @@ def _render_pdf_to_images(pdf_path: Path, rendered_dir: Path) -> list[Path]:
 
 
 def _coerce_ocr_response(payload: Any) -> OCRClusterResponse:
+    """Coerce a structured-output payload into the OCR model."""
     if isinstance(payload, OCRClusterResponse):
         return payload
     if isinstance(payload, dict):
@@ -812,6 +1183,7 @@ def _coerce_ocr_response(payload: Any) -> OCRClusterResponse:
 
 
 def _extract_message_text(raw: Any) -> str:
+    """Extract plain text from LangChain raw message content."""
     content = getattr(raw, "content", raw)
     if isinstance(content, str):
         return content.strip()
@@ -830,6 +1202,7 @@ def _extract_message_text(raw: Any) -> str:
 
 
 def _minimal_ocr_response_from_text(*, text: str, page_number: int, image_path: Path) -> OCRClusterResponse:
+    """Create a coarse page-wide OCR result when only raw text is available."""
     normalized_text = text.strip()
     with Image.open(image_path) as image:
         width, height = image.size
@@ -880,6 +1253,12 @@ def _minimal_ocr_response_from_text(*, text: str, page_number: int, image_path: 
 
 
 def _run_live_ocr_page(image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings) -> OCRClusterResponse:
+    """Run one page image through the configured OCR provider.
+
+    This is the default implementation behind the OCRRunner hook. Tests can
+    replace it with a fake runner, but the callable contract stays the same:
+    page image in, structured OCR model out.
+    """
     chat = build_chat_model_for_role("ocr", provider_settings)
     structured = chat.with_structured_output(OCRClusterResponse, include_raw=True)
     prompt = (
@@ -937,7 +1316,7 @@ def _write_summary(
     provider_settings: WorkflowProviderSettings,
     state_store: OCRWorkflowStateStore,
 ) -> None:
-    payload = {
+    payload: dict[str, Any] = {
         "document_id": document_id,
         "ocr_provider": provider_settings.ocr.provider,
         "ocr_model": provider_settings.ocr.model,
@@ -983,12 +1362,22 @@ def prepare_ocr_workflow_input(
     - ``ocr-state.sqlite`` as the authoritative state store
     - a progress manifest mirrored from SQLite for quick inspection
     - a short summary file for manual debugging
+
+    Hook contracts:
+    - ``ocr_runner`` must accept ``(image_path, page_number, provider_settings)``
+      and return one structured OCR page result.
+    - ``pdf_rasterizer`` must accept ``(pdf_path, rendered_dir)`` and return the
+      list of rendered page image paths.
     """
 
+    # Require exactly one input shape so the rest of the function can stay linear.
     if bool(image_payloads) == bool(pdf_path):
         raise ValueError("provide exactly one of image_payloads or pdf_path")
 
+    # Load provider defaults only when the caller did not pass them explicitly.
     provider_settings = provider_settings or WorkflowProviderSettings.from_env()
+
+    # Record the start of OCR preparation for probes and debug traces.
     _emit_ocr_event(
         probe,
         "ocr.prepare_started",
@@ -997,275 +1386,119 @@ def prepare_ocr_workflow_input(
         output_dir=str(output_dir),
         source_kind="pdf" if pdf_path is not None else "image",
     )
+    # Resolve the output folder and the inspectable files we will write.
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    rendered_root = output_dir / "rendered_pages"
-    legacy_root = output_dir / "legacy_split_pages"
     summary_path = output_dir / "ocr-summary.json"
     progress_path = output_dir / "ocr-progress.json"
     state_db_path = output_dir / "ocr-state.sqlite"
 
-    pdf_source = Path(pdf_path) if pdf_path is not None else None
-    if pdf_source is not None:
-        rendered_dir = rendered_root / pdf_source.stem
-        rasterizer = pdf_rasterizer or _render_pdf_to_images
-        rendered_paths = rasterizer(pdf_source, rendered_dir)
-        page_sources = list(enumerate(rendered_paths, start=1))
-        source_kind = "pdf"
-        input_fingerprint = _compute_input_fingerprint(pdf_path=pdf_source)
-    else:
-        rendered_dir = rendered_root / document_id
-        page_sources = _materialize_image_payloads(list(image_payloads or []), rendered_dir)
-        source_kind = "image"
-        input_fingerprint = _compute_input_fingerprint(page_sources=page_sources)
+    # Turn the source input into a concrete page-by-page plan.
+    source_plan = _resolve_ocr_source_plan(
+        document_id=document_id,
+        output_dir=output_dir,
+        image_payloads=image_payloads,
+        pdf_path=Path(pdf_path) if pdf_path is not None else None,
+        pdf_rasterizer=pdf_rasterizer,
+    )
 
-    legacy_dir = legacy_root / _legacy_folder_name(document_id=document_id, pdf_path=pdf_source)
-    legacy_dir.mkdir(parents=True, exist_ok=True)
+    # Open or rebuild the SQLite resume store for this exact document input.
     state_store = OCRWorkflowStateStore.open_or_rebuild(
         db_path=state_db_path,
         document_id=document_id,
         title=title,
-        source_kind=source_kind,
-        total_pages=len(page_sources),
-        input_fingerprint=input_fingerprint,
-        rendered_dir=rendered_dir,
-        legacy_dir=legacy_dir,
+        source_kind=source_plan.source_kind,
+        total_pages=len(source_plan.page_sources),
+        input_fingerprint=source_plan.input_fingerprint,
+        rendered_dir=source_plan.rendered_dir,
+        legacy_dir=source_plan.legacy_dir,
         progress_path=progress_path,
     )
+
+    # Emit a trace that the state store and inspectable folders are ready.
     _emit_ocr_event(
         probe,
         "ocr.state_ready",
         document_id=document_id,
         state_db_path=str(state_db_path),
         progress_path=str(progress_path),
-        rendered_dir=str(rendered_dir),
-        legacy_dir=str(legacy_dir),
+        rendered_dir=str(source_plan.rendered_dir),
+        legacy_dir=str(source_plan.legacy_dir),
     )
 
-    raw_pages: list[dict[str, Any]] = []
+    # Accumulate the serialized OCR pages that will later be normalized into workflow input.
+    raw_pages: list[OCRPageJSON] = []
+
+    # Track which pages completed, were reused, or still failed after retries.
     completed_pages: list[int] = []
     reused_pages: list[int] = []
-    runner = ocr_runner or _run_live_ocr_page
-    candidate_models = list(ocr_candidate_models or [provider_settings.ocr.model])
+
+    # Select candidate OCR models, falling back to the configured default model.
+    candidate_models: list[str] = list(ocr_candidate_models or [provider_settings.ocr.model])
+
+    # Collect pages that still fail after exhausting every candidate model.
     page_failures: list[int] = []
 
-    for done_count, (page_number, image_path) in enumerate(page_sources, start=1):
+    # Bundle the reusable per-run OCR context so the per-page loop stays small.
+    page_context = OCRPageProcessingContext(
+        document_id=document_id,
+        title=title,
+        source_kind=source_plan.source_kind,
+        total_pages=len(source_plan.page_sources),
+        input_fingerprint=source_plan.input_fingerprint,
+        candidate_models=candidate_models,
+        provider_settings=provider_settings,
+        ocr_page_runner=ocr_runner or _run_live_ocr_page,
+        state_store=state_store,
+        probe=probe,
+    )
+
+    # Process every rendered page one-by-one.
+    for done_count, (page_number, image_path) in enumerate(source_plan.page_sources, start=1):
         image_path = Path(image_path)
         image_sha256 = _sha256_file(image_path)
-        page_json_path = legacy_dir / f"page_{page_number}.json"
-        page_image_path = legacy_dir / f"page_{page_number}{image_path.suffix or '.png'}"
-        state_store.ensure_document(
-            document_id=document_id,
-            title=title,
-            source_kind=source_kind,
-            total_pages=len(page_sources),
-            input_fingerprint=input_fingerprint,
-        )
-        if not state_store.should_skip_page(
-            document_id=document_id,
-            page_number=page_number,
-            stage="render",
-            content_hash=image_sha256,
-            artifact_path=image_path,
-        ):
-            _emit_ocr_event(
-                probe,
-                "ocr.render_started",
-                document_id=document_id,
-                page_number=page_number,
-                image_path=str(image_path),
-            )
-            state_store.record_attempt(
-                document_id=document_id,
-                page_number=page_number,
-                stage="render",
-                content_hash=image_sha256,
-                model_name="local-materialize",
-                artifact_path=image_path,
-            )
-            state_store.record_page_completed(
-                document_id=document_id,
-                page_number=page_number,
-                stage="render",
-                content_hash=image_sha256,
-                artifact_path=image_path,
-                model_name="local-materialize",
-                attempt_index=1 if state_store.get_page_state(document_id=document_id, page_number=page_number, stage="render") else None,
-            )
-            _emit_ocr_event(
-                probe,
-                "ocr.render_completed",
-                document_id=document_id,
-                page_number=page_number,
-                image_path=str(image_path),
-            )
+        page_json_path = source_plan.legacy_dir / f"page_{page_number}.json"
+        page_image_path = source_plan.legacy_dir / f"page_{page_number}{image_path.suffix or '.png'}"
 
-        if state_store.should_skip_page(
-            document_id=document_id,
+        # Run the page through the resume-aware OCR processor.
+        _process_ocr_page(
+            context=page_context,
+            done_count=done_count,
             page_number=page_number,
-            stage="ocr",
-            content_hash=image_sha256,
-            artifact_path=page_json_path,
-        ):
-            split_page = SplitPage.model_validate(json.loads(page_json_path.read_text(encoding="utf-8")))
-            raw_pages.append(split_page.dump_supercede_parse())
-            completed_pages.append(page_number)
-            reused_pages.append(page_number)
-            _emit_ocr_event(
-                probe,
-                "ocr.page_reused",
-                document_id=document_id,
-                page_number=page_number,
-                page_json_path=str(page_json_path),
-            )
-            _LOGGER.info(
-                "ocr resume | %s/%s | %s | reused page %s",
-                done_count,
-                len(page_sources),
-                _progress_bar(done_count, len(page_sources)),
-                page_number,
-            )
-            continue
-
-        last_exc: Exception | None = None
-        page_completed = False
-        _emit_ocr_event(
-            probe,
-            "ocr.page_started",
-            document_id=document_id,
-            page_number=page_number,
-            page_json_path=str(page_json_path),
+            image_path=image_path,
+            image_sha256=image_sha256,
+            page_json_path=page_json_path,
+            page_image_path=page_image_path,
+            raw_pages=raw_pages,
+            completed_pages=completed_pages,
+            reused_pages=reused_pages,
+            page_failures=page_failures,
         )
-        for candidate_model in candidate_models:
-            candidate_settings = provider_settings.model_copy(
-                update={
-                    "ocr": provider_settings.ocr.model_copy(update={"model": candidate_model}),
-                }
-            )
-            _emit_ocr_event(
-                probe,
-                "ocr.candidate_started",
-                document_id=document_id,
-                page_number=page_number,
-                model_name=candidate_model,
-            )
-            attempt_index = state_store.record_attempt(
-                document_id=document_id,
-                page_number=page_number,
-                stage="ocr",
-                content_hash=image_sha256,
-                model_name=candidate_model,
-                artifact_path=page_json_path,
-            )
-            try:
-                response = runner(image_path, page_number, candidate_settings)
-                split_page = SplitPage(
-                    pdf_page_num=page_number,
-                    metadata=SplitPageMeta(
-                        ocr_model_name=candidate_model,
-                        ocr_datetime=0.0,
-                        ocr_json_version="workflow_ingest_v1",
-                    ),
-                    **response.model_dump(dump_format="python"),
-                )
-                shutil.copy2(image_path, page_image_path)
-                page_json_path.write_text(
-                    json.dumps(split_page.dump_raw(dump_format="json"), indent=2),
-                    encoding="utf-8",
-                )
-                state_store.record_page_completed(
-                    document_id=document_id,
-                    page_number=page_number,
-                    stage="ocr",
-                    content_hash=image_sha256,
-                    artifact_path=page_json_path,
-                    model_name=candidate_model,
-                    attempt_index=attempt_index,
-                )
-                raw_pages.append(split_page.dump_supercede_parse())
-                completed_pages.append(page_number)
-                page_completed = True
-                _emit_ocr_event(
-                    probe,
-                    "ocr.candidate_completed",
-                    document_id=document_id,
-                    page_number=page_number,
-                    model_name=candidate_model,
-                    page_json_path=str(page_json_path),
-                )
-                _LOGGER.info(
-                    "ocr progress | %s/%s | %s | completed page %s | model=%s",
-                    done_count,
-                    len(page_sources),
-                    _progress_bar(done_count, len(page_sources)),
-                    page_number,
-                    candidate_model,
-                )
-                break
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                state_store.record_page_failed(
-                    document_id=document_id,
-                    page_number=page_number,
-                    stage="ocr",
-                    content_hash=image_sha256,
-                    error_message=str(exc),
-                    model_name=candidate_model,
-                    attempt_index=attempt_index,
-                )
-                _LOGGER.warning(
-                    "ocr candidate failed | page=%s model=%s attempt=%s error=%s",
-                    page_number,
-                    candidate_model,
-                    attempt_index,
-                    exc,
-                )
-                _emit_ocr_event(
-                    probe,
-                    "ocr.candidate_failed",
-                    document_id=document_id,
-                    page_number=page_number,
-                    model_name=candidate_model,
-                    attempt_index=attempt_index,
-                    error=str(exc),
-                )
+
+        # Mirror the SQLite state into the human-readable progress file.
         _sync_progress_from_state(
             state_store=state_store,
             document_id=document_id,
             title=title,
-            source_kind=source_kind,
-            total_pages=len(page_sources),
+            source_kind=source_plan.source_kind,
+            total_pages=len(source_plan.page_sources),
             progress_path=progress_path,
         )
-        if not page_completed:
-            page_failures.append(page_number)
-            _emit_ocr_event(
-                probe,
-                "ocr.page_failed",
-                document_id=document_id,
-                page_number=page_number,
-                candidate_models=list(candidate_models),
-            )
-            _LOGGER.warning(
-                "ocr progress | %s/%s | %s | failed page %s after %s candidate(s)",
-                done_count,
-                len(page_sources),
-                _progress_bar(done_count, len(page_sources)),
-                page_number,
-                len(candidate_models),
-            )
-            if last_exc is not None:
-                _LOGGER.warning("last ocr error for page %s: %s", page_number, last_exc)
 
+    # Mark the whole document complete once every page has been processed.
     state_store.refresh_document_completion(document_id=document_id)
+
+    # Write one final mirrored progress snapshot after completion.
     _sync_progress_from_state(
         state_store=state_store,
         document_id=document_id,
         title=title,
-        source_kind=source_kind,
-        total_pages=len(page_sources),
+        source_kind=source_plan.source_kind,
+        total_pages=len(source_plan.page_sources),
         progress_path=progress_path,
     )
+
+    # Emit a final probe event for tooling and debug traces.
     _emit_ocr_event(
         probe,
         "ocr.prepare_finished",
@@ -1276,33 +1509,28 @@ def prepare_ocr_workflow_input(
         failed_pages=page_failures,
         state_db_path=str(state_db_path),
     )
+
+    # Fail the run if any page still has no successful OCR artifact.
     if page_failures:
         raise RuntimeError(
             f"OCR preparation incomplete for pages {page_failures}; rerun will retry failed pages."
         )
-    workflow_input = normalize_ocr_pages(
+
+    # Convert the serialized OCR page dicts into the workflow ingest source model.
+    return _finalize_ocr_workflow_artifacts(
         document_id=document_id,
         title=title,
-        pages=raw_pages,
-    )
-    artifacts = OCRWorkflowArtifacts(
-        workflow_input=workflow_input,
-        ocr_pages=raw_pages,
-        legacy_dir=legacy_dir,
-        rendered_dir=rendered_dir,
+        raw_pages=raw_pages,
+        completed_pages=completed_pages,
+        reused_pages=reused_pages,
+        rendered_dir=source_plan.rendered_dir,
+        legacy_dir=source_plan.legacy_dir,
         state_db_path=state_db_path,
         progress_path=progress_path,
         summary_path=summary_path,
-        completed_pages=completed_pages,
-        reused_pages=reused_pages,
-    )
-    _write_summary(
-        artifacts,
-        document_id=document_id,
         provider_settings=provider_settings,
         state_store=state_store,
     )
-    return artifacts
 
 
 def run_ocr_ingest_workflow(
@@ -1322,7 +1550,12 @@ def run_ocr_ingest_workflow(
     deps: dict[str, Any] | None = None,
     probe: WorkflowProbe | None = None,
 ):
-    """Run OCR preparation and then feed the normalized result into workflow ingest."""
+    """Run OCR preparation and then feed the normalized result into workflow ingest.
+
+    This is the high-level two-stage orchestration:
+    1. produce or reuse per-page OCR artifacts
+    2. normalize those pages and hand them to the semantic workflow parser
+    """
 
     artifacts = prepare_ocr_workflow_input(
         document_id=document_id,

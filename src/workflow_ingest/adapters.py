@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 
 from .models import (
     BoundingBox,
@@ -12,11 +12,22 @@ from .models import (
 )
 
 
+class OCRPageJSON(TypedDict, total=False):
+    """Serialized OCR page payload produced by the OCR preparation layer."""
+
+    pdf_page_num: int
+    printed_page_number: str
+    contains_table: bool
+    OCR_text_clusters: list[dict[str, Any]]
+    non_text_objects: list[dict[str, Any]]
+    text: str
+
+
 def normalize_ocr_pages(
     *,
     document_id: str,
     title: str,
-    pages: list[dict[str, Any]],
+    pages: list[OCRPageJSON],
 ) -> WorkflowIngestInput:
     """Normalize raw OCR JSON into workflow ingest models.
 

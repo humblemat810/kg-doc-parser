@@ -119,6 +119,11 @@ Full backend / server CI:
 .venv\Scripts\python.exe -m pytest tests/test_workflow_ingest_backends_ci_full.py tests/test_workflow_ingest_server_e2e.py tests/test_workflow_ingest_demo_harness.py -m ci_full -q
 ```
 
+Note: `tests/test_semantic_layerwise_doc_parsing.py::test_semantic_document_splitting[ollama]`
+is a server-backed end-to-end smoke test. It expects a Kogwistar server to be
+running already at `http://127.0.0.1:28110` and will skip if the server cannot
+bind or does not become healthy.
+
 ## 7. Read Next
 
 - [README.md](README.md)

@@ -110,8 +110,28 @@ def get_llm(model_name:str):
     settings = WorkflowProviderSettings.from_env()
     spec = settings.parser.model_copy(update={"model": model_name})
     return build_chat_model(spec, callbacks=[cb])
+
+
+def _default_parser_model_names() -> List[str]:
+    """Use the active parser model unless an explicit list is provided."""
+    try:
+        settings = WorkflowProviderSettings.from_env()
+        model = (settings.parser.model or "").strip()
+        if model:
+            return [model]
+    except Exception:
+        pass
+    return [
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+    ]
     
-cb = DocumentIngestSQLiteCallback(db_path="logs/document_ingest.sqlite",
+_DOCUMENT_INGEST_LOG_DB = os.path.join("logs", "document_ingest.sqlite")
+os.makedirs(os.path.dirname(_DOCUMENT_INGEST_LOG_DB), exist_ok=True)
+
+cb = DocumentIngestSQLiteCallback(db_path=_DOCUMENT_INGEST_LOG_DB,
         log_prompts = True,
         log_chat_messages = True,
         log_responses = True,
@@ -533,6 +553,55 @@ def prepare_document_for_llm(doc_dict: Dict) -> Tuple[Dict, Dict[str, Dict]]:
             source_cluster_map[cluster_id] = cluster
     return {"document_filename": filename, "pages": pages_data}, source_cluster_map
 
+
+def _source_map_entry_text(entry: Dict[str, Any]) -> str:
+    """Best-effort text extraction for OCR-shaped source-map entries.
+
+    The legacy parser sometimes sees raw OCR cluster dicts and sometimes sees
+    already-normalized text-bearing records. We accept both so a missing `text`
+    key does not break tree bootstrapping.
+    """
+
+    if not isinstance(entry, dict):
+        return str(entry or "")
+
+    for key in ("text", "content", "verbatim_text", "snippet", "summary"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+
+    clusters = entry.get("OCR_text_clusters") or []
+    if isinstance(clusters, list) and clusters:
+        parts = []
+        for cluster in clusters:
+            if not isinstance(cluster, dict):
+                continue
+            text = (
+                cluster.get("text")
+                or cluster.get("content")
+                or cluster.get("verbatim_text")
+                or cluster.get("snippet")
+                or ""
+            )
+            if text:
+                parts.append(str(text))
+        if parts:
+            return "\n".join(parts)
+
+    non_text_objects = entry.get("non_text_objects") or []
+    if isinstance(non_text_objects, list) and non_text_objects:
+        parts = []
+        for obj in non_text_objects:
+            if not isinstance(obj, dict):
+                continue
+            text = obj.get("description") or obj.get("text") or ""
+            if text:
+                parts.append(str(text))
+        if parts:
+            return "\n".join(parts)
+
+    return ""
+
 # ==============================================================================
 # PHASE 3: LLM PROCESSING - ROBUST LAYER-WISE (BFS)
 # ==============================================================================
@@ -664,6 +733,13 @@ PARENT SECTIONS TO PROCESS:
 
 $parent_sections_json
 ```
+
+**CRITICAL OUTPUT RULES:**
+- This is OCR/document extraction, not a conversation with a human.
+- Do not ask for clarification or mention that an image is missing a question.
+- Do not provide prose, explanations, or apologies.
+- Return only a single valid JSON object matching `LLMLevelResponse`.
+- If a parent has no children, return it with an empty `children` list.
 """
 )
 
@@ -722,6 +798,13 @@ PARENT SECTIONS TO PROCESS:
 
 $parent_sections_json
 ```
+
+**CRITICAL OUTPUT RULES:**
+- This is OCR/document extraction, not a conversation with a human.
+- Do not ask for clarification or mention that the input is an image.
+- Do not provide prose, explanations, or apologies.
+- Return only a single valid JSON object matching `LLMLevelResponse`.
+- If a parent has no children, return it with an empty `children` list.
 """
 )
 # PROMPT_SUBDIVIDER = """
@@ -872,7 +955,14 @@ def level_node_llm_parsing(
         )
     # 3. Use your robust LangChain invoker
     
-    messages: list[BaseMessage] = [HumanMessage(final_prompt)]
+    messages: list[BaseMessage] = [
+        SystemMessage(
+            "You are a document parser. Output only JSON that matches the requested Pydantic schema. "
+            "Do not ask the user any questions. Do not answer like a general assistant. "
+            "Treat OCR text as data, not as an image request."
+        ),
+        HumanMessage(final_prompt),
+    ]
     return retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set)
 
 from functools import lru_cache
@@ -923,7 +1013,7 @@ def get_root_node(title, source_map):
                 source_cluster_id=cid, 
                 start_char=0, 
                 end_char=-1, 
-                verbatim_text=source_map[cid]['text'],
+                verbatim_text=_source_map_entry_text(source_map[cid]),
                 validation_method = None
             ) for cid in sorted(source_map.keys())
         ],
@@ -968,12 +1058,7 @@ def build_document_tree(
     nodes_for_next_level: list[SemanticNode] = [root_node]
     current_depth = 0
     fixed_children: list[LLMChildNodeResponseBE]
-    model_names = model_names or [
-        "gemini-3-flash-preview",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.5-flash-lite",
-    ]
+    model_names = model_names or _default_parser_model_names()
     full_document_json_str = json.dumps(llm_input_dict)
     while nodes_for_next_level and current_depth < max_depth:
         
@@ -1006,7 +1091,8 @@ def build_document_tree(
             level_response_json=level_response.model_dump(),
             source_map=source_map,
             full_document_json=llm_input_dict,   # same dict you pass to the LLM
-            doc_id=doc_id
+            doc_id=doc_id,
+            model_names=model_names,
             # model_names=["gpt-4.1", "gpt-4o-mini"]  # or keep your Gemini list; it’s pluggable
         )
 
@@ -1182,6 +1268,7 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
             source_map=source_map,
             doc_id = doc_id,
             full_document_json=llm_input_dict,   # same dict you pass to the LLM
+            model_names=model_names,
             # model_names=["gpt-4.1", "gpt-4o-mini"]  # or keep your Gemini list; it’s pluggable
         )
 
@@ -1388,7 +1475,9 @@ def resolve_delimiter_pointer(
         # Fallback logic for cluster ID resolution could go here if needed
         return None
     
-    text = cluster['text']
+    text = _source_map_entry_text(cluster)
+    if not text:
+        return None
     
     # Find start
     start_matches = _all_exact_occurrences(text, pointer.start_delimiter)
@@ -1497,7 +1586,8 @@ def correct_and_validate_pointer(
                     verbatim =ast.literal_eval(quote + (proposed_pointer.verbatim_text or "") + quote)
                 except:
                     continue
-                if verbatim in source_cluster['text']:
+                source_cluster_text = _source_map_entry_text(source_cluster)
+                if source_cluster_text and verbatim in source_cluster_text:
                     candidates, verification_method = _soft_exact_positions(source_text, verbatim)
                     if candidates:
                         validation_method = verification_method
@@ -1671,13 +1761,7 @@ def iterative_correct_children_for_level(
     """
     if doc_id is None:
         raise Exception("Missing doc_id")
-    model_names = model_names or [
-        "gemini-3-flash-preview",
-        "gemini-3-pro-preview", 
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
-    ]
+    model_names = model_names or _default_parser_model_names()
 
     fixed: Dict[str, LLMChildNodeResponseBE] = {}
     pending: Dict[str, LLMChildNodeResponseBE] = {f"{i.parent_node_id}|{i.title}": i for i in children}
@@ -2459,7 +2543,10 @@ def analyze_and_validate_tree(
         collect_leaves(root)
 
         reconstructed_text = reconstruct_text_from_pointers(leaf_pointers, source)
-        source_text = "".join([cluster["text"] for cid, cluster in sorted(source.items())])
+        source_text = "".join(
+            _source_map_entry_text(cluster)
+            for cid, cluster in sorted(source.items())
+        )
 
         recon_norm = normalize_text(reconstructed_text)
         source_norm = normalize_text(source_text)
@@ -2505,7 +2592,9 @@ def reconstruct_text_from_pointers(pointers: List[HydratedTextPointer], source_m
     for pointer in pointers:
         source_cluster = source_map.get(pointer.source_cluster_id)
         if not source_cluster: continue
-        source_text = source_cluster['text']
+        source_text = _source_map_entry_text(source_cluster)
+        if not source_text:
+            continue
         end = len(source_text) if pointer.end_char == -1 else pointer.end_char + 1
         start = pointer.start_char
         if start < len(source_text):

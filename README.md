@@ -237,6 +237,12 @@ There is now a manual workflow-ingest demo harness that can run the end-to-end f
 - a subprocess-hosted local server
 - an already running external Kogwistar server
 
+The legacy semantic-smoke test in
+[`tests/test_semantic_layerwise_doc_parsing.py`](/c:/Users/chanh/Documents/kg_doc_parser/tests/test_semantic_layerwise_doc_parsing.py)
+also expects a live Kogwistar server at `http://127.0.0.1:28110`. It does not
+start that server for you, so use the VS Code server launch config or start it
+manually before running the Ollama case.
+
 Example:
 
 ```powershell
