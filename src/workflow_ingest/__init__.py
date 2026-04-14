@@ -16,6 +16,16 @@ from .cache import WorkflowLLMCallCache
 from .design import DEFAULT_WORKFLOW_ID, build_ingest_workflow_design, ensure_ingest_workflow_design
 from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
 from .handlers import build_ingest_step_resolver
+from .parsing import (
+    OCRParseRequest,
+    PageIndexParseRequest,
+    ParseMode,
+    TreeParseRequest,
+    parse_document,
+    parse_ocr_document,
+    parse_page_index_document,
+    parse_tree_document,
+)
 from .ocr_pipeline import (
     OCRImagePayload,
     OCRWorkflowArtifacts,
@@ -38,7 +48,7 @@ from .runners import (
     run_page_index_source_workflow,
 )
 from .smoke_assets import generate_ocr_smoke_assets
-from .page_index import PageIndexBlockSpec, PageIndexParseResult, build_page_index_workflow_input, parse_page_index_document
+from .page_index import PageIndexBlockSpec, PageIndexParseResult, build_page_index_workflow_input
 from .models import (
     BoundingBox,
     CanonicalGraphWriteResult,
@@ -112,10 +122,14 @@ __all__ = [
     "OCRImagePayload",
     "OCRWorkflowArtifacts",
     "OCRWorkflowStateStore",
+    "OCRParseRequest",
     "ParseSessionState",
     "ProviderEndpointConfig",
+    "PageIndexParseRequest",
     "PageIndexBlockSpec",
     "PageIndexParseResult",
+    "ParseMode",
+    "TreeParseRequest",
     "SemanticNode",
     "ServerCanonicalKgClient",
     "SourceUnit",
@@ -153,7 +167,10 @@ __all__ = [
     "ensure_ingest_workflow_design",
     "emit_probe_event",
     "normalize_ocr_pages",
+    "parse_document",
+    "parse_ocr_document",
     "parse_page_index_document",
+    "parse_tree_document",
     "prepare_ocr_workflow_input",
     "run_demo_harness",
     "run_demo_harness_workflow",

@@ -18,7 +18,8 @@ from kogwistar.engine_core.models import Edge, Node
 
 from .demo_harness import DemoHarnessConfig, run_demo_harness
 from .ocr_pipeline import OCRImagePayload, OCRWorkflowArtifacts, prepare_ocr_workflow_input, run_ocr_ingest_workflow
-from .page_index import PageIndexParseResult, PageIndexSourceFormat, parse_page_index_document
+from .page_index import PageIndexParseResult, PageIndexSourceFormat
+from .parsing import parse_ocr_document, parse_page_index_document, parse_tree_document
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
 from .parser_core import default_parse_semantic_fn
@@ -463,12 +464,11 @@ def run_layerwise_source_workflow(
         raise ValueError("layerwise workflow expects a directory of legacy OCR page artifacts")
     from src.ocr import regen_doc
     from src.semantic_document_splitting_layerwise_edits import (
-        parse_doc as legacy_parse_doc,
         semantic_tree_to_kge_payload as legacy_semantic_tree_to_kge_payload,
     )
 
     raw_doc = {source_path.name: regen_doc(str(source_path), use_raw=True)}
-    tree, source_map = legacy_parse_doc(
+    tree, source_map = parse_tree_document(
         doc_id=source_path.name,
         raw_doc_dict=raw_doc,
         parsing_mode=parsing_mode,  # type: ignore[arg-type]

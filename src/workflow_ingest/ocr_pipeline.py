@@ -1557,7 +1557,9 @@ def run_ocr_ingest_workflow(
     2. normalize those pages and hand them to the semantic workflow parser
     """
 
-    artifacts = prepare_ocr_workflow_input(
+    from .parsing import parse_ocr_document
+
+    artifacts = parse_ocr_document(
         document_id=document_id,
         title=title,
         output_dir=output_dir,
