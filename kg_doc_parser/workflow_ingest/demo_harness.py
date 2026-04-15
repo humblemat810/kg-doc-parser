@@ -283,7 +283,7 @@ def _configure_legacy_cache(cache_dir: Path, probe: WorkflowProbe | None) -> Non
     """Initialize the legacy parser cache used by the cached demo mode."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     os.environ["KG_DOC_PARSER_JOBLIB_CACHE_DIR"] = str(cache_dir)
-    module_name = "src.semantic_document_splitting_layerwise_edits"
+    module_name = "kg_doc_parser.semantic_document_splitting_layerwise_edits"
     if module_name in sys.modules:
         importlib.reload(sys.modules[module_name])
         emit_probe_event(probe, "demo.cache_reloaded", module=module_name, cache_dir=str(cache_dir))

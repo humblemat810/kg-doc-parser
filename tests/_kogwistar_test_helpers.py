@@ -16,7 +16,7 @@ def load_kogwistar_in_memory_backend():
 
 
 def load_kogwistar_fake_embedding_function():
-    from src.workflow_ingest.providers import EmbeddingProviderConfig, build_embedding_function
+    from kg_doc_parser.workflow_ingest.providers import EmbeddingProviderConfig, build_embedding_function
 
     return build_embedding_function(
         EmbeddingProviderConfig(provider="fake", model="kg-doc-parser-workflow-embedding-v1", dimension=2)
@@ -151,8 +151,8 @@ def drain_phase1_indexes_with_workers_until_idle(
 def build_workflow_engine_triplet(base_dir: Path, backend_kind: str):
     import os
 
-    from src.workflow_ingest.providers import EmbeddingProviderConfig, WorkflowProviderSettings, build_embedding_function
-    from src.workflow_ingest.service import build_default_engines
+    from kg_doc_parser.workflow_ingest.providers import EmbeddingProviderConfig, WorkflowProviderSettings, build_embedding_function
+    from kg_doc_parser.workflow_ingest.service import build_default_engines
 
     if backend_kind == "in_memory":
         engines = build_default_engines(

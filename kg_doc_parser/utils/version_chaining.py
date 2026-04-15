@@ -1,6 +1,4 @@
-import sys
-import os, pathlib
-sys.path.insert(0, str((pathlib.Path(__file__).parent.parent).absolute()))
+import pathlib
 import logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -9,7 +7,7 @@ import os
 
 #import logging.handlers
 #logger.addHandler(logging.handlers.RotatingFileHandler(os.path.join('.', 'logs', __name__)))
-from utils.log import SQLiteHandler
+from .log import SQLiteHandler
 sqlite_handler = SQLiteHandler(os.path.join('.','logs', 'application_logs.db'))
 sqlite_handler.setLevel(logging.DEBUG)
 logger.addHandler(sqlite_handler)
@@ -1165,7 +1163,7 @@ def backfill_page_hashes(db: VersionChainDB, file_root, dpi: int = 300):
 
 
 if __name__ == "__main__":
-    from pdf2png import RawFileLoader
+    from ..pdf2png import RawFileLoader
     import pandas as pd
     in_compare_root = os.path.join('..', 'doc_data', 'raw_documents')
     loader = RawFileLoader(

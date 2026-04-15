@@ -50,7 +50,7 @@ from pydantic import BaseModel, Field
 from PIL import Image
 from pypdf import PdfReader
 
-from src.models import OCRClusterResponse, SplitPage, SplitPageMeta
+from ..models import OCRClusterResponse, SplitPage, SplitPageMeta
 
 from .adapters import OCRPageJSON, normalize_ocr_pages
 from .models import WorkflowIngestInput

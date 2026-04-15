@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 
-from src.workflow_ingest import (
+from kg_doc_parser.workflow_ingest import (
     OCRImagePayload,
     OCRWorkflowArtifacts,
     WorkflowProviderSettings,
@@ -17,9 +17,9 @@ from src.workflow_ingest import (
     parse_page_index_document,
     parse_tree_document,
 )
-from src.workflow_ingest import cli as workflow_cli
-from src.workflow_ingest import runners
-from src.workflow_ingest import parsing as parsing_api
+from kg_doc_parser.workflow_ingest import cli as workflow_cli
+from kg_doc_parser.workflow_ingest import runners
+from kg_doc_parser.workflow_ingest import parsing as parsing_api
 
 
 pytestmark = [pytest.mark.workflow]
@@ -184,7 +184,7 @@ def test_parse_tree_document_honors_explicit_provider_and_model(
         }
         return ("tree", {"source": "map"})
 
-    monkeypatch.setattr("src.semantic_document_splitting_layerwise_edits.parse_doc", _fake_parse_doc)
+    monkeypatch.setattr("kg_doc_parser.semantic_document_splitting_layerwise_edits.parse_doc", _fake_parse_doc)
     monkeypatch.setenv("KG_DOC_PARSER_PROVIDER", "gemini")
     monkeypatch.setenv("KG_DOC_PARSER_MODEL", "gemini-2.5-flash")
 
@@ -217,7 +217,7 @@ def test_parse_tree_document_uses_env_defaults_when_overrides_are_omitted(
         }
         return ("tree", {"source": "map"})
 
-    monkeypatch.setattr("src.semantic_document_splitting_layerwise_edits.parse_doc", _fake_parse_doc)
+    monkeypatch.setattr("kg_doc_parser.semantic_document_splitting_layerwise_edits.parse_doc", _fake_parse_doc)
     monkeypatch.setenv("KG_DOC_PARSER_PROVIDER", "ollama")
     monkeypatch.setenv("KG_DOC_PARSER_MODEL", "qwen3:4b")
 
@@ -275,8 +275,8 @@ def test_cli_ocr_command_uses_parse_ocr_document(monkeypatch: pytest.MonkeyPatch
 
         return _Run(final_state={}), _Bundle()
 
-    monkeypatch.setattr("src.workflow_ingest.parsing.parse_ocr_document", _fake_parse_ocr_document)
-    monkeypatch.setattr("src.workflow_ingest.ocr_pipeline.run_ingest_workflow", _fake_run_ingest_workflow)
+    monkeypatch.setattr("kg_doc_parser.workflow_ingest.parsing.parse_ocr_document", _fake_parse_ocr_document)
+    monkeypatch.setattr("kg_doc_parser.workflow_ingest.ocr_pipeline.run_ingest_workflow", _fake_run_ingest_workflow)
     monkeypatch.setattr(runners, "build_default_engines", _fake_build_default_engines)
 
     exit_code = workflow_cli.main(["ocr", str(source), "--output-dir", str(output_dir)])

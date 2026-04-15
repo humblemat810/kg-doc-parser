@@ -9,9 +9,9 @@ from uuid import uuid4
 
 import pytest
 
-from src.workflow_ingest import OCRWorkflowArtifacts, ProviderEndpointConfig, WorkflowProviderSettings
-from src.workflow_ingest import cli as workflow_cli
-from src.workflow_ingest import runners
+from kg_doc_parser.workflow_ingest import OCRWorkflowArtifacts, ProviderEndpointConfig, WorkflowProviderSettings
+from kg_doc_parser.workflow_ingest import cli as workflow_cli
+from kg_doc_parser.workflow_ingest import runners
 
 
 pytestmark = [pytest.mark.workflow]

@@ -4,7 +4,7 @@ import importlib.util
 
 import pytest
 
-from src.workflow_ingest import (
+from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     ProviderEndpointConfig,
     WorkflowProviderSettings,

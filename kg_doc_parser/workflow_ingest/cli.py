@@ -3,7 +3,7 @@ from __future__ import annotations
 """Command line entrypoints for reusable workflow ingest runners.
 
 The CLI is intentionally thin: it only parses arguments, builds provider
-settings, and calls the reusable runner helpers in `src.workflow_ingest.runners`.
+settings, and calls the reusable runner helpers in `kg_doc_parser.workflow_ingest.runners`.
 That keeps the API-first surface available to tests and orchestration code
 while still giving humans a simple command family to run locally.
 """

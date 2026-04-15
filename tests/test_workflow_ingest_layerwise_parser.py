@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 
 from _kogwistar_test_helpers import build_workflow_engine_triplet
-from src.workflow_ingest.models import (
+from kg_doc_parser.workflow_ingest.models import (
     CurrentLayerContext,
     CurrentLayerResult,
     CurrentLayerReview,
@@ -14,14 +14,14 @@ from src.workflow_ingest.models import (
     ParseSessionState,
     WorkflowIngestInput,
 )
-from src.workflow_ingest.parser_core import (
+from kg_doc_parser.workflow_ingest.parser_core import (
     initialize_parse_session,
     prepare_layer_frontier,
     review_layer,
     switch_split_strategy,
 )
-from src.workflow_ingest.semantics import HydratedTextPointer
-from src.workflow_ingest.service import run_ingest_workflow
+from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer
+from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
 
 
 pytestmark = [pytest.mark.workflow]
@@ -625,7 +625,7 @@ def test_legacy_compat_and_layerwise_paths_produce_equivalent_labels(workflow_ba
     text = inp.collections[0].pages[0].units[0].text or ""
 
     def _full_tree(*, collection, parser_input_dict, parser_source_map):
-        from src.workflow_ingest.semantics import SemanticNode
+        from kg_doc_parser.workflow_ingest.semantics import SemanticNode
 
         root = SemanticNode(
             node_id=f"{collection.collection_id}|root",

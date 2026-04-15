@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from src.workflow_ingest.models import (
+from kg_doc_parser.workflow_ingest.models import (
     CurrentLayerContext,
     CurrentLayerResult,
     CurrentLayerReview,
@@ -13,13 +13,13 @@ from src.workflow_ingest.models import (
     LayerDuplicateChildNote,
     LayerSpanConflict,
 )
-from src.workflow_ingest.parser_core import (
+from kg_doc_parser.workflow_ingest.parser_core import (
     check_layer_coverage,
     dedupe_and_filter_layer,
     detect_layer_invariants,
     repair_layer_candidates,
 )
-from src.workflow_ingest.semantics import HydratedTextPointer
+from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer
 
 
 pytestmark = [pytest.mark.workflow, pytest.mark.ci]

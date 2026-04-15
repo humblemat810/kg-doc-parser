@@ -14,10 +14,7 @@ from pypdf import PdfReader, PdfWriter
 import threading
 import pikepdf
 
-try:
-    from .utils.file_loaders import RawFileLoader
-except ImportError:  # pragma: no cover - supports top-level test imports
-    from src.utils.file_loaders import RawFileLoader
+from .utils.file_loaders import RawFileLoader
 
 def batch_split_pdf(document_folder: pathlib.Path | str | None = None, outfolder_path: str | pathlib.Path = "split_pages", exists_ok = 'skip', allowed_relative_paths: list[str] | None= None,
                     file_loader : RawFileLoader | None = None):
@@ -76,11 +73,6 @@ def batch_split_pdf(document_folder: pathlib.Path | str | None = None, outfolder
                     raise Exception("exhausted all pdf splitter")
         elif str(input_pdf).endswith('.docx'):
             continue
-            from src.utils.try_docx2pdf import docx_to_paged_pdfs_with_temp
-            loader = file_loader
-            out_full_dir = pathlib.Path(outfolder_path)/rel_path
-            f = rel_path
-            docx_to_paged_pdfs_with_temp(os.path.join(loader.compare_root, f), str(out_full_dir))
 
 
 def split_pdf_with_pikepdf(input_pdf_path, output_folder, exists_ok='skip'):
@@ -159,7 +151,7 @@ def batch_pdf2png(document_folder, outfolder_path = None, exists_ok = 'skip', al
     """
     if outfolder_path is None:
         outfolder_path = document_folder
-    from src.utils.bounded_threadpool_executor import BoundedExecutor
+    from kg_doc_parser.utils.bounded_threadpool_executor import BoundedExecutor
     bounded_executor = BoundedExecutor(max_workers= 2, max_pending= 5) # num of pdf
     # for pdf_file in os.listdir(document_folder):
     #     pdf_file : str

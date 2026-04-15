@@ -462,8 +462,8 @@ def run_layerwise_source_workflow(
     )
     if not source_path.is_dir():
         raise ValueError("layerwise workflow expects a directory of legacy OCR page artifacts")
-    from src.ocr import regen_doc
-    from src.semantic_document_splitting_layerwise_edits import (
+    from kg_doc_parser.ocr import regen_doc
+    from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
         semantic_tree_to_kge_payload as legacy_semantic_tree_to_kge_payload,
     )
 

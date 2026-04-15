@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from src.workflow_ingest import DemoHarnessConfig, run_demo_harness
+from kg_doc_parser.workflow_ingest import DemoHarnessConfig, run_demo_harness
 
 
 def main() -> None:

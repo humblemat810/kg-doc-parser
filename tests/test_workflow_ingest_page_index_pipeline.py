@@ -8,14 +8,14 @@ import pytest
 from joblib import Memory
 
 from _kogwistar_test_helpers import build_workflow_engine_triplet, drain_phase1_indexes_until_idle
-from src.workflow_ingest import (
+from kg_doc_parser.workflow_ingest import (
     PageIndexParseResult,
     ProviderEndpointConfig,
     WorkflowProviderSettings,
     parse_page_index_document,
 )
-from src.workflow_ingest.service import run_ingest_workflow
-from src.workflow_ingest.semantics import semantic_tree_to_kge_payload
+from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
+from kg_doc_parser.workflow_ingest.semantics import semantic_tree_to_kge_payload
 
 
 pytestmark = [pytest.mark.workflow]

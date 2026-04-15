@@ -11,10 +11,10 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 from _kogwistar_test_helpers import load_kogwistar_fake_backend
 from _kogwistar_test_helpers import drain_phase1_indexes_until_idle
-from src.workflow_ingest.models import WorkflowIngestInput
-from src.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-from src.workflow_ingest.providers import WorkflowProviderSettings, build_embedding_function
-from src.workflow_ingest.service import _TinyEmbeddingFunction, run_ingest_workflow
+from kg_doc_parser.workflow_ingest.models import WorkflowIngestInput
+from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
+from kg_doc_parser.workflow_ingest.providers import WorkflowProviderSettings, build_embedding_function
+from kg_doc_parser.workflow_ingest.service import _TinyEmbeddingFunction, run_ingest_workflow
 
 
 def _scratch(name: str) -> Path:

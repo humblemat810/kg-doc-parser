@@ -5,9 +5,7 @@ description = "doc parser using llm driven engine with graph knowledge awareness
 authors = ["humblemat810 <67593116+humblemat810@users.noreply.github.com>"]
 readme = "README.md"
 packages = [
-    { include = "kg_doc_parser" },
-    { include = "src" },
-    { include = "utils", from = "src" }
+    { include = "kg_doc_parser" }
 ]
 
 [tool.poetry.dependencies]
@@ -28,7 +26,7 @@ kogwistar = { git = "https://github.com/humblemat810/kogwistar.git", branch = "m
 fastmcp = "^3.2.3"
 
 [tool.poetry.scripts]
-workflow-ingest = "src.workflow_ingest.cli:main"
+workflow-ingest = "kg_doc_parser.workflow_ingest.cli:main"
 
 
 [build-system]

@@ -7,11 +7,11 @@ a semantic hierarchy (Knowledge Graph) from raw OCR data.
 
 Usage
 -----
->>> from src.semantic_document_splitting_layerwise_edits import parse_doc
+>>> from kg_doc_parser.semantic_document_splitting_layerwise_edits import parse_doc
 >>> # doc_data = {"file.pdf": [page1_ocr, page2_ocr...]}
 >>> document_tree, source_map = parse_doc(doc_id="my_doc", raw_doc_dict=doc_data)
 >>> # Convert to KGE Payload
->>> from src.semantic_document_splitting_layerwise_edits import semantic_tree_to_kge_payload
+>>> from kg_doc_parser.semantic_document_splitting_layerwise_edits import semantic_tree_to_kge_payload
 >>> graph_payload = semantic_tree_to_kge_payload(document_tree)
 
 Pipeline Flow
@@ -53,7 +53,7 @@ Data Structures
 
 2. HydratedTextPointer:
    - A specific span of text in the original OCR output.
-   - Links Semantic Nodes back to `TextCluster`s in `src.models`.
+   - Links Semantic Nodes back to `TextCluster`s in `kg_doc_parser.models`.
 
 3. Source Map Structure:
    - A lookup dictionary mapping unique cluster IDs to their original OCR data.
@@ -96,15 +96,9 @@ from rapidfuzz.distance import LCSseq
 from datetime import datetime
 from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory
-try:
-    from document_ingester_logger import DocumentIngestSQLiteCallback
-except ImportError:  # pragma: no cover
-    from src.document_ingester_logger import DocumentIngestSQLiteCallback
+from kg_doc_parser.document_ingester_logger import DocumentIngestSQLiteCallback
 from kogwistar.id_provider import stable_id
-try:
-    from workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
-except ImportError:  # pragma: no cover
-    from src.workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 
 def get_llm(model_name:str):
     settings = WorkflowProviderSettings.from_env()

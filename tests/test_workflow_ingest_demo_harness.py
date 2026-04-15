@@ -9,7 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from _kogwistar_test_helpers import load_kogwistar_fake_backend
-from src.workflow_ingest import (
+from kg_doc_parser.workflow_ingest import (
     DemoHarnessConfig,
     DocumentTreeApiPersistenceClient,
     EmbeddingProviderConfig,
@@ -20,7 +20,7 @@ from src.workflow_ingest import (
     build_embedding_function,
     run_demo_harness,
 )
-from src.workflow_ingest.demo_harness import _start_subprocess_server
+from kg_doc_parser.workflow_ingest.demo_harness import _start_subprocess_server
 
 
 def _scratch(name: str) -> Path:

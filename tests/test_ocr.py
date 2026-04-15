@@ -1,16 +1,13 @@
 import sys
 import os
 
-if True:
-    sys.path.append(os.path.join(".", "src"))
-
 import logging
 import pathlib
 if True:
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
 
-from utils.log import SQLiteHandler
+from kg_doc_parser.utils.log import SQLiteHandler
 if True:
     sqlite_handler = SQLiteHandler(os.path.join('.','logs', 'application_logs.db'))
     sqlite_handler.setLevel(logging.DEBUG)
@@ -20,10 +17,10 @@ if True:
 from typing import Optional, cast
 
 def test_batch_ocr_one_by_one(gemini_key):
-    from src.utils.bounded_threadpool_executor import BoundedExecutor
+    from kg_doc_parser.utils.bounded_threadpool_executor import BoundedExecutor
     bounded_executor = None# BoundedExecutor(max_workers= 6, max_pending= 100)
     try:
-        from ocr import batch_gemini_ocr_image
+        from kg_doc_parser.ocr import batch_gemini_ocr_image
         batch_gemini_ocr_image(gemini_key, bounded_executor=bounded_executor)
     except Exception as e:
         logger.error(str(e))
@@ -33,10 +30,10 @@ def test_batch_ocr_one_by_one(gemini_key):
         raise
     pass
 def test_batch_ocr_one_by_one_tree(gemini_key):
-    from utils.file_loaders import filter_folder
-    from src.utils.bounded_threadpool_executor import BoundedExecutor
+    from kg_doc_parser.utils.file_loaders import filter_folder
+    from kg_doc_parser.utils.bounded_threadpool_executor import BoundedExecutor
     bounded_executor = None# BoundedExecutor(max_workers= 3, max_pending= 12)
-    from utils.file_loaders import RawFileLoader
+    from kg_doc_parser.utils.file_loaders import RawFileLoader
     def _temp_check(x: str):
         tf = x.endswith('.png') and not os.path.exists(str(x)[:-len(pathlib.Path(x).suffix)] + '.json')
         return tf
@@ -77,7 +74,7 @@ def test_batch_ocr_one_by_one_tree(gemini_key):
         allowed_file_list = filter_folder()
         allowed_relative_paths += allowed_file_list
     try:
-        from ocr import batch_gemini_ocr_image
+        from kg_doc_parser.ocr import batch_gemini_ocr_image
         batch_gemini_ocr_image(gemini_key, 
                                folder=os.path.join("..", 'doc_data','split_pages'), 
                                bounded_executor=bounded_executor,
@@ -93,9 +90,9 @@ def test_batch_ocr_one_by_one_tree(gemini_key):
         raise
     pass
 def test_batch_ocr(gemini_key):
-    from src.utils.bounded_threadpool_executor import BoundedExecutor
+    from kg_doc_parser.utils.bounded_threadpool_executor import BoundedExecutor
     bounded_executor = BoundedExecutor(max_workers= 3, max_pending= 100)
-    from utils.file_loaders import RawFileLoader
+    from kg_doc_parser.utils.file_loaders import RawFileLoader
     def _temp_check(x: str):
         tf = x.endswith('.png') # and not os.path.exists(str(x)[:-len(pathlib.Path(x).suffix)] + '.json')
         return tf

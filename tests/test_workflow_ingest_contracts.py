@@ -10,15 +10,15 @@ from _kogwistar_test_helpers import (
     drain_phase1_indexes_until_idle,
     drain_phase1_indexes_with_workers_until_idle,
 )
-from src.workflow_ingest.clients import ServerCanonicalKgClient, UnsupportedClientOperation
-from src.workflow_ingest.adapters import (
+from kg_doc_parser.workflow_ingest.clients import ServerCanonicalKgClient, UnsupportedClientOperation
+from kg_doc_parser.workflow_ingest.adapters import (
     build_authoritative_source_map,
     normalize_ocr_pages,
 )
-from src.workflow_ingest.design import build_ingest_workflow_design
-from src.workflow_ingest.models import GroundedSourceRecord, SourceUnit, WorkflowExportBundle, WorkflowIngestInput
-from src.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-from src.workflow_ingest.service import run_ingest_workflow
+from kg_doc_parser.workflow_ingest.design import build_ingest_workflow_design
+from kg_doc_parser.workflow_ingest.models import GroundedSourceRecord, SourceUnit, WorkflowExportBundle, WorkflowIngestInput
+from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
+from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
 
 
 pytestmark = [pytest.mark.workflow]

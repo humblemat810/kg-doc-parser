@@ -65,9 +65,9 @@ import pytest
 from PIL import Image, ImageDraw
 
 from _kogwistar_test_helpers import build_workflow_engine_triplet, drain_phase1_indexes_until_idle
-from src.models import OCRClusterResponse, TextCluster
-from src.ocr import regen_doc
-from src.workflow_ingest import (
+from kg_doc_parser.models import OCRClusterResponse, TextCluster
+from kg_doc_parser.ocr import regen_doc
+from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     OCRImagePayload,
     ProviderEndpointConfig,
@@ -75,8 +75,8 @@ from src.workflow_ingest import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
-from src.workflow_ingest.ocr_pipeline import _compute_input_fingerprint, _resolve_ocr_source_plan
-from src.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
+from kg_doc_parser.workflow_ingest.ocr_pipeline import _compute_input_fingerprint, _resolve_ocr_source_plan
+from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 
 
 pytestmark = [pytest.mark.workflow]

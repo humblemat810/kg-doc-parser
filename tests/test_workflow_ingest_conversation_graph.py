@@ -13,11 +13,11 @@ from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
 )
-from src.workflow_ingest.design import DEFAULT_WORKFLOW_ID, ensure_ingest_workflow_design
-from src.workflow_ingest.handlers import build_ingest_step_resolver
-from src.workflow_ingest.models import WorkflowIngestInput
-from src.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-from src.workflow_ingest.service import run_ingest_workflow
+from kg_doc_parser.workflow_ingest.design import DEFAULT_WORKFLOW_ID, ensure_ingest_workflow_design
+from kg_doc_parser.workflow_ingest.handlers import build_ingest_step_resolver
+from kg_doc_parser.workflow_ingest.models import WorkflowIngestInput
+from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
+from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
 
 
 pytestmark = [pytest.mark.workflow]

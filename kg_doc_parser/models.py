@@ -18,7 +18,7 @@ Physical Layer (OCR)
 
 Resultant Knowledge Graph Structure
 -----------------------------------
-The semantic parsing pipeline (`src.semantic_document_splitting_layerwise_edits`) transforms
+The semantic parsing pipeline (`kg_doc_parser.semantic_document_splitting_layerwise_edits`) transforms
 these physical models into a Knowledge Graph.
 
     [SemanticNode] (Entity)

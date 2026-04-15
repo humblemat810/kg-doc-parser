@@ -10,7 +10,7 @@ import base64
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import Runnable
-from src.models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
+from .models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
 from typing import Any, Iterable, cast, Callable, Optional,  Literal, Union
 try:
     from typing import TypeAlias
@@ -28,14 +28,10 @@ from pydantic import BaseModel, Field, model_validator, field_validator, field_s
 from langchain_core.messages import SystemMessage, BaseMessage, HumanMessage
 from langchain_core.language_models import BaseChatModel
 try:
-    from workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+    from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 except ImportError:  # pragma: no cover
-    from src.workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
-
-try:
-    from pdf2png import RawFileLoader
-except ImportError:  # pragma: no cover
-    from src.pdf2png import RawFileLoader
+    from kg_doc_parser.pdf2png import RawFileLoader
+from .pdf2png import RawFileLoader
 PastCompatibleSplitPage: TypeAlias = SplitPage
 
 
@@ -399,7 +395,7 @@ def TextBoxResponsePlusMetaResponse_to_OCRClusterResponse(raw_response: TextBoxR
                                                              "bb_x_max" : i['bounding_box'][3],
                                                              "cluster_number" : i['id']}) for i in non_text_blocks]
     return OCRClusterResponse.model_validate(temp)
-from src.utils.langchain import GeminiCostCallbackHandler
+from .utils.langchain import GeminiCostCallbackHandler
 def refine_image_response(ok2, response_dict, outfile_name, image_file_path, model_names, cb: GeminiCostCallbackHandler):
     
         # if allow_page_refine and (not preexisting):
@@ -433,7 +429,7 @@ def refine_image_response(ok2, response_dict, outfile_name, image_file_path, mod
                     refined = refine_table_ocr(response_dict, llm = llm, cb = cb, error_messages=error_messages)
                     ok2 = True
                 except Exception as e:
-                    from src.utils.log import safe_format_exception
+                    from .utils.log import safe_format_exception
                     e_prompt = safe_format_exception(e)
                     error_message = SystemMessage("post process error raised:\n"
                                                     f"{e_prompt[-10000:]}"
@@ -519,7 +515,7 @@ def ocr_single_image(gemini_key: str, page_file_name, file_name,
     ok = False
     i_model = 0
     usage_metadata = []
-    from utils.langchain import get_gemini_callback_cost
+    from .utils.langchain import get_gemini_callback_cost
     response_dict: dict = {}
     image_file_path: str = os.path.join(folder, file_name, page_file_name)
     with get_gemini_callback_cost() as cb:
@@ -537,7 +533,7 @@ def ocr_single_image(gemini_key: str, page_file_name, file_name,
                     ok = True
                     # chain_new_raw = llm.with_structured_output(RawOCRResponse, include_raw = True)
                 except Exception as e:
-                    from src.utils.log import safe_format_exception
+                    from .utils.log import safe_format_exception
                     e_prompt = safe_format_exception(e)
                     error_message = SystemMessage("post process error raised:\n"
                                                     f"{e_prompt[-10000:]}"
@@ -663,9 +659,9 @@ def regen_doc_group(folder_path, use_raw = False):
     return DocumentGroup(**{"documents": doc_group})
 
 try:
-    from utils.bounded_threadpool_executor import BoundedExecutor
+    from .utils.bounded_threadpool_executor import BoundedExecutor
 except ImportError:  # pragma: no cover
-    from src.utils.bounded_threadpool_executor import BoundedExecutor
+    from .utils.bounded_threadpool_executor import BoundedExecutor
 
 
 def get_legacy_loader_like(folder: str, allowed_relative_paths: str | Any):

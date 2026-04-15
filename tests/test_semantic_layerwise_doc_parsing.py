@@ -1,5 +1,4 @@
 import sys, pathlib
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 
         
@@ -116,7 +115,7 @@ def _load_version_chain_db():
     the affected tests should be skipped rather than failing during import.
     """
     try:
-        from src.utils.version_chaining import VersionChainDB
+        from kg_doc_parser.utils.version_chaining import VersionChainDB
     except ModuleNotFoundError:
         pytest.skip("legacy VersionChainDB helper is not available in this checkout")
     return VersionChainDB
@@ -196,10 +195,10 @@ def test_iterative_pointer_correction_uses_active_parser_model(monkeypatch: pyte
 
     logger_stub.DocumentIngestSQLiteCallback = _NoopDocumentIngestSQLiteCallback
     monkeypatch.setitem(sys.modules, "document_ingester_logger", logger_stub)
-    monkeypatch.setitem(sys.modules, "src.document_ingester_logger", logger_stub)
-    sys.modules.pop("src.semantic_document_splitting_layerwise_edits", None)
+    monkeypatch.setitem(sys.modules, "kg_doc_parser.document_ingester_logger", logger_stub)
+    sys.modules.pop("kg_doc_parser.semantic_document_splitting_layerwise_edits", None)
 
-    parsing_module = importlib.import_module("src.semantic_document_splitting_layerwise_edits")
+    parsing_module = importlib.import_module("kg_doc_parser.semantic_document_splitting_layerwise_edits")
 
     HydratedTextPointer = parsing_module.HydratedTextPointer
     LLMChildNodeResponseBE = parsing_module.LLMChildNodeResponseBE
@@ -248,7 +247,7 @@ def _run_post_ocr_semantic_smoke_case(
     doc_selector,
     cache_key: str,
 ) -> None:
-    from src.utils.file_loaders import RawFileLoader
+    from kg_doc_parser.utils.file_loaders import RawFileLoader
     import os
     import json
     from joblib import Memory
@@ -261,14 +260,14 @@ def _run_post_ocr_semantic_smoke_case(
         filtering_callbacks=[doc_selector],
         include=["dirs"],
     )
-    from src.semantic_document_splitting_layerwise_edits import (
+    from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
         parse_doc,
         semantic_tree_to_kge_payload,
         kge_payload_to_semantic_tree,
         build_index_terms_for_semantic_node,
         all_child_from_root,
     )
-    from src.ocr import regen_doc
+    from kg_doc_parser.ocr import regen_doc
 
     memory = Memory(
         location=os.path.join(
@@ -396,7 +395,7 @@ def test_semantic_document_splitting(gemini_key, monkeypatch, parser_provider, m
     - if the server cannot bind or never reaches ``/health``, the test skips
       with a diagnostic explaining whether any candidate port is listening.
     """
-    from src.utils.file_loaders import RawFileLoader, find_folders_two_levels_from_leaves_mem_optimized
+    from kg_doc_parser.utils.file_loaders import RawFileLoader, find_folders_two_levels_from_leaves_mem_optimized
     import os
     def filter_callback (file_path):
         # folder at least have some page ocr that ends with .json
@@ -415,13 +414,13 @@ def test_semantic_document_splitting(gemini_key, monkeypatch, parser_provider, m
                            filtering_callbacks = [filter_callback],
                            include = ['dirs']
                            )
-    from src.semantic_document_splitting_layerwise_edits import (parse_doc, 
+    from kg_doc_parser.semantic_document_splitting_layerwise_edits import (parse_doc, 
                                                                  semantic_tree_to_kge_payload, 
                                                                  kge_payload_to_semantic_tree,
                                                                  build_index_terms_for_semantic_node,
                                                                  all_child_from_root,
                                                                  SemanticNode)
-    from src.ocr import regen_doc
+    from kg_doc_parser.ocr import regen_doc
     from joblib import Memory
     import uuid, os
     memory = Memory(
@@ -585,7 +584,7 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
     cacheless rerun, especially when retrying the manual Gemini case.
     """
     from pdf2png import batch_split_pdf
-    from src.utils.file_loaders import RawFileLoader
+    from kg_doc_parser.utils.file_loaders import RawFileLoader
     import os
     from functools import lru_cache
     from joblib import Memory
@@ -634,14 +633,14 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
     splitted_folder = (pathlib.Path(os.getcwd()).parent / "doc_data" / "split_pages").absolute()
     batch_split_pdf(file_loader=selected_loader, outfolder_path=splitted_folder, exists_ok="skip")
 
-    from semantic_document_splitting_layerwise_edits import (
+    from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
         parse_doc,
         semantic_tree_to_kge_payload,
         kge_payload_to_semantic_tree,
         build_index_terms_for_semantic_node,
         all_child_from_root,
     )
-    from src.ocr import regen_doc
+    from kg_doc_parser.ocr import regen_doc
 
     memory = Memory(location=".joblib")
     for f in selected_loader:
@@ -706,7 +705,7 @@ def test_semantic_document_splitting_doc_group(gemini_key, monkeypatch, parser_p
     for a fresh cacheless rerun, especially when retrying the manual Gemini
     case.
     """
-    from src.utils.file_loaders import RawFileLoader
+    from kg_doc_parser.utils.file_loaders import RawFileLoader
     import os
     from functools import lru_cache
     from joblib import Memory
@@ -730,14 +729,14 @@ def test_semantic_document_splitting_doc_group(gemini_key, monkeypatch, parser_p
         include=["files"],
     )
 
-    from semantic_document_splitting_layerwise_edits import (
+    from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
         parse_doc,
         semantic_tree_to_kge_payload,
         kge_payload_to_semantic_tree,
         build_index_terms_for_semantic_node,
         all_child_from_root,
     )
-    from src.ocr import regen_doc_group
+    from kg_doc_parser.ocr import regen_doc_group
 
     memory = Memory(location=".joblib")
     VersionChainDB = _load_version_chain_db()

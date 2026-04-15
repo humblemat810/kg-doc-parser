@@ -1,8 +1,6 @@
 
 import sys
 import os
-if True:    
-    sys.path.append(os.path.join(".", "src"))
 import pytest
 import logging
 
@@ -11,7 +9,7 @@ if True:
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
 
-from utils.log import SQLiteHandler
+from kg_doc_parser.utils.log import SQLiteHandler
 if True:
     sqlite_handler = SQLiteHandler(os.path.join('.','logs', 'application_logs.db'))
     sqlite_handler.setLevel(logging.DEBUG)
@@ -31,7 +29,7 @@ async def test_regen_doc_group_and_send_to_engine_for_storing():
         type: str = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
         metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata for the document")
 
-    from ocr import regen_doc_group
+    from kg_doc_parser.ocr import regen_doc_group
     graph_rag_port = 28110
     folder_path = os.path.join("..","doc_data","split_pages","Document Samples - cleaned","Samples for sending","Document 2 - Ficticious")
     

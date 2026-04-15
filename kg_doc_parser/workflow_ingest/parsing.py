@@ -209,7 +209,7 @@ def parse_tree_document(
         "KG_DOC_PARSER_LOCATION": settings.parser.location,
         "KG_DOC_PARSER_MAX_RETRIES": str(settings.parser.max_retries),
     }
-    from src.semantic_document_splitting_layerwise_edits import parse_doc as legacy_parse_doc
+    from kg_doc_parser.semantic_document_splitting_layerwise_edits import parse_doc as legacy_parse_doc
 
     with _temporary_env(env_overrides):
         return legacy_parse_doc(

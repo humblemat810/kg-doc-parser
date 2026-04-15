@@ -1,16 +1,13 @@
 import sys
 import os
 
-if True:
-    sys.path.append(os.path.join(".", "src"))
-
 import logging
 import pathlib
 if True:
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
 
-from utils.log import SQLiteHandler
+from kg_doc_parser.utils.log import SQLiteHandler
 if True:
     sqlite_handler = SQLiteHandler(os.path.join('.','logs', 'application_logs.db'))
     sqlite_handler.setLevel(logging.DEBUG)
@@ -19,7 +16,7 @@ if True:
 
     
 def test_batch_split_pdf():
-    from pdf2png import batch_split_pdf
+    from kg_doc_parser.pdf2png import batch_split_pdf
     
     #test_doc_dir = pathlib.Path(__file__).parent/"test_documents"
     # splitted_folder = (pathlib.Path('.')/ "split_pages").absolute()
@@ -27,11 +24,11 @@ def test_batch_split_pdf():
     splitted_folder = (pathlib.Path(os.getcwd()).parent/"doc_data"/ "split_pages").absolute()
     batch_split_pdf(test_doc_dir, splitted_folder, exists_ok='skip')
 def test_batch_split_pdf_tree_with_filter():
-    from pdf2png import batch_split_pdf
+    from kg_doc_parser.pdf2png import batch_split_pdf
     import os
     # test_doc_dir=pathlib.Path(os.getcwd()).parent/"doc_data"/"raw_documents"
     # allowed_relative_paths = []
-    from utils.file_loaders import RawFileLoader
+    from kg_doc_parser.utils.file_loaders import RawFileLoader
     loader = RawFileLoader(env_flist_path=None, #'split_raw_file_list', 
                            walk_root=os.path.join('..', 'doc_data', 'raw_documents', 'updated assets-20251024T020813Z-1-001'),
                            compare_root = os.path.join('..', 'doc_data', 'raw_documents')
@@ -47,7 +44,7 @@ def test_batch_split_pdf_tree_with_filter():
 
 def test_raw_file_loader():
     
-    from utils.file_loaders import RawFileLoader
+    from kg_doc_parser.utils.file_loaders import RawFileLoader
     loader = RawFileLoader(env_flist_path='split_raw_file_list', walk_root=os.path.join('..', 'doc_data', 'raw_documents', 'Active Vendors_230625'),
                            compare_root = os.path.join('..', 'doc_data', 'raw_documents')
                            )
@@ -58,7 +55,7 @@ def test_batch_pdf_to_png():
     import pathlib
     pathlib.Path(__file__).parent
     abs_pdf_path = os.path.abspath(os.path.join('.', 'split_pages'))
-    from pdf2png import batch_pdf2png
+    from kg_doc_parser.pdf2png import batch_pdf2png
     batch_pdf2png(abs_pdf_path, exists_ok="skip")
 def test_batch_pdf_to_png_tree_with_filter():
     import os
@@ -71,10 +68,10 @@ def test_batch_pdf_to_png_tree_with_filter():
         use_folder = int(pathlib.Path(file_path).parts[-2].rsplit('.')[-1]) <= 4 #or pathlib.Path(file_path).parts[-2].startswith("QLD")
         return use_folder
     
-    from pdf2png import batch_pdf2png
+    from kg_doc_parser.pdf2png import batch_pdf2png
     # allowed_file_list = filter_folder() # by page
     allowed_file_list = []
-    from utils.file_loaders import RawFileLoader, find_folders_two_levels_from_leaves_mem_optimized
+    from kg_doc_parser.utils.file_loaders import RawFileLoader, find_folders_two_levels_from_leaves_mem_optimized
     loader = RawFileLoader(env_flist_path=None, #'split_raw_file_list', 
                            walk_root=os.path.join('..', 'doc_data', 'split_pages', 'jds'),
                            compare_root = os.path.join('..', 'doc_data', 'split_pages'),

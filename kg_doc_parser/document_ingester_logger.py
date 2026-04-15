@@ -16,10 +16,7 @@ Why this design:
 --------------------------------------------------------------------------------
 RECOMMENDED USAGE (per-document metadata; safe for concurrency)
 
-try:
-    from workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
-except ImportError:  # pragma: no cover
-    from src.workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 from document_ingest_logger import DocumentIngestSQLiteCallback
 
 cb = DocumentIngestSQLiteCallback(db_path="logs/document_ingest.sqlite")
