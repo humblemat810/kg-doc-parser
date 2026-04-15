@@ -5,6 +5,7 @@ description = "doc parser using llm driven engine with graph knowledge awareness
 authors = ["humblemat810 <67593116+humblemat810@users.noreply.github.com>"]
 readme = "README.md"
 packages = [
+    { include = "kg_doc_parser" },
     { include = "src" },
     { include = "utils", from = "src" }
 ]
