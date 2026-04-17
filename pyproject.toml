@@ -7,10 +7,18 @@ readme = "README.md"
 packages = [
     { include = "kg_doc_parser" }
 ]
+homepage = "https://github.com/humblemat810/kg_doc_parser"
+repository = "https://github.com/humblemat810/kg_doc_parser"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+    "Topic :: Text Processing :: General",
+]
 
 [tool.poetry.dependencies]
 python = "^3.13"
-pytest = "^9.0.2"
 pydantic = "^2.12.5"
 joblib = "^1.5.3"
 pdf2image = "^1.17.0"
@@ -22,8 +30,11 @@ langchain-google-genai = "^4.1.2"
 pydantic-extension = "^0.0.7"
 rapidfuzz = "^3.14.3"
 mcp = "^1.25.0"
-kogwistar = { git = "https://github.com/humblemat810/kogwistar.git", branch = "main" }
+kogwistar = "^0.2.0"
 fastmcp = "^3.2.3"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.0.2"
 
 [tool.poetry.scripts]
 workflow-ingest = "kg_doc_parser.workflow_ingest.cli:main"
