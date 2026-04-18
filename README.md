@@ -1,10 +1,10 @@
-# Kogwistar-docparser 
+# Kogwistar Graph-Knowledge Doc Pipeline
 
 If you want the shortest path into the project, start with [QUICKSTART.md](QUICKSTART.md).
 
-## Graph Knowledge Doc Parser
+## Graph Knowledge Doc Pipeline
 
-Utilities and experiments for document ingestion, PDF splitting, OCR, and page-level parsing. Refactored from the kogwistar project as a stand alone ingestor.
+Utilities and experiments for document ingestion, PDF splitting, OCR, page-level parsing, and conversion into graph-knowledge artifacts that the Obsidian sink and downstream Kogwistar workflows can consume. Refactored from the kogwistar project as a standalone ingestion-to-graph pipeline.
 
 ## Status
 
@@ -26,11 +26,25 @@ The reusable workflow-ingest code now has three layers:
 
 - Python APIs, which are the primary contract for tests and orchestration
 - CLI entrypoints, which are thin wrappers around those APIs
-- composable subworkflows for OCR, page-index parsing, and recursive layerwise parsing
+- composable subworkflows for OCR, page-index parsing, recursive layerwise parsing, and graph-knowledge conversion
 
 The reusable helpers live under `src/workflow_ingest/` and are designed so the
 same core logic can be called from tests, scripts, and higher-level workflow
 code without duplicating orchestration.
+
+## CLI Cheatsheet
+
+| Command | What it does | Main tests |
+|---|---|---|
+| `workflow-ingest ocr <source> --output-dir <dir>` | Runs OCR over a file or folder and writes OCR artifacts | `tests/test_workflow_ingest_parsing_api.py`, `tests/test_workflow_ingest_cli.py` |
+| `workflow-ingest page-index <source> --output-dir <dir>` | Parses page-index text into structured graph input | `tests/test_workflow_ingest_parsing_api.py`, `tests/test_workflow_ingest_cli.py` |
+| `workflow-ingest layerwise <source> --output-dir <dir>` | Runs the recursive layerwise parser workflow | `tests/test_workflow_ingest_layerwise_parser.py`, `tests/test_workflow_ingest_cli.py` |
+| `workflow-ingest demo --output-dir <dir>` | Runs the end-to-end demo harness and writes run artifacts | `tests/test_workflow_ingest_demo_harness.py` |
+| `workflow-ingest ocr-smoke-assets --output-dir <dir>` | Generates local OCR smoke assets for manual or automated runs | `tests/test_workflow_ingest_cli.py` |
+
+For a quick sanity check, `workflow-ingest --help` shows the full command tree,
+and `workflow-ingest demo --help` shows the demo-specific options without
+writing any artifacts.
 
 ### CLI Commands
 
@@ -44,6 +58,26 @@ workflow-ingest layerwise --help
 workflow-ingest demo --help
 workflow-ingest ocr-smoke-assets --help
 ```
+
+To inspect the demo harness options:
+
+```powershell
+workflow-ingest demo --help
+```
+
+To actually run the demo harness, use:
+
+```powershell
+workflow-ingest demo --output-dir logs\workflow_ingest_demo
+```
+
+Then open the output directory:
+
+```powershell
+explorer logs\workflow_ingest_demo
+```
+
+That directory contains the probe trail, summary JSON, cache directory, and the local engine/server data for the run.
 
 If you want the local checked-out `./kogwistar` subtree to win over the GitHub
 dependency during development, run the Bash bootstrap helper after install:

@@ -39,6 +39,34 @@ workflow-ingest demo --help
 workflow-ingest ocr-smoke-assets --help
 ```
 
+CLI cheatsheet:
+
+| Command | Use when you want | Main tests |
+|---|---|---|
+| `workflow-ingest ocr <source> --output-dir <dir>` | OCR a file or folder and write inspectable artifacts | `tests/test_workflow_ingest_parsing_api.py`, `tests/test_workflow_ingest_cli.py` |
+| `workflow-ingest page-index <source> --output-dir <dir>` | Parse page-index text into structured output | `tests/test_workflow_ingest_parsing_api.py`, `tests/test_workflow_ingest_cli.py` |
+| `workflow-ingest layerwise <source> --output-dir <dir>` | Run recursive layerwise parsing | `tests/test_workflow_ingest_layerwise_parser.py`, `tests/test_workflow_ingest_cli.py` |
+| `workflow-ingest demo --output-dir <dir>` | Run the end-to-end demo harness | `tests/test_workflow_ingest_demo_harness.py` |
+| `workflow-ingest ocr-smoke-assets --output-dir <dir>` | Generate local smoke assets for OCR testing | `tests/test_workflow_ingest_cli.py` |
+
+`workflow-ingest demo --help` only prints the demo harness options. It does not
+create artifacts.
+
+To run the demo harness and produce files you can inspect, use:
+
+```powershell
+workflow-ingest demo --output-dir logs\workflow_ingest_demo
+```
+
+Then open:
+
+```powershell
+explorer logs\workflow_ingest_demo
+```
+
+That directory contains the run summary, probe trail, cache directory, and the
+local engine/server data for the demo.
+
 Common commands:
 
 ```powershell
