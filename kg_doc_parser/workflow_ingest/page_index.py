@@ -34,7 +34,7 @@ tests/test_workflow_ingest_page_index_pipeline.py::test_page_index_ollama_smoke_
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
@@ -51,10 +51,19 @@ PageIndexNodeType = Literal["SECTION", "SUBSECTION", "PARAGRAPH", "TERM"]
 class PageIndexBlockSpec(BaseModel):
     """Recursive structural block emitted by the page-index parser."""
 
-    title: str
-    node_type: PageIndexNodeType
-    excerpt: str
-    child_nodes: list["PageIndexBlockSpec"] = Field(default_factory=list)
+    title: str = Field(
+        description="Short label for this block, usually the heading text or a concise paragraph label."
+    )
+    node_type: PageIndexNodeType = Field(
+        description="One of SECTION, SUBSECTION, PARAGRAPH, or TERM. Preserve hierarchy depth, do not flatten it."
+    )
+    excerpt: str = Field(
+        description="A short verbatim excerpt from the source page that grounds this block. Do not use the whole page text; keep it tight and exact."
+    )
+    child_nodes: list["PageIndexBlockSpec"] = Field(
+        default_factory=list,
+        description="Direct children only. Use nested children for substructure; do not duplicate the same excerpt across siblings.",
+    )
 
 
 PageIndexBlockSpec.model_rebuild()
@@ -256,40 +265,98 @@ def _llm_page_outline(
     page_number: int,
     source_format: PageIndexSourceFormat,
     provider_settings: WorkflowProviderSettings,
+    trace_log: Callable[[str], None] | None = None,
 ) -> list[PageIndexBlockSpec]:
+    if trace_log is not None:
+        trace_log(f"page_index_llm_chat_build_start page_number={page_number}")
     chat = build_chat_model_for_role("parser", provider_settings)
+    if trace_log is not None:
+        trace_log(f"page_index_llm_chat_build_done page_number={page_number}")
+        trace_log(f"page_index_llm_structured_wrap_start page_number={page_number}")
     structured = chat.with_structured_output(PageIndexBlockSpec, include_raw=True)
+    if trace_log is not None:
+        trace_log(f"page_index_llm_structured_wrap_done page_number={page_number}")
     from langchain_core.messages import HumanMessage, SystemMessage
 
     prompt = (
         "You are a document parser for a page-index pipeline.\n"
         "Return a hierarchy of section, subsection, paragraph, and term blocks.\n"
+        "Follow the same general shape as a good heuristic page-index parse: headings become SECTION or SUBSECTION, prose paragraphs stay grouped under the nearest heading, and short named list items may become TERM.\n"
         "Prefer a deeper tree when the document contains nested numbering, subclauses, or subheadings.\n"
         "Do not flatten nested structure into one section with many children if the text supports a parent/child relationship.\n"
-        "Treat headings and numbered clauses as hierarchy cues: page title > section > subsection > paragraph > term.\n"
-        "Keep paragraphs grouped under the nearest heading, and keep terms nested under the clause or subsection they belong to.\n"
+        "Do not repeat the same excerpt across multiple sibling children.\n"
+        "Do not use the whole page text as an excerpt for any block.\n"
+        "Each excerpt should be a small grounded slice of text, usually a phrase, sentence, or short paragraph, not the pre-parse document body.\n"
+        "Each child node must cover a distinct span of source text and stay grounded in the page text.\n"
+        "Keep children nested under the nearest heading or clause that actually owns them.\n"
         "Use verbatim excerpts from the supplied page text.\n"
         f"Source format: {source_format}\n"
         f"Page number: {page_number}\n"
         "Do not invent content. Keep excerpts short but exact."
     )
+    example = (
+        "Example shape:\n"
+        "{\n"
+        '  "title": "Page 1",\n'
+        '  "node_type": "SECTION",\n'
+        '  "excerpt": "Watershed resilience overview.",\n'
+        '  "child_nodes": [\n'
+        "    {\n"
+        '      "title": "Finding 1",\n'
+        '      "node_type": "PARAGRAPH",\n'
+        '      "excerpt": "Inspection notes describe basin capacity and runoff.",\n'
+        '      "child_nodes": []\n'
+        "    },\n"
+        "    {\n"
+        '      "title": "Maintenance",\n'
+        '      "node_type": "SUBSECTION",\n'
+        '      "excerpt": "Maintenance actions are staged by priority.",\n'
+        '      "child_nodes": [\n'
+        "        {\n"
+        '          "title": "Pump checks",\n'
+        '          "node_type": "TERM",\n'
+        '          "excerpt": "pump checks",\n'
+        '          "child_nodes": []\n'
+        "        }\n"
+        "      ]\n"
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    )
+    if trace_log is not None:
+        trace_log(f"page_index_llm_prompt_ready page_number={page_number}")
+    if trace_log is not None:
+        trace_log(
+            f"page_index_llm_invoke_start page_number={page_number} source_format={source_format}"
+        )
     payload = structured.invoke(
         [
             SystemMessage(content=prompt),
+            SystemMessage(content=example),
             HumanMessage(content=page_text),
         ]
     )
+    if trace_log is not None:
+        trace_log(f"page_index_llm_invoke_end page_number={page_number}")
     parsed = payload.get("parsed") if isinstance(payload, dict) else payload
     if parsed is None:
         error = payload.get("parsing_error") if isinstance(payload, dict) else None
         raise ValueError(f"ollama page index parse failed: {error!r}")
     if isinstance(parsed, PageIndexBlockSpec):
-        return [parsed]
-    if isinstance(parsed, list):
-        return [PageIndexBlockSpec.model_validate(item) for item in parsed]
-    if isinstance(parsed, dict) and "child_nodes" in parsed:
-        return [PageIndexBlockSpec.model_validate(parsed)]
-    raise TypeError(f"unexpected ollama page index payload: {type(parsed)!r}")
+        parsed_list = [parsed]
+    elif isinstance(parsed, list):
+        parsed_list = [PageIndexBlockSpec.model_validate(item) for item in parsed]
+    elif isinstance(parsed, dict) and "child_nodes" in parsed:
+        parsed_list = [PageIndexBlockSpec.model_validate(parsed)]
+    else:
+        raise TypeError(f"unexpected ollama page index payload: {type(parsed)!r}")
+    if any(_page_index_block_exceeds_excerpt_budget(item, page_text) for item in parsed_list) or any(
+        _page_index_block_is_too_generic(item, page_text) for item in parsed_list
+    ):
+        if trace_log is not None:
+            trace_log(f"page_index_llm_overlong_excerpt_fallback page_number={page_number}")
+        return _heuristic_page_outline(page_text, page_number=page_number, source_format=source_format)
+    return parsed_list
 
 
 def _find_page_unit(authoritative_source_map: dict[str, GroundedSourceRecord], page_number: int) -> tuple[str, str]:
@@ -371,6 +438,50 @@ def _materialize_block_tree(
     return nodes, cursor
 
 
+def _page_index_block_exceeds_excerpt_budget(spec: PageIndexBlockSpec, page_text: str) -> bool:
+    page_text_norm = page_text.strip()
+    excerpt_norm = spec.excerpt.strip()
+    if not excerpt_norm:
+        return True
+    if excerpt_norm == page_text_norm:
+        return True
+    if len(excerpt_norm) > max(240, int(len(page_text_norm) * 0.75)):
+        return True
+    return any(_page_index_block_exceeds_excerpt_budget(child, page_text) for child in spec.child_nodes)
+
+
+def _page_index_block_is_too_generic(
+    spec: PageIndexBlockSpec,
+    page_text: str,
+    *,
+    ancestor_excerpts: tuple[str, ...] = (),
+) -> bool:
+    def _normalize(text: str) -> str:
+        return " ".join(text.split()).strip().lower()
+
+    page_text_norm = _normalize(page_text)
+    excerpt_norm = _normalize(spec.excerpt)
+    if not excerpt_norm:
+        return True
+    if excerpt_norm == page_text_norm:
+        return True
+    if excerpt_norm in ancestor_excerpts:
+        return True
+    if len(spec.child_nodes) > 1:
+        child_norms = [_normalize(child.excerpt) for child in spec.child_nodes if _normalize(child.excerpt)]
+        if len(child_norms) != len(spec.child_nodes):
+            return True
+        if len(set(child_norms)) == 1:
+            return True
+    if len(excerpt_norm) > max(240, int(len(page_text_norm) * 0.75)):
+        return True
+    next_ancestors = ancestor_excerpts + (excerpt_norm,)
+    return any(
+        _page_index_block_is_too_generic(child, page_text, ancestor_excerpts=next_ancestors)
+        for child in spec.child_nodes
+    )
+
+
 def parse_page_index_document(
     *,
     document_id: str,
@@ -379,6 +490,7 @@ def parse_page_index_document(
     source_format: PageIndexSourceFormat = "text",
     mode: PageIndexMode = "heuristic",
     provider_settings: WorkflowProviderSettings | None = None,
+    trace_log: Callable[[str], None] | None = None,
 ) -> PageIndexParseResult:
     """Parse a plain text or Markdown document into a page-index semantic tree."""
 
@@ -404,6 +516,10 @@ def parse_page_index_document(
     root_pointers: list[HydratedTextPointer] = []
     page_nodes: list[SemanticNode] = []
     for page_number, (unit_id, record) in enumerate(page_units, start=1):
+        if trace_log is not None:
+            trace_log(
+                f"page_index_page_start page_number={page_number} unit_id={unit_id} mode={mode}"
+            )
         root_pointers.append(
             HydratedTextPointer(
                 source_cluster_id=unit_id,
@@ -419,11 +535,14 @@ def parse_page_index_document(
             settings = provider_settings or WorkflowProviderSettings.from_env()
             if settings.parser.provider != "ollama":
                 raise ValueError("ollama mode requires KG_DOC_PARSER_PROVIDER=ollama")
+            if trace_log is not None:
+                trace_log(f"page_index_llm_prepare page_number={page_number} provider=ollama")
             block_specs = _llm_page_outline(
                 page_text=page_text,
                 page_number=page_number,
                 source_format=source_format,
                 provider_settings=settings,
+                trace_log=trace_log,
             )
         else:  # pragma: no cover - Literal guards this in type-checked code.
             raise ValueError(f"unsupported page index mode: {mode}")
@@ -451,6 +570,10 @@ def parse_page_index_document(
         )
         page_node.child_nodes.extend(child_nodes)
         page_nodes.append(page_node)
+        if trace_log is not None:
+            trace_log(
+                f"page_index_page_end page_number={page_number} unit_id={unit_id} child_count={len(child_nodes)}"
+            )
 
     semantic_tree = SemanticNode(
         title=title,
@@ -461,6 +584,11 @@ def parse_page_index_document(
         child_nodes=page_nodes,
     )
     coverage = compute_pointer_coverage(semantic_tree, parser_source_map)
+    if trace_log is not None:
+        trace_log(
+            "page_index_parse_complete "
+            f"document_id={document_id} page_count={len(page_nodes)} coverage={coverage.get('coverage_ratio')}"
+        )
     return PageIndexParseResult(
         mode=mode,
         source_format=source_format,
