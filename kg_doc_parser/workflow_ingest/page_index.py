@@ -34,7 +34,6 @@ tests/test_workflow_ingest_page_index_pipeline.py::test_page_index_ollama_smoke_
 """
 
 import re
-import difflib
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Literal
@@ -44,12 +43,8 @@ from pydantic import BaseModel, Field
 from .adapters import build_authoritative_source_map, build_parser_input_dict, build_parser_source_map
 from .models import GroundedSourceRecord, NormalizedPage, NormalizedSourceCollection, SourceUnit, WorkflowIngestInput
 from .providers import WorkflowProviderSettings, build_chat_model_for_role
+from kogwistar.fuzzy_offsets import FuzzySpanHit as _FuzzyHit, find_best_fuzzy_span
 from .semantics import HydratedTextPointer, SemanticNode, compute_pointer_coverage, correct_and_validate_pointer
-
-try:  # pragma: no cover - optional dependency
-    from rapidfuzz import fuzz as _rapidfuzz
-except Exception:  # pragma: no cover
-    _rapidfuzz = None
 
 PageIndexMode = Literal["heuristic", "ollama"]
 PageIndexSourceFormat = Literal["text", "markdown"]
@@ -161,13 +156,6 @@ class _BlockSpan:
     heading_level: int | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _FuzzyHit:
-    start: int
-    end: int
-    score: float
-
-
 def _split_pages(raw_text: str) -> list[str]:
     """Split a logical document into page-sized chunks."""
 
@@ -203,28 +191,6 @@ def _page_index_normalize_text(text: str) -> str:
     return " ".join(text.split()).strip().lower()
 
 
-def _page_index_offset_repair_threshold(excerpt_len: int) -> float:
-    if excerpt_len <= 8:
-        return 95.0
-    if excerpt_len <= 20:
-        return 92.0
-    if excerpt_len <= 60:
-        return 88.0
-    if excerpt_len <= 120:
-        return 85.0
-    return 82.0
-
-
-def _page_index_choose_fuzzy_scorer():
-    if _rapidfuzz is not None:
-        return _rapidfuzz.partial_ratio
-
-    def _ratio(candidate: str, excerpt: str) -> float:
-        return difflib.SequenceMatcher(None, candidate, excerpt).ratio() * 100.0
-
-    return _ratio
-
-
 def _page_index_find_best_fuzzy_span(
     *,
     page_text: str,
@@ -232,57 +198,14 @@ def _page_index_find_best_fuzzy_span(
     origin_start: int,
     scan_band: int | None = None,
 ) -> _FuzzyHit | None:
-    if not excerpt:
-        return None
-    excerpt_len = len(excerpt)
-    if excerpt_len == 0:
-        return None
-
-    threshold = _page_index_offset_repair_threshold(excerpt_len)
-    scorer = _page_index_choose_fuzzy_scorer()
-    if scan_band is None:
-        scan_band = max(2000, excerpt_len * 50)
-
-    lo = max(0, origin_start - scan_band)
-    hi = min(len(page_text), origin_start + scan_band)
-    region = page_text[lo:hi]
-    if not region:
-        return None
-
-    deltas = [0]
-    if excerpt_len >= 20:
-        delta_5 = max(1, excerpt_len // 20)
-        deltas.extend([delta_5, -delta_5])
-    if excerpt_len >= 60:
-        delta_10 = max(2, excerpt_len // 10)
-        deltas.extend([delta_10, -delta_10])
-
-    step = 1 if excerpt_len <= 40 else max(2, excerpt_len // 25)
-    best: _FuzzyHit | None = None
-    for delta in deltas:
-        width = excerpt_len + delta
-        if width <= 0 or width > len(region):
-            continue
-        max_i = len(region) - width
-        for i in range(0, max_i + 1, step):
-            candidate = region[i : i + width]
-            if _page_index_normalize_text(candidate) == _page_index_normalize_text(page_text):
-                continue
-            score = float(scorer(candidate, excerpt))
-            if score < threshold:
-                continue
-            hit = _FuzzyHit(start=lo + i, end=lo + i + width, score=score)
-            if best is None:
-                best = hit
-                continue
-            prev_dist = abs(best.start - origin_start)
-            cur_dist = abs(hit.start - origin_start)
-            if (hit.score > best.score) or (
-                hit.score == best.score
-                and (cur_dist < prev_dist or (cur_dist == prev_dist and (hit.end - hit.start) < (best.end - best.start)))
-            ):
-                best = hit
-    return best
+    page_text_norm = _page_index_normalize_text(page_text)
+    return find_best_fuzzy_span(
+        content=page_text,
+        excerpt=excerpt,
+        origin_start=origin_start,
+        scan_band=scan_band,
+        candidate_filter=lambda candidate: _page_index_normalize_text(candidate) != page_text_norm,
+    )
 
 
 def build_page_index_workflow_input(
