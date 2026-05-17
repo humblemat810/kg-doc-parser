@@ -34,6 +34,7 @@ tests/test_workflow_ingest_page_index_pipeline.py::test_page_index_ollama_smoke_
 """
 
 import re
+import difflib
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Literal
@@ -44,6 +45,11 @@ from .adapters import build_authoritative_source_map, build_parser_input_dict, b
 from .models import GroundedSourceRecord, NormalizedPage, NormalizedSourceCollection, SourceUnit, WorkflowIngestInput
 from .providers import WorkflowProviderSettings, build_chat_model_for_role
 from .semantics import HydratedTextPointer, SemanticNode, compute_pointer_coverage, correct_and_validate_pointer
+
+try:  # pragma: no cover - optional dependency
+    from rapidfuzz import fuzz as _rapidfuzz
+except Exception:  # pragma: no cover
+    _rapidfuzz = None
 
 PageIndexMode = Literal["heuristic", "ollama"]
 PageIndexSourceFormat = Literal["text", "markdown"]
@@ -155,6 +161,13 @@ class _BlockSpan:
     heading_level: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _FuzzyHit:
+    start: int
+    end: int
+    score: float
+
+
 def _split_pages(raw_text: str) -> list[str]:
     """Split a logical document into page-sized chunks."""
 
@@ -184,6 +197,92 @@ def _is_numeric_heavy_or_table_like(text: str) -> bool:
     if re.search(r"\b\d+\b(?:\s+\b\d+\b){2,}", compact):
         return True
     return False
+
+
+def _page_index_normalize_text(text: str) -> str:
+    return " ".join(text.split()).strip().lower()
+
+
+def _page_index_offset_repair_threshold(excerpt_len: int) -> float:
+    if excerpt_len <= 8:
+        return 95.0
+    if excerpt_len <= 20:
+        return 92.0
+    if excerpt_len <= 60:
+        return 88.0
+    if excerpt_len <= 120:
+        return 85.0
+    return 82.0
+
+
+def _page_index_choose_fuzzy_scorer():
+    if _rapidfuzz is not None:
+        return _rapidfuzz.partial_ratio
+
+    def _ratio(candidate: str, excerpt: str) -> float:
+        return difflib.SequenceMatcher(None, candidate, excerpt).ratio() * 100.0
+
+    return _ratio
+
+
+def _page_index_find_best_fuzzy_span(
+    *,
+    page_text: str,
+    excerpt: str,
+    origin_start: int,
+    scan_band: int | None = None,
+) -> _FuzzyHit | None:
+    if not excerpt:
+        return None
+    excerpt_len = len(excerpt)
+    if excerpt_len == 0:
+        return None
+
+    threshold = _page_index_offset_repair_threshold(excerpt_len)
+    scorer = _page_index_choose_fuzzy_scorer()
+    if scan_band is None:
+        scan_band = max(2000, excerpt_len * 50)
+
+    lo = max(0, origin_start - scan_band)
+    hi = min(len(page_text), origin_start + scan_band)
+    region = page_text[lo:hi]
+    if not region:
+        return None
+
+    deltas = [0]
+    if excerpt_len >= 20:
+        delta_5 = max(1, excerpt_len // 20)
+        deltas.extend([delta_5, -delta_5])
+    if excerpt_len >= 60:
+        delta_10 = max(2, excerpt_len // 10)
+        deltas.extend([delta_10, -delta_10])
+
+    step = 1 if excerpt_len <= 40 else max(2, excerpt_len // 25)
+    best: _FuzzyHit | None = None
+    for delta in deltas:
+        width = excerpt_len + delta
+        if width <= 0 or width > len(region):
+            continue
+        max_i = len(region) - width
+        for i in range(0, max_i + 1, step):
+            candidate = region[i : i + width]
+            if _page_index_normalize_text(candidate) == _page_index_normalize_text(page_text):
+                continue
+            score = float(scorer(candidate, excerpt))
+            if score < threshold:
+                continue
+            hit = _FuzzyHit(start=lo + i, end=lo + i + width, score=score)
+            if best is None:
+                best = hit
+                continue
+            prev_dist = abs(best.start - origin_start)
+            cur_dist = abs(hit.start - origin_start)
+            if (hit.score > best.score) or (
+                hit.score == best.score
+                and (cur_dist < prev_dist or (cur_dist == prev_dist and (hit.end - hit.start) < (best.end - best.start)))
+            ):
+                best = hit
+    return best
 
 
 def build_page_index_workflow_input(
@@ -1036,6 +1135,8 @@ def _resolve_pointer(
     page_text: str,
     excerpt: str,
     start_at: int = 0,
+    repair_stats: dict[str, int] | None = None,
+    trace_log: Callable[[str], None] | None = None,
 ) -> HydratedTextPointer:
     needle = excerpt.strip() or excerpt or page_text.strip()
     candidate = HydratedTextPointer(
@@ -1046,7 +1147,33 @@ def _resolve_pointer(
     )
     resolved = correct_and_validate_pointer(candidate, {unit_id: {"text": page_text}})
     if resolved is None:
-        raise ValueError(f"unable to resolve excerpt against page text for {unit_id!r}: {needle!r}")
+        fuzzy_hit = _page_index_find_best_fuzzy_span(
+            page_text=page_text,
+            excerpt=needle,
+            origin_start=start_at,
+        )
+        if fuzzy_hit is None:
+            if repair_stats is not None:
+                repair_stats["pointer_fuzzy_failures"] = int(repair_stats.get("pointer_fuzzy_failures", 0)) + 1
+            raise ValueError(f"unable to resolve excerpt against page text for {unit_id!r}: {needle!r}")
+        fuzzy_candidate = HydratedTextPointer(
+            source_cluster_id=unit_id,
+            start_char=fuzzy_hit.start,
+            end_char=fuzzy_hit.end - 1,
+            verbatim_text=page_text[fuzzy_hit.start : fuzzy_hit.end],
+        )
+        resolved = correct_and_validate_pointer(fuzzy_candidate, {unit_id: {"text": page_text}})
+        if resolved is None:
+            if repair_stats is not None:
+                repair_stats["pointer_fuzzy_failures"] = int(repair_stats.get("pointer_fuzzy_failures", 0)) + 1
+            raise ValueError(f"unable to resolve excerpt against page text for {unit_id!r}: {needle!r}")
+        if repair_stats is not None:
+            repair_stats["pointer_fuzzy_repairs"] = int(repair_stats.get("pointer_fuzzy_repairs", 0)) + 1
+        if trace_log is not None:
+            trace_log(
+                "page_index_pointer_fuzzy_repair "
+                f"unit_id={unit_id} start={fuzzy_hit.start} end={fuzzy_hit.end} score={fuzzy_hit.score:.2f}"
+            )
     return resolved
 
 
@@ -1076,11 +1203,20 @@ def _materialize_block_tree(
     parent_id: str,
     level_from_root: int,
     start_at: int = 0,
+    repair_stats: dict[str, int] | None = None,
+    trace_log: Callable[[str], None] | None = None,
 ) -> tuple[list[SemanticNode], int]:
     nodes: list[SemanticNode] = []
     cursor = start_at
     for spec in block_specs:
-        pointer = _resolve_pointer(unit_id=unit_id, page_text=page_text, excerpt=spec.excerpt, start_at=cursor)
+        pointer = _resolve_pointer(
+            unit_id=unit_id,
+            page_text=page_text,
+            excerpt=spec.excerpt,
+            start_at=cursor,
+            repair_stats=repair_stats,
+            trace_log=trace_log,
+        )
         cursor = pointer.end_char + 1
         node = _make_semantic_node(
             title=spec.title,
@@ -1096,6 +1232,8 @@ def _materialize_block_tree(
             parent_id=node.node_id or parent_id,
             level_from_root=level_from_root + 1,
             start_at=cursor,
+            repair_stats=repair_stats,
+            trace_log=trace_log,
         )
         node.child_nodes.extend(child_nodes)
         nodes.append(node)
@@ -1234,6 +1372,10 @@ def parse_page_index_document(
             )
         page_diagnostics_item = dict(page_diagnostics_item)
         page_diagnostics_item.update(page_refinement_diagnostics)
+        page_repair_stats: dict[str, int] = {
+            "pointer_fuzzy_repairs": 0,
+            "pointer_fuzzy_failures": 0,
+        }
         page_diagnostics_item["page_number"] = page_number
         page_diagnostics_item["unit_id"] = unit_id
         page_diagnostics.append(page_diagnostics_item)
@@ -1264,9 +1406,12 @@ def parse_page_index_document(
             unit_id=unit_id,
             parent_id=page_node.node_id or document_id,
             level_from_root=2,
+            repair_stats=page_repair_stats,
+            trace_log=trace_log,
         )
         page_node.child_nodes.extend(child_nodes)
         page_nodes.append(page_node)
+        page_diagnostics_item.update(page_repair_stats)
         if trace_log is not None:
             trace_log(
                 f"page_index_page_end page_number={page_number} unit_id={unit_id} child_count={len(child_nodes)}"
@@ -1292,6 +1437,8 @@ def parse_page_index_document(
     refinement_accepted = sum(int(item.get("refine_excerpts_accepted", 0) or 0) for item in page_diagnostics)
     refinement_rejected = sum(int(item.get("refine_excerpts_rejected", 0) or 0) for item in page_diagnostics)
     refinement_fallback_pages = sum(1 for item in page_diagnostics if item.get("refine_excerpts_fallback"))
+    pointer_fuzzy_repairs = sum(int(item.get("pointer_fuzzy_repairs", 0) or 0) for item in page_diagnostics)
+    pointer_fuzzy_failures = sum(int(item.get("pointer_fuzzy_failures", 0) or 0) for item in page_diagnostics)
     if mode == "heuristic":
         overall_assignment_mode = "heuristic_deterministic"
     else:
@@ -1307,6 +1454,8 @@ def parse_page_index_document(
         "refine_excerpts_rejected": refinement_rejected,
         "refine_excerpts_fallback": refinement_fallback_pages > 0,
         "refine_excerpts_fallback_pages": refinement_fallback_pages,
+        "pointer_fuzzy_repairs": pointer_fuzzy_repairs,
+        "pointer_fuzzy_failures": pointer_fuzzy_failures,
         "validation_errors": validation_errors,
         "validation_warnings": validation_warnings,
         "page_diagnostics": page_diagnostics,
