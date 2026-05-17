@@ -5,7 +5,8 @@ from __future__ import annotations
 The pipeline keeps a fast heuristic mode for deterministic structure extraction
 and an Ollama-backed mode that reuses the existing parser provider boundary.
 Both modes normalize raw content into page-aware source units and return a
-semantic tree with hydrated spans.
+semantic tree with hydrated spans. Ollama mode uses candidate extraction plus
+flat block assignment, with optional excerpt refinement disabled by default.
 
 Example CLI
 -----------
@@ -17,22 +18,23 @@ tests/test_workflow_ingest_page_index_pipeline.py::test_page_index_heuristic_par
     .venv\\Scripts\\python.exe -m pytest \
 tests/test_workflow_ingest_page_index_pipeline.py::test_page_index_heuristic_parses_text_and_markdown[markdown] -q
 
-Ollama mode with a local Gemma parser model:
+Ollama mode with a local Qwen parser model:
 
     set KG_DOC_PARSER_PROVIDER=ollama
-    set KG_DOC_PARSER_MODEL=gemma4
+    set KG_DOC_PARSER_MODEL=qwen3:4b-instruct-2507-q8_0
     set KG_DOC_PARSER_BASE_URL=http://127.0.0.1:11434
     .venv\\Scripts\\python.exe -m pytest \
 tests/test_workflow_ingest_page_index_pipeline.py::test_page_index_ollama_smoke_parses_text_and_markdown[text] -q
 
     set KG_DOC_PARSER_PROVIDER=ollama
-    set KG_DOC_PARSER_MODEL=gemma4
+    set KG_DOC_PARSER_MODEL=qwen3:4b-instruct-2507-q8_0
     set KG_DOC_PARSER_BASE_URL=http://127.0.0.1:11434
     .venv\\Scripts\\python.exe -m pytest \
 tests/test_workflow_ingest_page_index_pipeline.py::test_page_index_ollama_smoke_parses_text_and_markdown[markdown] -q
 """
 
 import re
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Literal
 
@@ -101,6 +103,15 @@ class BlockAssignmentBatch(BaseModel):
     assignments: list[BlockAssignment] = Field(default_factory=list)
 
 
+class ExcerptRefinementSuggestion(BaseModel):
+    path_id: str = Field(description="Stable tree path identifier for the block to refine.")
+    excerpt: str = Field(description="Refined excerpt proposed for the block.")
+
+
+class ExcerptRefinementBatch(BaseModel):
+    suggestions: list[ExcerptRefinementSuggestion] = Field(default_factory=list)
+
+
 @dataclass(slots=True)
 class PageIndexValidationResult:
     valid: bool
@@ -156,232 +167,23 @@ def _is_setext_underline(line: str) -> bool:
     return bool(stripped) and bool(re.fullmatch(r"=+|-+", stripped))
 
 
-def _split_page_blocks(page_text: str, *, source_format: PageIndexSourceFormat = "text") -> list[_BlockSpan]:
-    blocks: list[_BlockSpan] = []
-    lines = page_text.splitlines(keepends=True)
-    cursor = 0
-    paragraph_start: int | None = None
-    paragraph_start_line = 0
-    paragraph_end = 0
-    paragraph_end_line = 0
-    paragraph_indent = 0
-    saw_nonblank = False
-
-    def _flush_paragraph() -> None:
-        nonlocal paragraph_start, paragraph_end, paragraph_start_line, paragraph_end_line, paragraph_indent
-        if paragraph_start is None:
-            return
-        raw = page_text[paragraph_start:paragraph_end]
-        trimmed = raw.strip()
-        if trimmed:
-            relative_start = raw.find(trimmed)
-            start_char = paragraph_start + relative_start
-            end_char = start_char + len(trimmed) - 1
-            blocks.append(
-                _classify_block(
-                    trimmed,
-                    start_char,
-                    end_char,
-                    source_format=source_format,
-                    is_first=False,
-                    line_start=paragraph_start_line or 1,
-                    line_end=paragraph_end_line or paragraph_start_line or 1,
-                    indent=paragraph_indent,
-                )
-            )
-        paragraph_start = None
-        paragraph_start_line = 0
-        paragraph_end = 0
-        paragraph_end_line = 0
-        paragraph_indent = 0
-
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        line_start = cursor
-        line_end = cursor + len(line)
-        line_body = line.rstrip("\r\n")
-        stripped = line_body.strip()
-        indent = len(line_body) - len(line_body.lstrip(" \t"))
-        if not stripped:
-            _flush_paragraph()
-            cursor = line_end
-            index += 1
-            continue
-        next_line_body = lines[index + 1].rstrip("\r\n") if index + 1 < len(lines) else ""
-        if next_line_body and _is_setext_underline(next_line_body):
-            underline_level = 1 if next_line_body.strip().startswith("=") else 2
-            _flush_paragraph()
-            start_char = line_start + line_body.find(stripped)
-            end_char = start_char + len(stripped) - 1
-            line_block = _classify_block(
-                stripped,
-                start_char,
-                end_char,
-                source_format=source_format,
-                is_first=not saw_nonblank,
-                line_start=index + 1,
-                line_end=index + 1,
-                indent=indent,
-                heading_level=underline_level,
-            )
-            saw_nonblank = True
-            blocks.append(line_block)
-            cursor = line_end + len(lines[index + 1])
-            index += 2
-            continue
-        line_block = _classify_block(
-            stripped,
-            line_start + line_body.find(stripped),
-            line_end - 1,
-            source_format=source_format,
-            is_first=not saw_nonblank,
-            line_start=index + 1,
-            line_end=index + 1,
-            indent=indent,
-        )
-        saw_nonblank = True
-        if line_block.node_type != "PARAGRAPH":
-            _flush_paragraph()
-            blocks.append(line_block)
-        else:
-            if paragraph_start is None:
-                paragraph_start = line_start
-                paragraph_start_line = index + 1
-                paragraph_indent = indent
-            paragraph_end = line_end
-            paragraph_end_line = index + 1
-        cursor = line_end
-        index += 1
-    _flush_paragraph()
-    return blocks
-
-
-def _classify_block(
-    text: str,
-    start_char: int,
-    end_char: int,
-    *,
-    source_format: PageIndexSourceFormat = "text",
-    is_first: bool = False,
-    line_start: int = 1,
-    line_end: int = 1,
-    indent: int = 0,
-    heading_level: int | None = None,
-) -> _BlockSpan:
-    stripped = text.strip()
-    first_line = stripped.splitlines()[0].strip()
-    word_count = len(first_line.split())
-    is_sentence_like = first_line.endswith((".", "!", "?"))
-    md_heading = re.match(r"^(#{1,6})\s+(.*)$", first_line)
-    if source_format == "markdown" and md_heading:
-        level = len(md_heading.group(1))
-        title = md_heading.group(2).strip() or first_line.lstrip("#").strip()
-        node_type: PageIndexNodeType = "SECTION" if level <= 2 else "SUBSECTION"
-        return _BlockSpan(
-            start_char=start_char,
-            end_char=end_char,
-            text=stripped,
-            node_type=node_type,
-            title=title,
-            line_start=line_start,
-            line_end=line_end,
-            indent=indent,
-            kind_hint="heading_markdown",
-            confidence=0.98,
-            heading_level=level,
-        )
-    if heading_level is not None:
-        node_type = "SECTION" if heading_level <= 1 else "SUBSECTION"
-        return _BlockSpan(
-            start_char=start_char,
-            end_char=end_char,
-            text=stripped,
-            node_type=node_type,
-            title=first_line.rstrip(":").strip(),
-            line_start=line_start,
-            line_end=line_end,
-            indent=indent,
-            kind_hint="heading_setext",
-            confidence=0.97,
-            heading_level=heading_level,
-        )
-
-    plain_heading = re.match(r"^(Section|Clause|Article|Definitions?)\b[:\s].*", first_line, flags=re.IGNORECASE)
-    numbered_heading = re.match(r"^\d+(?:\.\d+){0,4}(?:[.)])?\s+\S+", first_line)
-    legal_clause = re.match(r"^\s*\((?:\d+|[a-z]|[ivx]+)\)\s+\S+", first_line, flags=re.IGNORECASE)
-    bullet_item = re.match(r"^\s*(?:[-*+•]|\d{1,3}[.)])\s+\S+", first_line)
-    all_caps_heading = (
-        len(first_line.split()) <= 8
-        and any(ch.isalpha() for ch in first_line)
-        and first_line.upper() == first_line
-        and not is_sentence_like
-    )
-    title_like_first_line = is_first and len(first_line.split()) <= 10 and not is_sentence_like
-    short_title_case = (
-        len(first_line.split()) <= 12
-        and not is_sentence_like
-        and first_line[:1].isupper()
-        and any(ch.isalpha() for ch in first_line)
-    )
-
-    if plain_heading or numbered_heading or all_caps_heading or title_like_first_line or short_title_case:
-        if title_like_first_line or (all_caps_heading and is_first):
-            level = 1
-        elif numbered_heading:
-            level = max(2, first_line.count(".") + 2)
-        else:
-            level = 2
-        title = first_line.rstrip(":").strip()
-        node_type = "SECTION" if level <= 2 else "SUBSECTION"
-        confidence = 0.95 if (plain_heading or numbered_heading) else 0.76
-        return _BlockSpan(
-            start_char=start_char,
-            end_char=end_char,
-            text=stripped,
-            node_type=node_type,
-            title=title,
-            line_start=line_start,
-            line_end=line_end,
-            indent=indent,
-            kind_hint="heading_plain",
-            confidence=confidence,
-            heading_level=level,
-        )
-    if legal_clause or bullet_item:
-        title = re.sub(
-            r"^\s*(?:[-*+•]|\d{1,3}[.)]|\((?:\d+|[a-z]|[ivx]+)\))\s+",
-            "",
-            first_line,
-            flags=re.IGNORECASE,
-        ).strip()
-        return _BlockSpan(
-            start_char=start_char,
-            end_char=end_char,
-            text=stripped,
-            node_type="TERM",
-            title=title or first_line,
-            line_start=line_start,
-            line_end=line_end,
-            indent=indent,
-            kind_hint="term_list_item",
-            confidence=0.74,
-            heading_level=None,
-        )
-    title = first_line[:120].rstrip()
-    return _BlockSpan(
-        start_char=start_char,
-        end_char=end_char,
-        text=stripped,
-        node_type="PARAGRAPH",
-        title=title,
-        line_start=line_start,
-        line_end=line_end,
-        indent=indent,
-        kind_hint="paragraph",
-        confidence=0.8 if word_count > 1 else 0.65,
-        heading_level=None,
-    )
+def _is_numeric_heavy_or_table_like(text: str) -> bool:
+    compact = " ".join(text.split())
+    if not compact:
+        return False
+    digit_count = sum(ch.isdigit() for ch in compact)
+    alpha_count = sum(ch.isalpha() for ch in compact)
+    pipe_count = compact.count("|")
+    tab_count = compact.count("\t")
+    if pipe_count >= 2 or tab_count >= 2:
+        return True
+    if alpha_count == 0 and digit_count >= 3:
+        return True
+    if digit_count >= 6 and digit_count > alpha_count:
+        return True
+    if re.search(r"\b\d+\b(?:\s+\b\d+\b){2,}", compact):
+        return True
+    return False
 
 
 def build_page_index_workflow_input(
@@ -453,6 +255,8 @@ def _split_page_blocks(page_text: str, *, source_format: PageIndexSourceFormat =
                     end_char,
                     source_format=source_format,
                     is_first=False,
+                    has_blank_before=True,
+                    has_blank_after=True,
                     line_start=paragraph_start_line or 1,
                     line_end=paragraph_end_line or paragraph_start_line or 1,
                     indent=paragraph_indent,
@@ -472,6 +276,8 @@ def _split_page_blocks(page_text: str, *, source_format: PageIndexSourceFormat =
         line_body = line.rstrip("\r\n")
         stripped = line_body.strip()
         indent = len(line_body) - len(line_body.lstrip(" \t"))
+        has_blank_before = index == 0 or not lines[index - 1].strip()
+        has_blank_after = index + 1 >= len(lines) or not lines[index + 1].strip()
         if not stripped:
             _flush_paragraph()
             cursor = line_end
@@ -489,6 +295,8 @@ def _split_page_blocks(page_text: str, *, source_format: PageIndexSourceFormat =
                 end_char,
                 source_format=source_format,
                 is_first=not saw_nonblank,
+                has_blank_before=has_blank_before,
+                has_blank_after=has_blank_after,
                 line_start=index + 1,
                 line_end=index + 1,
                 indent=indent,
@@ -505,6 +313,8 @@ def _split_page_blocks(page_text: str, *, source_format: PageIndexSourceFormat =
             line_end - 1,
             source_format=source_format,
             is_first=not saw_nonblank,
+            has_blank_before=has_blank_before,
+            has_blank_after=has_blank_after,
             line_start=index + 1,
             line_end=index + 1,
             indent=indent,
@@ -533,6 +343,8 @@ def _classify_block(
     *,
     source_format: PageIndexSourceFormat = "text",
     is_first: bool = False,
+    has_blank_before: bool = False,
+    has_blank_after: bool = False,
     line_start: int = 1,
     line_end: int = 1,
     indent: int = 0,
@@ -542,6 +354,8 @@ def _classify_block(
     first_line = stripped.splitlines()[0].strip()
     word_count = len(first_line.split())
     is_sentence_like = first_line.endswith((".", "!", "?"))
+    surrounded_by_blank_lines = has_blank_before and has_blank_after
+    numeric_heavy = _is_numeric_heavy_or_table_like(first_line)
     md_heading = re.match(r"^(#{1,6})\s+(.*)$", first_line)
     if source_format == "markdown" and md_heading:
         level = len(md_heading.group(1))
@@ -577,33 +391,41 @@ def _classify_block(
         )
 
     plain_heading = re.match(r"^(Section|Clause|Article|Definitions?)\b[:\s].*", first_line, flags=re.IGNORECASE)
-    numbered_heading = re.match(r"^\d+(?:\.\d+){0,4}(?:[.)])?\s+\S+", first_line)
+    numbered_heading = None if numeric_heavy else re.match(r"^\d+(?:\.\d+){0,4}(?:[.)])?\s+\S+", first_line)
     legal_clause = re.match(r"^\s*\((?:\d+|[a-z]|[ivx]+)\)\s+\S+", first_line, flags=re.IGNORECASE)
-    bullet_item = re.match(r"^\s*(?:[-*+•]|\d{1,3}[.)])\s+\S+", first_line)
+    bullet_item = re.match(r"^\s*(?:[-*+]|\d{1,3}[.)])\s+\S+", first_line)
     all_caps_heading = (
         len(first_line.split()) <= 8
         and any(ch.isalpha() for ch in first_line)
         and first_line.upper() == first_line
         and not is_sentence_like
+        and not numeric_heavy
+        and (is_first or surrounded_by_blank_lines)
     )
-    title_like_first_line = is_first and len(first_line.split()) <= 10 and not is_sentence_like
+    title_like_first_line = is_first and len(first_line.split()) <= 10 and not is_sentence_like and not numeric_heavy
     short_title_case = (
         len(first_line.split()) <= 12
         and not is_sentence_like
         and first_line[:1].isupper()
         and any(ch.isalpha() for ch in first_line)
+        and not numeric_heavy
+        and (is_first or surrounded_by_blank_lines)
     )
 
     if plain_heading or numbered_heading or all_caps_heading or title_like_first_line or short_title_case:
-        if title_like_first_line or (all_caps_heading and is_first):
-            level = 1
-        elif numbered_heading:
+        if numbered_heading:
             level = max(2, first_line.count(".") + 2)
+        elif title_like_first_line or (all_caps_heading and is_first):
+            level = 1
         else:
             level = 2
         title = first_line.rstrip(":").strip()
         node_type = "SECTION" if level <= 2 else "SUBSECTION"
         confidence = 0.95 if (plain_heading or numbered_heading) else 0.76
+        if surrounded_by_blank_lines:
+            confidence = min(0.98, confidence + 0.06)
+        if numeric_heavy:
+            confidence = max(0.4, confidence - 0.2)
         return _BlockSpan(
             start_char=start_char,
             end_char=end_char,
@@ -619,7 +441,7 @@ def _classify_block(
         )
     if legal_clause or bullet_item:
         title = re.sub(
-            r"^\s*(?:[-*+•]|\d{1,3}[.)]|\((?:\d+|[a-z]|[ivx]+)\))\s+",
+            r"^\s*(?:[-*+]|\d{1,3}[.)]|\((?:\d+|[a-z]|[ivx]+)\))\s+",
             "",
             first_line,
             flags=re.IGNORECASE,
@@ -647,8 +469,8 @@ def _classify_block(
         line_start=line_start,
         line_end=line_end,
         indent=indent,
-        kind_hint="paragraph",
-        confidence=0.8 if word_count > 1 else 0.65,
+        kind_hint="paragraph_table_like" if numeric_heavy else "paragraph",
+        confidence=0.62 if numeric_heavy else (0.8 if word_count > 1 else 0.65),
         heading_level=None,
     )
 
@@ -707,7 +529,7 @@ def _deterministic_block_assignments(candidates: list[CandidateBlock]) -> list[B
                     block_id=candidate.block_id,
                     parent_id=parent_id,
                     node_type=candidate.node_type_hint,
-                    title=candidate.title_hint or candidate.title_hint,
+                    title=candidate.title_hint,
                 )
             )
             stack.append((level, candidate.block_id))
@@ -749,6 +571,20 @@ def _validate_block_assignments(
         errors.append("reading order was not preserved")
 
     parent_chain_map = {assignment.block_id: assignment.parent_id for assignment in assignments}
+    heading_candidate_ids = [candidate.block_id for candidate in candidates if _candidate_heading_evidence(candidate)]
+    heading_assignment_parent_ids = {
+        assignment.block_id: assignment.parent_id
+        for assignment in assignments
+        if assignment.block_id in candidate_by_id
+        and assignment.node_type in {"SECTION", "SUBSECTION"}
+        and _candidate_heading_evidence(candidate_by_id[assignment.block_id])
+    }
+    baseline_assignments = _deterministic_block_assignments(candidates)
+    baseline_heading_parent_ids = {
+        assignment.block_id: assignment.parent_id
+        for assignment in baseline_assignments
+        if assignment.block_id in candidate_by_id and _candidate_heading_evidence(candidate_by_id[assignment.block_id])
+    }
     for assignment in assignments:
         candidate = candidate_by_id.get(assignment.block_id)
         if candidate is None:
@@ -774,6 +610,10 @@ def _validate_block_assignments(
                 errors.append(f"{assignment.block_id!r} lacks heading evidence for {assignment.node_type}")
         if assignment.node_type == "TERM" and not _candidate_term_evidence(candidate):
             errors.append(f"{assignment.block_id!r} lacks term evidence")
+    baseline_nested_heading_count = sum(1 for parent_id in baseline_heading_parent_ids.values() if parent_id is not None)
+    assigned_nested_heading_count = sum(1 for parent_id in heading_assignment_parent_ids.values() if parent_id is not None)
+    if baseline_nested_heading_count > 0 and assigned_nested_heading_count == 0 and len(heading_candidate_ids) >= 2:
+        errors.append("heading structure was flattened")
 
     normalized_page_text = " ".join(page_text.split()).strip().lower()
     sibling_groups: dict[str | None, list[CandidateBlock]] = {}
@@ -810,9 +650,10 @@ def _assemble_page_index_blocks(
     assignments: list[BlockAssignment],
 ) -> list[PageIndexBlockSpec]:
     candidate_by_id = {candidate.block_id: candidate for candidate in candidates}
+    repaired_assignments = _repair_block_assignments_for_assembly(candidates=candidates, assignments=assignments)
     spec_by_id: dict[str, PageIndexBlockSpec] = {}
     roots: list[PageIndexBlockSpec] = []
-    for assignment in assignments:
+    for assignment in repaired_assignments:
         candidate = candidate_by_id[assignment.block_id]
         spec = PageIndexBlockSpec(
             title=assignment.title or candidate.title_hint,
@@ -820,7 +661,7 @@ def _assemble_page_index_blocks(
             excerpt=candidate.text,
         )
         spec_by_id[assignment.block_id] = spec
-    for assignment in assignments:
+    for assignment in repaired_assignments:
         spec = spec_by_id[assignment.block_id]
         parent_id = assignment.parent_id
         if parent_id and parent_id in spec_by_id:
@@ -828,6 +669,203 @@ def _assemble_page_index_blocks(
         else:
             roots.append(spec)
     return roots
+
+
+def _repair_block_assignments_for_assembly(
+    *,
+    candidates: list[CandidateBlock],
+    assignments: list[BlockAssignment],
+) -> list[BlockAssignment]:
+    candidate_ids = {candidate.block_id for candidate in candidates}
+    index_by_id = {candidate.block_id: index for index, candidate in enumerate(candidates)}
+    repaired: list[BlockAssignment] = []
+    for assignment in assignments:
+        parent_id = assignment.parent_id
+        if parent_id is None or parent_id not in candidate_ids:
+            repaired_parent_id = None
+        else:
+            parent_index = index_by_id.get(parent_id)
+            child_index = index_by_id.get(assignment.block_id)
+            if parent_index is None or child_index is None or parent_index >= child_index:
+                repaired_parent_id = None
+            else:
+                repaired_parent_id = parent_id
+        repaired.append(assignment.model_copy(update={"parent_id": repaired_parent_id}))
+    return repaired
+
+
+def _normalize_page_index_excerpt(text: str) -> str:
+    return " ".join(text.split()).strip().lower()
+
+
+def _page_index_path_id(path: tuple[int, ...]) -> str:
+    return ".".join(str(index) for index in path)
+
+
+def _iter_page_index_block_specs_with_paths(
+    block_specs: list[PageIndexBlockSpec],
+    *,
+    path: tuple[int, ...] = (),
+):
+    for index, spec in enumerate(block_specs):
+        current_path = path + (index,)
+        yield current_path, spec
+        yield from _iter_page_index_block_specs_with_paths(spec.child_nodes, path=current_path)
+
+
+def _get_page_index_block_spec_at_path(
+    block_specs: list[PageIndexBlockSpec],
+    path: tuple[int, ...],
+) -> PageIndexBlockSpec:
+    current: PageIndexBlockSpec | None = None
+    current_nodes = block_specs
+    for index in path:
+        current = current_nodes[index]
+        current_nodes = current.child_nodes
+    if current is None:
+        raise IndexError("empty page index path")
+    return current
+
+
+def _refine_page_index_block_excerpts(
+    *,
+    block_specs: list[PageIndexBlockSpec],
+    page_text: str,
+    page_number: int,
+    unit_id: str,
+    provider_settings: WorkflowProviderSettings,
+    trace_log: Callable[[str], None] | None = None,
+) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+    entries = [
+        {
+            "path_id": _page_index_path_id(path),
+            "node_type": spec.node_type,
+            "title": spec.title,
+            "excerpt": spec.excerpt,
+        }
+        for path, spec in _iter_page_index_block_specs_with_paths(block_specs)
+    ]
+    diagnostics = {
+        "refine_excerpts_enabled": True,
+        "refine_excerpts_attempted": len(entries),
+        "refine_excerpts_accepted": 0,
+        "refine_excerpts_rejected": 0,
+        "refine_excerpts_fallback": False,
+    }
+    if not entries:
+        return block_specs, diagnostics
+
+    if trace_log is not None:
+        trace_log(
+            f"page_index_refine_prepare page_number={page_number} unit_id={unit_id} block_count={len(entries)}"
+        )
+    chat = build_chat_model_for_role("parser", provider_settings)
+    structured = chat.with_structured_output(ExcerptRefinementBatch, include_raw=True)
+    from langchain_core.messages import HumanMessage, SystemMessage
+    import json as _json
+
+    prompt = (
+        "You refine excerpts for a page-index tree.\n"
+        "Return only shorter grounded excerpts for blocks you can improve.\n"
+        "Rules:\n"
+        "- keep path_id values exactly as provided\n"
+        "- return an excerpt only if it is a strict exact substring of the page text\n"
+        "- do not return empty excerpts\n"
+        "- do not return the whole page text\n"
+        "- do not change titles, node types, or parent relationships\n"
+        "- prefer compact verbatim spans\n"
+        f"Page number: {page_number}\n"
+        f"Page text: {page_text}\n"
+        f"Blocks: {_json.dumps(entries, ensure_ascii=False, sort_keys=True)}"
+    )
+    try:
+        payload = structured.invoke(
+            [
+                SystemMessage(content="You are a grounded excerpt refiner."),
+                HumanMessage(content=prompt),
+            ]
+        )
+        parsed = payload.get("parsed") if isinstance(payload, dict) else payload
+        if parsed is None:
+            error = payload.get("parsing_error") if isinstance(payload, dict) else None
+            raise ValueError(f"excerpt refinement failed: {error!r}")
+        batch = (
+            parsed
+            if isinstance(parsed, ExcerptRefinementBatch)
+            else ExcerptRefinementBatch.model_validate(parsed)
+        )
+    except Exception as exc:
+        diagnostics["refine_excerpts_fallback"] = True
+        diagnostics["refine_excerpts_rejected"] = diagnostics["refine_excerpts_attempted"]
+        diagnostics["refine_excerpts_error"] = f"{type(exc).__name__}: {exc}"
+        if trace_log is not None:
+            trace_log(
+                f"page_index_refine_fallback page_number={page_number} unit_id={unit_id} error={type(exc).__name__}"
+            )
+        return block_specs, diagnostics
+
+    refined = deepcopy(block_specs)
+    suggestions = {item.path_id: item.excerpt for item in batch.suggestions}
+    for path, original_spec in _iter_page_index_block_specs_with_paths(refined):
+        path_id = _page_index_path_id(path)
+        suggestion = suggestions.get(path_id)
+        if suggestion is None:
+            continue
+        current_excerpt = original_spec.excerpt
+        proposed = suggestion.strip()
+        if not proposed:
+            diagnostics["refine_excerpts_rejected"] += 1
+            continue
+        if _normalize_page_index_excerpt(proposed) == _normalize_page_index_excerpt(current_excerpt):
+            diagnostics["refine_excerpts_rejected"] += 1
+            continue
+        if _normalize_page_index_excerpt(proposed) == _normalize_page_index_excerpt(page_text):
+            diagnostics["refine_excerpts_rejected"] += 1
+            continue
+        try:
+            _resolve_pointer(unit_id=unit_id, page_text=page_text, excerpt=proposed)
+        except Exception:
+            diagnostics["refine_excerpts_rejected"] += 1
+            continue
+
+        ancestor_excerpts: tuple[str, ...] = ()
+        current_nodes = refined
+        for index in path[:-1]:
+            ancestor = current_nodes[index]
+            normalized = _normalize_page_index_excerpt(ancestor.excerpt)
+            if normalized:
+                ancestor_excerpts += (normalized,)
+            current_nodes = ancestor.child_nodes
+        parent_nodes = refined if len(path) == 1 else _get_page_index_block_spec_at_path(refined, path[:-1]).child_nodes
+        sibling_norms = [
+            _normalize_page_index_excerpt(sibling.excerpt)
+            for sibling_index, sibling in enumerate(parent_nodes)
+            if sibling_index != path[-1] and _normalize_page_index_excerpt(sibling.excerpt)
+        ]
+        normalized_proposed = _normalize_page_index_excerpt(proposed)
+        if normalized_proposed in ancestor_excerpts or normalized_proposed in sibling_norms:
+            diagnostics["refine_excerpts_rejected"] += 1
+            continue
+
+        candidate_spec = deepcopy(original_spec)
+        candidate_spec.excerpt = proposed
+        if _page_index_block_exceeds_excerpt_budget(candidate_spec, page_text):
+            diagnostics["refine_excerpts_rejected"] += 1
+            continue
+        if _page_index_block_is_too_generic(candidate_spec, page_text, ancestor_excerpts=ancestor_excerpts):
+            diagnostics["refine_excerpts_rejected"] += 1
+            continue
+
+        original_spec.excerpt = proposed
+        diagnostics["refine_excerpts_accepted"] += 1
+
+    if trace_log is not None:
+        trace_log(
+            "page_index_refine_complete "
+            f"page_number={page_number} accepted={diagnostics['refine_excerpts_accepted']} "
+            f"rejected={diagnostics['refine_excerpts_rejected']}"
+        )
+    return refined, diagnostics
 
 
 def _build_page_outline_from_candidates(
@@ -921,7 +959,8 @@ def _llm_page_outline(
         "- do not invent excerpts\n"
         "- do not create whole-page child blocks\n"
         "- use SECTION, SUBSECTION, PARAGRAPH, and TERM only\n"
-        "The recursive tree is built deterministically after validation.\n"
+        "The recursive tree is assembled deterministically after validation.\n"
+        "Optional excerpt refinement is disabled by default.\n"
         f"Source format: {source_format}\n"
         f"Page number: {page_number}\n"
         f"Candidates: {_json.dumps([asdict(candidate) for candidate in candidates], ensure_ascii=False, sort_keys=True)}"
@@ -1116,6 +1155,7 @@ def parse_page_index_document(
     mode: PageIndexMode = "heuristic",
     provider_settings: WorkflowProviderSettings | None = None,
     trace_log: Callable[[str], None] | None = None,
+    refine_excerpts: bool = False,
 ) -> PageIndexParseResult:
     """Parse a plain text or Markdown document into a page-index semantic tree."""
 
@@ -1176,7 +1216,24 @@ def parse_page_index_document(
             )
         else:  # pragma: no cover - Literal guards this in type-checked code.
             raise ValueError(f"unsupported page index mode: {mode}")
+        page_refinement_diagnostics = {
+            "refine_excerpts_enabled": False,
+            "refine_excerpts_attempted": 0,
+            "refine_excerpts_accepted": 0,
+            "refine_excerpts_rejected": 0,
+            "refine_excerpts_fallback": False,
+        }
+        if mode == "ollama" and refine_excerpts:
+            block_specs, page_refinement_diagnostics = _refine_page_index_block_excerpts(
+                block_specs=block_specs,
+                page_text=page_text,
+                page_number=page_number,
+                unit_id=unit_id,
+                provider_settings=settings,
+                trace_log=trace_log,
+            )
         page_diagnostics_item = dict(page_diagnostics_item)
+        page_diagnostics_item.update(page_refinement_diagnostics)
         page_diagnostics_item["page_number"] = page_number
         page_diagnostics_item["unit_id"] = unit_id
         page_diagnostics.append(page_diagnostics_item)
@@ -1230,6 +1287,11 @@ def parse_page_index_document(
     candidate_count = sum(int(item.get("candidate_count", 0) or 0) for item in page_diagnostics)
     assignment_count = sum(int(item.get("assignment_count", 0) or 0) for item in page_diagnostics)
     assignment_modes = {str(item.get("assignment_mode") or "") for item in page_diagnostics if item.get("assignment_mode")}
+    refinement_enabled = any(bool(item.get("refine_excerpts_enabled")) for item in page_diagnostics)
+    refinement_attempted = sum(int(item.get("refine_excerpts_attempted", 0) or 0) for item in page_diagnostics)
+    refinement_accepted = sum(int(item.get("refine_excerpts_accepted", 0) or 0) for item in page_diagnostics)
+    refinement_rejected = sum(int(item.get("refine_excerpts_rejected", 0) or 0) for item in page_diagnostics)
+    refinement_fallback_pages = sum(1 for item in page_diagnostics if item.get("refine_excerpts_fallback"))
     if mode == "heuristic":
         overall_assignment_mode = "heuristic_deterministic"
     else:
@@ -1239,6 +1301,12 @@ def parse_page_index_document(
         "fallback_reason": fallback_reasons[0] if fallback_reasons else None,
         "candidate_count": candidate_count,
         "assignment_count": assignment_count,
+        "refine_excerpts_enabled": refinement_enabled,
+        "refine_excerpts_attempted": refinement_attempted,
+        "refine_excerpts_accepted": refinement_accepted,
+        "refine_excerpts_rejected": refinement_rejected,
+        "refine_excerpts_fallback": refinement_fallback_pages > 0,
+        "refine_excerpts_fallback_pages": refinement_fallback_pages,
         "validation_errors": validation_errors,
         "validation_warnings": validation_warnings,
         "page_diagnostics": page_diagnostics,

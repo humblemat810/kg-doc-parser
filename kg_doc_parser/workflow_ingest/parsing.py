@@ -57,6 +57,7 @@ class PageIndexParseRequest:
     provider_settings: WorkflowProviderSettings | None = None
     provider: str | None = None
     model: str | None = None
+    refine_excerpts: bool = False
 
 
 @dataclass(slots=True)
@@ -160,6 +161,7 @@ def parse_page_index_document(
     provider_settings: WorkflowProviderSettings | None = None,
     provider: str | None = None,
     model: str | None = None,
+    refine_excerpts: bool = False,
 ) -> PageIndexParseResult:
     """Parse a text / Markdown page-index document into a semantic tree."""
 
@@ -176,6 +178,7 @@ def parse_page_index_document(
         source_format=source_format,
         mode=mode,
         provider_settings=settings,
+        refine_excerpts=refine_excerpts,
     )
 
 
