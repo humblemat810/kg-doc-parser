@@ -513,7 +513,7 @@ def test_page_index_resolve_pointer_prefers_nearest_fuzzy_match() -> None:
         unit_id="p0001",
         page_text=page_text,
         excerpt="Alpha beta gamma deltx epsilon",
-        start_at=20,
+        start_at=50,
     )
 
     assert resolved.verbatim_text == "Alpha beta gamma delta epsilon"
