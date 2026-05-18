@@ -34,6 +34,7 @@ tests/test_workflow_ingest_page_index_pipeline.py::test_page_index_ollama_smoke_
 """
 
 import re
+import json
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Literal
@@ -154,6 +155,136 @@ class _BlockSpan:
     kind_hint: str = "paragraph"
     confidence: float = 0.8
     heading_level: int | None = None
+
+
+def _page_index_assignment_debug_payload(assignments: list[BlockAssignment]) -> list[dict[str, Any]]:
+    return [
+        {
+            "block_id": assignment.block_id,
+            "parent_id": assignment.parent_id,
+            "node_type": assignment.node_type,
+            "title": assignment.title,
+        }
+        for assignment in assignments
+    ]
+
+
+def _page_index_block_spec_debug_payload(block_specs: list[PageIndexBlockSpec]) -> list[dict[str, Any]]:
+    def _walk(spec: PageIndexBlockSpec, *, path: str) -> dict[str, Any]:
+        return {
+            "path": path,
+            "title": spec.title,
+            "node_type": spec.node_type,
+            "excerpt": spec.excerpt,
+            "child_count": len(spec.child_nodes),
+            "children": [
+                _walk(child, path=f"{path}.{index + 1}") for index, child in enumerate(spec.child_nodes)
+            ],
+        }
+
+    return [_walk(spec, path=str(index + 1)) for index, spec in enumerate(block_specs)]
+
+
+def _page_index_retry_failure_summary(
+    *,
+    validation_errors: list[str],
+    assignments: list[BlockAssignment] | None = None,
+    parse_error: str | None = None,
+) -> str:
+    """Build a short repair note for a second-pass LLM prompt."""
+    lines = ["First attempt failed. Repair the block hierarchy without inventing content."]
+    if parse_error:
+        lines.append(f"Parse error: {parse_error}")
+    if validation_errors:
+        lines.append("Validation errors: " + "; ".join(validation_errors[:4]))
+    if assignments:
+        lines.append(
+            "Rejected assignment snapshot: "
+            + json.dumps(
+                _page_index_assignment_debug_payload(assignments[:8]),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+    lines.append(
+        "Fix guidance: preserve reading order, keep the same block_id values, "
+        "and nest heading blocks under the correct earlier heading parent instead of flattening them."
+    )
+    return "\n".join(lines)
+
+
+def _page_index_structure_failure_summary(
+    *,
+    validation_errors: list[str],
+    assignments: list[BlockAssignment],
+    block_specs: list[PageIndexBlockSpec],
+) -> str:
+    """Build a compact repair note for an assembled tree validation failure."""
+    lines = ["Structure build failed. Repair the hierarchy while keeping every block grounded."]
+    if validation_errors:
+        lines.append("Structure validation errors: " + "; ".join(validation_errors[:4]))
+    lines.append(
+        "Current assignment snapshot: "
+        + json.dumps(
+            _page_index_assignment_debug_payload(assignments[:8]),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    lines.append(
+        "Rejected tree snapshot: "
+        + json.dumps(
+            _page_index_block_spec_debug_payload(block_specs)[:4],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    lines.append(
+        "Fix guidance: reuse only existing block_id values, preserve reading order, "
+        "nest child headings under their correct earlier heading parent, and avoid broad whole-page child blocks."
+    )
+    return "\n".join(lines)
+
+
+def _page_index_assignment_prompt(
+    *,
+    page_number: int,
+    source_format: PageIndexSourceFormat,
+    candidates: list[CandidateBlock],
+    retry_summary: str | None = None,
+    retry_kind: str = "assignment",
+) -> str:
+    """Construct the structured-output prompt for a page-index assignment attempt."""
+    prompt = (
+        "You assign flat page-index blocks.\n"
+        "Return JSON matching the schema exactly.\n"
+        "Rules:\n"
+        "- assign every block exactly once\n"
+        "- use only the provided block_id values\n"
+        "- parent_id must be null or reference an earlier block_id\n"
+        "- preserve reading order\n"
+        "- do not invent excerpts\n"
+        "- do not create whole-page child blocks\n"
+        "- use SECTION, SUBSECTION, PARAGRAPH, and TERM only\n"
+        "The recursive tree is assembled deterministically after validation.\n"
+        "Optional excerpt refinement is disabled by default.\n"
+        f"Source format: {source_format}\n"
+        f"Page number: {page_number}\n"
+        f"Candidates: {json.dumps([asdict(candidate) for candidate in candidates], ensure_ascii=False, sort_keys=True)}"
+    )
+    if retry_summary:
+        if retry_kind == "structure":
+            prompt += (
+                "\n\nPrevious structure build failed validation. Repair the block assignments using the compact "
+                "failure summary below:\n"
+                f"{retry_summary}\n"
+            )
+        else:
+            prompt += (
+                "\n\nPrevious attempt failed validation. Repair the structure using the compact failure summary below:\n"
+                f"{retry_summary}\n"
+            )
+    return prompt
 
 
 def _split_pages(raw_text: str) -> list[str]:
@@ -716,6 +847,71 @@ def _repair_block_assignments_for_assembly(
     return repaired
 
 
+def _validate_page_index_block_structure(
+    *,
+    candidates: list[CandidateBlock],
+    assignments: list[BlockAssignment],
+    block_specs: list[PageIndexBlockSpec],
+    page_text: str,
+) -> PageIndexValidationResult:
+    """Validate the assembled tree shape before accepting an LLM assignment."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    if candidates and not block_specs:
+        errors.append("block tree is empty")
+
+    normalized_page_text = _normalize_page_index_excerpt(page_text)
+    baseline_assignments = _deterministic_block_assignments(candidates)
+    candidate_by_id = {candidate.block_id: candidate for candidate in candidates}
+    baseline_nested_heading_count = sum(
+        1
+        for assignment in baseline_assignments
+        if assignment.parent_id is not None
+        and assignment.block_id in candidate_by_id
+        and _candidate_heading_evidence(candidate_by_id[assignment.block_id])
+    )
+    repaired_assignments = _repair_block_assignments_for_assembly(
+        candidates=candidates,
+        assignments=assignments,
+    )
+    repaired_nested_heading_count = sum(
+        1
+        for assignment in repaired_assignments
+        if assignment.parent_id is not None
+        and assignment.block_id in candidate_by_id
+        and _candidate_heading_evidence(candidate_by_id[assignment.block_id])
+    )
+    if baseline_nested_heading_count > 0 and repaired_nested_heading_count == 0:
+        errors.append("assembled heading structure was flattened")
+
+    def _validate_siblings(siblings: list[PageIndexBlockSpec], *, path: str) -> None:
+        normalized_sibling_excerpts: list[str] = []
+        for index, spec in enumerate(siblings, start=1):
+            current_path = f"{path}.{index}" if path else str(index)
+            normalized_excerpt = _normalize_page_index_excerpt(spec.excerpt)
+            if not normalized_excerpt:
+                errors.append(f"block {current_path} has empty excerpt")
+            elif normalized_excerpt == normalized_page_text and len(candidates) > 1:
+                errors.append(f"block {current_path} duplicates the whole page")
+            elif _page_index_block_exceeds_excerpt_budget(spec, page_text):
+                errors.append(f"block {current_path} excerpt is too broad")
+            elif _page_index_block_is_too_generic(spec, page_text):
+                errors.append(f"block {current_path} excerpt is too generic")
+            normalized_sibling_excerpts.append(normalized_excerpt)
+            _validate_siblings(spec.child_nodes, path=current_path)
+        non_empty = [excerpt for excerpt in normalized_sibling_excerpts if excerpt]
+        if len(non_empty) > 1 and len(set(non_empty)) == 1:
+            errors.append(f"block siblings at {path or 'root'} repeat the same excerpt")
+
+    _validate_siblings(block_specs, path="")
+    return PageIndexValidationResult(
+        valid=not errors,
+        errors=errors,
+        warnings=warnings,
+        fallback_reason=None if not errors else "structure_validation_failed",
+    )
+
+
 def _normalize_page_index_excerpt(text: str) -> str:
     return " ".join(text.split()).strip().lower()
 
@@ -954,6 +1150,17 @@ def _llm_page_outline(
             "assignment_mode": "deterministic_fallback",
             "candidate_count": 0,
             "assignment_count": 0,
+            "assignment_attempt_count": 0,
+            "assignment_retry_used": False,
+            "assignment_retry_succeeded": False,
+            "structure_retry_used": False,
+            "structure_retry_succeeded": False,
+            "retry_used": False,
+            "retry_succeeded": False,
+            "assignment_validation_errors": ["no candidate blocks extracted"],
+            "structure_validation_errors": [],
+            "first_validation_errors": ["no candidate blocks extracted"],
+            "retry_validation_errors": [],
             "validation_errors": ["no candidate blocks extracted"],
             "validation_warnings": [],
             "fallback_reason": "no_candidates",
@@ -968,81 +1175,344 @@ def _llm_page_outline(
     if trace_log is not None:
         trace_log(f"page_index_llm_structured_wrap_done page_number={page_number}")
     from langchain_core.messages import HumanMessage, SystemMessage
-    import json as _json
 
-    prompt = (
-        "You assign flat page-index blocks.\n"
-        "Return JSON matching the schema exactly.\n"
-        "Rules:\n"
-        "- assign every block exactly once\n"
-        "- use only the provided block_id values\n"
-        "- parent_id must be null or reference an earlier block_id\n"
-        "- preserve reading order\n"
-        "- do not invent excerpts\n"
-        "- do not create whole-page child blocks\n"
-        "- use SECTION, SUBSECTION, PARAGRAPH, and TERM only\n"
-        "The recursive tree is assembled deterministically after validation.\n"
-        "Optional excerpt refinement is disabled by default.\n"
-        f"Source format: {source_format}\n"
-        f"Page number: {page_number}\n"
-        f"Candidates: {_json.dumps([asdict(candidate) for candidate in candidates], ensure_ascii=False, sort_keys=True)}"
-    )
-    if trace_log is not None:
-        trace_log(f"page_index_llm_prompt_ready page_number={page_number}")
-        trace_log(f"page_index_llm_invoke_start page_number={page_number} source_format={source_format}")
-    try:
-        payload = structured.invoke(
-            [
-                SystemMessage(content="You are a grounded page-index block assigner."),
-                HumanMessage(content=prompt),
-            ]
+    def _invoke_attempt(
+        *,
+        retry_summary: str | None = None,
+        retry_kind: str = "assignment",
+        attempt_label: str,
+    ) -> tuple[BlockAssignmentBatch | None, str | None]:
+        prompt = _page_index_assignment_prompt(
+            page_number=page_number,
+            source_format=source_format,
+            candidates=candidates,
+            retry_summary=retry_summary,
+            retry_kind=retry_kind,
         )
         if trace_log is not None:
-            trace_log(f"page_index_llm_invoke_end page_number={page_number}")
+            trace_log(f"page_index_llm_prompt_ready page_number={page_number} attempt={attempt_label}")
+            trace_log(
+                f"page_index_llm_invoke_start page_number={page_number} attempt={attempt_label} source_format={source_format}"
+            )
+        try:
+            payload = structured.invoke(
+                [
+                    SystemMessage(content="You are a grounded page-index block assigner."),
+                    HumanMessage(content=prompt),
+                ]
+            )
+            if trace_log is not None:
+                trace_log(f"page_index_llm_invoke_end page_number={page_number} attempt={attempt_label}")
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: {exc}"
+
         parsed = payload.get("parsed") if isinstance(payload, dict) else payload
         if parsed is None:
             error = payload.get("parsing_error") if isinstance(payload, dict) else None
-            raise ValueError(f"ollama page index parse failed: {error!r}")
+            return None, f"parse_error: {error!r}"
         batch = parsed if isinstance(parsed, BlockAssignmentBatch) else BlockAssignmentBatch.model_validate(parsed)
-        validation = _validate_block_assignments(candidates, batch.assignments, page_text=page_text)
-        if validation.valid:
-            return _assemble_page_index_blocks(candidates=candidates, assignments=batch.assignments), {
-                "assignment_mode": "ollama_flat_assignment",
-                "candidate_count": len(candidates),
-                "assignment_count": len(batch.assignments),
-                "validation_errors": list(validation.errors),
-                "validation_warnings": list(validation.warnings),
-                "fallback_reason": None,
-            }
+        return batch, None
+
+    def _trace_assignment_raw(attempt_label: str, batch: BlockAssignmentBatch) -> None:
+        if trace_log is None:
+            return
+        trace_log(
+            "page_index_llm_assignment_raw "
+            f"page_number={page_number} attempt={attempt_label} "
+            f"payload={json.dumps(_page_index_assignment_debug_payload(batch.assignments), ensure_ascii=False, sort_keys=True)}"
+        )
+
+    def _fallback(
+        *,
+        assignment_attempt_count: int,
+        assignment_retry_used: bool,
+        first_validation_errors: list[str],
+        assignment_retry_validation_errors: list[str],
+        structure_validation_errors: list[str],
+        validation_warnings: list[str],
+        fallback_reason: str,
+        retry_prompt_summary: str | None = None,
+        structure_retry_prompt_summary: str | None = None,
+    ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+        fallback_assignments = _deterministic_block_assignments(candidates)
+        fallback_block_specs = _assemble_page_index_blocks(
+            candidates=candidates,
+            assignments=fallback_assignments,
+        )
         if trace_log is not None:
             trace_log(
-                f"page_index_llm_validation_failed page_number={page_number} errors={len(validation.errors)}"
+                "page_index_llm_assignment_fallback "
+                f"page_number={page_number} payload={json.dumps(_page_index_assignment_debug_payload(fallback_assignments), ensure_ascii=False, sort_keys=True)} "
+                f"block_specs={json.dumps(_page_index_block_spec_debug_payload(fallback_block_specs), ensure_ascii=False, sort_keys=True)}"
             )
-        return _assemble_page_index_blocks(
-            candidates=candidates,
-            assignments=_deterministic_block_assignments(candidates),
-        ), {
+        validation_errors = structure_validation_errors or assignment_retry_validation_errors or first_validation_errors
+        return fallback_block_specs, {
             "assignment_mode": "deterministic_fallback",
+            "final_outcome": "deterministic_fallback",
             "candidate_count": len(candidates),
-            "assignment_count": len(batch.assignments),
-            "validation_errors": list(validation.errors),
-            "validation_warnings": list(validation.warnings),
-            "fallback_reason": validation.fallback_reason,
+            "assignment_count": len(fallback_assignments),
+            "assignment_attempt_count": assignment_attempt_count,
+            "assignment_retry_used": assignment_retry_used,
+            "assignment_retry_succeeded": False,
+            "structure_retry_used": bool(structure_validation_errors),
+            "structure_retry_succeeded": False,
+            "retry_used": assignment_retry_used or bool(structure_validation_errors),
+            "retry_succeeded": False,
+            "assignment_validation_errors": assignment_retry_validation_errors or first_validation_errors,
+            "structure_validation_errors": structure_validation_errors,
+            "first_validation_errors": first_validation_errors,
+            "retry_validation_errors": assignment_retry_validation_errors,
+            "validation_errors": validation_errors,
+            "validation_warnings": validation_warnings,
+            "fallback_reason": fallback_reason,
+            "retry_prompt_summary": retry_prompt_summary,
+            "structure_retry_prompt_summary": structure_retry_prompt_summary,
         }
-    except Exception as exc:
+
+    def _accept_or_retry_structure(
+        *,
+        batch: BlockAssignmentBatch,
+        attempt_label: str,
+        assignment_attempt_count: int,
+        assignment_retry_used: bool,
+        assignment_retry_succeeded: bool,
+        first_validation_errors: list[str],
+        assignment_retry_validation_errors: list[str],
+        validation_warnings: list[str],
+        retry_prompt_summary: str | None = None,
+    ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+        block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=batch.assignments)
+        structure_validation = _validate_page_index_block_structure(
+            candidates=candidates,
+            assignments=batch.assignments,
+            block_specs=block_specs,
+            page_text=page_text,
+        )
         if trace_log is not None:
-            trace_log(f"page_index_llm_assignment_fallback page_number={page_number} error={type(exc).__name__}")
-        return _assemble_page_index_blocks(
+            trace_log(
+                "page_index_structure_validation "
+                f"page_number={page_number} attempt={attempt_label} errors={len(structure_validation.errors)}"
+            )
+        if structure_validation.valid:
+            if trace_log is not None:
+                trace_log(
+                    "page_index_llm_assignment_accepted "
+                    f"page_number={page_number} attempt={attempt_label} "
+                    f"block_specs={json.dumps(_page_index_block_spec_debug_payload(block_specs), ensure_ascii=False, sort_keys=True)}"
+                )
+            mode = "llm_flat_assignment"
+            final_outcome = "first_pass_success"
+            if assignment_retry_succeeded:
+                mode = "llm_flat_assignment_retry"
+                final_outcome = "assignment_retry_success"
+            return block_specs, {
+                "assignment_mode": mode,
+                "final_outcome": final_outcome,
+                "candidate_count": len(candidates),
+                "assignment_count": len(batch.assignments),
+                "assignment_attempt_count": assignment_attempt_count,
+                "assignment_retry_used": assignment_retry_used,
+                "assignment_retry_succeeded": assignment_retry_succeeded,
+                "structure_retry_used": False,
+                "structure_retry_succeeded": False,
+                "retry_used": assignment_retry_used,
+                "retry_succeeded": assignment_retry_succeeded,
+                "assignment_validation_errors": assignment_retry_validation_errors or first_validation_errors,
+                "structure_validation_errors": [],
+                "first_validation_errors": first_validation_errors,
+                "retry_validation_errors": assignment_retry_validation_errors,
+                "validation_errors": [],
+                "validation_warnings": validation_warnings + list(structure_validation.warnings),
+                "fallback_reason": None,
+                "retry_prompt_summary": retry_prompt_summary,
+                "structure_retry_prompt_summary": None,
+            }
+
+        structure_errors = list(structure_validation.errors)
+        structure_summary = _page_index_structure_failure_summary(
+            validation_errors=structure_errors,
+            assignments=batch.assignments,
+            block_specs=block_specs,
+        )
+        if trace_log is not None:
+            trace_log(
+                "page_index_llm_structure_retry_start "
+                f"page_number={page_number} failure_summary={structure_summary.splitlines()[0]}"
+            )
+            trace_log(f"page_index_llm_structure_retry_prompt_ready page_number={page_number}")
+        structure_batch, structure_error = _invoke_attempt(
+            retry_summary=structure_summary,
+            retry_kind="structure",
+            attempt_label="structure_retry",
+        )
+        next_attempt_count = assignment_attempt_count + 1
+        if structure_batch is None:
+            return _fallback(
+                assignment_attempt_count=next_attempt_count,
+                assignment_retry_used=assignment_retry_used,
+                first_validation_errors=first_validation_errors,
+                assignment_retry_validation_errors=assignment_retry_validation_errors,
+                structure_validation_errors=structure_errors + [str(structure_error or "unknown structure retry parse error")],
+                validation_warnings=validation_warnings + list(structure_validation.warnings),
+                fallback_reason="structure_validation_failed",
+                retry_prompt_summary=retry_prompt_summary,
+                structure_retry_prompt_summary=structure_summary,
+            )
+        _trace_assignment_raw("structure_retry", structure_batch)
+        structure_assignment_validation = _validate_block_assignments(
+            candidates,
+            structure_batch.assignments,
+            page_text=page_text,
+        )
+        if not structure_assignment_validation.valid:
+            if trace_log is not None:
+                trace_log(
+                    "page_index_llm_validation_failed "
+                    f"page_number={page_number} attempt=structure_retry errors={len(structure_assignment_validation.errors)}"
+                )
+            return _fallback(
+                assignment_attempt_count=next_attempt_count,
+                assignment_retry_used=assignment_retry_used,
+                first_validation_errors=first_validation_errors,
+                assignment_retry_validation_errors=assignment_retry_validation_errors,
+                structure_validation_errors=structure_errors + list(structure_assignment_validation.errors),
+                validation_warnings=validation_warnings + list(structure_validation.warnings),
+                fallback_reason="structure_validation_failed",
+                retry_prompt_summary=retry_prompt_summary,
+                structure_retry_prompt_summary=structure_summary,
+            )
+        repaired_block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=structure_batch.assignments)
+        repaired_structure_validation = _validate_page_index_block_structure(
             candidates=candidates,
-            assignments=_deterministic_block_assignments(candidates),
-        ), {
-            "assignment_mode": "deterministic_fallback",
+            assignments=structure_batch.assignments,
+            block_specs=repaired_block_specs,
+            page_text=page_text,
+        )
+        if trace_log is not None:
+            trace_log(
+                "page_index_structure_validation "
+                f"page_number={page_number} attempt=structure_retry errors={len(repaired_structure_validation.errors)}"
+            )
+        if not repaired_structure_validation.valid:
+            return _fallback(
+                assignment_attempt_count=next_attempt_count,
+                assignment_retry_used=assignment_retry_used,
+                first_validation_errors=first_validation_errors,
+                assignment_retry_validation_errors=assignment_retry_validation_errors,
+                structure_validation_errors=structure_errors + list(repaired_structure_validation.errors),
+                validation_warnings=validation_warnings + list(repaired_structure_validation.warnings),
+                fallback_reason="structure_validation_failed",
+                retry_prompt_summary=retry_prompt_summary,
+                structure_retry_prompt_summary=structure_summary,
+            )
+        if trace_log is not None:
+            trace_log(
+                "page_index_llm_assignment_accepted "
+                f"page_number={page_number} attempt=structure_retry "
+                f"block_specs={json.dumps(_page_index_block_spec_debug_payload(repaired_block_specs), ensure_ascii=False, sort_keys=True)}"
+            )
+        return repaired_block_specs, {
+            "assignment_mode": "llm_flat_assignment_structure_retry",
+            "final_outcome": "structure_retry_success",
             "candidate_count": len(candidates),
-            "assignment_count": len(candidates),
-            "validation_errors": [f"{type(exc).__name__}: {exc}"],
-            "validation_warnings": [],
-            "fallback_reason": "llm_unavailable_or_invalid",
+            "assignment_count": len(structure_batch.assignments),
+            "assignment_attempt_count": next_attempt_count,
+            "assignment_retry_used": assignment_retry_used,
+            "assignment_retry_succeeded": assignment_retry_succeeded,
+            "structure_retry_used": True,
+            "structure_retry_succeeded": True,
+            "retry_used": True,
+            "retry_succeeded": True,
+            "assignment_validation_errors": assignment_retry_validation_errors or first_validation_errors,
+            "structure_validation_errors": structure_errors,
+            "first_validation_errors": first_validation_errors,
+            "retry_validation_errors": assignment_retry_validation_errors,
+            "validation_errors": [],
+            "validation_warnings": validation_warnings + list(repaired_structure_validation.warnings),
+            "fallback_reason": None,
+            "retry_prompt_summary": retry_prompt_summary,
+            "structure_retry_prompt_summary": structure_summary,
         }
+
+    first_batch, first_error = _invoke_attempt(attempt_label="first")
+    first_validation_errors: list[str] = []
+    first_validation_warnings: list[str] = []
+    if first_batch is not None:
+        _trace_assignment_raw("first", first_batch)
+        first_validation = _validate_block_assignments(candidates, first_batch.assignments, page_text=page_text)
+        first_validation_errors = list(first_validation.errors)
+        first_validation_warnings = list(first_validation.warnings)
+        if first_validation.valid:
+            return _accept_or_retry_structure(
+                batch=first_batch,
+                attempt_label="first",
+                assignment_attempt_count=1,
+                assignment_retry_used=False,
+                assignment_retry_succeeded=False,
+                first_validation_errors=[],
+                assignment_retry_validation_errors=[],
+                validation_warnings=first_validation_warnings,
+            )
+        if trace_log is not None:
+            trace_log(
+                f"page_index_llm_validation_failed page_number={page_number} attempt=first errors={len(first_validation.errors)}"
+            )
+    else:
+        first_validation_errors = [str(first_error or "unknown parse error")]
+        if trace_log is not None:
+            trace_log(
+                f"page_index_llm_validation_failed page_number={page_number} attempt=first errors=1"
+            )
+
+    retry_summary = _page_index_retry_failure_summary(
+        validation_errors=first_validation_errors,
+        assignments=first_batch.assignments if first_batch is not None else None,
+        parse_error=first_error,
+    )
+    if trace_log is not None:
+        trace_log(
+            "page_index_llm_retry_start "
+            f"page_number={page_number} failure_summary={retry_summary.splitlines()[0]}"
+        )
+        trace_log(f"page_index_llm_retry_prompt_ready page_number={page_number}")
+
+    retry_batch, retry_error = _invoke_attempt(retry_summary=retry_summary, attempt_label="retry")
+    retry_validation_errors: list[str] = []
+    retry_validation_warnings: list[str] = []
+    if retry_batch is not None:
+        _trace_assignment_raw("retry", retry_batch)
+        retry_validation = _validate_block_assignments(candidates, retry_batch.assignments, page_text=page_text)
+        retry_validation_errors = list(retry_validation.errors)
+        retry_validation_warnings = list(retry_validation.warnings)
+        if retry_validation.valid:
+            return _accept_or_retry_structure(
+                batch=retry_batch,
+                attempt_label="retry",
+                assignment_attempt_count=2,
+                assignment_retry_used=True,
+                assignment_retry_succeeded=True,
+                first_validation_errors=first_validation_errors,
+                assignment_retry_validation_errors=[],
+                validation_warnings=retry_validation_warnings,
+                retry_prompt_summary=retry_summary,
+            )
+        if trace_log is not None:
+            trace_log(
+                f"page_index_llm_validation_failed page_number={page_number} attempt=retry errors={len(retry_validation.errors)}"
+            )
+    else:
+        retry_validation_errors = [str(retry_error or "unknown retry parse error")]
+
+    return _fallback(
+        assignment_attempt_count=2,
+        assignment_retry_used=True,
+        first_validation_errors=first_validation_errors,
+        assignment_retry_validation_errors=retry_validation_errors,
+        structure_validation_errors=[],
+        validation_warnings=retry_validation_warnings,
+        fallback_reason="assignment_validation_failed" if first_validation_errors else "llm_unavailable_or_invalid",
+        retry_prompt_summary=retry_summary,
+    )
 
 
 def _find_page_unit(authoritative_source_map: dict[str, GroundedSourceRecord], page_number: int) -> tuple[str, str]:
@@ -1351,9 +1821,20 @@ def parse_page_index_document(
     coverage = compute_pointer_coverage(semantic_tree, parser_source_map)
     validation_errors = [error for item in page_diagnostics for error in item.get("validation_errors", [])]
     validation_warnings = [warning for item in page_diagnostics for warning in item.get("validation_warnings", [])]
+    first_validation_errors = [error for item in page_diagnostics for error in item.get("first_validation_errors", [])]
+    retry_validation_errors = [error for item in page_diagnostics for error in item.get("retry_validation_errors", [])]
+    assignment_validation_errors = [error for item in page_diagnostics for error in item.get("assignment_validation_errors", [])]
+    structure_validation_errors = [error for item in page_diagnostics for error in item.get("structure_validation_errors", [])]
     fallback_reasons = [item.get("fallback_reason") for item in page_diagnostics if item.get("fallback_reason")]
     candidate_count = sum(int(item.get("candidate_count", 0) or 0) for item in page_diagnostics)
     assignment_count = sum(int(item.get("assignment_count", 0) or 0) for item in page_diagnostics)
+    assignment_attempt_count = sum(int(item.get("assignment_attempt_count", 1) or 1) for item in page_diagnostics)
+    assignment_retry_used = any(bool(item.get("assignment_retry_used")) for item in page_diagnostics)
+    assignment_retry_succeeded = any(bool(item.get("assignment_retry_succeeded")) for item in page_diagnostics)
+    structure_retry_used = any(bool(item.get("structure_retry_used")) for item in page_diagnostics)
+    structure_retry_succeeded = any(bool(item.get("structure_retry_succeeded")) for item in page_diagnostics)
+    retry_used = any(bool(item.get("retry_used")) for item in page_diagnostics)
+    retry_succeeded = any(bool(item.get("retry_succeeded")) for item in page_diagnostics)
     assignment_modes = {str(item.get("assignment_mode") or "") for item in page_diagnostics if item.get("assignment_mode")}
     refinement_enabled = any(bool(item.get("refine_excerpts_enabled")) for item in page_diagnostics)
     refinement_attempted = sum(int(item.get("refine_excerpts_attempted", 0) or 0) for item in page_diagnostics)
@@ -1364,13 +1845,37 @@ def parse_page_index_document(
     pointer_fuzzy_failures = sum(int(item.get("pointer_fuzzy_failures", 0) or 0) for item in page_diagnostics)
     if mode == "heuristic":
         overall_assignment_mode = "heuristic_deterministic"
+    elif fallback_reasons:
+        overall_assignment_mode = "deterministic_fallback"
+    elif structure_retry_succeeded:
+        overall_assignment_mode = "llm_flat_assignment_structure_retry"
+    elif assignment_retry_succeeded:
+        overall_assignment_mode = "llm_flat_assignment_retry"
+    elif retry_used:
+        overall_assignment_mode = "deterministic_fallback"
     else:
-        overall_assignment_mode = "ollama_flat_assignment" if assignment_modes == {"ollama_flat_assignment"} else "deterministic_fallback"
+        overall_assignment_mode = "llm_flat_assignment" if assignment_modes == {"llm_flat_assignment"} else "deterministic_fallback"
+    if fallback_reasons:
+        final_outcome = "deterministic_fallback"
+    elif structure_retry_succeeded:
+        final_outcome = "structure_retry_success"
+    elif assignment_retry_succeeded:
+        final_outcome = "assignment_retry_success"
+    else:
+        final_outcome = "first_pass_success"
     diagnostics = {
         "assignment_mode": overall_assignment_mode,
+        "final_outcome": final_outcome,
         "fallback_reason": fallback_reasons[0] if fallback_reasons else None,
         "candidate_count": candidate_count,
         "assignment_count": assignment_count,
+        "assignment_attempt_count": assignment_attempt_count,
+        "assignment_retry_used": assignment_retry_used,
+        "assignment_retry_succeeded": assignment_retry_succeeded,
+        "structure_retry_used": structure_retry_used,
+        "structure_retry_succeeded": structure_retry_succeeded,
+        "retry_used": retry_used,
+        "retry_succeeded": retry_succeeded,
         "refine_excerpts_enabled": refinement_enabled,
         "refine_excerpts_attempted": refinement_attempted,
         "refine_excerpts_accepted": refinement_accepted,
@@ -1380,6 +1885,10 @@ def parse_page_index_document(
         "pointer_fuzzy_repairs": pointer_fuzzy_repairs,
         "pointer_fuzzy_failures": pointer_fuzzy_failures,
         "validation_errors": validation_errors,
+        "assignment_validation_errors": assignment_validation_errors,
+        "structure_validation_errors": structure_validation_errors,
+        "first_validation_errors": first_validation_errors,
+        "retry_validation_errors": retry_validation_errors,
         "validation_warnings": validation_warnings,
         "page_diagnostics": page_diagnostics,
     }
