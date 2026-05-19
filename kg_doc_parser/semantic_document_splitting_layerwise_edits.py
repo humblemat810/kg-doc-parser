@@ -76,6 +76,7 @@ entry func : build_document_tree
 # ==============================================================================
 import json
 import re
+import time
 
 from dataclasses import dataclass
 from enum import Enum
@@ -99,6 +100,27 @@ from joblib import Memory
 from kg_doc_parser.document_ingester_logger import DocumentIngestSQLiteCallback
 from kogwistar.id_provider import stable_id
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+
+_LAYERWISE_TRACE_ENV = "KG_DOC_LAYERWISE_TRACE_FILE"
+
+
+def _emit_layerwise_trace(kind: str, **data: Any) -> None:
+    trace_path = os.environ.get(_LAYERWISE_TRACE_ENV)
+    if not trace_path:
+        return
+    try:
+        trace_dir = os.path.dirname(trace_path)
+        if trace_dir:
+            os.makedirs(trace_dir, exist_ok=True)
+        record = {
+            "kind": kind,
+            "ts": time.time(),
+            **data,
+        }
+        with open(trace_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    except Exception:
+        pass
 
 def get_llm(model_name:str):
     settings = WorkflowProviderSettings.from_env()
@@ -1043,6 +1065,15 @@ def build_document_tree(
     output structure
         layers of nodes from coarse to fine grained
     """
+    _emit_layerwise_trace(
+        "build_document_tree.start",
+        doc_id=doc_id,
+        max_depth=max_depth,
+        parsing_mode=parsing_mode,
+        allow_review=allow_review,
+        source_cluster_count=len(source_map),
+        model_names=model_names,
+    )
     root_node : SemanticNode= SemanticNode.model_validate(get_root_node(title=llm_input_dict['document_filename'], source_map=source_map))
     # SemanticNode(
     #     title=llm_input_dict['document_filename'],
@@ -1057,12 +1088,25 @@ def build_document_tree(
     while nodes_for_next_level and current_depth < max_depth:
         
         print(f"\nProcessing Level {current_depth} with {len(nodes_for_next_level)} nodes...")
+        _emit_layerwise_trace(
+            "build_document_tree.level.start",
+            doc_id=doc_id,
+            level=current_depth,
+            node_count=len(nodes_for_next_level),
+        )
         
         nodes_at_this_level: list[SemanticNode] = nodes_for_next_level
         current_level_node_context_reset_token = current_level_nodes.set(nodes_at_this_level)
         nodes_for_next_level: list[SemanticNode] = []
         node_this_level_lookup_by_id = {str(node.node_id): node for node in nodes_at_this_level}
         # This is the single, batched call for the entire level
+        _emit_layerwise_trace(
+            "build_document_tree.level_node_llm_parsing.start",
+            doc_id=doc_id,
+            level=current_depth,
+            node_count=len(nodes_at_this_level),
+            model_names=model_names,
+        )
         llm_response_json = level_node_llm_parsing(
             [i.model_dump() for i in nodes_at_this_level], 
             source_map, 
@@ -1072,6 +1116,11 @@ def build_document_tree(
             "level_parsing",
             parsing_mode=parsing_mode
         )
+        _emit_layerwise_trace(
+            "build_document_tree.level_node_llm_parsing.done",
+            doc_id=doc_id,
+            level=current_depth,
+        )
         @joblib_memory_cached(memory)
         def get_level_response(llm_response_json) -> Dict[str, Any]:
             response_cacheable = LLMLevelResponseBE.model_validate(llm_response_json).model_dump() # only dumped version cacheable by joblib
@@ -1080,6 +1129,12 @@ def build_document_tree(
         level_response : LLMLevelResponseBE= LLMLevelResponseBE.model_validate(response_cacheable)
         # [{i.title + "|" + i.node_type: [j.verbatim_text for j in i.pointers]} for i in level_response.children]
         # correct excerpts
+        _emit_layerwise_trace(
+            "build_document_tree.correct_level_children.start",
+            doc_id=doc_id,
+            level=current_depth,
+            child_count=len(level_response.children),
+        )
         corrected_children, unfixed_children = correct_level_children_with_iterative_pipeline(
             
             level_response_json=level_response.model_dump(),
@@ -1088,6 +1143,13 @@ def build_document_tree(
             doc_id=doc_id,
             model_names=model_names,
             # model_names=["gpt-4.1", "gpt-4o-mini"]  # or keep your Gemini list; it’s pluggable
+        )
+        _emit_layerwise_trace(
+            "build_document_tree.correct_level_children.done",
+            doc_id=doc_id,
+            level=current_depth,
+            fixed_count=len(corrected_children),
+            unfixed_count=len(unfixed_children),
         )
 
         corrected_children : list[LLMChildNodeResponseBE]
@@ -1100,8 +1162,20 @@ def build_document_tree(
         fe_children, layer_parent_types, layer_parent_sigs = prepare_frontend_children(nodes_at_this_level, level_response, fixed_children) # for next level of LLM
         
         if allow_review:
+            _emit_layerwise_trace(
+                "build_document_tree.iterative_review.start",
+                doc_id=doc_id,
+                level=current_depth,
+                child_count=len(fe_children),
+            )
             fixed_children, _reasoning_history= iterative_review_loop(fe_children, layer_parent_types, layer_parent_sigs, source_map,
                                                     model_names, doc_id, full_document_json_str, current_depth, llm_input_dict, nodes_at_this_level)
+            _emit_layerwise_trace(
+                "build_document_tree.iterative_review.done",
+                doc_id=doc_id,
+                level=current_depth,
+                child_count=len(fixed_children),
+            )
         for ch in fixed_children:
             ch: LLMChildNodeResponseBE
             child_def = ch.model_dump()
@@ -1115,8 +1189,19 @@ def build_document_tree(
             else:
                 nodes_for_next_level.append(child_node)
         current_level_nodes.reset(current_level_node_context_reset_token)
+        _emit_layerwise_trace(
+            "build_document_tree.level.done",
+            doc_id=doc_id,
+            level=current_depth,
+            next_level_count=len(nodes_for_next_level),
+        )
         current_depth += 1
         
+    _emit_layerwise_trace(
+        "build_document_tree.done",
+        doc_id=doc_id,
+        depth=current_depth,
+    )
     return root_node    
 def prepare_frontend_children(nodes_at_this_level, level_response, fixed_children: List[LLMChildNodeResponseBE]):
         # RUN LLM loop make sure missing content will be guarded by LLM
@@ -1189,6 +1274,12 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
     # after the loop, at the end, just like the initial run, have to check the verbatim/excepts really exists 
     # and correct check the except really exists again
 
+    _emit_layerwise_trace(
+        "iterative_review_loop.start",
+        doc_id=doc_id,
+        current_depth=current_depth,
+        child_count=len(fe_children),
+    )
     edited = False
     proposals = True
     retries = 0
@@ -1220,6 +1311,13 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
                           for node in nodes_at_this_level],
             attempt = retries
         )
+        _emit_layerwise_trace(
+            "iterative_review_loop.proposal.done",
+            doc_id=doc_id,
+            current_depth=current_depth,
+            retry=retries,
+            proposal_count=len(getattr(proposals_response, "proposals", []) or []),
+        )
         CUD_reasoning_history.append({"role": "ai_assistant", 'content': proposals_response.reasoning})
         # current_level_nodes.reset(token)
         if not (proposals_response.is_empty()):# 
@@ -1243,6 +1341,14 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
         retries += 1
     # --- END CUD loop ---   then post CUD validate below
     if not fe_children or (not edited): 
+        _emit_layerwise_trace(
+            "iterative_review_loop.done",
+            doc_id=doc_id,
+            current_depth=current_depth,
+            fixed_count=len(fe_children),
+            edited=edited,
+            reasoning_steps=len(CUD_reasoning_history),
+        )
         return  [LLMChildNodeResponseBE.model_validate(i) for i in fe_children] , CUD_reasoning_history# no children even after re-check in iterative pipeline, time to early stop
     # Create SemanticNode children for this parent
     else:
@@ -1272,6 +1378,14 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
         # ids = [str(c.id) for c in corrected_children]
         # corrected_children_map: dict[str, LLMChildNodeResponseBE] = {str(i.id) : i for i in corrected_children}
         fixed_children: list[LLMChildNodeResponseBE] = corrected_children #[corrected_children_map[str(i)] for i in ids]
+    _emit_layerwise_trace(
+        "iterative_review_loop.done",
+        doc_id=doc_id,
+        current_depth=current_depth,
+        fixed_count=len(fixed_children),
+        edited=edited,
+        reasoning_steps=len(CUD_reasoning_history),
+    )
     return fixed_children, CUD_reasoning_history
         
 from typing import Dict, List, Optional, Tuple, Callable, Iterable
@@ -1756,6 +1870,13 @@ def iterative_correct_children_for_level(
     if doc_id is None:
         raise Exception("Missing doc_id")
     model_names = model_names or _default_parser_model_names()
+    _emit_layerwise_trace(
+        "iterative_correct_children_for_level.start",
+        doc_id=doc_id,
+        child_count=len(children),
+        max_rounds=max_rounds,
+        model_names=model_names,
+    )
 
     fixed: Dict[str, LLMChildNodeResponseBE] = {}
     pending: Dict[str, LLMChildNodeResponseBE] = {f"{i.parent_node_id}|{i.title}": i for i in children}
@@ -1765,6 +1886,13 @@ def iterative_correct_children_for_level(
         if not pending:
             break
         pending_length_history.append({'round_idx': round_idx, "stage":'pre-deterministic', 'length_pending': len(pending), "still_unsolved_same_cnt": still_unsolved_same_cnt})
+        _emit_layerwise_trace(
+            "iterative_correct_children_for_level.round.start",
+            doc_id=doc_id,
+            round_idx=round_idx,
+            pending_count=len(pending),
+            still_unsolved_same_cnt=still_unsolved_same_cnt,
+        )
         # ----- 1) deterministic pass
         still_unresolved: Dict[str, LLMChildNodeResponseBE] = {}
         for key, child in list(pending.items()):
@@ -1782,6 +1910,13 @@ def iterative_correct_children_for_level(
             break # short circuit if all resovled correctly
         pending_length_history.append({'round_idx': round_idx, "stage":'pre-llm-correct', 'length_pending': len(pending), "still_unsolved_same_cnt": still_unsolved_same_cnt})
         # ----- 2) LLM batch pass over *only* unresolved children
+        _emit_layerwise_trace(
+            "iterative_correct_children_for_level.llm.start",
+            doc_id=doc_id,
+            round_idx=round_idx,
+            pending_count=len(pending),
+            still_unsolved_same_cnt=still_unsolved_same_cnt,
+        )
         nodes_to_correct = [
             {
                 "parent_node_id": c.parent_node_id,
@@ -1800,6 +1935,12 @@ def iterative_correct_children_for_level(
             parsed: LLMLevelResponse = call_llm_structured(
                 prompt, model_names, LLMLevelResponse, doc_id, schema, "correct_level_children_schema", still_unsolved_same_cnt
             )
+            _emit_layerwise_trace(
+                "iterative_correct_children_for_level.llm.done",
+                doc_id=doc_id,
+                round_idx=round_idx,
+                returned_count=len(getattr(parsed, "children", []) or []),
+            )
             parsed_be = LLMLevelResponseBE.model_validate(parsed.model_dump())
             # validate each returned child again deterministically (trust but verify)
             returned_by_key: Dict[str, LLMChildNodeResponseBE] = {}
@@ -1815,6 +1956,13 @@ def iterative_correct_children_for_level(
         except Exception as e:  # noqa: BLE001
             # LLM failed this round; keep items pending for next round or exit
             print(f"LLM correction round {round_idx+1} failed: {e}")
+            _emit_layerwise_trace(
+                "iterative_correct_children_for_level.llm.error",
+                doc_id=doc_id,
+                round_idx=round_idx,
+                error=type(e).__name__,
+                message=str(e),
+            )
             # fall through; next round will retry or terminate
 
     # Final set = fixed + whatever remains pending (keep originals for transparency)
@@ -1825,6 +1973,12 @@ def iterative_correct_children_for_level(
 
     out = ChildrenCorrectionResult(fixed_children = list(fixed.values()) ,
                                     pending_fix_children= list(pending.values()))
+    _emit_layerwise_trace(
+        "iterative_correct_children_for_level.done",
+        doc_id=doc_id,
+        fixed_count=len(out.fixed_children),
+        pending_count=len(out.pending_fix_children),
+    )
     return out
 # ======== Minimal additions to support your CUD loop (matching your usage) ========
 from string import Template as _CUDTemplate
@@ -2185,6 +2339,13 @@ def CUD_proposal(
     Ask LLM for CUD proposals (single round) for the CURRENT LAYER.
     Returns a list of CUDProposal, or [] if none.
     """
+    _emit_layerwise_trace(
+        "CUD_proposal.start",
+        doc_id=doc_id,
+        attempt=attempt,
+        child_count=len(children),
+        has_reasoning_history=bool(reasoning_history),
+    )
     # build small prompt from current layer only
     if children:
         prompt = _CUD_PROMPT.substitute(current_layer_json=_serialize_children_for_prompt(children),
@@ -2197,9 +2358,22 @@ def CUD_proposal(
                                         full_document_json_str = full_document_json_str,
                                         ancestors = last_layer, reasoning_history = str(reasoning_history))
         ResponseModel = CResponse
+    _emit_layerwise_trace(
+        "CUD_proposal.prompt.ready",
+        doc_id=doc_id,
+        attempt=attempt,
+        prompt_chars=len(prompt),
+        response_model=ResponseModel.__name__,
+    )
     # Prefer your structured invoker if available
 
     try:
+        _emit_layerwise_trace(
+            "CUD_proposal.llm.start",
+            doc_id=doc_id,
+            attempt=attempt,
+            model_names=model_names,
+        )
         resp:CUDResponse['llm'] | CResponse['llm']  = _default_call_llm_structured(
             prompt=prompt,
             model_names=model_names,
@@ -2210,11 +2384,23 @@ def CUD_proposal(
             i_attempt=attempt,
             
         )
+        _emit_layerwise_trace(
+            "CUD_proposal.llm.done",
+            doc_id=doc_id,
+            attempt=attempt,
+        )
         return ResponseModel.model_validate(resp.model_dump())
     except Exception as e:
         print("error " + str(e))
         # logger.error(e)
         # fail-safe: no proposals means exit loop on your side
+        _emit_layerwise_trace(
+            "CUD_proposal.error",
+            doc_id=doc_id,
+            attempt=attempt,
+            error=type(e).__name__,
+            message=str(e),
+        )
         raise e
         return []
 from typing import Sequence
@@ -2334,12 +2520,23 @@ def correct_level_children_with_iterative_pipeline(
     """
     level = LLMLevelResponseBE.model_validate(level_response_json)
     children = [LLMChildNodeResponseBE.model_validate(c.model_dump()) for c in level.children]
+    _emit_layerwise_trace(
+        "correct_level_children_with_iterative_pipeline.start",
+        doc_id=doc_id,
+        child_count=len(children),
+    )
     to_return = iterative_correct_children_for_level(
         children=children,
         source_map=source_map,
         full_document_json=full_document_json,
         doc_id = doc_id,
         model_names=model_names,
+    )
+    _emit_layerwise_trace(
+        "correct_level_children_with_iterative_pipeline.done",
+        doc_id=doc_id,
+        fixed_count=len(to_return.fixed_children),
+        pending_count=len(to_return.pending_fix_children),
     )
     
     return to_return
@@ -2613,10 +2810,24 @@ def parse_doc(
     
     
     try:
+        _emit_layerwise_trace(
+            "parse_doc.start",
+            doc_id=doc_id,
+            parsing_mode=parsing_mode,
+            max_depth=max_depth,
+            model_names=model_names,
+        )
         print("--- Phase 2: Preparing Document ---")
+        _emit_layerwise_trace("parse_doc.prepare_document_for_llm.start", doc_id=doc_id)
         llm_input_dict, source_map = prepare_document_for_llm(raw_doc_dict)
+        _emit_layerwise_trace(
+            "parse_doc.prepare_document_for_llm.done",
+            doc_id=doc_id,
+            source_cluster_count=len(source_map),
+        )
 
         print("\n--- Phase 3: Building Document Tree (Layer-wise) ---")
+        _emit_layerwise_trace("parse_doc.build_document_tree.start", doc_id=doc_id)
         document_tree = build_document_tree(
             doc_id,
             llm_input_dict,
@@ -2625,6 +2836,7 @@ def parse_doc(
             max_depth=max_depth,
             model_names=model_names,
         )
+        _emit_layerwise_trace("parse_doc.build_document_tree.done", doc_id=doc_id)
         cov: CoverageResponse = compute_pointer_coverage(document_tree, source_map)
         print("Overall coverage:", cov.overall)
         for cid, r in cov.per_cluster.items():
@@ -2643,14 +2855,27 @@ def parse_doc(
         # if is_valid:
         print("\n--- Phase 5: Visualizing the Reconstructed Tree ---")
         print_tree(document_tree)
+        _emit_layerwise_trace("parse_doc.done", doc_id=doc_id)
         
     except (ValidationError, json.JSONDecodeError) as e:
         print("\n--- ERROR: Failed to parse or validate LLM response. ---")
         print(f"Details: {e}")
+        _emit_layerwise_trace(
+            "parse_doc.error",
+            doc_id=doc_id,
+            error=type(e).__name__,
+            message=str(e),
+        )
         raise e
     except Exception as e:
         print("\n--- ERROR: A critical error occurred. ---")
         print(f"Details: {e}")
+        _emit_layerwise_trace(
+            "parse_doc.error",
+            doc_id=doc_id,
+            error=type(e).__name__,
+            message=str(e),
+        )
         raise e
     return document_tree, source_map
 
