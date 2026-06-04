@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, ClassVar, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_extension.model_slicing import BackendField, FrontendField
 from pydantic_extension.model_slicing.mixin import DtoField, ExcludeMode, LLMField, ModeSlicingMixin
 
@@ -340,6 +340,18 @@ class LayerChildCandidate(ModeSlicingMixin, BaseModel):
     ] = Field(default_factory=dict)
 
 
+class LayerReasoningEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str | None = None
+    stage: str | None = None
+    proposal_source: Literal["llm", "fallback"] | None = None
+    proposal_failure_reason: str | None = None
+    provider_child_count: int | None = None
+    depth: int | None = None
+    lines: int | None = None
+
+
 class CurrentLayerContext(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
@@ -378,7 +390,7 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
 
     children: Annotated[list[LayerChildCandidate], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     satisfied: Annotated[Optional[bool], DtoField(), BackendField(), FrontendField(), LLMField()] = None
-    reasoning_history: Annotated[list[dict[str, Any]], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
+    reasoning_history: Annotated[list[LayerReasoningEntry], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     review_rounds: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     metadata: Annotated[
         dict[str, Any],
@@ -387,6 +399,26 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+
+
+class LLMLayerChildCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    parent_node_id: str
+    title: str
+    node_type: str
+    total_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
+    expandable: bool = True
+
+
+class LLMCurrentLayerResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    children: list[LLMLayerChildCandidate] = Field(default_factory=list)
+    satisfied: bool | None = None
+    reasoning_history: list[LayerReasoningEntry] = Field(default_factory=list)
+    review_rounds: int = 0
 
 
 class CurrentLayerReview(ModeSlicingMixin, BaseModel):
@@ -432,6 +464,19 @@ class CurrentLayerReview(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+
+
+class LLMCurrentLayerReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updated_result: LLMCurrentLayerResult | None = None
+    coverage_ok: bool | None = None
+    satisfied: bool | None = None
+    strategy_used: Literal["excerpt_first", "boundary_first"] = "excerpt_first"
+    overlap_conflicts: list[LayerSpanConflict] = Field(default_factory=list)
+    coverage_gap_notes: list[LayerCoverageGap] = Field(default_factory=list)
+    duplicate_child_notes: list[LayerDuplicateChildNote] = Field(default_factory=list)
+    review_notes: list[str] = Field(default_factory=list)
 
 
 class CanonicalGraphWriteResult(ModeSlicingMixin, BaseModel):

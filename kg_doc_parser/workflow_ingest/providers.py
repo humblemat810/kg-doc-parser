@@ -82,7 +82,8 @@ class FakeChatModel:
     def __init__(self, *, payload_factory: Callable[[Any], dict[str, Any]] | None = None) -> None:
         self.payload_factory = payload_factory or _default_schema_payload
 
-    def with_structured_output(self, schema, include_raw: bool = True):
+    def with_structured_output(self, schema, include_raw: bool = True, **kwargs):
+        _ = kwargs
         payload = self.payload_factory(schema)
         return _FakeStructuredResponse(schema, payload)
 

@@ -67,6 +67,7 @@ from PIL import Image, ImageDraw
 from _kogwistar_test_helpers import build_workflow_engine_triplet, drain_phase1_indexes_until_idle
 from kg_doc_parser.models import OCRClusterResponse, TextCluster
 from kg_doc_parser.ocr import regen_doc
+import kg_doc_parser.workflow_ingest.ocr_pipeline as ocr_pipeline_module
 from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     OCRImagePayload,
@@ -196,6 +197,37 @@ def _skip_if_live_ocr_unavailable(exc: Exception) -> None:
         )
     ):
         pytest.skip(f"live ocr unavailable: {exc}")
+
+
+def test_workflow_ocr_structured_output_prefers_function_calling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+    image_path = _scratch("ocr_function_calling") / "page_1.png"
+    _draw_test_image(image_path, lines=["OCR structured output"])
+
+    class _FakeStructured:
+        def invoke(self, messages):
+            return {"parsed": _fake_ocr_response(1, "OCR structured output")}
+
+    class _FakeChat:
+        def with_structured_output(self, schema, include_raw=True, **kwargs):
+            captured.append({"schema": schema.__name__, "include_raw": include_raw, **kwargs})
+            return _FakeStructured()
+
+    monkeypatch.setattr(ocr_pipeline_module, "build_chat_model_for_role", lambda *args, **kwargs: _FakeChat())
+
+    response = ocr_pipeline_module._run_live_ocr_page(
+        image_path,
+        1,
+        WorkflowProviderSettings(
+            ocr=ProviderEndpointConfig(provider="azure", model="gpt-5-nano", base_url="https://example.openai.azure.com/")
+        ),
+    )
+
+    assert response.OCR_text_clusters[0].text == "OCR structured output"
+    assert captured
+    assert captured[0]["method"] == "json_schema"
 
 
 @pytest.mark.ci

@@ -4,7 +4,16 @@ import json
 import re
 from typing import Any, Callable
 
-from .models import CurrentLayerResult, CurrentLayerReview, LayerChildCandidate
+from kg_doc_parser.llm_structured_output import build_structured_output_runnable
+
+from .models import (
+    CurrentLayerResult,
+    CurrentLayerReview,
+    LLMCurrentLayerResult,
+    LLMCurrentLayerReview,
+    LayerChildCandidate,
+    LayerReasoningEntry,
+)
 from .providers import WorkflowProviderSettings, build_chat_model_for_role
 from .semantics import HydratedTextPointer
 
@@ -217,25 +226,23 @@ def _annotate_proposal_result(
     if proposal_failure_reason:
         metadata["proposal_failure_reason"] = proposal_failure_reason
     reasoning_history = list(getattr(result, "reasoning_history", []) or [])
-    marker: dict[str, Any] = {
+    marker_payload: dict[str, Any] = {
         "source": "workflow_layered_proposal",
         "proposal_source": proposal_source,
     }
     if provider_child_count is not None:
-        marker["provider_child_count"] = provider_child_count
+        marker_payload["provider_child_count"] = provider_child_count
     if proposal_failure_reason:
-        marker["proposal_failure_reason"] = proposal_failure_reason
-    reasoning_history.append(marker)
-    return result.model_copy(
-        update={
-            "metadata": metadata,
-            "reasoning_history": reasoning_history,
-        }
-    )
+        marker_payload["proposal_failure_reason"] = proposal_failure_reason
+    reasoning_history.append(LayerReasoningEntry.model_validate(marker_payload))
+    payload = result.model_dump()
+    payload["metadata"] = metadata
+    payload["reasoning_history"] = [entry.model_dump() if hasattr(entry, "model_dump") else entry for entry in reasoning_history]
+    return result.__class__.model_validate(payload)
 
 
 def _structured_invoke(model: Any, schema: Any, messages: list[tuple[str, str]]) -> Any:
-    structured = model.with_structured_output(schema, include_raw=True)
+    structured = build_structured_output_runnable(model, schema, include_raw=True)
     response = structured.invoke(messages)
     if isinstance(response, dict):
         parsed = response.get("parsed")
@@ -371,11 +378,13 @@ def build_layerwise_llm_callbacks(
             ),
         ]
         try:
-            result = _structured_invoke(chat_model, CurrentLayerResult, messages)
+            result = _structured_invoke(chat_model, LLMCurrentLayerResult, messages)
             parsed = (
                 result
-                if isinstance(result, CurrentLayerResult)
-                else CurrentLayerResult.model_validate(result)
+                if isinstance(result, LLMCurrentLayerResult)
+                else LLMCurrentLayerResult.model_validate(
+                    result.model_dump() if hasattr(result, "model_dump") else result
+                )
             )
             validation_reason = _proposal_validation_reason(
                 parsed=parsed,
@@ -384,10 +393,11 @@ def build_layerwise_llm_callbacks(
             )
             if validation_reason:
                 raise ValueError(validation_reason)
+            runtime_result = CurrentLayerResult.model_validate(parsed.model_dump())
             annotated = _annotate_proposal_result(
-                parsed,
+                runtime_result,
                 proposal_source="llm",
-                provider_child_count=len(parsed.children),
+                provider_child_count=len(runtime_result.children),
             )
             _emit(
                 "workflow_layered_proposal_result",
@@ -395,8 +405,8 @@ def build_layerwise_llm_callbacks(
                 depth=int(getattr(current_layer_context, "depth", 0)),
                 retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                 split_strategy=split_strategy,
-                child_count=len(parsed.children),
-                satisfied=parsed.satisfied,
+                child_count=len(runtime_result.children),
+                satisfied=runtime_result.satisfied,
             )
             return annotated
         except Exception as exc:
@@ -471,22 +481,25 @@ def build_layerwise_llm_callbacks(
             ),
         ]
         try:
-            result = _structured_invoke(chat_model, CurrentLayerReview, messages)
+            result = _structured_invoke(chat_model, LLMCurrentLayerReview, messages)
             reviewed = (
                 result
-                if isinstance(result, CurrentLayerReview)
-                else CurrentLayerReview.model_validate(result)
+                if isinstance(result, LLMCurrentLayerReview)
+                else LLMCurrentLayerReview.model_validate(
+                    result.model_dump() if hasattr(result, "model_dump") else result
+                )
             )
+            runtime_review = CurrentLayerReview.model_validate(reviewed.model_dump())
             _emit(
                 "workflow_layered_review_result",
                 review_source="llm",
                 depth=int(getattr(current_layer_context, "depth", 0)),
                 retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                 split_strategy=split_strategy,
-                satisfied=reviewed.satisfied,
-                coverage_ok=reviewed.coverage_ok,
+                satisfied=runtime_review.satisfied,
+                coverage_ok=runtime_review.coverage_ok,
             )
-            return reviewed
+            return runtime_review
         except Exception as exc:
             failure_reason = _trim_text(repr(exc), max_chars=500)
             reviewed = CurrentLayerReview(

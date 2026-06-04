@@ -98,6 +98,7 @@ from datetime import datetime
 from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory
 from kg_doc_parser.document_ingester_logger import DocumentIngestSQLiteCallback
+from kg_doc_parser.llm_structured_output import build_structured_output_runnable
 from kogwistar.id_provider import stable_id
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 
@@ -900,7 +901,7 @@ def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id
                 # Use with_structured_output with our new batch response model
                 for retries in range(max_retry):
                     try:
-                        response: dict = llm.with_structured_output(LLMLevelResponse["llm"], include_raw=True).invoke(messages,
+                        response: dict = build_structured_output_runnable(llm, LLMLevelResponse["llm"], include_raw=True).invoke(messages,
                                                 config={
                                                         "metadata": {
                                                         "document_id": doc_id,
@@ -1821,7 +1822,7 @@ def _default_call_llm_structured(
             line_no = cf.f_lineno if cf else None
             try:
                 llm = get_llm(name)
-                resp: dict = llm.with_structured_output(schema, include_raw=True).invoke(messages, 
+                resp: dict = build_structured_output_runnable(llm, schema, include_raw=True).invoke(messages, 
                                     config={
                                             "metadata": {
                                             "document_id": doc_id,
@@ -3360,7 +3361,7 @@ def build_index_terms_for_semantic_node(
             llm: BaseChatModel = get_llm(model_name)
 
             try:
-                res: dict = llm.with_structured_output(BatchIndexResponse, include_raw=True).invoke(
+                res: dict = build_structured_output_runnable(llm, BatchIndexResponse, include_raw=True).invoke(
                     cur_messages,
                     config={
                         "metadata": {

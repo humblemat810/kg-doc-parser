@@ -11,6 +11,7 @@ import base64
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import Runnable
 from .models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
+from .llm_structured_output import build_structured_output_runnable
 from typing import Any, Iterable, cast, Callable, Optional,  Literal, Union
 try:
     from typing import TypeAlias
@@ -165,7 +166,7 @@ class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
 def get_first_round_response(draft_responses, llm: BaseChatModel, model_name: str, cb: BaseCallbackHandler, 
                              messages: list[BaseMessage], sys_message, img_message, usage_metadata) -> OCRClusterResponse | None:
     
-                    chain = llm.with_structured_output(RawOCRResponse, include_raw = True)
+                    chain = build_structured_output_runnable(llm, RawOCRResponse, include_raw=True)
                     before_parse: Runnable = chain.steps[0]
                     after_parse: Runnable = chain.steps[1]
                     raw_response = before_parse.invoke(messages, config={"callbacks": [cb]}
@@ -200,13 +201,13 @@ def get_first_round_response(draft_responses, llm: BaseChatModel, model_name: st
                             text: str = Field(description = "OCR identified text with layout")
                         ocr_draft_response = cast(
                                                     OCRDraftResponse | None,
-                                                    llm.with_structured_output(OCRDraftResponse).invoke(messages),
+                                                    build_structured_output_runnable(llm, OCRDraftResponse, include_raw=True).invoke(messages),
                                                 )
                         if (ocr_draft_response is not None) and (ocr_draft_response.text is not None) and ocr_draft_response.text != "":
                             draft_responses[model_name] = ocr_draft_response.text
                         sys_message_2.content += ("If your internal OCR fails. Focus on table parsing mode because my error analysis modes often show that the failing OCR pages are usually highly complicated tables. "
                                                  f"Try to put in as much data as possible given all text found by simple OCR for your reference:```{ocr_draft_response.text}```"  if ocr_draft_response else"")
-                        response_with_raw = cast(dict[str, RawOCRResponse], llm.with_structured_output(RawOCRResponse, include_raw = True).invoke(
+                        response_with_raw = cast(dict[str, RawOCRResponse], build_structured_output_runnable(llm, RawOCRResponse, include_raw=True).invoke(
                             [sys_message, img_message]
                         ))
                         raw_ocr_response : None | RawOCRResponse= None
@@ -298,14 +299,14 @@ def final_resort(draft_responses: dict, messages, page_file_name, model_name, im
                         earlier_partial_ocr = draft_responses.get("gemini-2.5-pro") or draft_responses.get("gemini-2.5-flash") or max_v
                         llm = _build_ocr_llm("gemini-2.5-pro", callbacks=[cb])
 
-                        ocr_meta_response: OCRMetaResponse| None =cast (OCRMetaResponse | None , llm.with_structured_output(OCRMetaResponse).invoke(messages[:2]))
+                        ocr_meta_response: OCRMetaResponse| None =cast (OCRMetaResponse | None , build_structured_output_runnable(llm, OCRMetaResponse, include_raw=True).invoke(messages[:2]))
                         if ocr_meta_response is None:
                             raise Exception("model capability cannot even skim meta coarse level information")
                         metadata = [SystemMessage("Earlier steps has already determined the metadata about this document: \n\n" + str(ocr_meta_response.model_dump()))]
                         has_error = False
                         try:
                             response2:RawOCRResponseMetaless | None= cast(RawOCRResponseMetaless | None, 
-                                                                          llm.with_structured_output(RawOCRResponseMetaless).invoke(messages[:2] + metadata))
+                                                                          build_structured_output_runnable(llm, RawOCRResponseMetaless, include_raw=True).invoke(messages[:2] + metadata))
                             if response2 is None:
                                 has_error = True
                             else:
@@ -315,7 +316,7 @@ def final_resort(draft_responses: dict, messages, page_file_name, model_name, im
                         if has_error:
                             # retry only
                             try:
-                                response3:TextBoxResponse | None = cast (TextBoxResponse | None , llm.with_structured_output(TextBoxResponse).invoke(messages[:2]))
+                                response3:TextBoxResponse | None = cast (TextBoxResponse | None , build_structured_output_runnable(llm, TextBoxResponse, include_raw=True).invoke(messages[:2]))
                                 if response3 is None:
                                     has_error = True
                                     raise(Exception("error when trying TextBoxResponse"))
@@ -587,7 +588,7 @@ def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
             oc_refined_result: OCRRefineResponse
             raw: str
             parsing_error: Exception
-            temp: dict = cast(dict, llm.with_structured_output(schema = OCRRefineResponse, include_raw = True).invoke(messages, config={"callbacks": [cb]}))
+            temp: dict = cast(dict, build_structured_output_runnable(llm, OCRRefineResponse, include_raw=True).invoke(messages, config={"callbacks": [cb]}))
             (raw, oc_refined_result, parsing_error) = (temp['raw'], temp['parsed'], temp['parsing_error'])
             if parsing_error:
                 raise parsing_error

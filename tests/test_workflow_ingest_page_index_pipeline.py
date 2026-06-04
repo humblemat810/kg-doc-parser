@@ -101,6 +101,45 @@ def _install_fake_page_index_chat(
     monkeypatch.setattr(page_index_module, "build_chat_model_for_role", lambda *args, **kwargs: _FakeChat())
 
 
+def test_page_index_llm_structured_output_prefers_function_calling(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[dict[str, object]] = []
+
+    class _FakeStructured:
+        def invoke(self, messages):
+            return {
+                "parsed": page_index_module.BlockAssignmentBatch(
+                    assignments=[
+                        page_index_module.BlockAssignment(
+                            block_id="p0001-b001",
+                            parent_id=None,
+                            node_type="SECTION",
+                            title="Root",
+                        )
+                    ]
+                )
+            }
+
+    class _FakeChat:
+        def with_structured_output(self, schema, include_raw=True, **kwargs):
+            captured.append({"schema": schema.__name__, "include_raw": include_raw, **kwargs})
+            return _FakeStructured()
+
+    monkeypatch.setattr(page_index_module, "build_chat_model_for_role", lambda *args, **kwargs: _FakeChat())
+
+    provider_settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="azure", model="gpt-5-nano", base_url="https://example.openai.azure.com/")
+    )
+    page_index_module._llm_page_outline(
+        page_text="# Root\n",
+        page_number=1,
+        source_format="markdown",
+        provider_settings=provider_settings,
+    )
+
+    assert captured
+    assert captured[0]["method"] == "json_schema"
+
+
 def test_page_index_module_exports_hybrid_primitives() -> None:
     assert hasattr(page_index_module, "CandidateBlock")
     assert hasattr(page_index_module, "BlockAssignment")

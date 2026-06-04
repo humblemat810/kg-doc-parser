@@ -109,8 +109,10 @@ class _FakeChatModel:
     def __init__(self, response: Any):
         self.response = response
         self.messages = None
+        self.structured_output_kwargs: dict[str, Any] | None = None
 
-    def with_structured_output(self, schema, include_raw: bool = True):
+    def with_structured_output(self, schema, include_raw: bool = True, **kwargs: Any):
+        self.structured_output_kwargs = {"include_raw": include_raw, **kwargs}
         return _FakeStructuredInvoker(self)
 
 
@@ -175,9 +177,10 @@ def test_propose_layer_fn_returns_llm_result_and_logs_source(monkeypatch: pytest
     assert [child.node_id for child in result.children] == ["doc|root|alpha", "doc|root|beta"]
     assert result.metadata["proposal_source"] == "llm"
     assert "proposal_failure_reason" not in result.metadata
-    assert result.reasoning_history[-1]["proposal_source"] == "llm"
+    assert result.reasoning_history[-1].proposal_source == "llm"
     assert layer_events[-1]["stage"] == "workflow_layered_proposal_result"
     assert layer_events[-1]["proposal_source"] == "llm"
+    assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
     prompt_body = fake_model.messages[1][1].lower()
     assert "coarser layerwise breakdown" in prompt_body
     assert "do not recombine separated verbatim fragments" in prompt_body
@@ -234,7 +237,7 @@ def test_propose_layer_fn_falls_back_and_marks_reason(
         assert "validation" in result.metadata["proposal_failure_reason"].lower()
     else:
         assert reason_fragment in result.metadata["proposal_failure_reason"]
-    assert result.reasoning_history[-1]["proposal_source"] == "fallback"
+    assert result.reasoning_history[-1].proposal_source == "fallback"
     assert layer_events[-1]["stage"] == "workflow_layered_proposal_result"
     assert layer_events[-1]["proposal_source"] == "fallback"
     assert "proposal_failure_reason" in layer_events[-1]

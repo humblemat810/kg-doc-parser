@@ -42,6 +42,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, Field
 
 from .adapters import build_authoritative_source_map, build_parser_input_dict, build_parser_source_map
+from ..llm_structured_output import build_structured_output_runnable
 from .models import GroundedSourceRecord, NormalizedPage, NormalizedSourceCollection, SourceUnit, WorkflowIngestInput
 from .providers import WorkflowProviderSettings, build_chat_model_for_role
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit, find_best_fuzzy_span
@@ -978,7 +979,7 @@ def _refine_page_index_block_excerpts(
             f"page_index_refine_prepare page_number={page_number} unit_id={unit_id} block_count={len(entries)}"
         )
     chat = build_chat_model_for_role("parser", provider_settings)
-    structured = chat.with_structured_output(ExcerptRefinementBatch, include_raw=True)
+    structured = build_structured_output_runnable(chat, ExcerptRefinementBatch, include_raw=True)
     from langchain_core.messages import HumanMessage, SystemMessage
     import json as _json
 
@@ -1172,7 +1173,7 @@ def _llm_page_outline(
     if trace_log is not None:
         trace_log(f"page_index_llm_chat_build_done page_number={page_number}")
         trace_log(f"page_index_llm_structured_wrap_start page_number={page_number}")
-    structured = chat.with_structured_output(BlockAssignmentBatch, include_raw=True)
+    structured = build_structured_output_runnable(chat, BlockAssignmentBatch, include_raw=True)
     if trace_log is not None:
         trace_log(f"page_index_llm_structured_wrap_done page_number={page_number}")
     from langchain_core.messages import HumanMessage, SystemMessage

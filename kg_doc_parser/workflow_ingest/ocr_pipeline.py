@@ -50,6 +50,7 @@ from pydantic import BaseModel, Field
 from PIL import Image
 from pypdf import PdfReader
 
+from ..llm_structured_output import build_structured_output_runnable
 from ..models import OCRClusterResponse, SplitPage, SplitPageMeta
 
 from .adapters import OCRPageJSON, normalize_ocr_pages
@@ -1260,7 +1261,7 @@ def _run_live_ocr_page(image_path: Path, page_number: int, provider_settings: Wo
     page image in, structured OCR model out.
     """
     chat = build_chat_model_for_role("ocr", provider_settings)
-    structured = chat.with_structured_output(OCRClusterResponse, include_raw=True)
+    structured = build_structured_output_runnable(chat, OCRClusterResponse, include_raw=True)
     prompt = (
         "You are an OCR model for workflow ingest.\n"
         "Return structured OCR for one page image.\n"
