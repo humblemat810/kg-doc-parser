@@ -330,6 +330,36 @@ def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: py
     assert [child.parent_node_id for child in result.children] == ["doc|root", "doc|root"]
 
 
+def test_boundary_mode_rejects_no_split_layer(monkeypatch: pytest.MonkeyPatch):
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "cutpoints": [],
+                "satisfied": True,
+                "reasoning_history": [],
+                "review_rounds": 0,
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+
+    callbacks = build_layerwise_llm_callbacks(_provider_settings(), proposal_mode="boundaries")
+    result = callbacks["propose_layer_fn"](
+        parser_source_map=_parser_source_map(),
+        current_layer_context=_boundary_context(),
+        semantic_tree=_semantic_tree(),
+        split_strategy="boundary_first",
+        parser_input_dict=_parser_input_dict(),
+        parse_session=_parse_session(),
+    )
+
+    assert result.metadata["proposal_source"] == "fallback"
+    assert "no accepted cutpoints" in result.metadata["proposal_failure_reason"]
+
+
 class _FakeStructuredInvoker:
     def __init__(self, owner: "_FakeChatModel"):
         self._owner = owner
@@ -490,8 +520,8 @@ def test_boundary_mode_recurses_through_refinement_for_ambiguous_cutpoints(monke
     )
 
     assert result.metadata["proposal_mode"] == "boundaries"
-    assert result.metadata["boundary_refinement_attempts"] == 1
-    assert result.metadata["boundary_refinement_count"] >= 1
+    assert result.metadata["proposal_source"] == "fallback"
+    assert "no accepted cutpoints" in result.metadata["proposal_failure_reason"]
 
 
 def test_boundary_and_child_modes_produce_equivalent_labels_for_same_fixture(monkeypatch: pytest.MonkeyPatch):
@@ -734,17 +764,17 @@ def test_propose_layer_fn_rejects_single_child_fake_split(monkeypatch: pytest.Mo
                     {
                         "node_id": "doc|root|only",
                         "parent_node_id": "doc|root",
-                        "title": "Demo Doc",
+                        "title": "Different title",
                         "node_type": "TEXT_FLOW",
                         "total_content_pointers": [
                             {
                                 "source_cluster_id": "cluster-1",
                                 "start_char": 0,
-                                "end_char": 24,
-                                "verbatim_text": "Alpha clause. Beta clause.",
+                                "end_char": 20,
+                                "verbatim_text": "Alpha clause. Beta",
                             }
                         ],
-                        "expandable": False,
+                        "expandable": True,
                     }
                 ],
                 "satisfied": True,

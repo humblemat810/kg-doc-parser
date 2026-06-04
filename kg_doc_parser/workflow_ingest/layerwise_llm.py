@@ -121,6 +121,15 @@ def _pointer_field(pointer: Any, field_name: str) -> Any:
     return getattr(pointer, field_name, None)
 
 
+def _pointer_signature(pointer: Any, *, parser_source_map: dict[str, dict[str, Any]]) -> tuple[str, int, int, str]:
+    return (
+        str(_pointer_field(pointer, "source_cluster_id") or ""),
+        int(_pointer_field(pointer, "start_char") or 0),
+        int(_pointer_field(pointer, "end_char") or -1),
+        _pointer_text(pointer, parser_source_map=parser_source_map).strip(),
+    )
+
+
 def _pointer_end_inclusive(
     pointer: Any,
     *,
@@ -517,11 +526,8 @@ def _proposal_validation_reason(
     )
     for parent_id, parent_children in children_by_parent.items():
         if len(parent_children) == 1:
-            only_child = parent_children[0]
-            child_title = str(getattr(only_child, "title", "") or "").strip().lower()
-            parent_title = str(parent_titles.get(parent_id) or "").strip().lower()
-            if not getattr(only_child, "expandable", False) or child_title == parent_title:
-                return "proposal collapsed a parent into a single child without a real breakdown"
+            _ = parent_titles.get(parent_id)
+            return "proposal collapsed a parent into a single child without a real breakdown"
     return None
 
 
@@ -1330,6 +1336,8 @@ def build_layerwise_llm_callbacks(
                 rejected_count = sum(1 for decision in review_decisions if decision.decision == "reject")
                 refinement_count = sum(1 for decision in review_decisions if decision.decision == "needs_refinement")
                 unresolved_interval_count = int(runtime_result.metadata.get("unresolved_interval_count", 0) or 0)
+                if accepted_count + shifted_count == 0:
+                    raise ValueError("boundary proposal produced no accepted cutpoints")
                 result_metadata = {
                     **runtime_result.metadata,
                     "proposal_mode": "boundaries",
