@@ -238,6 +238,13 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
+    proposal_mode: Annotated[
+        Literal["children", "boundaries"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = "children"
     ocr: Annotated[ProviderEndpointConfig, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
         default_factory=ProviderEndpointConfig
     )
@@ -255,6 +262,7 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
             return value if value not in {None, ""} else default
 
         return cls(
+            proposal_mode=str(_env("KG_DOC_PARSER_PROPOSAL_MODE", "children")),
             ocr=ProviderEndpointConfig(
                 provider=_normalize_provider_name(_env("KG_DOC_OCR_PROVIDER", "gemini")),
                 model=str(_env("KG_DOC_OCR_MODEL", "gemini-2.5-flash")),

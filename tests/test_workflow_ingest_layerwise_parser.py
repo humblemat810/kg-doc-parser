@@ -6,6 +6,8 @@ from uuid import uuid4
 import pytest
 
 from _kogwistar_test_helpers import build_workflow_engine_triplet
+from kg_doc_parser.workflow_ingest import ProviderEndpointConfig, WorkflowProviderSettings
+from kg_doc_parser.workflow_ingest.layerwise_llm import build_layerwise_llm_callbacks
 from kg_doc_parser.workflow_ingest.models import (
     CurrentLayerContext,
     CurrentLayerResult,
@@ -53,6 +55,31 @@ def _segment_pointer(unit_id: str, text: str, fragment: str) -> HydratedTextPoin
         end_char=end,
         verbatim_text=fragment,
     )
+
+
+class _SequencedFakeStructuredInvoker:
+    def __init__(self, owner: "_SequencedFakeChatModel"):
+        self._owner = owner
+
+    def invoke(self, messages):
+        self._owner.messages = messages
+        if not self._owner.responses:
+            raise RuntimeError("no more fake structured responses configured")
+        response = self._owner.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return {"parsed": response}
+
+
+class _SequencedFakeChatModel:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.messages = None
+        self.structured_output_kwargs: dict[str, object] | None = None
+
+    def with_structured_output(self, schema, include_raw: bool = True, **kwargs):
+        self.structured_output_kwargs = {"include_raw": include_raw, **kwargs}
+        return _SequencedFakeStructuredInvoker(self)
 
 
 @pytest.mark.ci
@@ -401,6 +428,177 @@ def test_layerwise_workflow_retries_same_layer_then_enqueues_next_layer(workflow
     assert bundle.graph_payload["nodes"]
     labels = {node["label"] for node in bundle.graph_payload["nodes"]}
     assert {"Section A", "Section B", "Alpha", "Beta"}.issubset(labels)
+
+
+def test_layerwise_workflow_boundary_mode_runs_end_to_end(monkeypatch: pytest.MonkeyPatch):
+    scratch = _scratch("layer_boundary_mode")
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", "in_memory"
+    )
+    inp = WorkflowIngestInput.from_text(
+        document_id="layer-boundary-doc",
+        text="Alpha clause. Beta clause.",
+        title="Layer Boundary Doc",
+    )
+    unit_id = f"{inp.request_id}|p1_t0"
+    text = inp.collections[0].pages[0].units[0].text or ""
+    fake_model = _SequencedFakeChatModel(
+        responses=[
+            {
+                "cutpoints": [
+                    {
+                        "parent_node_id": f"{inp.request_id}|root",
+                        "source_cluster_id": unit_id,
+                        "cut_offset": 1,
+                        "boundary_kind": "word",
+                        "confidence": 0.25,
+                        "reason": "ambiguous early cutpoint",
+                    },
+                    {
+                        "parent_node_id": f"{inp.request_id}|root",
+                        "source_cluster_id": unit_id,
+                        "cut_offset": 14,
+                        "boundary_kind": "sentence",
+                        "confidence": 0.99,
+                        "reason": "sentence boundary before the second clause",
+                    },
+                ],
+                "satisfied": True,
+                "reasoning_history": [],
+                "review_rounds": 0,
+            },
+            {
+                "cutpoints": [],
+                "satisfied": True,
+                "reasoning_history": [],
+                "review_rounds": 0,
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+    callbacks = build_layerwise_llm_callbacks(
+        WorkflowProviderSettings(
+            parser=ProviderEndpointConfig(provider="fake", model="fake-model"),
+        ),
+        proposal_mode="boundaries",
+    )
+
+    run, bundle = run_ingest_workflow(
+        inp=inp,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        deps={
+            "propose_layer_fn": callbacks["propose_layer_fn"],
+            "review_layer_fn": callbacks["review_layer_fn"],
+            "split_strategy": "boundary_first",
+            "fallback_split_strategy": "excerpt_first",
+            "max_review_retries": 1,
+        },
+    )
+
+    assert run.status == "succeeded"
+    assert bundle is not None
+    assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
+    assert run.final_state["parse_session"]["strategy_history"] == ["boundary_first"]
+    assert run.final_state["parse_session"]["split_strategy"] == "boundary_first"
+    labels = {node["label"] for node in bundle.graph_payload["nodes"]}
+    assert "Layer Boundary Doc" in labels
+    assert "Alpha clause." in labels
+    assert "Beta clause." in labels
+    assert len(labels) >= 3
+
+
+def test_layerwise_workflow_boundary_mode_builds_two_level_tree_end_to_end(monkeypatch: pytest.MonkeyPatch):
+    scratch = _scratch("layer_boundary_tree")
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", "in_memory"
+    )
+    inp = WorkflowIngestInput.from_text(
+        document_id="layer-boundary-tree-doc",
+        text="Alpha clause. Alpha extra. Beta clause.",
+        title="Layer Boundary Tree Doc",
+    )
+    unit_id = f"{inp.request_id}|p1_t0"
+    child_node_id = f"{inp.request_id}|root|{unit_id}|unit-0"
+    fake_model = _SequencedFakeChatModel(
+        responses=[
+            {
+                "cutpoints": [
+                    {
+                        "parent_node_id": f"{inp.request_id}|root",
+                        "source_cluster_id": unit_id,
+                        "cut_offset": 27,
+                        "boundary_kind": "sentence",
+                        "confidence": 0.99,
+                        "reason": "split after the second sentence",
+                    }
+                ],
+                "satisfied": True,
+                "reasoning_history": [],
+                "review_rounds": 0,
+            },
+            {
+                "cutpoints": [
+                    {
+                        "parent_node_id": child_node_id,
+                        "source_cluster_id": unit_id,
+                        "cut_offset": 14,
+                        "boundary_kind": "sentence",
+                        "confidence": 0.95,
+                        "reason": "split the first child into two sentences",
+                    }
+                ],
+                "satisfied": True,
+                "reasoning_history": [],
+                "review_rounds": 0,
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+    callbacks = build_layerwise_llm_callbacks(
+        WorkflowProviderSettings(
+            parser=ProviderEndpointConfig(provider="fake", model="fake-model"),
+        ),
+        proposal_mode="boundaries",
+    )
+
+    def _review_layer_fn(*, current_layer_result, **kwargs):
+        return current_layer_result.model_copy(update={"satisfied": True})
+
+    run, bundle = run_ingest_workflow(
+        inp=inp,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        deps={
+            "propose_layer_fn": callbacks["propose_layer_fn"],
+            "review_layer_fn": _review_layer_fn,
+            "split_strategy": "boundary_first",
+            "fallback_split_strategy": "excerpt_first",
+            "max_review_retries": 0,
+        },
+    )
+
+    assert run.status == "succeeded"
+    assert bundle is not None
+    assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
+    labels = {node["label"] for node in bundle.graph_payload["nodes"]}
+    assert {"Layer Boundary Tree Doc", "Alpha clause. Alpha extra.", "Beta clause.", "Alpha clause.", "Alpha extra."}.issubset(labels)
+    edges = {(edge["source_ids"][0], edge["target_ids"][0]) for edge in bundle.graph_payload["edges"]}
+    grandchild_alpha = f"{child_node_id}|{unit_id}|unit-0"
+    grandchild_alpha_extra = f"{child_node_id}|{unit_id}|unit-1"
+    assert (f"{inp.request_id}|root", child_node_id) in edges
+    assert (child_node_id, grandchild_alpha) in edges
+    assert (child_node_id, grandchild_alpha_extra) in edges
+    assert run.final_state["parse_session"]["strategy_history"] == ["boundary_first"]
+    assert run.final_state["parse_session"]["split_strategy"] == "boundary_first"
 
 
 def test_layerwise_workflow_switches_strategy_after_overlap_retry_exhaustion(

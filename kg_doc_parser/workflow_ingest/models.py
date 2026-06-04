@@ -340,14 +340,89 @@ class LayerChildCandidate(ModeSlicingMixin, BaseModel):
     ] = Field(default_factory=dict)
 
 
+class BoundaryCutpoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent_node_id: str
+    source_cluster_id: str
+    cut_offset: int
+    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"]
+    confidence: float | None = None
+    reason: str | None = None
+
+
+class LLMBoundaryProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent_node_id: str
+    source_cluster_id: str
+    cutpoints: list[BoundaryCutpoint] = Field(default_factory=list)
+    satisfied: bool | None = None
+    reasoning_history: list["LayerReasoningEntry"] = Field(default_factory=list)
+    review_rounds: int = 0
+
+
+class LLMBoundaryProposalBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cutpoints: list[BoundaryCutpoint] = Field(default_factory=list)
+    satisfied: bool | None = None
+    reasoning_history: list["LayerReasoningEntry"] = Field(default_factory=list)
+    review_rounds: int = 0
+
+
+class BoundaryReviewDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent_node_id: str
+    source_cluster_id: str
+    input_cut_offset: int | None = None
+    cut_offset: int
+    decision: Literal["accept", "shift_left", "shift_right", "reject", "needs_refinement"]
+    resolved_cut_offset: int | None = None
+    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] | None = None
+    reason: str | None = None
+
+
+class BoundaryReviewBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[BoundaryReviewDecision] = Field(default_factory=list)
+    satisfied: bool | None = None
+    coverage_ok: bool | None = None
+    review_notes: list[str] = Field(default_factory=list)
+
+
+class BoundaryUnitSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent_node_id: str
+    source_cluster_id: str
+    start_char: int
+    end_char: int
+    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] = "semantic"
+    summary_text: str = ""
+    exact_text: str = ""
+    expandable: bool = False
+
+
 class LayerReasoningEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str | None = None
     stage: str | None = None
     proposal_source: Literal["llm", "fallback"] | None = None
+    proposal_mode: Literal["children", "boundaries"] | None = None
     proposal_failure_reason: str | None = None
     provider_child_count: int | None = None
+    boundary_count: int | None = None
+    accepted_boundary_count: int | None = None
+    shifted_boundary_count: int | None = None
+    rejected_boundary_count: int | None = None
+    refinement_count: int | None = None
+    unresolved_interval_count: int | None = None
+    assembled_child_count: int | None = None
+    summary_count: int | None = None
     depth: int | None = None
     lines: int | None = None
 

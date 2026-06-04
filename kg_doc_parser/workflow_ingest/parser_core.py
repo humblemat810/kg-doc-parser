@@ -801,6 +801,7 @@ def commit_layer_children(
                 total_content_pointers=list(child.total_content_pointers),
                 child_nodes=[],
                 level_from_root=current_depth + 1,
+                metadata=dict(child.metadata),
             )
         )
 
