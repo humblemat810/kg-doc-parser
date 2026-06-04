@@ -140,7 +140,7 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
     provider: Annotated[
-        Literal["gemini", "ollama", "openai", "vertex", "fake"],
+        Literal["gemini", "ollama", "openai", "azure", "vertex", "fake"],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -156,6 +156,13 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
         ExcludeMode("llm"),
     ] = None
     api_key_env: Annotated[
+        Optional[str],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
+    api_version: Annotated[
         Optional[str],
         DtoField(),
         BackendField(),
@@ -208,6 +215,24 @@ class EmbeddingProviderConfig(ModeSlicingMixin, BaseModel):
     ] = None
 
 
+def _normalize_provider_name(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "azure_openai":
+        return "azure"
+    return normalized
+
+
+def _is_gpt5_model(model: str | None) -> bool:
+    normalized = str(model or "").strip().lower()
+    return normalized.startswith("gpt-5") or normalized.startswith("gpt5")
+
+
+def _chat_temperature_for_model(model: str | None, requested_temperature: float) -> float:
+    if _is_gpt5_model(model):
+        return 1.0
+    return requested_temperature
+
+
 class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
@@ -230,21 +255,23 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
 
         return cls(
             ocr=ProviderEndpointConfig(
-                provider=str(_env("KG_DOC_OCR_PROVIDER", "gemini")),
+                provider=_normalize_provider_name(_env("KG_DOC_OCR_PROVIDER", "gemini")),
                 model=str(_env("KG_DOC_OCR_MODEL", "gemini-2.5-flash")),
                 temperature=float(_env("KG_DOC_OCR_TEMPERATURE", "0.1")),
                 base_url=_env("KG_DOC_OCR_BASE_URL"),
                 api_key_env=_env("KG_DOC_OCR_API_KEY_ENV"),
+                api_version=_env("KG_DOC_OCR_API_VERSION"),
                 project=_env("KG_DOC_OCR_PROJECT"),
                 location=_env("KG_DOC_OCR_LOCATION"),
                 max_retries=int(_env("KG_DOC_OCR_MAX_RETRIES", "2")),
             ),
             parser=ProviderEndpointConfig(
-                provider=str(_env("KG_DOC_PARSER_PROVIDER", "gemini")),
+                provider=_normalize_provider_name(_env("KG_DOC_PARSER_PROVIDER", "gemini")),
                 model=str(_env("KG_DOC_PARSER_MODEL", "gemini-2.5-flash")),
                 temperature=float(_env("KG_DOC_PARSER_TEMPERATURE", "0.1")),
                 base_url=_env("KG_DOC_PARSER_BASE_URL"),
                 api_key_env=_env("KG_DOC_PARSER_API_KEY_ENV"),
+                api_version=_env("KG_DOC_PARSER_API_VERSION"),
                 project=_env("KG_DOC_PARSER_PROJECT"),
                 location=_env("KG_DOC_PARSER_LOCATION"),
                 max_retries=int(_env("KG_DOC_PARSER_MAX_RETRIES", "2")),
@@ -369,23 +396,54 @@ def build_chat_model(
     if spec.provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        kwargs = {"model": spec.model, "temperature": spec.temperature, "callbacks": callbacks}
+        kwargs = {
+            "model": spec.model,
+            "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
+            "callbacks": callbacks,
+        }
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["api_key"] = os.getenv(spec.api_key_env)
         return ChatOpenAI(**kwargs)
+    if spec.provider == "azure":
+        from langchain_openai import AzureChatOpenAI
+
+        kwargs = {
+            "azure_deployment": spec.model,
+            "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
+            "callbacks": callbacks,
+        }
+        if spec.base_url:
+            kwargs["azure_endpoint"] = spec.base_url
+        if spec.api_version:
+            kwargs["api_version"] = spec.api_version
+        elif os.getenv("OPENAI_API_VERSION"):
+            kwargs["api_version"] = os.getenv("OPENAI_API_VERSION")
+        elif os.getenv("AZURE_OPENAI_API_VERSION"):
+            kwargs["api_version"] = os.getenv("AZURE_OPENAI_API_VERSION")
+        if spec.api_key_env and os.getenv(spec.api_key_env):
+            kwargs["api_key"] = os.getenv(spec.api_key_env)
+        return AzureChatOpenAI(**kwargs)
     if spec.provider == "ollama":
         from langchain_ollama import ChatOllama
 
-        kwargs = {"model": spec.model, "temperature": spec.temperature, "callbacks": callbacks}
+        kwargs = {
+            "model": spec.model,
+            "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
+            "callbacks": callbacks,
+        }
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
         return ChatOllama(**kwargs)
     if spec.provider == "vertex":
         from langchain_google_vertexai import ChatVertexAI
 
-        kwargs = {"model": spec.model, "temperature": spec.temperature, "callbacks": callbacks}
+        kwargs = {
+            "model": spec.model,
+            "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
+            "callbacks": callbacks,
+        }
         if spec.project:
             kwargs["project"] = spec.project
         if spec.location:

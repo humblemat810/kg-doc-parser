@@ -539,6 +539,121 @@ def test_layerwise_workflow_fails_when_satisfaction_retries_exhaust(workflow_bac
     assert any("layer satisfaction retries exhausted" in err for err in run.final_state["workflow_errors"])
 
 
+def test_layerwise_workflow_preserves_committed_layers_when_later_layer_fails(workflow_backend_kind):
+    scratch = _scratch("layer_partial_failure")
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", workflow_backend_kind
+    )
+    inp = WorkflowIngestInput.from_text(
+        document_id="layer-partial-failure-doc",
+        text="Alpha clause\nBeta clause\nGamma clause\nDelta clause",
+        title="Layer Partial Failure Doc",
+    )
+    unit_id = f"{inp.request_id}|p1_t0"
+    text = inp.collections[0].pages[0].units[0].text or ""
+
+    def _propose_layer_fn(*, current_layer_context, **kwargs):
+        parent_id = current_layer_context.parent_node_ids[0]
+        if current_layer_context.depth == 0:
+            return CurrentLayerResult(
+                children=[
+                    LayerChildCandidate(
+                        node_id="node-section-a",
+                        parent_node_id=parent_id,
+                        title="Section A",
+                        node_type="TEXT_FLOW",
+                        total_content_pointers=[
+                            _segment_pointer(unit_id, text, "Alpha clause\nBeta clause")
+                        ],
+                        expandable=True,
+                    ),
+                    LayerChildCandidate(
+                        node_id="node-section-b",
+                        parent_node_id=parent_id,
+                        title="Section B",
+                        node_type="TEXT_FLOW",
+                        total_content_pointers=[
+                            _segment_pointer(unit_id, text, "Gamma clause\nDelta clause")
+                        ],
+                        expandable=False,
+                    ),
+                ],
+                satisfied=True,
+                reasoning_history=[],
+            )
+        if parent_id == "node-section-a":
+            return CurrentLayerResult(
+                children=[
+                    LayerChildCandidate(
+                        node_id="node-alpha-group",
+                        parent_node_id=parent_id,
+                        title="Alpha Group",
+                        node_type="TEXT_FLOW",
+                        total_content_pointers=[
+                            _segment_pointer(unit_id, text, "Alpha clause")
+                        ],
+                        expandable=True,
+                    ),
+                    LayerChildCandidate(
+                        node_id="node-beta",
+                        parent_node_id=parent_id,
+                        title="Beta",
+                        node_type="TEXT_FLOW",
+                        total_content_pointers=[_segment_pointer(unit_id, text, "Beta clause")],
+                        expandable=False,
+                    ),
+                ],
+                satisfied=True,
+                reasoning_history=[],
+            )
+        if parent_id == "node-alpha-group":
+            raise RuntimeError("forced late-layer proposal failure for regression coverage")
+        raise RuntimeError("unexpected parent in regression test")
+
+    def _review_layer_fn(*, current_layer_context, current_layer_result, **kwargs):
+        return CurrentLayerReview(
+            updated_result=current_layer_result,
+            coverage_ok=True,
+            satisfied=current_layer_result.satisfied is not False,
+            strategy_used=current_layer_context.split_strategy,
+            review_notes=[],
+        )
+
+    run, bundle = run_ingest_workflow(
+        inp=inp,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        deps={
+            "propose_layer_fn": _propose_layer_fn,
+            "review_layer_fn": _review_layer_fn,
+            "max_review_retries": 1,
+        },
+    )
+
+    def _find(node: dict, node_id: str):
+        if node.get("node_id") == node_id:
+            return node
+        for child in node.get("child_nodes") or []:
+            found = _find(child, node_id)
+            if found is not None:
+                return found
+        return None
+
+    assert bundle is None
+    assert run.status in {"failed", "failure"}
+    tree = run.final_state["semantic_tree"]
+    section_a = _find(tree, "node-section-a")
+    section_b = _find(tree, "node-section-b")
+    alpha_group = _find(tree, "node-alpha-group")
+    assert section_a is not None
+    assert section_b is not None
+    assert alpha_group is not None
+    assert [child["node_id"] for child in section_a.get("child_nodes") or []] == ["node-alpha-group", "node-beta"]
+    assert alpha_group.get("child_nodes") == []
+    assert section_b.get("child_nodes") == []
+
+
 def test_layerwise_workflow_retries_when_cud_coverage_check_fails(workflow_backend_kind):
     scratch = _scratch("layer_coverage_retry")
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
