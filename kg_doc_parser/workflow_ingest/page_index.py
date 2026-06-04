@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field
 from .adapters import build_authoritative_source_map, build_parser_input_dict, build_parser_source_map
 from .models import GroundedSourceRecord, NormalizedPage, NormalizedSourceCollection, SourceUnit, WorkflowIngestInput
 from .providers import WorkflowProviderSettings, build_chat_model_for_role
-from kogwistar.fuzzy_offsets import FuzzySpanHit as _FuzzyHit, find_best_fuzzy_span
+from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit, find_best_fuzzy_span
 from .semantics import HydratedTextPointer, SemanticNode, compute_pointer_coverage, correct_and_validate_pointer
 
 PageIndexMode = Literal["heuristic", "ollama"]
@@ -1145,6 +1145,7 @@ def _llm_page_outline(
     trace_log: Callable[[str], None] | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
+    assignment_mode_prefix = "ollama" if provider_settings.parser.provider == "ollama" else "llm"
     if not candidates:
         return [], {
             "assignment_mode": "deterministic_fallback",
@@ -1300,10 +1301,10 @@ def _llm_page_outline(
                     f"page_number={page_number} attempt={attempt_label} "
                     f"block_specs={json.dumps(_page_index_block_spec_debug_payload(block_specs), ensure_ascii=False, sort_keys=True)}"
                 )
-            mode = "llm_flat_assignment"
+            mode = f"{assignment_mode_prefix}_flat_assignment"
             final_outcome = "first_pass_success"
             if assignment_retry_succeeded:
-                mode = "llm_flat_assignment_retry"
+                mode = f"{assignment_mode_prefix}_flat_assignment_retry"
                 final_outcome = "assignment_retry_success"
             return block_specs, {
                 "assignment_mode": mode,
@@ -1412,7 +1413,7 @@ def _llm_page_outline(
                 f"block_specs={json.dumps(_page_index_block_spec_debug_payload(repaired_block_specs), ensure_ascii=False, sort_keys=True)}"
             )
         return repaired_block_specs, {
-            "assignment_mode": "llm_flat_assignment_structure_retry",
+            "assignment_mode": f"{assignment_mode_prefix}_flat_assignment_structure_retry",
             "final_outcome": "structure_retry_success",
             "candidate_count": len(candidates),
             "assignment_count": len(structure_batch.assignments),
@@ -1510,7 +1511,9 @@ def _llm_page_outline(
         assignment_retry_validation_errors=retry_validation_errors,
         structure_validation_errors=[],
         validation_warnings=retry_validation_warnings,
-        fallback_reason="assignment_validation_failed" if first_validation_errors else "llm_unavailable_or_invalid",
+        fallback_reason="assignment_validation_failed"
+        if first_batch is not None
+        else "llm_unavailable_or_invalid",
         retry_prompt_summary=retry_summary,
     )
 
@@ -1848,13 +1851,22 @@ def parse_page_index_document(
     elif fallback_reasons:
         overall_assignment_mode = "deterministic_fallback"
     elif structure_retry_succeeded:
-        overall_assignment_mode = "llm_flat_assignment_structure_retry"
+        overall_assignment_mode = f"{provider_settings.parser.provider}_flat_assignment_structure_retry"
     elif assignment_retry_succeeded:
-        overall_assignment_mode = "llm_flat_assignment_retry"
+        overall_assignment_mode = f"{provider_settings.parser.provider}_flat_assignment_retry"
     elif retry_used:
         overall_assignment_mode = "deterministic_fallback"
     else:
-        overall_assignment_mode = "llm_flat_assignment" if assignment_modes == {"llm_flat_assignment"} else "deterministic_fallback"
+        expected_assignment_modes = {
+            f"{provider_settings.parser.provider}_flat_assignment",
+            f"{provider_settings.parser.provider}_flat_assignment_retry",
+            f"{provider_settings.parser.provider}_flat_assignment_structure_retry",
+        }
+        overall_assignment_mode = (
+            f"{provider_settings.parser.provider}_flat_assignment"
+            if assignment_modes.issubset(expected_assignment_modes) and assignment_modes
+            else "deterministic_fallback"
+        )
     if fallback_reasons:
         final_outcome = "deterministic_fallback"
     elif structure_retry_succeeded:

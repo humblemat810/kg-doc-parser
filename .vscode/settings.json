@@ -9,7 +9,8 @@
     "python-envs.defaultEnvManager": "ms-python.python:poetry",
     "python-envs.defaultPackageManager": "ms-python.python:poetry",
     "python.analysis.extraPaths": [
-        "./src"
+        "./src",
+        "./kogwistar"
     ],
     "files.watcherExclude": {
         "**/node_modules": true,
