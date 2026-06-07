@@ -43,11 +43,15 @@ def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSe
         "base_url": args.parser_base_url,
         "api_key_env": args.parser_api_key_env,
     }
+    proposal_mode = getattr(args, "proposal_mode", None)
     ocr_override = any(value is not None for value in ocr_values.values())
     parser_override = any(value is not None for value in parser_values.values())
-    if not ocr_override and not parser_override:
+    proposal_override = proposal_mode is not None
+    if not ocr_override and not parser_override and not proposal_override:
         return None
     settings = WorkflowProviderSettings.from_env()
+    if proposal_override:
+        settings = settings.model_copy(update={"proposal_mode": proposal_mode})
     if ocr_override:
         settings = settings.model_copy(
             update={
@@ -69,6 +73,7 @@ def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSe
 
 def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("provider overrides")
+    group.add_argument("--proposal-mode", choices=["children", "boundaries"], default=None)
     group.add_argument("--ocr-provider", default=None)
     group.add_argument("--ocr-model", default=None)
     group.add_argument("--ocr-base-url", default=None)
@@ -240,6 +245,7 @@ def _demo_command(args: argparse.Namespace) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     probe = _build_probe(output_dir, command="demo")
     try:
+        provider_settings = _provider_settings_from_args(args)
         config = DemoHarnessConfig(
             output_dir=output_dir,
             document_id=args.document_id,
@@ -248,6 +254,7 @@ def _demo_command(args: argparse.Namespace) -> int:
             parser_mode=args.parser_mode,
             server_mode=args.server_mode,
             external_base_url=args.external_base_url,
+            provider_settings=provider_settings,
             enable_sys_monitoring=not args.disable_sys_monitoring,
         )
         artifacts = run_demo_harness_workflow(config)
@@ -294,6 +301,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     demo = subparsers.add_parser("demo", help="Run the workflow ingest demo harness")
     _add_common_output_args(demo)
+    _add_provider_args(demo)
     demo.add_argument("--document-id", default="demo-doc")
     demo.add_argument("--title", default="Workflow Ingest Demo")
     demo.add_argument("--text", default="Alpha clause\nBeta clause\nGamma clause")

@@ -193,6 +193,28 @@ def test_boundary_helpers_classify_and_snap_cutpoints():
     )
 
 
+def test_boundary_parent_coverage_report_marks_gaps_and_spans():
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _boundary_parent_coverage_report
+
+    report = _boundary_parent_coverage_report(
+        parent_node_id="doc|root",
+        source_cluster_id="cluster-1",
+        start_char=0,
+        end_char_exclusive=20,
+        segments=[
+            {"start_char": 0, "end_char": 9},
+            {"start_char": 10, "end_char": 19, "skipped": True, "skip_reason": "ambiguous boundary"},
+        ],
+    )
+
+    assert report["parent_node_id"] == "doc|root"
+    assert report["coverage_state"] == "covered_with_gaps"
+    assert report["parent_span"] == {"start_char": 0, "end_char": 19}
+    assert report["covered_span"] == {"start_char": 0, "end_char": 9}
+    assert report["gap_count"] == 1
+    assert report["gap_ranges"][0]["reason"] == "ambiguous boundary"
+
+
 def test_llm_boundary_proposal_round_trip():
     proposal = LLMBoundaryProposal(
         parent_node_id="doc|root",
@@ -383,6 +405,31 @@ class _FakeChatModel:
         return _FakeStructuredInvoker(self)
 
 
+class _SequencedStructuredInvoker:
+    def __init__(self, owner: "_SequencedFakeChatModel"):
+        self._owner = owner
+
+    def invoke(self, messages):
+        self._owner.messages.append(messages)
+        if not self._owner.responses:
+            raise RuntimeError("no more fake responses configured")
+        response = self._owner.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class _SequencedFakeChatModel:
+    def __init__(self, responses: list[Any]):
+        self.responses = list(responses)
+        self.messages: list[Any] = []
+        self.structured_output_kwargs: dict[str, Any] | None = None
+
+    def with_structured_output(self, schema, include_raw: bool = True, **kwargs: Any):
+        self.structured_output_kwargs = {"include_raw": include_raw, **kwargs}
+        return _SequencedStructuredInvoker(self)
+
+
 def test_propose_layer_fn_returns_llm_result_and_logs_source(monkeypatch: pytest.MonkeyPatch):
     parsed = CurrentLayerResult(
         children=[
@@ -451,6 +498,72 @@ def test_propose_layer_fn_returns_llm_result_and_logs_source(monkeypatch: pytest
     prompt_body = fake_model.messages[1][1].lower()
     assert "coarser layerwise breakdown" in prompt_body
     assert "do not recombine separated verbatim fragments" in prompt_body
+
+
+def test_propose_layer_fn_retries_child_mode_with_previous_error_context(monkeypatch: pytest.MonkeyPatch):
+    parsed = CurrentLayerResult(
+        children=[
+            LayerChildCandidate(
+                node_id="doc|root|alpha",
+                parent_node_id="doc|root",
+                title="Alpha",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id="cluster-1",
+                        start_char=0,
+                        end_char=11,
+                        verbatim_text="Alpha clause",
+                    )
+                ],
+                expandable=False,
+            ),
+            LayerChildCandidate(
+                node_id="doc|root|beta",
+                parent_node_id="doc|root",
+                title="Beta",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id="cluster-1",
+                        start_char=14,
+                        end_char=24,
+                        verbatim_text="Beta clause",
+                    )
+                ],
+                expandable=False,
+            ),
+        ],
+        satisfied=True,
+        reasoning_history=[],
+    )
+    fake_model = _SequencedFakeChatModel(
+        [
+            RuntimeError("transient structured output failure"),
+            {"parsed": parsed},
+        ]
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+    settings = _provider_settings()
+    settings.parser.max_retries = 1
+
+    callbacks = build_layerwise_llm_callbacks(settings)
+    result = callbacks["propose_layer_fn"](
+        parser_source_map=_parser_source_map(),
+        current_layer_context=_context(),
+        semantic_tree=_semantic_tree(),
+        split_strategy="excerpt_first",
+        parser_input_dict=_parser_input_dict(),
+        parse_session=_parse_session(),
+    )
+
+    assert [child.node_id for child in result.children] == ["doc|root|alpha", "doc|root|beta"]
+    assert len(fake_model.messages) == 2
+    assert "transient structured output failure" in fake_model.messages[1][1][1]
+    assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
 
 
 def test_boundary_mode_recurses_through_refinement_for_ambiguous_cutpoints(monkeypatch: pytest.MonkeyPatch):

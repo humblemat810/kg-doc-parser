@@ -20,6 +20,7 @@ from .models import (
     LayerChildCandidate,
     LayerReasoningEntry,
 )
+from kogwistar.runtime import RetryExhaustedError, retry_with_context
 from .providers import WorkflowProviderSettings, build_chat_model_for_role
 from .semantics import HydratedTextPointer
 
@@ -1132,10 +1133,24 @@ def build_layerwise_llm_callbacks(
     if proposal_mode not in {"children", "boundaries"}:
         raise ValueError("proposal_mode must be either 'children' or 'boundaries'")
     boundary_refinement_rounds = max(0, int(boundary_refinement_rounds or 0))
+    proposal_retry_rounds = max(0, int(getattr(provider_settings.parser, "max_retries", 0) or 0))
 
     def _emit(stage: str, **extra: Any) -> None:
         if callable(event_sink):
             event_sink(stage, **extra)
+
+    def _proposal_attempt_payload(
+        payload: dict[str, Any],
+        *,
+        attempt_index: int,
+        prior_error: str | None,
+    ) -> dict[str, Any]:
+        payload = dict(payload)
+        payload["proposal_attempt"] = attempt_index + 1
+        payload["proposal_retry_rounds"] = proposal_retry_rounds
+        if prior_error:
+            payload["previous_attempt_error"] = prior_error
+        return payload
 
     def _propose_layer_fn(
         *,
@@ -1152,239 +1167,101 @@ def build_layerwise_llm_callbacks(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
             )
-            prompt_payload = {
-                "task": "Propose semantic cutpoints for the next layer. Return only boundary cutpoints, not child text.",
-                "output_contract": "Return an LLMBoundaryProposalBatch only.",
-                "proposal_mode": proposal_mode,
-                "split_strategy": split_strategy,
-                "attempt_context": _proposal_attempt_context(
-                    parse_session=parse_session,
-                    current_layer_context=current_layer_context,
-                ),
-                "current_layer_context": _dump_model(current_layer_context),
-                "parent_nodes": _parent_context_excerpt(
-                    current_layer_context=current_layer_context,
-                    parser_source_map=parser_source_map,
-                ),
-                "boundary_candidates": boundary_candidates,
-                "semantic_tree_snapshot": _summarize_for_prompt(
-                    semantic_tree,
-                    max_depth=4,
-                    max_items=5,
-                    max_string=280,
-                ),
-                "full_document_context": _summarize_for_prompt(
-                    parser_input_dict,
-                    max_depth=4,
-                    max_items=5,
-                    max_string=280,
-                ),
-                "source_map_excerpt": _source_map_excerpt(parser_source_map),
-                "rules": [
-                    "Operate on ONE layer only: propose cutpoints for the current parent nodes.",
-                    "Only choose cutpoints from the provided candidate lists when possible.",
-                    "Do not emit child text, summaries, or prose.",
-                    "Cutpoints must be parent-scoped and source-cluster scoped.",
-                    "Prefer word, sentence, paragraph, list-item, or section boundaries over semantic guesses.",
-                    "Keep the proposal sorted and unique per parent/source cluster.",
-                    "If a parent is atomic, return no internal cutpoints for that parent and set satisfied=true only when the current layer is complete.",
-                ],
-            }
-            messages = [
-                (
-                    "system",
-                    "You are revising ONE semantic layer in an iterative document parsing workflow. "
-                    "Return only structured data matching LLMBoundaryProposalBatch. "
-                    "Propose grounded cutpoints only; the host will review and assemble the children.",
-                ),
-                (
-                    "human",
-                    json.dumps(prompt_payload, sort_keys=True),
-                ),
-            ]
-            try:
-                result = _structured_invoke(chat_model, LLMBoundaryProposalBatch, messages)
-                parsed = (
-                    result
-                    if isinstance(result, LLMBoundaryProposalBatch)
-                    else LLMBoundaryProposalBatch.model_validate(
-                        result.model_dump() if hasattr(result, "model_dump") else result
-                    )
+            def _build_boundary_messages(attempt_number: int, previous_error: str | None):
+                prompt_payload = _proposal_attempt_payload(
+                    {
+                        "task": "Propose semantic cutpoints for the next layer. Return only boundary cutpoints, not child text.",
+                        "output_contract": "Return an LLMBoundaryProposalBatch only.",
+                        "proposal_mode": proposal_mode,
+                        "split_strategy": split_strategy,
+                        "attempt_context": _proposal_attempt_context(
+                            parse_session=parse_session,
+                            current_layer_context=current_layer_context,
+                        ),
+                        "current_layer_context": _dump_model(current_layer_context),
+                        "parent_nodes": _parent_context_excerpt(
+                            current_layer_context=current_layer_context,
+                            parser_source_map=parser_source_map,
+                        ),
+                        "boundary_candidates": boundary_candidates,
+                        "semantic_tree_snapshot": _summarize_for_prompt(
+                            semantic_tree,
+                            max_depth=4,
+                            max_items=5,
+                            max_string=280,
+                        ),
+                        "full_document_context": _summarize_for_prompt(
+                            parser_input_dict,
+                            max_depth=4,
+                            max_items=5,
+                            max_string=280,
+                        ),
+                        "source_map_excerpt": _source_map_excerpt(parser_source_map),
+                        "rules": [
+                            "Operate on ONE layer only: propose cutpoints for the current parent nodes.",
+                            "Only choose cutpoints from the provided candidate lists when possible.",
+                            "Do not emit child text, summaries, or prose.",
+                            "Cutpoints must be parent-scoped and source-cluster scoped.",
+                            "Prefer word, sentence, paragraph, list-item, or section boundaries over semantic guesses.",
+                            "Keep the proposal sorted and unique per parent/source cluster.",
+                            "If a parent is atomic, return no internal cutpoints for that parent and set satisfied=true only when the current layer is complete.",
+                        ],
+                    },
+                    attempt_index=attempt_number - 1,
+                    prior_error=previous_error,
                 )
-                validation_reason = _boundary_validation_reason(
-                    parsed=parsed,
-                    current_layer_context=current_layer_context,
-                    parser_source_map=parser_source_map,
-                )
-                if validation_reason:
-                    raise ValueError(validation_reason)
-                review_decisions = [
-                    _boundary_review_decision(
-                        cutpoint=cutpoint,
-                        current_layer_context=current_layer_context,
-                        parser_source_map=parser_source_map,
-                    )
-                    for cutpoint in parsed.cutpoints
-                ]
-                refinement_notes: list[str] = []
-                refinement_attempts = 0
-                if boundary_refinement_rounds > 0:
-                    unresolved_targets = _boundary_refinement_targets(
-                        parsed=parsed,
-                        review_decisions=review_decisions,
-                    )
-                    for target in unresolved_targets[:boundary_refinement_rounds]:
-                        refinement_attempts += 1
-                        refinement_prompt_payload = {
-                            "task": "Refine a single ambiguous cutpoint using only nearby legal boundaries.",
-                            "output_contract": "Return an LLMBoundaryProposalBatch only.",
-                            "proposal_mode": proposal_mode,
-                            "split_strategy": split_strategy,
-                            "attempt_context": _proposal_attempt_context(
-                                parse_session=parse_session,
-                                current_layer_context=current_layer_context,
-                            ),
-                            "current_layer_context": _dump_model(current_layer_context),
-                            "refinement_target": _boundary_refinement_prompt_context(
-                                current_layer_context=current_layer_context,
-                                parser_source_map=parser_source_map,
-                                target=target,
-                            ),
-                            "rules": [
-                                "Operate on one ambiguous cutpoint only.",
-                                "Choose a nearby legal cutpoint or return no cutpoints with satisfied=true.",
-                                "Do not emit prose or child text.",
-                                "Preserve the original parent and source cluster scope.",
-                            ],
-                        }
-                        refinement_messages = [
-                            (
-                                "system",
-                                "You are refining one ambiguous semantic cutpoint in a layered document parser. "
-                                "Return only structured data matching LLMBoundaryProposalBatch.",
-                            ),
-                            ("human", json.dumps(refinement_prompt_payload, sort_keys=True)),
-                        ]
-                        try:
-                            refinement_result = _structured_invoke(chat_model, LLMBoundaryProposalBatch, refinement_messages)
-                            refinement_parsed = (
-                                refinement_result
-                                if isinstance(refinement_result, LLMBoundaryProposalBatch)
-                                else LLMBoundaryProposalBatch.model_validate(
-                                    refinement_result.model_dump()
-                                    if hasattr(refinement_result, "model_dump")
-                                    else refinement_result
-                                )
-                            )
-                            refinement_validation_reason = _boundary_validation_reason(
-                                parsed=refinement_parsed,
-                                current_layer_context=current_layer_context,
-                                parser_source_map=parser_source_map,
-                            )
-                            if refinement_validation_reason:
-                                raise ValueError(refinement_validation_reason)
-                            refinement_decisions = [
-                                _boundary_review_decision(
-                                    cutpoint=cutpoint,
-                                    current_layer_context=current_layer_context,
-                                    parser_source_map=parser_source_map,
-                                )
-                                for cutpoint in refinement_parsed.cutpoints
-                            ]
-                            if refinement_decisions:
-                                replacement_map = {
-                                    _boundary_decision_key(decision): decision for decision in review_decisions
-                                }
-                                for decision in refinement_decisions:
-                                    if decision.decision not in {"accept", "shift_left", "shift_right"}:
-                                        continue
-                                    replacement_map[_boundary_decision_key(decision)] = decision
-                                review_decisions = sorted(replacement_map.values(), key=_boundary_decision_key)
-                                refinement_notes.extend(
-                                    note
-                                    for note in (
-                                        decision.reason for decision in refinement_decisions if decision.reason
-                                    )
-                                    if note not in refinement_notes
-                                )
-                        except Exception as refinement_exc:
-                            refinement_notes.append(
-                                f"boundary refinement skipped for {target.parent_node_id}:{target.source_cluster_id}:{target.cut_offset} "
-                                f"due to {refinement_exc!r}"
-                            )
-                review_batch = BoundaryReviewBatch(
-                    decisions=review_decisions,
-                    satisfied=parsed.satisfied,
-                    coverage_ok=not any(
-                        decision.decision in {"reject", "needs_refinement"}
-                        for decision in review_decisions
+                return [
+                    (
+                        "system",
+                        "You are revising ONE semantic layer in an iterative document parsing workflow. "
+                        "Return only structured data matching LLMBoundaryProposalBatch. "
+                        "Propose grounded cutpoints only; the host will review and assemble the children.",
                     ),
-                    review_notes=[
-                        decision.reason
-                        for decision in review_decisions
-                        if decision.reason
-                    ]
-                    + refinement_notes,
-                )
-                runtime_result, summaries, accepted_cutpoints = _assemble_layer_result_from_boundaries(
-                    current_layer_context=current_layer_context,
-                    parser_source_map=parser_source_map,
-                    review_batch=review_batch,
-                )
-                accepted_count = sum(1 for decision in review_decisions if decision.decision == "accept")
-                shifted_count = sum(1 for decision in review_decisions if decision.decision in {"shift_left", "shift_right"})
-                rejected_count = sum(1 for decision in review_decisions if decision.decision == "reject")
-                refinement_count = sum(1 for decision in review_decisions if decision.decision == "needs_refinement")
-                unresolved_interval_count = int(runtime_result.metadata.get("unresolved_interval_count", 0) or 0)
-                if accepted_count + shifted_count == 0:
-                    raise ValueError("boundary proposal produced no accepted cutpoints")
-                result_metadata = {
-                    **runtime_result.metadata,
-                    "proposal_mode": "boundaries",
-                    "boundary_proposed_count": len(parsed.cutpoints),
-                    "boundary_accepted_count": accepted_count,
-                    "boundary_shifted_count": shifted_count,
-                    "boundary_rejected_count": rejected_count,
-                    "boundary_refinement_count": refinement_count,
-                    "boundary_refinement_attempts": refinement_attempts,
-                    "boundary_summary_count": len(summaries),
-                    "boundary_cutpoints": [cutpoint.model_dump() for cutpoint in parsed.cutpoints],
-                    "boundary_review_decisions": [decision.model_dump() for decision in review_decisions],
-                    "boundary_review_notes": list(review_batch.review_notes),
-                    "proposal_source": "llm",
-                }
-                runtime_result = runtime_result.model_copy(update={"metadata": result_metadata})
-                annotated = _annotate_proposal_result(
-                    runtime_result,
-                    proposal_source="llm",
-                    proposal_mode="boundaries",
-                    boundary_count=len(parsed.cutpoints),
-                    accepted_boundary_count=accepted_count,
-                    shifted_boundary_count=shifted_count,
-                    rejected_boundary_count=rejected_count,
-                    refinement_count=refinement_count,
-                    unresolved_interval_count=unresolved_interval_count,
-                    summary_count=len(summaries),
-                )
+                    ("human", json.dumps(prompt_payload, sort_keys=True)),
+                ]
+
+            def _emit_boundary_retry(record) -> None:
                 _emit(
-                    "workflow_layered_proposal_result",
+                    "workflow_layered_proposal_retry",
                     proposal_source="llm",
                     proposal_mode="boundaries",
                     depth=int(getattr(current_layer_context, "depth", 0)),
                     retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                     split_strategy=split_strategy,
-                    boundary_count=len(parsed.cutpoints),
-                    accepted_boundary_count=accepted_count,
-                    shifted_boundary_count=shifted_count,
-                    rejected_boundary_count=rejected_count,
-                    refinement_count=refinement_count,
-                    unresolved_interval_count=unresolved_interval_count,
-                    child_count=len(runtime_result.children),
-                    satisfied=runtime_result.satisfied,
+                    attempt=record.attempt_number,
+                    retry_budget=proposal_retry_rounds,
+                    retry_reason=record.error_message,
                 )
-                return annotated
-            except Exception as exc:
-                failure_reason = _trim_text(repr(exc), max_chars=500)
+
+            try:
+                boundary_result = retry_with_context(
+                    max_attempts=proposal_retry_rounds + 1,
+                    build_request=_build_boundary_messages,
+                    invoke=lambda messages: _structured_invoke(chat_model, LLMBoundaryProposalBatch, messages),
+                    validate=lambda parsed: _boundary_validation_reason(
+                        parsed=(
+                            parsed
+                            if isinstance(parsed, LLMBoundaryProposalBatch)
+                            else LLMBoundaryProposalBatch.model_validate(
+                                parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
+                            )
+                        ),
+                        current_layer_context=current_layer_context,
+                        parser_source_map=parser_source_map,
+                    ),
+                    on_retry=_emit_boundary_retry,
+                )
+                parsed = (
+                    boundary_result.value
+                    if isinstance(boundary_result.value, LLMBoundaryProposalBatch)
+                    else LLMBoundaryProposalBatch.model_validate(
+                        boundary_result.value.model_dump()
+                        if hasattr(boundary_result.value, "model_dump")
+                        else boundary_result.value
+                    )
+                )
+            except RetryExhaustedError as exc:
+                failure_reason = exc.last_error
                 fallback = fallback_builder(
                     current_layer_context=current_layer_context,
                     parser_source_map=parser_source_map,
@@ -1409,92 +1286,291 @@ def build_layerwise_llm_callbacks(
                 )
                 return annotated
 
-        prompt_payload = {
-            "task": "Propose the next semantic layer for the current parent nodes.",
-            "output_contract": "Return a CurrentLayerResult only. Do not emit prose.",
-            "split_strategy": split_strategy,
-            "attempt_context": _proposal_attempt_context(
-                parse_session=parse_session,
-                current_layer_context=current_layer_context,
-            ),
-            "current_layer_context": _dump_model(current_layer_context),
-            "parent_nodes": _parent_context_excerpt(
-                current_layer_context=current_layer_context,
-                parser_source_map=parser_source_map,
-            ),
-            "semantic_tree_snapshot": _summarize_for_prompt(
-                semantic_tree,
-                max_depth=4,
-                max_items=5,
-                max_string=280,
-            ),
-            "full_document_context": _summarize_for_prompt(
-                parser_input_dict,
-                max_depth=4,
-                max_items=5,
-                max_string=280,
-            ),
-            "source_map_excerpt": _source_map_excerpt(parser_source_map),
-            "rules": [
-                "Operate on ONE layer only: propose only the immediate children for the current parent nodes.",
-                "Do not edit ancestors or descendants and do not break down current children directly.",
-                "Children together must preserve the parent meaning collectively.",
-                "Each parent should end up with more than one child or no child at all.",
-                "If a parent is already atomic, return no children for that parent and use satisfied=true only when the current layer is complete.",
-                "Prefer a coarser layerwise breakdown over premature deep flattening so later iterations can refine substructure.",
-                "Do not recombine separated verbatim fragments into invented longer text; keep grounding exact and local.",
-                "Every pointer must use exact source_cluster_id values plus character spans from the supplied source map.",
-                "Set expandable=false for leaf nodes and expandable=true only when later subdivision is still appropriate.",
-            ],
-        }
-        messages = [
-            (
-                "system",
-                "You are revising ONE semantic layer in an iterative document parsing workflow. "
-                "Return only structured data matching CurrentLayerResult. "
-                "Produce grounded immediate children for the supplied parents and preserve layerwise semantics.",
-            ),
-            (
-                "human",
-                json.dumps(prompt_payload, sort_keys=True),
-            ),
-        ]
-        try:
-            result = _structured_invoke(chat_model, LLMCurrentLayerResult, messages)
-            parsed = (
-                result
-                if isinstance(result, LLMCurrentLayerResult)
-                else LLMCurrentLayerResult.model_validate(
-                    result.model_dump() if hasattr(result, "model_dump") else result
+            review_decisions = [
+                _boundary_review_decision(
+                    cutpoint=cutpoint,
+                    current_layer_context=current_layer_context,
+                    parser_source_map=parser_source_map,
                 )
+                for cutpoint in parsed.cutpoints
+            ]
+            refinement_notes: list[str] = []
+            refinement_attempts = 0
+            if boundary_refinement_rounds > 0:
+                unresolved_targets = _boundary_refinement_targets(
+                    parsed=parsed,
+                    review_decisions=review_decisions,
+                )
+                for target in unresolved_targets[:boundary_refinement_rounds]:
+                    refinement_attempts += 1
+                    refinement_prompt_payload = {
+                        "task": "Refine a single ambiguous cutpoint using only nearby legal boundaries.",
+                        "output_contract": "Return an LLMBoundaryProposalBatch only.",
+                        "proposal_mode": proposal_mode,
+                        "split_strategy": split_strategy,
+                        "attempt_context": _proposal_attempt_context(
+                            parse_session=parse_session,
+                            current_layer_context=current_layer_context,
+                        ),
+                        "current_layer_context": _dump_model(current_layer_context),
+                        "refinement_target": _boundary_refinement_prompt_context(
+                            current_layer_context=current_layer_context,
+                            parser_source_map=parser_source_map,
+                            target=target,
+                        ),
+                        "rules": [
+                            "Operate on one ambiguous cutpoint only.",
+                            "Choose a nearby legal cutpoint or return no cutpoints with satisfied=true.",
+                            "Do not emit prose or child text.",
+                            "Preserve the original parent and source cluster scope.",
+                        ],
+                    }
+                    refinement_messages = [
+                        (
+                            "system",
+                            "You are refining one ambiguous semantic cutpoint in a layered document parser. "
+                            "Return only structured data matching LLMBoundaryProposalBatch.",
+                        ),
+                        ("human", json.dumps(refinement_prompt_payload, sort_keys=True)),
+                    ]
+                    try:
+                        refinement_result = _structured_invoke(chat_model, LLMBoundaryProposalBatch, refinement_messages)
+                        refinement_parsed = (
+                            refinement_result
+                            if isinstance(refinement_result, LLMBoundaryProposalBatch)
+                            else LLMBoundaryProposalBatch.model_validate(
+                                refinement_result.model_dump()
+                                if hasattr(refinement_result, "model_dump")
+                                else refinement_result
+                            )
+                        )
+                        refinement_validation_reason = _boundary_validation_reason(
+                            parsed=refinement_parsed,
+                            current_layer_context=current_layer_context,
+                            parser_source_map=parser_source_map,
+                        )
+                        if refinement_validation_reason:
+                            raise ValueError(refinement_validation_reason)
+                        refinement_decisions = [
+                            _boundary_review_decision(
+                                cutpoint=cutpoint,
+                                current_layer_context=current_layer_context,
+                                parser_source_map=parser_source_map,
+                            )
+                            for cutpoint in refinement_parsed.cutpoints
+                        ]
+                        if refinement_decisions:
+                            replacement_map = {
+                                _boundary_decision_key(decision): decision for decision in review_decisions
+                            }
+                            for decision in refinement_decisions:
+                                if decision.decision not in {"accept", "shift_left", "shift_right"}:
+                                    continue
+                                replacement_map[_boundary_decision_key(decision)] = decision
+                            review_decisions = sorted(replacement_map.values(), key=_boundary_decision_key)
+                            refinement_notes.extend(
+                                note
+                                for note in (
+                                    decision.reason for decision in refinement_decisions if decision.reason
+                                )
+                                if note not in refinement_notes
+                            )
+                    except Exception as refinement_exc:
+                        refinement_notes.append(
+                            f"boundary refinement skipped for {target.parent_node_id}:{target.source_cluster_id}:{target.cut_offset} "
+                            f"due to {refinement_exc!r}"
+                        )
+            review_batch = BoundaryReviewBatch(
+                decisions=review_decisions,
+                satisfied=parsed.satisfied,
+                coverage_ok=not any(
+                    decision.decision in {"reject", "needs_refinement"}
+                    for decision in review_decisions
+                ),
+                review_notes=[
+                    decision.reason
+                    for decision in review_decisions
+                    if decision.reason
+                ]
+                + refinement_notes,
             )
-            validation_reason = _proposal_validation_reason(
-                parsed=parsed,
+            runtime_result, summaries, accepted_cutpoints = _assemble_layer_result_from_boundaries(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
+                review_batch=review_batch,
             )
-            if validation_reason:
-                raise ValueError(validation_reason)
-            runtime_result = CurrentLayerResult.model_validate(parsed.model_dump())
+            accepted_count = sum(1 for decision in review_decisions if decision.decision == "accept")
+            shifted_count = sum(1 for decision in review_decisions if decision.decision in {"shift_left", "shift_right"})
+            rejected_count = sum(1 for decision in review_decisions if decision.decision == "reject")
+            refinement_count = sum(1 for decision in review_decisions if decision.decision == "needs_refinement")
+            unresolved_interval_count = int(runtime_result.metadata.get("unresolved_interval_count", 0) or 0)
+            if accepted_count + shifted_count == 0:
+                failure_reason = "boundary proposal produced no accepted cutpoints"
+                fallback = fallback_builder(
+                    current_layer_context=current_layer_context,
+                    parser_source_map=parser_source_map,
+                )
+                annotated = _annotate_proposal_result(
+                    fallback,
+                    proposal_source="fallback",
+                    proposal_mode="boundaries",
+                    proposal_failure_reason=failure_reason,
+                    provider_child_count=0,
+                )
+                _emit(
+                    "workflow_layered_proposal_result",
+                    proposal_source="fallback",
+                    proposal_mode="boundaries",
+                    proposal_failure_reason=failure_reason,
+                    depth=int(getattr(current_layer_context, "depth", 0)),
+                    retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                    split_strategy=split_strategy,
+                    child_count=len(annotated.children),
+                    satisfied=annotated.satisfied,
+                )
+                return annotated
+            result_metadata = {
+                **runtime_result.metadata,
+                "proposal_mode": "boundaries",
+                "proposal_retry_count": boundary_result.retry_count,
+                "boundary_proposed_count": len(parsed.cutpoints),
+                "boundary_accepted_count": accepted_count,
+                "boundary_shifted_count": shifted_count,
+                "boundary_rejected_count": rejected_count,
+                "boundary_refinement_count": refinement_count,
+                "boundary_refinement_attempts": refinement_attempts,
+                "boundary_summary_count": len(summaries),
+                "boundary_cutpoints": [cutpoint.model_dump() for cutpoint in parsed.cutpoints],
+                "boundary_review_decisions": [decision.model_dump() for decision in review_decisions],
+                "boundary_review_notes": list(review_batch.review_notes),
+                "proposal_source": "llm",
+            }
+            runtime_result = runtime_result.model_copy(update={"metadata": result_metadata})
             annotated = _annotate_proposal_result(
                 runtime_result,
                 proposal_source="llm",
-                proposal_mode="children",
-                provider_child_count=len(runtime_result.children),
+                proposal_mode="boundaries",
+                boundary_count=len(parsed.cutpoints),
+                accepted_boundary_count=accepted_count,
+                shifted_boundary_count=shifted_count,
+                rejected_boundary_count=rejected_count,
+                refinement_count=refinement_count,
+                unresolved_interval_count=unresolved_interval_count,
+                summary_count=len(summaries),
             )
             _emit(
                 "workflow_layered_proposal_result",
+                proposal_source="llm",
+                proposal_mode="boundaries",
+                depth=int(getattr(current_layer_context, "depth", 0)),
+                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                split_strategy=split_strategy,
+                boundary_count=len(parsed.cutpoints),
+                accepted_boundary_count=accepted_count,
+                shifted_boundary_count=shifted_count,
+                rejected_boundary_count=rejected_count,
+                refinement_count=refinement_count,
+                unresolved_interval_count=unresolved_interval_count,
+                child_count=len(runtime_result.children),
+                satisfied=runtime_result.satisfied,
+            )
+            return annotated
+
+        def _build_child_messages(attempt_number: int, previous_error: str | None):
+            prompt_payload = _proposal_attempt_payload(
+                {
+                    "task": "Propose the next semantic layer for the current parent nodes.",
+                    "output_contract": "Return a CurrentLayerResult only. Do not emit prose.",
+                    "split_strategy": split_strategy,
+                    "attempt_context": _proposal_attempt_context(
+                        parse_session=parse_session,
+                        current_layer_context=current_layer_context,
+                    ),
+                    "current_layer_context": _dump_model(current_layer_context),
+                    "parent_nodes": _parent_context_excerpt(
+                        current_layer_context=current_layer_context,
+                        parser_source_map=parser_source_map,
+                    ),
+                    "semantic_tree_snapshot": _summarize_for_prompt(
+                        semantic_tree,
+                        max_depth=4,
+                        max_items=5,
+                        max_string=280,
+                    ),
+                    "full_document_context": _summarize_for_prompt(
+                        parser_input_dict,
+                        max_depth=4,
+                        max_items=5,
+                        max_string=280,
+                    ),
+                    "source_map_excerpt": _source_map_excerpt(parser_source_map),
+                    "rules": [
+                        "Operate on ONE layer only: propose only the immediate children for the current parent nodes.",
+                        "Do not edit ancestors or descendants and do not break down current children directly.",
+                        "Children together must preserve the parent meaning collectively.",
+                        "Each parent should end up with more than one child or no child at all.",
+                        "If a parent is already atomic, return no children for that parent and use satisfied=true only when the current layer is complete.",
+                        "Prefer a coarser layerwise breakdown over premature deep flattening so later iterations can refine substructure.",
+                        "Do not recombine separated verbatim fragments into invented longer text; keep grounding exact and local.",
+                        "Every pointer must use exact source_cluster_id values plus character spans from the supplied source map.",
+                        "Set expandable=false for leaf nodes and expandable=true only when later subdivision is still appropriate.",
+                    ],
+                },
+                attempt_index=attempt_number - 1,
+                prior_error=previous_error,
+            )
+            return [
+                (
+                    "system",
+                    "You are revising ONE semantic layer in an iterative document parsing workflow. "
+                    "Return only structured data matching CurrentLayerResult. "
+                    "Produce grounded immediate children for the supplied parents and preserve layerwise semantics.",
+                ),
+                ("human", json.dumps(prompt_payload, sort_keys=True)),
+            ]
+
+        def _emit_child_retry(record) -> None:
+            _emit(
+                "workflow_layered_proposal_retry",
                 proposal_source="llm",
                 proposal_mode="children",
                 depth=int(getattr(current_layer_context, "depth", 0)),
                 retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                 split_strategy=split_strategy,
-                child_count=len(runtime_result.children),
-                satisfied=runtime_result.satisfied,
+                attempt=record.attempt_number,
+                retry_budget=proposal_retry_rounds,
+                retry_reason=record.error_message,
             )
-            return annotated
-        except Exception as exc:
-            failure_reason = _trim_text(repr(exc), max_chars=500)
+
+        try:
+            child_result = retry_with_context(
+                max_attempts=proposal_retry_rounds + 1,
+                build_request=_build_child_messages,
+                invoke=lambda messages: _structured_invoke(chat_model, LLMCurrentLayerResult, messages),
+                validate=lambda parsed: _proposal_validation_reason(
+                    parsed=(
+                        parsed
+                        if isinstance(parsed, LLMCurrentLayerResult)
+                        else LLMCurrentLayerResult.model_validate(
+                            parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
+                        )
+                    ),
+                    current_layer_context=current_layer_context,
+                    parser_source_map=parser_source_map,
+                ),
+                on_retry=_emit_child_retry,
+            )
+            parsed = (
+                child_result.value
+                if isinstance(child_result.value, LLMCurrentLayerResult)
+                else LLMCurrentLayerResult.model_validate(
+                    child_result.value.model_dump()
+                    if hasattr(child_result.value, "model_dump")
+                    else child_result.value
+                )
+            )
+        except RetryExhaustedError as exc:
+            failure_reason = exc.last_error
             fallback = fallback_builder(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
@@ -1518,6 +1594,28 @@ def build_layerwise_llm_callbacks(
                 satisfied=annotated.satisfied,
             )
             return annotated
+
+        runtime_result = CurrentLayerResult.model_validate(parsed.model_dump())
+        runtime_result = runtime_result.model_copy(
+            update={"metadata": {**runtime_result.metadata, "proposal_retry_count": child_result.retry_count}}
+        )
+        annotated = _annotate_proposal_result(
+            runtime_result,
+            proposal_source="llm",
+            proposal_mode="children",
+            provider_child_count=len(runtime_result.children),
+        )
+        _emit(
+            "workflow_layered_proposal_result",
+            proposal_source="llm",
+            proposal_mode="children",
+            depth=int(getattr(current_layer_context, "depth", 0)),
+            retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+            split_strategy=split_strategy,
+            child_count=len(runtime_result.children),
+            satisfied=runtime_result.satisfied,
+        )
+        return annotated
 
     def _review_layer_fn(
         *,

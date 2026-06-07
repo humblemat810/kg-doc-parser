@@ -409,6 +409,7 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
             "cache_dir": str(artifacts.cache_dir),
             "engine_dir": str(artifacts.engine_dir),
             "server_data_dir": str(artifacts.server_data_dir),
+            "proposal_mode": config.provider_settings.proposal_mode if config.provider_settings else None,
             "parser_mode": config.parser_mode,
             "server_mode": config.server_mode,
         }
