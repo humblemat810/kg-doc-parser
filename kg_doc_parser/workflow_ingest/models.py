@@ -347,6 +347,9 @@ class BoundaryCutpoint(BaseModel):
     source_cluster_id: str
     cut_offset: int
     boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"]
+    text_before_cut: str = ""
+    text_after_cut: str = ""
+    cut_reason: str = ""
     confidence: float | None = None
     reason: str | None = None
 
@@ -381,6 +384,10 @@ class BoundaryReviewDecision(BaseModel):
     decision: Literal["accept", "shift_left", "shift_right", "reject", "needs_refinement"]
     resolved_cut_offset: int | None = None
     boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] | None = None
+    anchor_match_mode: Literal["exact", "fuzzy"] | None = None
+    anchor_match_score: float | None = None
+    text_before_cut: str | None = None
+    text_after_cut: str | None = None
     reason: str | None = None
 
 

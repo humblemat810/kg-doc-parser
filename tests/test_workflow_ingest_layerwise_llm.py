@@ -119,6 +119,36 @@ def _parser_source_map() -> dict[str, dict[str, Any]]:
     }
 
 
+def _boundary_cutpoint_payload(
+    text: str,
+    offset: int,
+    *,
+    anchor_offset: int | None = None,
+    parent_node_id: str = "doc|root",
+    source_cluster_id: str = "cluster-1",
+    boundary_kind: str = "sentence",
+    confidence: float | None = None,
+    reason: str = "boundary anchor",
+) -> dict[str, Any]:
+    anchor_offset = offset if anchor_offset is None else anchor_offset
+    window = 8
+    start = max(0, min(len(text), anchor_offset - window))
+    end = max(0, min(len(text), anchor_offset + window))
+    payload: dict[str, Any] = {
+        "parent_node_id": parent_node_id,
+        "source_cluster_id": source_cluster_id,
+        "cut_offset": offset,
+        "boundary_kind": boundary_kind,
+        "text_before_cut": text[start:anchor_offset],
+        "text_after_cut": text[anchor_offset:end],
+        "cut_reason": reason,
+        "reason": reason,
+    }
+    if confidence is not None:
+        payload["confidence"] = confidence
+    return payload
+
+
 def test_boundary_helpers_classify_and_snap_cutpoints():
     from kg_doc_parser.workflow_ingest.layerwise_llm import (
         _boundary_review_decision,
@@ -132,14 +162,16 @@ def test_boundary_helpers_classify_and_snap_cutpoints():
 
     decision = _boundary_review_decision(
         cutpoint=BoundaryCutpoint(
-            parent_node_id="doc|root",
-            source_cluster_id="cluster-1",
-            cut_offset=12,
-            boundary_kind="semantic",
-            confidence=0.5,
-            reason="near the paragraph boundary",
+            **_boundary_cutpoint_payload(
+                "Alpha clause. Beta clause.",
+                12,
+                anchor_offset=13,
+                boundary_kind="semantic",
+                confidence=0.5,
+                reason="near the paragraph boundary",
+            )
         ),
-        current_layer_context=_context(),
+        current_layer_context=_boundary_context(),
         parser_source_map=_parser_source_map(),
     )
 
@@ -152,33 +184,59 @@ def test_boundary_helpers_classify_and_snap_cutpoints():
             source_cluster_id="cluster-1",
             cut_offset=16,
             boundary_kind="semantic",
+            text_before_cut="Alpha clause. Be",
+            text_after_cut="ta clause.",
+            cut_reason="inside token",
             confidence=0.5,
             reason="inside token",
         ),
-        current_layer_context=_context(),
+        current_layer_context=_boundary_context(),
         parser_source_map=_parser_source_map(),
     )
     assert reject_decision.decision == "reject"
     assert "word" in (reject_decision.reason or "")
 
+    fuzzy_decision = _boundary_review_decision(
+        cutpoint=BoundaryCutpoint(
+            parent_node_id="doc|root",
+            source_cluster_id="cluster-1",
+            cut_offset=12,
+            boundary_kind="sentence",
+            text_before_cut="Alpha clausx.",
+            text_after_cut=" Beta",
+            cut_reason="near the sentence boundary",
+            confidence=0.8,
+            reason="near the sentence boundary",
+        ),
+        current_layer_context=_boundary_context(),
+        parser_source_map=_parser_source_map(),
+    )
+    assert fuzzy_decision.anchor_match_mode == "fuzzy"
+    assert fuzzy_decision.resolved_cut_offset == 13
+    assert fuzzy_decision.decision == "shift_right"
+
+    far_shift_decision = _boundary_review_decision(
+        cutpoint=BoundaryCutpoint(
+            parent_node_id="doc|root",
+            source_cluster_id="cluster-1",
+            cut_offset=0,
+            boundary_kind="sentence",
+            text_before_cut="Alpha clausx.",
+            text_after_cut=" Beta",
+            cut_reason="far off boundary guess",
+            confidence=0.8,
+            reason="far off boundary guess",
+        ),
+        current_layer_context=_boundary_context(),
+        parser_source_map=_parser_source_map(),
+    )
+    assert far_shift_decision.decision == "reject"
+    assert "exceeds maximum" in (far_shift_decision.reason or "")
+
     reversed_batch = LLMBoundaryProposalBatch(
         cutpoints=[
-            BoundaryCutpoint(
-                parent_node_id="doc|root",
-                source_cluster_id="cluster-1",
-                cut_offset=20,
-                boundary_kind="sentence",
-                confidence=0.8,
-                reason="later boundary",
-            ),
-            BoundaryCutpoint(
-                parent_node_id="doc|root",
-                source_cluster_id="cluster-1",
-                cut_offset=10,
-                boundary_kind="sentence",
-                confidence=0.8,
-                reason="earlier boundary",
-            ),
+            BoundaryCutpoint(**_boundary_cutpoint_payload("Alpha clause. Beta clause.", 20, boundary_kind="sentence", confidence=0.8, reason="later boundary")),
+            BoundaryCutpoint(**_boundary_cutpoint_payload("Alpha clause. Beta clause.", 10, boundary_kind="sentence", confidence=0.8, reason="earlier boundary")),
         ],
         satisfied=True,
         reasoning_history=[],
@@ -220,14 +278,7 @@ def test_llm_boundary_proposal_round_trip():
         parent_node_id="doc|root",
         source_cluster_id="cluster-1",
         cutpoints=[
-            BoundaryCutpoint(
-                parent_node_id="doc|root",
-                source_cluster_id="cluster-1",
-                cut_offset=13,
-                boundary_kind="sentence",
-                confidence=0.9,
-                reason="sentence boundary",
-            )
+            BoundaryCutpoint(**_boundary_cutpoint_payload("Alpha clause. Beta clause.", 13, boundary_kind="sentence", confidence=0.9, reason="sentence boundary"))
         ],
         satisfied=True,
         reasoning_history=[],
@@ -252,14 +303,7 @@ def test_workflow_provider_settings_from_env_enables_boundary_mode(monkeypatch: 
         {
             "parsed": {
                 "cutpoints": [
-                    {
-                        "parent_node_id": "doc|root",
-                        "source_cluster_id": "cluster-1",
-                        "cut_offset": 14,
-                        "boundary_kind": "sentence",
-                        "confidence": 0.92,
-                        "reason": "sentence break",
-                    }
+                    _boundary_cutpoint_payload("Alpha clause. Beta clause.", 14, boundary_kind="sentence", confidence=0.92, reason="sentence break"),
                 ],
                 "satisfied": True,
                 "reasoning_history": [],
@@ -286,27 +330,31 @@ def test_workflow_provider_settings_from_env_enables_boundary_mode(monkeypatch: 
     assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
 
 
+def test_structured_invoke_returns_typed_pydantic_model():
+    from pydantic import BaseModel
+
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
+
+    class _Schema(BaseModel):
+        value: int
+        label: str
+
+    fake_model = _FakeChatModel({"parsed": {"value": 7, "label": "demo"}})
+    result = _structured_invoke(fake_model, _Schema, [("human", "hello")])
+
+    assert isinstance(result, _Schema)
+    assert result.value == 7
+    assert result.label == "demo"
+    assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
+
+
 def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: pytest.MonkeyPatch):
     fake_model = _FakeChatModel(
         {
             "parsed": {
                 "cutpoints": [
-                    {
-                        "parent_node_id": "doc|root",
-                        "source_cluster_id": "cluster-1",
-                        "cut_offset": 12,
-                        "boundary_kind": "semantic",
-                        "confidence": 0.4,
-                        "reason": "near sentence boundary",
-                    },
-                    {
-                        "parent_node_id": "doc|root",
-                        "source_cluster_id": "cluster-1",
-                        "cut_offset": 16,
-                        "boundary_kind": "semantic",
-                        "confidence": 0.92,
-                        "reason": "inside word and should be rejected",
-                    },
+                    _boundary_cutpoint_payload("Alpha clause. Beta clause.", 12, anchor_offset=13, boundary_kind="semantic", confidence=0.4, reason="near sentence boundary"),
+                    _boundary_cutpoint_payload("Alpha clause. Beta clause.", 16, anchor_offset=16, boundary_kind="semantic", confidence=0.92, reason="inside word and should be rejected"),
                 ],
                 "satisfied": True,
                 "reasoning_history": [],
@@ -567,7 +615,7 @@ def test_propose_layer_fn_retries_child_mode_with_previous_error_context(monkeyp
 
 
 def test_boundary_mode_recurses_through_refinement_for_ambiguous_cutpoints(monkeypatch: pytest.MonkeyPatch):
-    ambiguous_text = "Alpha clause;more text"
+    ambiguous_text = "Alpha clause. Beta clause. Alpha clause. Beta clause."
     ambiguous_source_map = {
         "cluster-1": {
             "page_number": 1,
@@ -597,14 +645,7 @@ def test_boundary_mode_recurses_through_refinement_for_ambiguous_cutpoints(monke
         {
             "parsed": {
                 "cutpoints": [
-                    {
-                        "parent_node_id": "doc|root",
-                        "source_cluster_id": "cluster-1",
-                        "cut_offset": 13,
-                        "boundary_kind": "semantic",
-                        "confidence": 0.2,
-                        "reason": "ambiguous start",
-                    }
+                    _boundary_cutpoint_payload(ambiguous_text, 13, boundary_kind="semantic", confidence=0.2, reason="ambiguous start"),
                 ],
                 "satisfied": True,
                 "reasoning_history": [],
@@ -682,14 +723,7 @@ def test_boundary_and_child_modes_produce_equivalent_labels_for_same_fixture(mon
         {
             "parsed": {
                 "cutpoints": [
-                    {
-                        "parent_node_id": "doc|root",
-                        "source_cluster_id": "cluster-1",
-                        "cut_offset": 13,
-                        "boundary_kind": "sentence",
-                        "confidence": 0.95,
-                        "reason": "sentence boundary",
-                    }
+                    _boundary_cutpoint_payload("Alpha clause. Beta clause.", 13, boundary_kind="sentence", confidence=0.95, reason="sentence boundary"),
                 ],
                 "satisfied": True,
                 "reasoning_history": [],
