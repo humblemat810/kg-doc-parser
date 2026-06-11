@@ -43,7 +43,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -54,8 +54,8 @@ from ..llm_structured_output import build_structured_output_runnable
 from ..models import OCRClusterResponse, SplitPage, SplitPageMeta
 
 from .adapters import OCRPageJSON, normalize_ocr_pages
-from .models import WorkflowIngestInput
-from .providers import ProviderEndpointConfig, WorkflowProviderSettings, build_chat_model_for_role
+from .models import WorkflowExportBundle, WorkflowIngestInput
+from .providers import WorkflowProviderSettings, build_chat_model_for_role
 from .probe import WorkflowProbe, emit_probe_event
 from .service import run_ingest_workflow
 
@@ -530,7 +530,7 @@ class OCRWorkflowStateStore:
         return conn
 
     @contextlib.contextmanager
-    def _session(self):
+    def _session(self) -> Iterator[sqlite3.Connection]:
         conn = self._connect()
         try:
             yield conn
@@ -1550,7 +1550,7 @@ def run_ocr_ingest_workflow(
     ocr_candidate_models: Sequence[str] | None = None,
     deps: dict[str, Any] | None = None,
     probe: WorkflowProbe | None = None,
-):
+) -> tuple[Any, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
     """Run OCR preparation and then feed the normalized result into workflow ingest.
 
     This is the high-level two-stage orchestration:

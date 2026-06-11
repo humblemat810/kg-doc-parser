@@ -173,11 +173,11 @@ class IngestExecutionClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_run_trace(self, *, run_id: str) -> list[Any]:
+    def get_run_trace(self, *, run_id: str) -> list[Node]:
         raise NotImplementedError
 
     @abstractmethod
-    def get_latest_checkpoint(self, *, run_id: str) -> Any:
+    def get_latest_checkpoint(self, *, run_id: str) -> Node | None:
         raise NotImplementedError
 
 
@@ -256,7 +256,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             final_state=dict(run.final_state),
         )
 
-    def resume_ingest(self, **kwargs) -> IngestRunResult:
+    def resume_ingest(self, **kwargs: Any) -> IngestRunResult:
         from .service import build_runtime
 
         deps = dict(kwargs.pop("deps", {}) or {})
@@ -332,14 +332,14 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             server_parser_used=False,
         )
 
-    def get_run_trace(self, *, run_id: str) -> list[Any]:
+    def get_run_trace(self, *, run_id: str) -> list[Node]:
         return list(
             self.conversation_engine.read.get_nodes(
                 where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": str(run_id)}]}
             )
         )
 
-    def get_latest_checkpoint(self, *, run_id: str) -> Any:
+    def get_latest_checkpoint(self, *, run_id: str) -> Node | None:
         checkpoints = list(
             self.conversation_engine.read.get_nodes(
                 where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": str(run_id)}]}
@@ -425,7 +425,7 @@ class ServerCanonicalKgClient(IngestExecutionClient):
             final_state=dict(run.final_state),
         )
 
-    def resume_ingest(self, **kwargs) -> IngestRunResult:
+    def resume_ingest(self, **kwargs: Any) -> IngestRunResult:
         raise UnsupportedClientOperation(
             "remote/server-backed runtime resume is not implemented in this repo"
         )
@@ -433,12 +433,12 @@ class ServerCanonicalKgClient(IngestExecutionClient):
     def persist_graph_payload(self, bundle: WorkflowExportBundle) -> CanonicalGraphWriteResult:
         return self.persistence_client.persist_graph_payload(bundle)
 
-    def get_run_trace(self, *, run_id: str) -> list[Any]:
+    def get_run_trace(self, *, run_id: str) -> list[Node]:
         raise UnsupportedClientOperation(
             "server-backed trace retrieval is not implemented in this repo"
         )
 
-    def get_latest_checkpoint(self, *, run_id: str) -> Any:
+    def get_latest_checkpoint(self, *, run_id: str) -> Node | None:
         raise UnsupportedClientOperation(
             "server-backed checkpoint retrieval is not implemented in this repo"
         )

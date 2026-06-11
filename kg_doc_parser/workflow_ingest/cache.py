@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeVar, cast
 
 from kogwistar.id_provider import stable_id
 
@@ -41,7 +41,7 @@ class WorkflowLLMCallCache:
         operation: str,
         fingerprint: dict[str, Any],
         fn: Callable[[], T],
-    ) -> Any:
+    ) -> T:
         path = self._cache_path(operation, fingerprint)
         if path.exists():
             emit_probe_event(
@@ -50,7 +50,7 @@ class WorkflowLLMCallCache:
                 operation=operation,
                 cache_path=str(path),
             )
-            return json.loads(path.read_text(encoding="utf-8"))
+            return cast(T, json.loads(path.read_text(encoding="utf-8")))
         result = fn()
         payload = _jsonable(result)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -60,4 +60,4 @@ class WorkflowLLMCallCache:
             operation=operation,
             cache_path=str(path),
         )
-        return payload
+        return cast(T, payload)

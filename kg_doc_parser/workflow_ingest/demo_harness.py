@@ -81,7 +81,7 @@ class _ServerContext(AbstractContextManager):
         self.base_url = base_url
         self._cleanup = cleanup
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, exc_type, exc, tb) -> bool:
         if self._cleanup is not None:
             self._cleanup(exc_type, exc, tb)
         return False
@@ -233,7 +233,7 @@ def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, Any]:
             verbatim_text=fragment,
         )
 
-    def _propose_layer_fn(*, current_layer_context, **kwargs):
+    def _propose_layer_fn(*, current_layer_context, **kwargs) -> CurrentLayerResult:
         if current_layer_context.depth == 0:
             return CurrentLayerResult(
                 children=[
@@ -265,7 +265,7 @@ def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, Any]:
             reasoning_history=[{"stage": "proposal", "depth": current_layer_context.depth}],
         )
 
-    def _review_layer_fn(*, current_layer_result, **kwargs):
+    def _review_layer_fn(*, current_layer_result, **kwargs) -> CurrentLayerReview:
         return CurrentLayerReview(
             updated_result=current_layer_result.model_copy(update={"satisfied": True}),
             coverage_ok=True,

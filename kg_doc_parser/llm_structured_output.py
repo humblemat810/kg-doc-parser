@@ -9,7 +9,7 @@ def build_structured_output_runnable(
     *,
     include_raw: bool = True,
     prefer_json_schema: bool = True,
-):
+) -> Any:
     """Build a structured-output runnable with strict-schema-first fallback."""
     attempts: list[dict[str, Any]] = []
     if prefer_json_schema:

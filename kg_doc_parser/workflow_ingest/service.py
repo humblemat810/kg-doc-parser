@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -9,17 +10,24 @@ from kogwistar.runtime.runtime import WorkflowRuntime
 from .clients import DirectRuntimeIngestClient
 from .design import DEFAULT_WORKFLOW_ID
 from .handlers import build_ingest_step_resolver
-from .models import IngestRunResult, WorkflowIngestInput
+from .models import IngestRunResult, WorkflowExportBundle, WorkflowIngestInput
 from .providers import WorkflowProviderSettings, build_embedding_function
+
+
+@dataclass(slots=True)
+class _RunCompat:
+    run_id: str
+    final_state: dict[str, Any]
+    status: str
 
 
 class _TinyEmbeddingFunction:
     _name = "kg-doc-parser-workflow-embedding-v1"
 
-    def name(self):
+    def name(self) -> str:
         return self._name
 
-    def __call__(self, input):
+    def __call__(self, input: list[str]) -> list[list[float]]:
         vectors = []
         for value in input:
             text = str(value or "")
@@ -34,7 +42,7 @@ def build_default_engines(
     embedding_function=None,
     backend_factory=None,
     provider_settings: WorkflowProviderSettings | None = None,
-):
+) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine, GraphKnowledgeEngine]:
     base_dir = Path(base_dir)
     provider_settings = provider_settings or WorkflowProviderSettings.from_env()
     # One embedding function is still wired per engine instance. The workflow
@@ -62,7 +70,7 @@ def build_default_engines(
     return workflow_engine, conversation_engine, knowledge_engine
 
 
-def build_runtime(*, workflow_engine, conversation_engine, deps: dict[str, Any] | None = None):
+def build_runtime(*, workflow_engine, conversation_engine, deps: dict[str, Any] | None = None) -> WorkflowRuntime:
     resolver = build_ingest_step_resolver(deps=deps)
     return WorkflowRuntime(
         workflow_engine=workflow_engine,
@@ -81,7 +89,7 @@ def run_ingest_workflow(
     knowledge_engine=None,
     workflow_id: str = DEFAULT_WORKFLOW_ID,
     deps: dict[str, Any] | None = None,
-):
+) -> tuple[_RunCompat, WorkflowExportBundle | None]:
     client = DirectRuntimeIngestClient(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
@@ -95,13 +103,7 @@ def run_ingest_workflow(
     return _legacy_run_result(result)
 
 
-def _legacy_run_result(result: IngestRunResult):
-    class _RunCompat:
-        def __init__(self, *, run_id: str, final_state: dict[str, Any], status: str) -> None:
-            self.run_id = run_id
-            self.final_state = final_state
-            self.status = status
-
+def _legacy_run_result(result: IngestRunResult) -> tuple[_RunCompat, WorkflowExportBundle | None]:
     return (
         _RunCompat(
             run_id=result.handle.run_id,

@@ -58,20 +58,22 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Annotated, Any, Callable, ClassVar, Literal, Optional, Protocol, Union, runtime_checkable, get_args, get_origin
+from typing import Annotated, Any, Callable, ClassVar, Literal, Optional, Protocol, TypeVar, Union, runtime_checkable, get_args, get_origin
 
 from pydantic import BaseModel, Field
 from pydantic_core import PydanticUndefined
 from pydantic_extension.model_slicing import BackendField, FrontendField
 from pydantic_extension.model_slicing.mixin import DtoField, ExcludeMode, LLMField, ModeSlicingMixin
 
+TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
+
 
 class _FakeStructuredResponse:
-    def __init__(self, schema, payload: dict[str, Any]):
+    def __init__(self, schema: type[TStructuredModel], payload: dict[str, Any]) -> None:
         self.schema = schema
         self.payload = payload
 
-    def invoke(self, messages, config=None):
+    def invoke(self, messages: Any, config: Any = None) -> dict[str, Any]:
         parsed = self.schema.model_validate(self.payload)
         return {"parsed": parsed, "raw": None, "parsing_error": None}
 
@@ -82,14 +84,19 @@ class FakeChatModel:
     def __init__(self, *, payload_factory: Callable[[Any], dict[str, Any]] | None = None) -> None:
         self.payload_factory = payload_factory or _default_schema_payload
 
-    def with_structured_output(self, schema, include_raw: bool = True, **kwargs):
+    def with_structured_output(
+        self,
+        schema: type[TStructuredModel],
+        include_raw: bool = True,
+        **kwargs: Any,
+    ) -> _FakeStructuredResponse:
         _ = kwargs
         payload = self.payload_factory(schema)
         return _FakeStructuredResponse(schema, payload)
 
 
-def _default_schema_payload(schema) -> dict[str, Any]:
-    def _value_for_field(field) -> Any:
+def _default_schema_payload(schema: type[BaseModel]) -> dict[str, Any]:
+    def _value_for_field(field: Any) -> Any:
         annotation = getattr(field, "annotation", None)
         origin = get_origin(annotation)
         args = get_args(annotation)
@@ -128,7 +135,17 @@ def _default_schema_payload(schema) -> dict[str, Any]:
 
 @runtime_checkable
 class ChatModelProvider(Protocol):
-    def build(self, *, callbacks: list[Any] | None = None) -> Any: ...
+    def build(self, *, callbacks: list[Any] | None = None) -> SupportsStructuredOutput: ...
+
+
+@runtime_checkable
+class SupportsStructuredOutput(Protocol):
+    def with_structured_output(
+        self,
+        schema: type[TStructuredModel],
+        include_raw: bool = True,
+        **kwargs: Any,
+    ) -> Any: ...
 
 
 @runtime_checkable
@@ -312,7 +329,7 @@ class _CallableEmbeddingFunction:
     def name(self) -> str:
         return self.name_value
 
-    def __call__(self, input):
+    def __call__(self, input: list[str]) -> list[list[float]]:
         vectors = []
         for value in input:
             vectors.append(_embedding_vector(str(value or ""), dimension=self.dimension))
@@ -369,7 +386,7 @@ def build_embedding_function(
         def name(self) -> str:
             return spec.model
 
-        def __call__(self, input):
+        def __call__(self, input: list[str]) -> list[list[float]]:
             texts = [str(value or "") for value in input]
             if hasattr(embeddings, "embed_documents"):
                 return embeddings.embed_documents(texts)
@@ -384,7 +401,7 @@ def build_chat_model(
     spec: ProviderEndpointConfig | None = None,
     *,
     callbacks: list[Any] | None = None,
-):
+) -> SupportsStructuredOutput:
     """Build a vendor-specific chat model behind a stable adapter boundary.
 
     Supported providers currently include gemini, openai, ollama, vertex, and
@@ -466,7 +483,7 @@ def build_chat_model_for_role(
     spec: WorkflowProviderSettings | None = None,
     *,
     callbacks: list[Any] | None = None,
-):
+) -> SupportsStructuredOutput:
     """Build the chat model used for either OCR or parsing.
 
     Examples:

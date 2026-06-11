@@ -12,18 +12,16 @@ import os
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Literal, Sequence
+from typing import Any, Callable, Iterator, Literal, Sequence
 
-from kogwistar.engine_core.models import Edge, Node
-
-from .demo_harness import DemoHarnessConfig, run_demo_harness
-from .ocr_pipeline import OCRImagePayload, OCRWorkflowArtifacts, prepare_ocr_workflow_input, run_ocr_ingest_workflow
+from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
+from .ocr_pipeline import OCRImagePayload, OCRWorkflowArtifacts, run_ocr_ingest_workflow
 from .page_index import PageIndexParseResult, PageIndexSourceFormat
-from .parsing import parse_ocr_document, parse_page_index_document, parse_tree_document
+from .parsing import parse_page_index_document, parse_tree_document
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
 from .parser_core import default_parse_semantic_fn
-from .service import build_default_engines, run_ingest_workflow
+from .service import build_default_engines
 from .semantics import HydratedTextPointer, SemanticNode
 
 SupportedOCRInput = Literal["image", "pdf"]
@@ -61,7 +59,12 @@ class LayerwiseWorkflowCommandResult(WorkflowCommandResult):
     graph_payload: dict[str, Any] | None = None
 
 
-def _fallback_parse_semantic_fn(*, collection, parser_input_dict: dict[str, Any], parser_source_map: dict[str, dict[str, Any]]):
+def _fallback_parse_semantic_fn(
+    *,
+    collection,
+    parser_input_dict: dict[str, Any],
+    parser_source_map: dict[str, dict[str, Any]],
+) -> SemanticNode:
     root = SemanticNode(
         title=collection.title,
         node_type="DOCUMENT_ROOT",
@@ -126,7 +129,7 @@ def _fallback_parse_semantic_fn(*, collection, parser_input_dict: dict[str, Any]
 
 
 @contextmanager
-def _temporary_env(overrides: dict[str, str | None]):
+def _temporary_env(overrides: dict[str, str | None]) -> Iterator[None]:
     previous: dict[str, str | None] = {}
     try:
         for key, value in overrides.items():
@@ -148,11 +151,16 @@ def build_legacy_parse_semantic_fn(
     *,
     provider_settings: WorkflowProviderSettings,
     model_names: Sequence[str] | None = None,
-):
+) -> Callable[..., SemanticNode]:
     parser_spec = provider_settings.parser
     parser_model_names = list(model_names) if model_names else [parser_spec.model]
 
-    def _parse_semantic_fn(*, collection, parser_input_dict: dict[str, Any], parser_source_map: dict[str, dict[str, Any]]):
+    def _parse_semantic_fn(
+        *,
+        collection,
+        parser_input_dict: dict[str, Any],
+        parser_source_map: dict[str, dict[str, Any]],
+    ) -> SemanticNode:
         env_overrides = {
             "KG_DOC_PARSER_PROVIDER": parser_spec.provider,
             "KG_DOC_PARSER_MODEL": parser_spec.model,
@@ -542,5 +550,5 @@ def run_layerwise_batch_workflow(
     return results
 
 
-def run_demo_harness_workflow(config: DemoHarnessConfig):
+def run_demo_harness_workflow(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
     return run_demo_harness(config)

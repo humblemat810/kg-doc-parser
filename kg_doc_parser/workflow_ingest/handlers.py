@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Callable
 
 from kogwistar.runtime import MappingStepResolver
-from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
+from kogwistar.runtime.runtime import StepContext
+from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
 
 from .adapters import (
     build_authoritative_source_map,
@@ -47,6 +48,8 @@ from .semantics import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+StepHandler = Callable[[StepContext], StepRunResult]
+
 
 
 def _success(next_step: str | None = None) -> RunSuccess:
@@ -57,8 +60,8 @@ def _success(next_step: str | None = None) -> RunSuccess:
     )
 
 
-def _probe_snapshot(state_view: dict[str, Any]) -> dict[str, Any]:
-    snapshot: dict[str, Any] = {
+def _probe_snapshot(state_view: dict[str, object]) -> dict[str, object]:
+    snapshot: dict[str, object] = {
         "state_keys": sorted(k for k, v in state_view.items() if v is not None),
     }
     frontier = state_view.get("layer_frontier_queue")
@@ -85,7 +88,7 @@ def _progress_bar(done: int, total: int, width: int = 20) -> str:
     return ("█" * filled) + ("░" * (width - filled))
 
 
-def _log_runtime_progress(*, step_name: str, state_view: dict[str, Any]) -> None:
+def _log_runtime_progress(*, step_name: str, state_view: dict[str, object]) -> None:
     current_layer_context = state_view.get("current_layer_context")
     parse_session = state_view.get("parse_session")
     if not isinstance(current_layer_context, dict) or not isinstance(parse_session, dict):
@@ -120,13 +123,13 @@ def _register_step(
     resolver: MappingStepResolver,
     *,
     step_name: str,
-    runtime_deps: dict[str, Any],
-):
+    runtime_deps: dict[str, object],
+)-> Callable[[StepHandler], StepHandler]:
     probe = runtime_deps.get("probe")
 
-    def decorator(fn):
+    def decorator(fn: StepHandler) -> StepHandler:
         @resolver.register(step_name)
-        def _wrapped(ctx):
+        def _wrapped(ctx: StepContext) -> StepRunResult:
             _log_runtime_progress(step_name=step_name, state_view=dict(ctx.state_view))
             emit_probe_event(
                 probe,
@@ -166,13 +169,13 @@ def _register_step(
     return decorator
 
 
-def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: dict[str, Any]) -> None:
+def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: dict[str, object]) -> None:
     @_register_step(resolver, step_name="start", runtime_deps=runtime_deps)
-    def _start(ctx):
+    def _start(ctx: StepContext) -> StepRunResult:
         return _success("normalize_input")
 
     @_register_step(resolver, step_name="normalize_input", runtime_deps=runtime_deps)
-    def _normalize_input(ctx):
+    def _normalize_input(ctx: StepContext) -> StepRunResult:
         payload = WorkflowIngestInput.model_validate(ctx.state_view["input"]).model_dump(
             field_mode="backend",
             dump_format="json",
@@ -182,7 +185,7 @@ def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: d
         return _success("build_source_map")
 
     @_register_step(resolver, step_name="build_source_map", runtime_deps=runtime_deps)
-    def _build_source_map(ctx):
+    def _build_source_map(ctx: StepContext) -> StepRunResult:
         normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
         authoritative_source_map = build_authoritative_source_map(normalized)
         collection = select_primary_collection(normalized)
@@ -198,7 +201,7 @@ def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: d
         return _success("init_parse_session")
 
     @_register_step(resolver, step_name="init_parse_session", runtime_deps=runtime_deps)
-    def _init_parse_session(ctx):
+    def _init_parse_session(ctx: StepContext) -> StepRunResult:
         normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
         collection = select_primary_collection(normalized)
         parse_semantic_fn = runtime_deps.get("parse_semantic_fn", default_parse_semantic_fn)
@@ -222,16 +225,16 @@ def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: d
         return _success("check_frontier_remaining")
 
 
-def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_deps: dict[str, Any]) -> None:
+def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_deps: dict[str, object]) -> None:
     @_register_step(resolver, step_name="check_frontier_remaining", runtime_deps=runtime_deps)
-    def _check_frontier_remaining(ctx):
+    def _check_frontier_remaining(ctx: StepContext) -> StepRunResult:
         queue = ctx.state_view.get("layer_frontier_queue") or []
         if queue:
             return _success("prepare_layer_frontier")
         return _success("finalize_semantic_tree")
 
     @_register_step(resolver, step_name="prepare_layer_frontier", runtime_deps=runtime_deps)
-    def _prepare_layer_frontier(ctx):
+    def _prepare_layer_frontier(ctx: StepContext) -> StepRunResult:
         parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
         semantic_tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
         context, remaining, updated_session = prepare_layer_frontier(
@@ -252,7 +255,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("propose_layer_breakdown")
 
     @_register_step(resolver, step_name="propose_layer_breakdown", runtime_deps=runtime_deps)
-    def _propose_layer_breakdown(ctx):
+    def _propose_layer_breakdown(ctx: StepContext) -> StepRunResult:
         normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
         collection = select_primary_collection(normalized)
         parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
@@ -273,7 +276,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("review_cud_proposal")
 
     @_register_step(resolver, step_name="review_cud_proposal", runtime_deps=runtime_deps)
-    def _review_cud_proposal(ctx):
+    def _review_cud_proposal(ctx: StepContext) -> StepRunResult:
         parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
@@ -298,7 +301,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("apply_cud_update")
 
     @_register_step(resolver, step_name="apply_cud_update", runtime_deps=runtime_deps)
-    def _apply_cud_update(ctx):
+    def _apply_cud_update(ctx: StepContext) -> StepRunResult:
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         current_layer_review = CurrentLayerReview.model_validate(ctx.state_view["current_layer_review"])
         updated_result = apply_cud_update(
@@ -313,7 +316,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("check_layer_coverage")
 
     @_register_step(resolver, step_name="check_layer_coverage", runtime_deps=runtime_deps)
-    def _check_layer_coverage(ctx):
+    def _check_layer_coverage(ctx: StepContext) -> StepRunResult:
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         current_layer_review = CurrentLayerReview.model_validate(ctx.state_view["current_layer_review"])
@@ -340,7 +343,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("check_layer_satisfaction")
 
     @_register_step(resolver, step_name="check_layer_satisfaction", runtime_deps=runtime_deps)
-    def _check_layer_satisfaction(ctx):
+    def _check_layer_satisfaction(ctx: StepContext) -> StepRunResult:
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         current_layer_review = CurrentLayerReview.model_validate(ctx.state_view["current_layer_review"])
@@ -383,7 +386,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("repair_layer_pointers")
 
     @_register_step(resolver, step_name="switch_split_strategy", runtime_deps=runtime_deps)
-    def _switch_split_strategy(ctx):
+    def _switch_split_strategy(ctx: StepContext) -> StepRunResult:
         parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         updated_session, updated_context = switch_split_strategy(
@@ -397,7 +400,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("propose_layer_breakdown")
 
     @_register_step(resolver, step_name="repair_layer_pointers", runtime_deps=runtime_deps)
-    def _repair_layer_pointers(ctx):
+    def _repair_layer_pointers(ctx: StepContext) -> StepRunResult:
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         repaired, repaired_count = repair_layer_candidates(
             current_layer_result=current_layer_result,
@@ -410,7 +413,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("dedupe_and_filter_layer")
 
     @_register_step(resolver, step_name="dedupe_and_filter_layer", runtime_deps=runtime_deps)
-    def _dedupe_and_filter_layer(ctx):
+    def _dedupe_and_filter_layer(ctx: StepContext) -> StepRunResult:
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         filtered = dedupe_and_filter_layer(
@@ -422,7 +425,7 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("commit_layer_children")
 
     @_register_step(resolver, step_name="commit_layer_children", runtime_deps=runtime_deps)
-    def _commit_layer_children(ctx):
+    def _commit_layer_children(ctx: StepContext) -> StepRunResult:
         semantic_tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
@@ -436,14 +439,14 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("check_children_expandable")
 
     @_register_step(resolver, step_name="check_children_expandable", runtime_deps=runtime_deps)
-    def _check_children_expandable(ctx):
+    def _check_children_expandable(ctx: StepContext) -> StepRunResult:
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         if any(child.expandable for child in current_layer_result.children):
             return _success("enqueue_next_layer_frontier")
         return _success("check_frontier_remaining")
 
     @_register_step(resolver, step_name="enqueue_next_layer_frontier", runtime_deps=runtime_deps)
-    def _enqueue_next_layer_frontier(ctx):
+    def _enqueue_next_layer_frontier(ctx: StepContext) -> StepRunResult:
         parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
@@ -467,16 +470,16 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("check_frontier_remaining")
 
     @_register_step(resolver, step_name="finalize_semantic_tree", runtime_deps=runtime_deps)
-    def _finalize_semantic_tree(ctx):
+    def _finalize_semantic_tree(ctx: StepContext) -> StepRunResult:
         tree = finalize_semantic_tree(SemanticNode.model_validate(ctx.state_view["semantic_tree"]))
         with ctx.state_write as st:
             st["semantic_tree"] = tree.model_dump()
         return _success("validate_tree")
 
 
-def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dict[str, Any]) -> None:
+def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dict[str, object]) -> None:
     @_register_step(resolver, step_name="validate_tree", runtime_deps=runtime_deps)
-    def _validate_tree(ctx):
+    def _validate_tree(ctx: StepContext) -> StepRunResult:
         tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
         authoritative_source_map = ctx.state_view["authoritative_source_map"]
         text_only_map = {
@@ -510,7 +513,7 @@ def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dic
         return _success("export_graph")
 
     @_register_step(resolver, step_name="export_graph", runtime_deps=runtime_deps)
-    def _export_graph(ctx):
+    def _export_graph(ctx: StepContext) -> StepRunResult:
         normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
         collection = select_primary_collection(normalized)
         tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
@@ -540,7 +543,7 @@ def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dic
         return _success("persist_canonical_graph")
 
     @_register_step(resolver, step_name="persist_canonical_graph", runtime_deps=runtime_deps)
-    def _persist_canonical_graph(ctx):
+    def _persist_canonical_graph(ctx: StepContext) -> StepRunResult:
         bundle = WorkflowExportBundle.model_validate(ctx.state_view["export_bundle"])
         persistence_client = runtime_deps.get("graph_persistence_client")
         if persistence_client is None:
@@ -585,11 +588,11 @@ def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dic
         return _success("end")
 
     @_register_step(resolver, step_name="end", runtime_deps=runtime_deps)
-    def _end(ctx):
+    def _end(ctx: StepContext) -> StepRunResult:
         return _success(None)
 
 
-def build_ingest_step_resolver(*, deps: dict[str, Any] | None = None) -> MappingStepResolver:
+def build_ingest_step_resolver(*, deps: dict[str, object] | None = None) -> MappingStepResolver:
     runtime_deps = dict(deps or {})
     resolver = MappingStepResolver()
     resolver.set_state_schema(

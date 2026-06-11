@@ -14,21 +14,25 @@ from .models import (
     LayerChildCandidate,
     LayerFrontierItem,
     LayerSpanConflict,
+    NormalizedSourceCollection,
     ParseSessionState,
 )
 from .semantics import HydratedTextPointer, SemanticNode
 
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
+ParseSemanticFn = Callable[..., SemanticNode]
+ProposeLayerFn = Callable[..., CurrentLayerResult]
+ReviewLayerFn = Callable[..., CurrentLayerReview]
 
 
 def default_parse_semantic_fn(
     *,
-    collection,
+    collection: NormalizedSourceCollection,
     parser_input_dict: dict[str, Any],
     parser_source_map: dict[str, dict[str, Any]],
     model_names: list[str] | None = None,
-):
+) -> SemanticNode:
     from ..semantic_document_splitting_layerwise_edits import build_document_tree
 
     return build_document_tree(
@@ -311,7 +315,7 @@ def initialize_parse_session(
     allow_review: bool = True,
     split_strategy: str = "excerpt_first",
     fallback_split_strategy: str = "boundary_first",
-    parse_semantic_fn: Callable[..., Any] | None = None,
+    parse_semantic_fn: ParseSemanticFn | None = None,
 ) -> tuple[ParseSessionState, list[LayerFrontierItem], SemanticNode]:
     if parse_semantic_fn is not None:
         full_tree = _coerce_semantic_tree(
@@ -446,7 +450,7 @@ def propose_layer_breakdown(
     parse_session: ParseSessionState,
     current_layer_context: CurrentLayerContext,
     semantic_tree: SemanticNode,
-    propose_layer_fn: Callable[..., Any] | None = None,
+    propose_layer_fn: ProposeLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
 ) -> CurrentLayerResult:
     if parse_session.mode == "legacy_compat":
@@ -495,7 +499,7 @@ def review_layer(
     current_layer_context: CurrentLayerContext,
     current_layer_result: CurrentLayerResult,
     parser_source_map: dict[str, dict[str, Any]] | None = None,
-    review_layer_fn: Callable[..., Any] | None = None,
+    review_layer_fn: ReviewLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
 ) -> tuple[CurrentLayerReview, ParseSessionState]:
     if parse_session.mode == "legacy_compat" or not parse_session.allow_review:

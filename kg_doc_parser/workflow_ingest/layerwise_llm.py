@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, Sequence, TypeVar
+from typing import Any, Callable, Sequence, TypeVar
 
 from pydantic import BaseModel
 
@@ -25,10 +24,11 @@ from .models import (
     LayerReasoningEntry,
 )
 from kogwistar.runtime import RetryExhaustedError, RetryResult, retry_with_context
-from .providers import WorkflowProviderSettings, build_chat_model_for_role
+from .providers import SupportsStructuredOutput, WorkflowProviderSettings, build_chat_model_for_role
 from .semantics import HydratedTextPointer
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
+LayerwiseCallback = Callable[..., CurrentLayerResult | CurrentLayerReview]
 MAX_BOUNDARY_REPAIR_SHIFT_CHARS = 8
 
 
@@ -38,15 +38,6 @@ class _BoundaryAnchorResolution:
     match_mode: str | None
     match_score: float | None
     reason: str | None
-
-
-class SupportsStructuredOutput(Protocol):
-    def with_structured_output(
-        self,
-        schema: type[TStructuredModel],
-        include_raw: bool = True,
-        **kwargs: Any,
-    ) -> Any: ...
 
 
 def _trim_text(value: Any, *, max_chars: int = 400) -> str:
@@ -1147,7 +1138,7 @@ def _assemble_layer_result_from_boundaries(
 
 
 def _annotate_proposal_result(
-    result: Any,
+    result: CurrentLayerResult,
     *,
     proposal_source: str,
     proposal_mode: str = "children",
@@ -1160,7 +1151,7 @@ def _annotate_proposal_result(
     refinement_count: int | None = None,
     unresolved_interval_count: int | None = None,
     summary_count: int | None = None,
-) -> Any:
+) -> CurrentLayerResult:
     metadata = dict(getattr(result, "metadata", {}) or {})
     metadata["proposal_source"] = proposal_source
     metadata["proposal_mode"] = proposal_mode
@@ -1241,8 +1232,8 @@ def _fallback_layer_result(
     *,
     current_layer_context: Any,
     parser_source_map: dict[str, dict[str, Any]],
-) -> Any:
-    children: list[Any] = []
+) -> CurrentLayerResult:
+    children: list[LayerChildCandidate] = []
     if int(getattr(current_layer_context, "depth", 0)) > 0:
         return CurrentLayerResult(
             children=[],
@@ -1290,12 +1281,12 @@ def build_layerwise_llm_callbacks(
     provider_settings: WorkflowProviderSettings,
     *,
     event_sink: Callable[..., None] | None = None,
-    fallback_layer_result_fn: Callable[..., Any] | None = None,
+    fallback_layer_result_fn: Callable[..., CurrentLayerResult] | None = None,
     max_depth: int = 2,
     allow_review: bool = True,
     proposal_mode: str | None = None,
     boundary_refinement_rounds: int = 1,
-) -> dict[str, Any]:
+) -> dict[str, LayerwiseCallback | int | bool]:
     chat_model = build_chat_model_for_role("parser", provider_settings)
     fallback_builder = fallback_layer_result_fn or _fallback_layer_result
     proposal_mode = str(proposal_mode or getattr(provider_settings, "proposal_mode", "children") or "children")
@@ -1330,13 +1321,13 @@ def build_layerwise_llm_callbacks(
         parser_input_dict,
         parse_session,
         **kwargs,
-    ):
+    ) -> CurrentLayerResult:
         if proposal_mode == "boundaries":
             boundary_candidates = _boundary_prompt_candidate_context(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
             )
-            def _build_boundary_messages(attempt_number: int, previous_error: str | None):
+            def _build_boundary_messages(attempt_number: int, previous_error: str | None) -> list[tuple[str, str]]:
                 prompt_payload = _proposal_attempt_payload(
                     {
                         "task": "Propose semantic cutpoints for the next layer. Return only boundary cutpoints, not child text.",
@@ -1392,7 +1383,7 @@ def build_layerwise_llm_callbacks(
                     ("human", json.dumps(prompt_payload, sort_keys=True)),
                 ]
 
-            def _emit_boundary_retry(record) -> None:
+            def _emit_boundary_retry(record: Any) -> None:
                 _emit(
                     "workflow_layered_proposal_retry",
                     proposal_source="llm",
@@ -1632,7 +1623,7 @@ def build_layerwise_llm_callbacks(
             )
             return annotated
 
-        def _build_child_messages(attempt_number: int, previous_error: str | None):
+        def _build_child_messages(attempt_number: int, previous_error: str | None) -> list[tuple[str, str]]:
             prompt_payload = _proposal_attempt_payload(
                 {
                     "task": "Propose the next semantic layer for the current parent nodes.",
@@ -1685,7 +1676,7 @@ def build_layerwise_llm_callbacks(
                 ("human", json.dumps(prompt_payload, sort_keys=True)),
             ]
 
-        def _emit_child_retry(record) -> None:
+        def _emit_child_retry(record: Any) -> None:
             _emit(
                 "workflow_layered_proposal_retry",
                 proposal_source="llm",
@@ -1767,7 +1758,7 @@ def build_layerwise_llm_callbacks(
         parser_source_map=None,
         parse_session=None,
         **kwargs,
-    ):
+    ) -> CurrentLayerReview:
         review_payload = {
             "task": "Review the current semantic layer proposal for layerwise correctness and source-grounded coverage.",
             "split_strategy": split_strategy,

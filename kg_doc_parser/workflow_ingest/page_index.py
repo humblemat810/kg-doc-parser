@@ -37,7 +37,7 @@ import re
 import json
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Iterator, Literal
 
 from pydantic import BaseModel, Field
 
@@ -925,7 +925,7 @@ def _iter_page_index_block_specs_with_paths(
     block_specs: list[PageIndexBlockSpec],
     *,
     path: tuple[int, ...] = (),
-):
+) -> Iterator[tuple[tuple[int, ...], PageIndexBlockSpec]]:
     for index, spec in enumerate(block_specs):
         current_path = path + (index,)
         yield current_path, spec
