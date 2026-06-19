@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Sequence, TypeVar
+from typing import Any, Callable, Sequence, TypeVar, TypedDict
 
 from pydantic import BaseModel
 
@@ -28,7 +28,17 @@ from .providers import SupportsStructuredOutput, WorkflowProviderSettings, build
 from .semantics import HydratedTextPointer
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
-LayerwiseCallback = Callable[..., CurrentLayerResult | CurrentLayerReview]
+LayerwiseProposeCallback = Callable[..., CurrentLayerResult]
+LayerwiseReviewCallback = Callable[..., CurrentLayerReview]
+
+
+class LayerwiseLLMCallbacks(TypedDict):
+    propose_layer_fn: LayerwiseProposeCallback
+    review_layer_fn: LayerwiseReviewCallback
+    max_depth: int
+    allow_review: bool
+
+
 MAX_BOUNDARY_REPAIR_SHIFT_CHARS = 8
 
 
@@ -305,6 +315,9 @@ def _legal_cutpoints_for_text(
             source_cluster_id="",
             cut_offset=offset,
             boundary_kind=kind,
+            text_before_cut=text[max(0, offset - 80) : offset],
+            text_after_cut=text[offset : offset + 80],
+            cut_reason="deterministic legal boundary",
             confidence=1.0,
             reason="deterministic_legal_boundary",
         )
@@ -1286,7 +1299,7 @@ def build_layerwise_llm_callbacks(
     allow_review: bool = True,
     proposal_mode: str | None = None,
     boundary_refinement_rounds: int = 1,
-) -> dict[str, LayerwiseCallback | int | bool]:
+) -> LayerwiseLLMCallbacks:
     chat_model = build_chat_model_for_role("parser", provider_settings)
     fallback_builder = fallback_layer_result_fn or _fallback_layer_result
     proposal_mode = str(proposal_mode or getattr(provider_settings, "proposal_mode", "children") or "children")
@@ -1408,7 +1421,7 @@ def build_layerwise_llm_callbacks(
                     ),
                     on_retry=_emit_boundary_retry,
                 )
-                parsed: LLMBoundaryProposalBatch = boundary_result.value
+                boundary_parsed: LLMBoundaryProposalBatch = boundary_result.value
             except RetryExhaustedError as exc:
                 failure_reason = exc.last_error
                 fallback = fallback_builder(
@@ -1441,13 +1454,13 @@ def build_layerwise_llm_callbacks(
                     current_layer_context=current_layer_context,
                     parser_source_map=parser_source_map,
                 )
-                for cutpoint in parsed.cutpoints
+                for cutpoint in boundary_parsed.cutpoints
             ]
             refinement_notes: list[str] = []
             refinement_attempts = 0
             if boundary_refinement_rounds > 0:
                 unresolved_targets = _boundary_refinement_targets(
-                    parsed=parsed,
+                    parsed=boundary_parsed,
                     review_decisions=review_decisions,
                 )
                 for target in unresolved_targets[:boundary_refinement_rounds]:
@@ -1527,7 +1540,7 @@ def build_layerwise_llm_callbacks(
                         )
             review_batch: BoundaryReviewBatch = BoundaryReviewBatch(
                 decisions=review_decisions,
-                satisfied=parsed.satisfied,
+                satisfied=boundary_parsed.satisfied,
                 coverage_ok=not any(
                     decision.decision in {"reject", "needs_refinement"}
                     for decision in review_decisions
@@ -1539,6 +1552,57 @@ def build_layerwise_llm_callbacks(
                 ]
                 + refinement_notes,
             )
+            if boundary_parsed.satisfied is True and not boundary_parsed.cutpoints:
+                runtime_result = CurrentLayerResult(
+                    children=[],
+                    satisfied=True,
+                    reasoning_history=list(boundary_parsed.reasoning_history),
+                    metadata={
+                        "proposal_mode": "boundaries",
+                        "proposal_source": "llm",
+                        "proposal_retry_count": boundary_result.retry_count,
+                        "boundary_proposed_count": 0,
+                        "boundary_accepted_count": 0,
+                        "boundary_shifted_count": 0,
+                        "boundary_rejected_count": 0,
+                        "boundary_refinement_count": 0,
+                        "boundary_refinement_attempts": refinement_attempts,
+                        "boundary_summary_count": 0,
+                        "boundary_cutpoints": [],
+                        "boundary_review_decisions": [],
+                        "boundary_review_notes": list(review_batch.review_notes),
+                        "boundary_atomic_decision": True,
+                    },
+                )
+                annotated = _annotate_proposal_result(
+                    runtime_result,
+                    proposal_source="llm",
+                    proposal_mode="boundaries",
+                    boundary_count=0,
+                    accepted_boundary_count=0,
+                    shifted_boundary_count=0,
+                    rejected_boundary_count=0,
+                    refinement_count=0,
+                    unresolved_interval_count=0,
+                    summary_count=0,
+                )
+                _emit(
+                    "workflow_layered_proposal_result",
+                    proposal_source="llm",
+                    proposal_mode="boundaries",
+                    depth=int(getattr(current_layer_context, "depth", 0)),
+                    retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                    split_strategy=split_strategy,
+                    boundary_count=0,
+                    accepted_boundary_count=0,
+                    shifted_boundary_count=0,
+                    rejected_boundary_count=0,
+                    refinement_count=0,
+                    unresolved_interval_count=0,
+                    child_count=0,
+                    satisfied=True,
+                )
+                return annotated
             runtime_result: CurrentLayerResult
             accepted_cutpoints: list[dict[str, Any]]
             runtime_result, summaries, accepted_cutpoints = _assemble_layer_result_from_boundaries(
@@ -1580,14 +1644,14 @@ def build_layerwise_llm_callbacks(
                 **runtime_result.metadata,
                 "proposal_mode": "boundaries",
                 "proposal_retry_count": boundary_result.retry_count,
-                "boundary_proposed_count": len(parsed.cutpoints),
+                "boundary_proposed_count": len(boundary_parsed.cutpoints),
                 "boundary_accepted_count": accepted_count,
                 "boundary_shifted_count": shifted_count,
                 "boundary_rejected_count": rejected_count,
                 "boundary_refinement_count": refinement_count,
                 "boundary_refinement_attempts": refinement_attempts,
                 "boundary_summary_count": len(summaries),
-                "boundary_cutpoints": [cutpoint.model_dump() for cutpoint in parsed.cutpoints],
+                "boundary_cutpoints": [cutpoint.model_dump() for cutpoint in boundary_parsed.cutpoints],
                 "boundary_review_decisions": [decision.model_dump() for decision in review_decisions],
                 "boundary_review_notes": list(review_batch.review_notes),
                 "proposal_source": "llm",
@@ -1597,7 +1661,7 @@ def build_layerwise_llm_callbacks(
                 runtime_result,
                 proposal_source="llm",
                 proposal_mode="boundaries",
-                boundary_count=len(parsed.cutpoints),
+                boundary_count=len(boundary_parsed.cutpoints),
                 accepted_boundary_count=accepted_count,
                 shifted_boundary_count=shifted_count,
                 rejected_boundary_count=rejected_count,
@@ -1612,7 +1676,7 @@ def build_layerwise_llm_callbacks(
                 depth=int(getattr(current_layer_context, "depth", 0)),
                 retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                 split_strategy=split_strategy,
-                boundary_count=len(parsed.cutpoints),
+                boundary_count=len(boundary_parsed.cutpoints),
                 accepted_boundary_count=accepted_count,
                 shifted_boundary_count=shifted_count,
                 rejected_boundary_count=rejected_count,
@@ -1701,7 +1765,7 @@ def build_layerwise_llm_callbacks(
                 ),
                 on_retry=_emit_child_retry,
             )
-            parsed: LLMCurrentLayerResult = child_result.value
+            child_parsed: LLMCurrentLayerResult = child_result.value
         except RetryExhaustedError as exc:
             failure_reason = exc.last_error
             fallback = fallback_builder(
@@ -1728,7 +1792,7 @@ def build_layerwise_llm_callbacks(
             )
             return annotated
 
-        runtime_result: CurrentLayerResult = CurrentLayerResult.model_validate(parsed.model_dump())
+        runtime_result: CurrentLayerResult = CurrentLayerResult.model_validate(child_parsed.model_dump())
         runtime_result = runtime_result.model_copy(
             update={"metadata": {**runtime_result.metadata, "proposal_retry_count": child_result.retry_count}}
         )

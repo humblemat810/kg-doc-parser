@@ -10,7 +10,6 @@ from kg_doc_parser.workflow_ingest.models import (
     BoundaryCutpoint,
     LLMBoundaryProposal,
     LLMBoundaryProposalBatch,
-    BoundaryReviewBatch,
     CurrentLayerContext,
     CurrentLayerResult,
     LayerChildCandidate,
@@ -400,7 +399,7 @@ def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: py
     assert [child.parent_node_id for child in result.children] == ["doc|root", "doc|root"]
 
 
-def test_boundary_mode_rejects_no_split_layer(monkeypatch: pytest.MonkeyPatch):
+def test_boundary_mode_accepts_atomic_no_split_layer(monkeypatch: pytest.MonkeyPatch):
     fake_model = _FakeChatModel(
         {
             "parsed": {
@@ -416,7 +415,12 @@ def test_boundary_mode_rejects_no_split_layer(monkeypatch: pytest.MonkeyPatch):
         lambda role, settings: fake_model,
     )
 
-    callbacks = build_layerwise_llm_callbacks(_provider_settings(), proposal_mode="boundaries")
+    layer_events: list[dict[str, Any]] = []
+    callbacks = build_layerwise_llm_callbacks(
+        _provider_settings(),
+        proposal_mode="boundaries",
+        event_sink=lambda stage, **extra: layer_events.append({"stage": stage, **extra}),
+    )
     result = callbacks["propose_layer_fn"](
         parser_source_map=_parser_source_map(),
         current_layer_context=_boundary_context(),
@@ -426,8 +430,22 @@ def test_boundary_mode_rejects_no_split_layer(monkeypatch: pytest.MonkeyPatch):
         parse_session=_parse_session(),
     )
 
-    assert result.metadata["proposal_source"] == "fallback"
-    assert "no accepted cutpoints" in result.metadata["proposal_failure_reason"]
+    assert result.metadata["proposal_source"] == "llm"
+    assert result.metadata["proposal_mode"] == "boundaries"
+    assert result.metadata["boundary_atomic_decision"] is True
+    assert result.metadata["boundary_proposed_count"] == 0
+    assert result.metadata["boundary_accepted_count"] == 0
+    assert result.metadata["boundary_shifted_count"] == 0
+    assert result.metadata["boundary_rejected_count"] == 0
+    assert result.metadata["boundary_summary_count"] == 0
+    assert "proposal_failure_reason" not in result.metadata
+    assert result.satisfied is True
+    assert result.children == []
+    assert layer_events[-1]["stage"] == "workflow_layered_proposal_result"
+    assert layer_events[-1]["proposal_source"] == "llm"
+    assert layer_events[-1]["proposal_mode"] == "boundaries"
+    assert layer_events[-1]["child_count"] == 0
+    assert layer_events[-1]["satisfied"] is True
 
 
 class _FakeStructuredInvoker:

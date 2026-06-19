@@ -347,9 +347,9 @@ class BoundaryCutpoint(BaseModel):
     source_cluster_id: str
     cut_offset: int
     boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"]
-    text_before_cut: str = ""
-    text_after_cut: str = ""
-    cut_reason: str = ""
+    text_before_cut: str
+    text_after_cut: str
+    cut_reason: str
     confidence: float | None = None
     reason: str | None = None
 

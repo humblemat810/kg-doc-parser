@@ -221,7 +221,7 @@ def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: d
             st["layer_frontier_queue"] = [
                 item.model_dump(field_mode="backend", dump_format="json") for item in frontier
             ]
-        st["semantic_tree"] = root.model_dump()
+            st["semantic_tree"] = root.model_dump()
         return _success("check_frontier_remaining")
 
 
