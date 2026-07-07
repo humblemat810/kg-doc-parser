@@ -39,6 +39,9 @@ class LayerwiseLLMCallbacks(TypedDict):
     allow_review: bool
 
 
+LayerwiseCallback = LayerwiseLLMCallbacks
+
+
 MAX_BOUNDARY_REPAIR_SHIFT_CHARS = 8
 
 
