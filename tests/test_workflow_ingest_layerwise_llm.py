@@ -250,6 +250,75 @@ def test_boundary_helpers_classify_and_snap_cutpoints():
     )
 
 
+def test_boundary_candidate_generation_prefers_structural_boundaries_over_words():
+    from collections import Counter
+
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _legal_cutpoints_for_text
+
+    text = (
+        "# Demo\n\n"
+        "Intro sentence. Another sentence.\n\n"
+        "## Finding 1\n\n"
+        "Alpha clause. Beta clause.\n\n"
+        "## Finding 2\n\n"
+        "Alpha clause. Beta clause."
+    )
+
+    cutpoints = _legal_cutpoints_for_text(text, max_points=8)
+    counts = Counter(cutpoint.boundary_kind for cutpoint in cutpoints)
+
+    assert counts["word"] == 0
+    assert counts["section"] >= 2
+    assert all(cutpoint.candidate_id for cutpoint in cutpoints)
+    assert [cutpoint.cut_offset for cutpoint in cutpoints] == sorted(
+        cutpoint.cut_offset for cutpoint in cutpoints
+    )
+
+
+def test_boundary_candidate_ids_include_pointer_span_to_avoid_multispan_collisions():
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _boundary_prompt_candidate_context
+
+    text = "Alpha clause. Beta clause.\nGamma clause. Delta clause."
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Demo Doc"],
+        parent_content_pointers_by_id={
+            "doc|root": [
+                HydratedTextPointer(
+                    source_cluster_id="cluster-1",
+                    start_char=0,
+                    end_char=25,
+                    verbatim_text="Alpha clause. Beta clause.",
+                ),
+                HydratedTextPointer(
+                    source_cluster_id="cluster-1",
+                    start_char=27,
+                    end_char=len(text) - 1,
+                    verbatim_text="Gamma clause. Delta clause.",
+                ),
+            ]
+        },
+        split_strategy="boundary_first",
+        retry_count=0,
+        max_retries=2,
+    )
+
+    candidates = _boundary_prompt_candidate_context(
+        current_layer_context=context,
+        parser_source_map={"cluster-1": {"text": text}},
+    )
+    candidate_ids = [
+        str(cutpoint["candidate_id"])
+        for parent in candidates
+        for cutpoint in parent["legal_cutpoints"]
+    ]
+
+    assert len(candidate_ids) == len(set(candidate_ids))
+    assert any("|0|" in candidate_id for candidate_id in candidate_ids)
+    assert any("|27|" in candidate_id for candidate_id in candidate_ids)
+
+
 def test_boundary_parent_coverage_report_marks_gaps_and_spans():
     from kg_doc_parser.workflow_ingest.layerwise_llm import _boundary_parent_coverage_report
 
@@ -393,10 +462,120 @@ def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: py
     assert result.metadata["boundary_refinement_attempts"] == 0
     assert result.reasoning_history[-1].proposal_mode == "boundaries"
     assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
+    assert any(event["stage"] == "workflow_layered_boundary_proposal_start" for event in layer_events)
+    assert any(event["stage"] == "workflow_layered_boundary_review_completed" for event in layer_events)
+    assert any(event["stage"] == "workflow_layered_boundary_assembly_start" for event in layer_events)
+    assert any(event["stage"] == "workflow_layered_boundary_assembly_completed" for event in layer_events)
     assert layer_events[-1]["stage"] == "workflow_layered_proposal_result"
     assert layer_events[-1]["proposal_mode"] == "boundaries"
     assert result.children
     assert [child.parent_node_id for child in result.children] == ["doc|root", "doc|root"]
+
+
+def test_boundary_mode_accepts_candidate_id_even_when_copied_offset_is_wrong(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "cutpoints": [
+                    {
+                        "candidate_id": "doc|root|cluster-1|0|b0000-sentence-13",
+                        "parent_node_id": "doc|root",
+                        "source_cluster_id": "cluster-1",
+                        "cut_offset": 1,
+                        "boundary_kind": "word",
+                        "text_before_cut": "#",
+                        "text_after_cut": " Alpha",
+                        "cut_reason": "sentence boundary selected from candidate list",
+                        "confidence": 0.95,
+                        "reason": "candidate-selected sentence boundary",
+                    }
+                ],
+                "satisfied": True,
+                "reasoning_history": [],
+                "review_rounds": 0,
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+
+    callbacks = build_layerwise_llm_callbacks(
+        _provider_settings(),
+        proposal_mode="boundaries",
+    )
+    result = callbacks["propose_layer_fn"](
+        parser_source_map=_parser_source_map(),
+        current_layer_context=_boundary_context(),
+        semantic_tree=_semantic_tree(),
+        split_strategy="boundary_first",
+        parser_input_dict=_parser_input_dict(),
+        parse_session=_parse_session(),
+    )
+
+    assert result.metadata["boundary_proposed_count"] == 1
+    assert result.metadata["boundary_accepted_count"] == 1
+    assert result.metadata["boundary_rejected_count"] == 0
+    assert len(result.children) == 2
+    assert result.children[0].total_content_pointers[0].end_char == 12
+    assert result.metadata["boundary_review_decisions"][0]["decision"] == "accept"
+    assert result.metadata["boundary_review_decisions"][0]["resolved_cut_offset"] == 13
+
+
+def test_boundary_mode_backfills_missing_candidate_id_from_exact_offset(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "cutpoints": [
+                    BoundaryCutpoint(
+                        candidate_id=None,
+                        parent_node_id="doc|root",
+                        source_cluster_id="cluster-1",
+                        cut_offset=13,
+                        boundary_kind="sentence",
+                        text_before_cut="",
+                        text_after_cut="",
+                        cut_reason="sentence boundary selected from candidate list",
+                        confidence=0.95,
+                        reason="candidate-selected sentence boundary",
+                    )
+                ],
+                "satisfied": True,
+                "reasoning_history": [],
+                "review_rounds": 0,
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+
+    callbacks = build_layerwise_llm_callbacks(
+        _provider_settings(),
+        proposal_mode="boundaries",
+    )
+    result = callbacks["propose_layer_fn"](
+        parser_source_map=_parser_source_map(),
+        current_layer_context=_boundary_context(),
+        semantic_tree=_semantic_tree(),
+        split_strategy="boundary_first",
+        parser_input_dict=_parser_input_dict(),
+        parse_session=_parse_session(),
+    )
+
+    assert result.metadata["boundary_proposed_count"] == 1
+    assert result.metadata["boundary_accepted_count"] == 1
+    assert result.metadata["boundary_rejected_count"] == 0
+    assert len(result.children) == 2
+    assert result.children[0].total_content_pointers[0].end_char == 12
+    assert result.metadata["boundary_review_decisions"][0]["decision"] == "accept"
+    assert result.metadata["boundary_review_decisions"][0]["resolved_cut_offset"] == 13
 
 
 def test_boundary_mode_accepts_atomic_no_split_layer(monkeypatch: pytest.MonkeyPatch):
@@ -441,6 +620,8 @@ def test_boundary_mode_accepts_atomic_no_split_layer(monkeypatch: pytest.MonkeyP
     assert "proposal_failure_reason" not in result.metadata
     assert result.satisfied is True
     assert result.children == []
+    assert any(event["stage"] == "workflow_layered_boundary_proposal_start" for event in layer_events)
+    assert any(event["stage"] == "workflow_layered_boundary_assembly_skipped" for event in layer_events)
     assert layer_events[-1]["stage"] == "workflow_layered_proposal_result"
     assert layer_events[-1]["proposal_source"] == "llm"
     assert layer_events[-1]["proposal_mode"] == "boundaries"
@@ -547,7 +728,7 @@ def test_propose_layer_fn_returns_llm_result_and_logs_source(monkeypatch: pytest
 
     result = callbacks["propose_layer_fn"](
         parser_source_map=_parser_source_map(),
-        current_layer_context=_context(),
+        current_layer_context=_boundary_context(),
         semantic_tree=_semantic_tree(),
         split_strategy="excerpt_first",
         parser_input_dict=_parser_input_dict(),
@@ -560,10 +741,48 @@ def test_propose_layer_fn_returns_llm_result_and_logs_source(monkeypatch: pytest
     assert result.reasoning_history[-1].proposal_source == "llm"
     assert layer_events[-1]["stage"] == "workflow_layered_proposal_result"
     assert layer_events[-1]["proposal_source"] == "llm"
+    assert any(event["stage"] == "workflow_layered_child_proposal_start" for event in layer_events)
+    assert any(event["stage"] == "workflow_layered_child_proposal_completed" for event in layer_events)
+    assert any(event["stage"] == "workflow_layered_child_proposal_assembled" for event in layer_events)
     assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
     prompt_body = fake_model.messages[1][1].lower()
     assert "coarser layerwise breakdown" in prompt_body
     assert "do not recombine separated verbatim fragments" in prompt_body
+
+
+def test_review_layer_fn_emits_start_and_completed_traces(monkeypatch: pytest.MonkeyPatch):
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "updated_result": None,
+                "coverage_ok": True,
+                "satisfied": True,
+                "strategy_used": "excerpt_first",
+                "review_notes": ["ok"],
+            }
+        }
+    )
+    layer_events: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+
+    callbacks = build_layerwise_llm_callbacks(
+        _provider_settings(),
+        event_sink=lambda stage, **extra: layer_events.append({"stage": stage, **extra}),
+    )
+    review = callbacks["review_layer_fn"](
+        current_layer_context=_context(),
+        current_layer_result=CurrentLayerResult(children=[], satisfied=True, reasoning_history=[]),
+        split_strategy="excerpt_first",
+        parser_source_map=_parser_source_map(),
+        parse_session=_parse_session(),
+    )
+
+    assert review.satisfied is True
+    assert any(event["stage"] == "workflow_layered_review_start" for event in layer_events)
+    assert any(event["stage"] == "workflow_layered_review_completed" for event in layer_events)
 
 
 def test_propose_layer_fn_retries_child_mode_with_previous_error_context(monkeypatch: pytest.MonkeyPatch):
@@ -619,7 +838,7 @@ def test_propose_layer_fn_retries_child_mode_with_previous_error_context(monkeyp
     callbacks = build_layerwise_llm_callbacks(settings)
     result = callbacks["propose_layer_fn"](
         parser_source_map=_parser_source_map(),
-        current_layer_context=_context(),
+        current_layer_context=_boundary_context(),
         semantic_tree=_semantic_tree(),
         split_strategy="excerpt_first",
         parser_input_dict=_parser_input_dict(),
@@ -766,7 +985,7 @@ def test_boundary_and_child_modes_produce_equivalent_labels_for_same_fixture(mon
 
     child_result = child_callbacks["propose_layer_fn"](
         parser_source_map=_parser_source_map(),
-        current_layer_context=_context(),
+        current_layer_context=_boundary_context(),
         semantic_tree=_semantic_tree(),
         split_strategy="excerpt_first",
         parser_input_dict=_parser_input_dict(),
@@ -835,6 +1054,82 @@ def test_boundary_summaries_survive_tree_commit_and_prompt_summary():
     assert committed.child_nodes[0].metadata["exact_text"] == "Alpha clause."
     assert node_payload["metadata"]["summary_text"] == "Alpha clause."
     assert node_payload["metadata"]["exact_text"] == "Alpha clause."
+
+
+def test_boundary_mode_preserves_full_verbatim_text_for_returned_child_pointers(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    long_left = "Alpha " * 120
+    long_right = "Beta " * 40
+    text = f"{long_left}\n\n{long_right}".strip()
+    cut_offset = text.index("\n\n") + 2
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "cutpoints": [
+                    _boundary_cutpoint_payload(
+                        text,
+                        cut_offset,
+                        boundary_kind="paragraph",
+                        confidence=0.95,
+                        reason="paragraph break",
+                    )
+                ],
+                "satisfied": True,
+                "reasoning_history": [],
+                "review_rounds": 0,
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+
+    callbacks = build_layerwise_llm_callbacks(
+        _provider_settings(),
+        proposal_mode="boundaries",
+    )
+    parser_source_map = {
+        "cluster-1": {
+            "page_number": 1,
+            "cluster_number": 1,
+            "text": text,
+        }
+    }
+    current_layer_context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Demo Doc"],
+        parent_content_pointers_by_id={
+            "doc|root": [
+                HydratedTextPointer(
+                    source_cluster_id="cluster-1",
+                    start_char=0,
+                    end_char=len(text) - 1,
+                    verbatim_text=text,
+                )
+            ]
+        },
+        split_strategy="boundary_first",
+        retry_count=0,
+        max_retries=2,
+    )
+
+    result = callbacks["propose_layer_fn"](
+        parser_source_map=parser_source_map,
+        current_layer_context=current_layer_context,
+        semantic_tree=_semantic_tree(),
+        split_strategy="boundary_first",
+        parser_input_dict=_parser_input_dict(),
+        parse_session=_parse_session(),
+    )
+
+    assert len(result.children) == 2
+    first_pointer = result.children[0].total_content_pointers[0]
+    expected_text = text[first_pointer.start_char : first_pointer.end_char + 1]
+    assert first_pointer.verbatim_text == expected_text
+    assert len(first_pointer.verbatim_text) > 500
 
 
 @pytest.mark.parametrize(
@@ -936,7 +1231,7 @@ def test_propose_layer_fn_rejects_single_child_fake_split(monkeypatch: pytest.Mo
                                 "source_cluster_id": "cluster-1",
                                 "start_char": 0,
                                 "end_char": 20,
-                                "verbatim_text": "Alpha clause. Beta",
+                                "verbatim_text": "Alpha clause. Beta cl",
                             }
                         ],
                         "expandable": True,
@@ -1024,3 +1319,123 @@ def test_propose_layer_fn_rejects_pointer_outside_source_map(monkeypatch: pytest
 
     assert result.metadata["proposal_source"] == "fallback"
     assert "source map" in result.metadata["proposal_failure_reason"]
+
+
+def test_propose_layer_fn_rejects_child_pointer_outside_parent_span(monkeypatch: pytest.MonkeyPatch):
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "children": [
+                    {
+                        "node_id": "doc|root|alpha",
+                        "parent_node_id": "doc|root",
+                        "title": "Alpha",
+                        "node_type": "TEXT_FLOW",
+                        "total_content_pointers": [
+                            {
+                                "source_cluster_id": "cluster-1",
+                                "start_char": 0,
+                                "end_char": 5,
+                                "verbatim_text": "Alpha ",
+                            }
+                        ],
+                        "expandable": False,
+                    },
+                    {
+                        "node_id": "doc|root|outside",
+                        "parent_node_id": "doc|root",
+                        "title": "Outside",
+                        "node_type": "TEXT_FLOW",
+                        "total_content_pointers": [
+                            {
+                                "source_cluster_id": "cluster-1",
+                                "start_char": 21,
+                                "end_char": 24,
+                                "verbatim_text": "ause",
+                            }
+                        ],
+                        "expandable": False,
+                    },
+                ],
+                "satisfied": True,
+                "reasoning_history": [],
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+
+    callbacks = build_layerwise_llm_callbacks(_provider_settings())
+    result = callbacks["propose_layer_fn"](
+        parser_source_map=_parser_source_map(),
+        current_layer_context=_context(),
+        semantic_tree=_semantic_tree(),
+        split_strategy="excerpt_first",
+        parser_input_dict=_parser_input_dict(),
+        parse_session=_parse_session(),
+    )
+
+    assert result.metadata["proposal_source"] == "fallback"
+    assert "parent span" in result.metadata["proposal_failure_reason"]
+
+
+def test_propose_layer_fn_rejects_child_pointer_verbatim_mismatch(monkeypatch: pytest.MonkeyPatch):
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "children": [
+                    {
+                        "node_id": "doc|root|alpha",
+                        "parent_node_id": "doc|root",
+                        "title": "Alpha",
+                        "node_type": "TEXT_FLOW",
+                        "total_content_pointers": [
+                            {
+                                "source_cluster_id": "cluster-1",
+                                "start_char": 0,
+                                "end_char": 5,
+                                "verbatim_text": "Alpha ",
+                            }
+                        ],
+                        "expandable": False,
+                    },
+                    {
+                        "node_id": "doc|root|beta",
+                        "parent_node_id": "doc|root",
+                        "title": "Beta",
+                        "node_type": "TEXT_FLOW",
+                        "total_content_pointers": [
+                            {
+                                "source_cluster_id": "cluster-1",
+                                "start_char": 14,
+                                "end_char": 17,
+                                "verbatim_text": "WRONG",
+                            }
+                        ],
+                        "expandable": False,
+                    },
+                ],
+                "satisfied": True,
+                "reasoning_history": [],
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+
+    callbacks = build_layerwise_llm_callbacks(_provider_settings())
+    result = callbacks["propose_layer_fn"](
+        parser_source_map=_parser_source_map(),
+        current_layer_context=_context(),
+        semantic_tree=_semantic_tree(),
+        split_strategy="excerpt_first",
+        parser_input_dict=_parser_input_dict(),
+        parse_session=_parse_session(),
+    )
+
+    assert result.metadata["proposal_source"] == "fallback"
+    assert "verbatim_text" in result.metadata["proposal_failure_reason"]

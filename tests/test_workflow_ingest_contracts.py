@@ -331,7 +331,7 @@ def test_fake_workflow_validation_failure_is_structured(workflow_backend_kind):
     )
     drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
 
-    assert bundle is None
+    assert bundle is not None
     assert run.status in {"failed", "failure"}
     assert any("text coverage below threshold" in err for err in run.final_state["workflow_errors"])
 

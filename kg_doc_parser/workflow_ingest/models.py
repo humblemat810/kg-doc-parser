@@ -343,6 +343,7 @@ class LayerChildCandidate(ModeSlicingMixin, BaseModel):
 class BoundaryCutpoint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    candidate_id: str | None = None
     parent_node_id: str
     source_cluster_id: str
     cut_offset: int
@@ -377,6 +378,7 @@ class LLMBoundaryProposalBatch(BaseModel):
 class BoundaryReviewDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    candidate_id: str | None = None
     parent_node_id: str
     source_cluster_id: str
     input_cut_offset: int | None = None

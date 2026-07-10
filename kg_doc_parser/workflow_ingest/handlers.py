@@ -51,6 +51,32 @@ _LOGGER = logging.getLogger(__name__)
 StepHandler = Callable[[StepContext], StepRunResult]
 
 
+def _build_export_bundle(*, ctx: StepContext) -> WorkflowExportBundle:
+    normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
+    collection = select_primary_collection(normalized)
+    tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
+    graph_payload = semantic_tree_to_kge_payload(tree, doc_id=collection.collection_id)
+    persistence_mode = str(ctx.state_view.get("persistence_mode", "local_debug"))
+    kg_authority = str(ctx.state_view.get("kg_authority", "local"))
+    return WorkflowExportBundle(
+        graph_payload=graph_payload,
+        authoritative_source_map=ctx.state_view["authoritative_source_map"],
+        embedding_spaces=collection.embedding_spaces,
+        consolidation_candidates=[],
+        retrieval_metadata={
+            "embedding_spaces": collection.embedding_spaces,
+            "supports_hybrid_retrieval": True,
+            "supports_split_embedding_spaces": True,
+            "collection_modality": collection.modality,
+        },
+        persistence_mode="server_canonical" if persistence_mode == "server_canonical" else "local_debug",
+        kg_authority="server" if kg_authority == "server" else "local",
+        canonical_write_confirmed=False,
+        parser_owner="local",
+        server_parser_used=False,
+        persisted_to_knowledge_engine=False,
+    )
+
 
 def _success(next_step: str | None = None) -> RunSuccess:
     return RunSuccess(
@@ -494,11 +520,15 @@ def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dic
             corrected_pointer_count=int(ctx.state_view.get("corrected_pointer_count", 0)),
             validation_notes=[],
         )
+        bundle = _build_export_bundle(ctx=ctx)
         threshold = float(runtime_deps.get("coverage_threshold", 0.99))
         if report.overall_text_coverage < threshold:
             error_message = (
                 f"text coverage below threshold: {report.overall_text_coverage:.3f} < {threshold:.3f}"
             )
+            with ctx.state_write as st:
+                st["validation_report"] = report.model_dump(field_mode="backend", dump_format="json")
+                st["export_bundle"] = bundle.model_dump(field_mode="backend", dump_format="json")
             return RunFailure(
                 conversation_node_id=None,
                 state_update=[],
@@ -514,30 +544,7 @@ def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dic
 
     @_register_step(resolver, step_name="export_graph", runtime_deps=runtime_deps)
     def _export_graph(ctx: StepContext) -> StepRunResult:
-        normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
-        collection = select_primary_collection(normalized)
-        tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
-        graph_payload = semantic_tree_to_kge_payload(tree, doc_id=collection.collection_id)
-        persistence_mode = str(runtime_deps.get("persistence_mode", "local_debug"))
-        kg_authority = str(runtime_deps.get("kg_authority", "local"))
-        bundle = WorkflowExportBundle(
-            graph_payload=graph_payload,
-            authoritative_source_map=ctx.state_view["authoritative_source_map"],
-            embedding_spaces=collection.embedding_spaces,
-            consolidation_candidates=[],
-            retrieval_metadata={
-                "embedding_spaces": collection.embedding_spaces,
-                "supports_hybrid_retrieval": True,
-                "supports_split_embedding_spaces": True,
-                "collection_modality": collection.modality,
-            },
-            persistence_mode="server_canonical" if persistence_mode == "server_canonical" else "local_debug",
-            kg_authority="server" if kg_authority == "server" else "local",
-            canonical_write_confirmed=False,
-            parser_owner="local",
-            server_parser_used=False,
-            persisted_to_knowledge_engine=False,
-        )
+        bundle = _build_export_bundle(ctx=ctx)
         with ctx.state_write as st:
             st["export_bundle"] = bundle.model_dump(field_mode="backend", dump_format="json")
         return _success("persist_canonical_graph")

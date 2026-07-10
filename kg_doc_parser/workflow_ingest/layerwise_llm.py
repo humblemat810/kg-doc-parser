@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from kg_doc_parser.llm_structured_output import build_structured_output_runnable
 from kogwistar.fuzzy_offsets import find_fuzzy_spans, offset_repair_threshold
+from kogwistar.utils import SourcePointerValidationError, validate_source_pointer
 
 from .models import (
     BoundaryCutpoint,
@@ -242,6 +243,12 @@ def _classify_boundary_kind(text: str, offset: int) -> str:
         return "semantic"
     prev_char = text[offset - 1]
     next_char = text[offset]
+    line_end = text.find("\n", offset)
+    if line_end == -1:
+        line_end = len(text)
+    next_line = text[offset:line_end]
+    if text[max(0, offset - 2) : offset] == "\n\n" and _is_heading_line(next_line):
+        return "section"
     if text[max(0, offset - 2) : offset] == "\n\n":
         return "paragraph"
     line_start = text.rfind("\n", 0, offset - 1) + 1
@@ -301,6 +308,7 @@ def _legal_cutpoints_for_text(
     text: str,
     *,
     max_points: int = 48,
+    include_word_boundaries: bool = False,
 ) -> list[BoundaryCutpoint]:
     if not text:
         return []
@@ -309,11 +317,16 @@ def _legal_cutpoints_for_text(
         kind = _classify_boundary_kind(text, offset)
         if kind == "semantic":
             continue
+        if kind == "word" and not include_word_boundaries:
+            continue
+        if _boundary_cutpoint_legality_reason(text, offset):
+            continue
         existing = best.get(offset)
         if existing is None or _boundary_kind_priority(kind) > _boundary_kind_priority(existing):
             best[offset] = kind
     ordered: list[BoundaryCutpoint] = [
         BoundaryCutpoint(
+            candidate_id=f"b{index:04d}-{kind}-{offset}",
             parent_node_id="",
             source_cluster_id="",
             cut_offset=offset,
@@ -324,16 +337,18 @@ def _legal_cutpoints_for_text(
             confidence=1.0,
             reason="deterministic_legal_boundary",
         )
-        for offset, kind in sorted(best.items())
+        for index, (offset, kind) in enumerate(sorted(best.items()))
     ]
     if len(ordered) <= max_points:
         return ordered
-    sampled: list[BoundaryCutpoint] = []
-    step = max(1, len(ordered) // max_points)
-    for index, boundary in enumerate(ordered):
-        if index % step == 0 or len(sampled) < 4:
-            sampled.append(boundary)
-    return sampled[:max_points]
+    selected: list[BoundaryCutpoint] = []
+    for kind in ("section", "paragraph", "list_item", "sentence", "word"):
+        kind_boundaries = [boundary for boundary in ordered if boundary.boundary_kind == kind]
+        room = max_points - len(selected)
+        if room <= 0:
+            break
+        selected.extend(kind_boundaries[:room])
+    return sorted(selected, key=lambda boundary: boundary.cut_offset)
 
 
 def _boundary_candidates_for_pointer(
@@ -385,10 +400,17 @@ def _boundary_prompt_candidate_context(
                     },
                     "legal_cutpoints": [
                         {
+                            "candidate_id": (
+                                f"{parent_id}|{str(_pointer_field(pointer, 'source_cluster_id') or '')}|"
+                                f"{start_char}|"
+                                f"{boundary.candidate_id or boundary.cut_offset}"
+                            ),
                             "cut_offset": start_char + boundary.cut_offset,
                             "boundary_kind": boundary.boundary_kind,
                             "confidence": boundary.confidence,
                             "reason": boundary.reason,
+                            "text_before_cut": text[max(0, boundary.cut_offset - 20) : boundary.cut_offset],
+                            "text_after_cut": text[boundary.cut_offset : min(len(text), boundary.cut_offset + 20)],
                             "text_before_cut_preview": _trim_text(
                                 text[max(0, boundary.cut_offset - 20) : boundary.cut_offset],
                                 max_chars=60,
@@ -415,6 +437,70 @@ def _boundary_prompt_candidate_context(
                 }
             )
     return candidates
+
+
+def _boundary_candidate_lookup(
+    boundary_candidates: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for parent in boundary_candidates:
+        parent_node_id = str(parent.get("parent_node_id") or "")
+        source_cluster_id = str(parent.get("source_cluster_id") or "")
+        for candidate in list(parent.get("legal_cutpoints") or []):
+            candidate_id = str(candidate.get("candidate_id") or "")
+            if not candidate_id:
+                continue
+            lookup[candidate_id] = {
+                **dict(candidate),
+                "parent_node_id": parent_node_id,
+                "source_cluster_id": source_cluster_id,
+            }
+    return lookup
+
+
+def _normalize_boundary_cutpoints_from_candidates(
+    parsed: LLMBoundaryProposalBatch,
+    *,
+    candidate_lookup: dict[str, dict[str, Any]],
+) -> LLMBoundaryProposalBatch:
+    normalized: list[BoundaryCutpoint] = []
+    for cutpoint in parsed.cutpoints:
+        candidate_id = str(cutpoint.candidate_id or "")
+        candidate = candidate_lookup.get(candidate_id)
+        if candidate is None:
+            parent_node_id = str(cutpoint.parent_node_id or "")
+            source_cluster_id = str(cutpoint.source_cluster_id or "")
+            cut_offset = cutpoint.cut_offset if isinstance(cutpoint.cut_offset, int) else None
+            if parent_node_id and source_cluster_id and cut_offset is not None:
+                for lookup_candidate in candidate_lookup.values():
+                    if (
+                        str(lookup_candidate.get("parent_node_id") or "") == parent_node_id
+                        and str(lookup_candidate.get("source_cluster_id") or "") == source_cluster_id
+                        and int(lookup_candidate.get("cut_offset") or -1) == cut_offset
+                    ):
+                        candidate = lookup_candidate
+                        break
+        if candidate is None:
+            normalized.append(cutpoint)
+            continue
+        normalized.append(
+            cutpoint.model_copy(
+                update={
+                    "candidate_id": candidate_id,
+                    "parent_node_id": str(candidate["parent_node_id"]),
+                    "source_cluster_id": str(candidate["source_cluster_id"]),
+                    "cut_offset": int(candidate["cut_offset"]),
+                    "boundary_kind": str(candidate.get("boundary_kind") or cutpoint.boundary_kind),
+                    "text_before_cut": str(
+                        candidate.get("text_before_cut") or candidate.get("text_before_cut_preview") or cutpoint.text_before_cut
+                    ),
+                    "text_after_cut": str(
+                        candidate.get("text_after_cut") or candidate.get("text_after_cut_preview") or cutpoint.text_after_cut
+                    ),
+                }
+            )
+        )
+    return parsed.model_copy(update={"cutpoints": normalized})
 
 
 def _boundary_anchor_occurrences(text: str, needle: str) -> list[int]:
@@ -626,6 +712,11 @@ def _proposal_validation_reason(
     if current_parent_ids and not child_parent_ids.issubset(current_parent_ids):
         return "proposal referenced parent ids outside the current layer"
     children_by_parent: dict[str, list[Any]] = {}
+    parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
+    source_text_by_cluster = {
+        str(source_cluster_id): str((record or {}).get("text") or "")
+        for source_cluster_id, record in parser_source_map.items()
+    }
     for child in children:
         pointers = list(getattr(child, "total_content_pointers", []) or [])
         if not pointers:
@@ -635,15 +726,20 @@ def _proposal_validation_reason(
             return "proposal child missing parent_node_id"
         children_by_parent.setdefault(parent_id, []).append(child)
         for pointer in pointers:
-            source_cluster_id = str(_pointer_field(pointer, "source_cluster_id") or "")
-            start_char = _pointer_field(pointer, "start_char")
-            end_char = _pointer_field(pointer, "end_char")
-            if not source_cluster_id or source_cluster_id not in parser_source_map:
-                return "proposal pointer referenced source outside the supplied source map"
-            if not isinstance(start_char, int) or not isinstance(end_char, int):
-                return "proposal pointer missing character span integers"
-            if start_char < 0 or end_char < start_char:
-                return "proposal pointer used an invalid character span"
+            verbatim_text = _pointer_field(pointer, "verbatim_text")
+            try:
+                validate_source_pointer(
+                    pointer,
+                    source_text_by_cluster=source_text_by_cluster,
+                    parent_pointers=list(parent_pointers.get(parent_id) or []),
+                    end_mode="inclusive",
+                    require_source_cluster=True,
+                    require_source_text=True,
+                    require_parent_containment=True,
+                    require_text_match=verbatim_text is not None,
+                )
+            except SourcePointerValidationError as exc:
+                return _proposal_pointer_validation_reason(exc)
     parent_titles = dict(
         zip(
             list(getattr(current_layer_context, "parent_node_ids", []) or []),
@@ -656,6 +752,22 @@ def _proposal_validation_reason(
             _ = parent_titles.get(parent_id)
             return "proposal collapsed a parent into a single child without a real breakdown"
     return None
+
+
+def _proposal_pointer_validation_reason(exc: SourcePointerValidationError) -> str:
+    if exc.code in {"missing_source_cluster", "source_not_found"}:
+        return "proposal pointer referenced source outside the supplied source map"
+    if exc.code == "span_not_int":
+        return "proposal pointer missing character span integers"
+    if exc.code == "invalid_span":
+        return "proposal pointer used an invalid character span"
+    if exc.code == "out_of_bounds":
+        return "proposal pointer used a character span outside the source text"
+    if exc.code == "outside_parent_span":
+        return "proposal pointer used a character span outside the current parent span"
+    if exc.code in {"missing_text", "text_mismatch"}:
+        return "proposal pointer verbatim_text did not match the source span"
+    return "proposal pointer failed source span validation"
 
 
 def _boundary_validation_reason(
@@ -773,6 +885,24 @@ def _boundary_decision_key(decision: BoundaryReviewDecision) -> tuple[str, str, 
     )
 
 
+def _boundary_review_decision_summary(decisions: list[BoundaryReviewDecision]) -> list[dict[str, Any]]:
+    return [
+        {
+            "candidate_id": decision.candidate_id,
+            "decision": decision.decision,
+            "parent_node_id": decision.parent_node_id,
+            "source_cluster_id": decision.source_cluster_id,
+            "input_cut_offset": decision.input_cut_offset,
+            "resolved_cut_offset": decision.resolved_cut_offset,
+            "boundary_kind": decision.boundary_kind,
+            "anchor_match_mode": decision.anchor_match_mode,
+            "anchor_match_score": decision.anchor_match_score,
+            "reason": _trim_text(decision.reason, max_chars=180),
+        }
+        for decision in decisions
+    ]
+
+
 def _boundary_review_decision(
     *,
     cutpoint: BoundaryCutpoint,
@@ -787,6 +917,7 @@ def _boundary_review_decision(
             break
     if pointer is None:
         return BoundaryReviewDecision(
+            candidate_id=cutpoint.candidate_id,
             parent_node_id=cutpoint.parent_node_id,
             source_cluster_id=cutpoint.source_cluster_id,
             input_cut_offset=cutpoint.cut_offset,
@@ -801,16 +932,25 @@ def _boundary_review_decision(
     start_char = int(_pointer_field(pointer, "start_char") or 0)
     _start_char, end_char_exclusive = _pointer_span_bounds(pointer, parser_source_map=parser_source_map)
     local_cut = cutpoint.cut_offset - start_char
-    resolution = _resolve_boundary_anchor(
-        text=text,
-        cut_offset=local_cut,
-        text_before_cut=cutpoint.text_before_cut,
-        text_after_cut=cutpoint.text_after_cut,
-    )
+    if cutpoint.candidate_id:
+        resolution = _BoundaryAnchorResolution(
+            resolved_cut_offset=local_cut,
+            match_mode="exact",
+            match_score=1.0,
+            reason="selected deterministic boundary candidate",
+        )
+    else:
+        resolution = _resolve_boundary_anchor(
+            text=text,
+            cut_offset=local_cut,
+            text_before_cut=cutpoint.text_before_cut,
+            text_after_cut=cutpoint.text_after_cut,
+        )
     if resolution.resolved_cut_offset is None:
         unresolved_reason = resolution.reason or "boundary anchor could not be resolved"
         unresolved_decision = "needs_refinement" if "ambiguous" in unresolved_reason or "resolve" in unresolved_reason or "matched" in unresolved_reason else "reject"
         return BoundaryReviewDecision(
+            candidate_id=cutpoint.candidate_id,
             parent_node_id=cutpoint.parent_node_id,
             source_cluster_id=cutpoint.source_cluster_id,
             input_cut_offset=cutpoint.cut_offset,
@@ -827,6 +967,7 @@ def _boundary_review_decision(
     resolved_cut_offset = start_char + resolved_local_cut
     if resolved_local_cut <= 0 or resolved_local_cut >= len(text):
         return BoundaryReviewDecision(
+            candidate_id=cutpoint.candidate_id,
             parent_node_id=cutpoint.parent_node_id,
             source_cluster_id=cutpoint.source_cluster_id,
             input_cut_offset=cutpoint.cut_offset,
@@ -843,6 +984,7 @@ def _boundary_review_decision(
     shift_distance = abs(resolved_cut_offset - cutpoint.cut_offset)
     if shift_distance > MAX_BOUNDARY_REPAIR_SHIFT_CHARS:
         return BoundaryReviewDecision(
+            candidate_id=cutpoint.candidate_id,
             parent_node_id=cutpoint.parent_node_id,
             source_cluster_id=cutpoint.source_cluster_id,
             input_cut_offset=cutpoint.cut_offset,
@@ -862,6 +1004,7 @@ def _boundary_review_decision(
     legality_reason = _boundary_cutpoint_legality_reason(text, resolved_local_cut)
     if legality_reason:
         return BoundaryReviewDecision(
+            candidate_id=cutpoint.candidate_id,
             parent_node_id=cutpoint.parent_node_id,
             source_cluster_id=cutpoint.source_cluster_id,
             input_cut_offset=cutpoint.cut_offset,
@@ -886,6 +1029,7 @@ def _boundary_review_decision(
         decision = "shift_left" if resolved_cut_offset < cutpoint.cut_offset else "shift_right"
         reason = resolution.reason or "shifted to a uniquely anchored boundary"
     return BoundaryReviewDecision(
+        candidate_id=cutpoint.candidate_id,
         parent_node_id=cutpoint.parent_node_id,
         source_cluster_id=cutpoint.source_cluster_id,
         input_cut_offset=cutpoint.cut_offset,
@@ -1081,6 +1225,7 @@ def _assemble_layer_result_from_boundaries(
                         "start_char": segment_start,
                         "end_char": segment_end - 1,
                         "boundary_kind": boundary_kind,
+                        "verbatim_text": segment_text,
                         "summary_text": _trim_multiline_text(segment_text, max_lines=2, max_chars=220),
                         "exact_text": _trim_text(segment_text, max_chars=500),
                         "expandable": child.expandable,
@@ -1119,7 +1264,7 @@ def _assemble_layer_result_from_boundaries(
                     source_cluster_id=str(item["source_cluster_id"]),
                     start_char=int(item["start_char"]),
                     end_char=int(item["end_char"]),
-                    verbatim_text=str(item["exact_text"] or item["summary_text"] or ""),
+                    verbatim_text=str(item["verbatim_text"] or item["exact_text"] or item["summary_text"] or ""),
                 )
             ],
             expandable=bool(item["expandable"]),
@@ -1142,14 +1287,14 @@ def _assemble_layer_result_from_boundaries(
         children=children,
         satisfied=True,
         reasoning_history=[],
-            metadata={
-                "proposal_mode": "boundaries",
-                "boundary_unit_summaries": [summary.model_dump() for summary in summaries],
-                "boundary_parent_coverage": coverage_reports,
-                "boundary_review_notes": list(review_batch.review_notes),
-                "unresolved_interval_count": unresolved_intervals,
-            },
-        )
+        metadata={
+            "proposal_mode": "boundaries",
+            "boundary_unit_summaries": [summary.model_dump() for summary in summaries],
+            "boundary_parent_coverage": coverage_reports,
+            "boundary_review_notes": list(review_batch.review_notes),
+            "unresolved_interval_count": unresolved_intervals,
+        },
+    )
     return result, summaries, accepted_cutpoints
 
 
@@ -1343,6 +1488,17 @@ def build_layerwise_llm_callbacks(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
             )
+            boundary_candidate_lookup = _boundary_candidate_lookup(boundary_candidates)
+            _emit(
+                "workflow_layered_boundary_proposal_start",
+                proposal_mode="boundaries",
+                depth=int(getattr(current_layer_context, "depth", 0)),
+                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                split_strategy=split_strategy,
+                candidate_count=len(boundary_candidates),
+                refinement_budget=boundary_refinement_rounds,
+            )
+
             def _build_boundary_messages(attempt_number: int, previous_error: str | None) -> list[tuple[str, str]]:
                 prompt_payload = _proposal_attempt_payload(
                     {
@@ -1375,12 +1531,13 @@ def build_layerwise_llm_callbacks(
                         "source_map_excerpt": _source_map_excerpt(parser_source_map),
                         "rules": [
                             "Operate on ONE layer only: propose cutpoints for the current parent nodes.",
-                            "Only choose cutpoints from the provided candidate lists when possible.",
+                            "Prefer choosing candidate_id values from the provided legal_cutpoints list.",
+                            "When choosing a candidate_id, copy its cut_offset, parent_node_id, and source_cluster_id exactly.",
                             "Do not emit child text, summaries, or prose.",
                             "For each cutpoint, emit cut_reason plus short exact text_before_cut and text_after_cut anchors.",
                             "The anchors must uniquely identify the cut within the parent text and must not be the full child verbatim.",
                             "Cutpoints must be parent-scoped and source-cluster scoped.",
-                            "Prefer word, sentence, paragraph, list-item, or section boundaries over semantic guesses.",
+                            "Prefer section, paragraph, list-item, and sentence boundaries over semantic guesses.",
                             "Keep the proposal sorted and unique per parent/source cluster.",
                             "If a parent is atomic, return no internal cutpoints for that parent and set satisfied=true only when the current layer is complete.",
                         ],
@@ -1413,20 +1570,69 @@ def build_layerwise_llm_callbacks(
                 )
 
             try:
+                _emit(
+                    "workflow_layered_boundary_proposal_attempt",
+                    proposal_mode="boundaries",
+                    depth=int(getattr(current_layer_context, "depth", 0)),
+                    retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                    split_strategy=split_strategy,
+                    attempt=1,
+                    retry_budget=proposal_retry_rounds,
+                    candidate_count=len(boundary_candidates),
+                )
+
+                def _validate_boundary_parsed(parsed: LLMBoundaryProposalBatch) -> str | None:
+                    unknown_candidate_ids = [
+                        str(cutpoint.candidate_id)
+                        for cutpoint in parsed.cutpoints
+                        if cutpoint.candidate_id
+                        and str(cutpoint.candidate_id) not in boundary_candidate_lookup
+                    ]
+                    if unknown_candidate_ids:
+                        return "boundary proposal referenced unknown candidate_id values: " + ", ".join(
+                            unknown_candidate_ids[:3]
+                        )
+                    normalized = _normalize_boundary_cutpoints_from_candidates(
+                        parsed,
+                        candidate_lookup=boundary_candidate_lookup,
+                    )
+                    return _boundary_validation_reason(
+                        parsed=normalized,
+                        current_layer_context=current_layer_context,
+                        parser_source_map=parser_source_map,
+                    )
+
                 boundary_result: RetryResult[LLMBoundaryProposalBatch] = retry_with_context(
                     max_attempts=proposal_retry_rounds + 1,
                     build_request=_build_boundary_messages,
                     invoke=lambda messages: _structured_invoke(chat_model, LLMBoundaryProposalBatch, messages),
-                    validate=lambda parsed: _boundary_validation_reason(
-                        parsed=parsed,
-                        current_layer_context=current_layer_context,
-                        parser_source_map=parser_source_map,
-                    ),
+                    validate=_validate_boundary_parsed,
                     on_retry=_emit_boundary_retry,
                 )
-                boundary_parsed: LLMBoundaryProposalBatch = boundary_result.value
+                boundary_parsed: LLMBoundaryProposalBatch = _normalize_boundary_cutpoints_from_candidates(
+                    boundary_result.value,
+                    candidate_lookup=boundary_candidate_lookup,
+                )
+                _emit(
+                    "workflow_layered_boundary_proposal_completed",
+                    proposal_mode="boundaries",
+                    depth=int(getattr(current_layer_context, "depth", 0)),
+                    retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                    split_strategy=split_strategy,
+                    attempt_count=boundary_result.retry_count + 1,
+                    cutpoint_count=len(boundary_parsed.cutpoints),
+                    satisfied=boundary_parsed.satisfied,
+                )
             except RetryExhaustedError as exc:
                 failure_reason = exc.last_error
+                _emit(
+                    "workflow_layered_boundary_proposal_failed",
+                    proposal_mode="boundaries",
+                    depth=int(getattr(current_layer_context, "depth", 0)),
+                    retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                    split_strategy=split_strategy,
+                    failure_reason=failure_reason,
+                )
                 fallback = fallback_builder(
                     current_layer_context=current_layer_context,
                     parser_source_map=parser_source_map,
@@ -1459,6 +1665,22 @@ def build_layerwise_llm_callbacks(
                 )
                 for cutpoint in boundary_parsed.cutpoints
             ]
+            _emit(
+                "workflow_layered_boundary_review_completed",
+                proposal_mode="boundaries",
+                depth=int(getattr(current_layer_context, "depth", 0)),
+                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                split_strategy=split_strategy,
+                accepted_boundary_count=sum(1 for decision in review_decisions if decision.decision == "accept"),
+                shifted_boundary_count=sum(
+                    1 for decision in review_decisions if decision.decision in {"shift_left", "shift_right"}
+                ),
+                rejected_boundary_count=sum(1 for decision in review_decisions if decision.decision == "reject"),
+                refinement_needed_count=sum(
+                    1 for decision in review_decisions if decision.decision == "needs_refinement"
+                ),
+                review_decisions=_boundary_review_decision_summary(review_decisions),
+            )
             refinement_notes: list[str] = []
             refinement_attempts = 0
             if boundary_refinement_rounds > 0:
@@ -1468,6 +1690,16 @@ def build_layerwise_llm_callbacks(
                 )
                 for target in unresolved_targets[:boundary_refinement_rounds]:
                     refinement_attempts += 1
+                    _emit(
+                        "workflow_layered_boundary_refinement_start",
+                        proposal_mode="boundaries",
+                        depth=int(getattr(current_layer_context, "depth", 0)),
+                        retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                        split_strategy=split_strategy,
+                        target_parent_node_id=target.parent_node_id,
+                        target_source_cluster_id=target.source_cluster_id,
+                        target_cut_offset=target.cut_offset,
+                    )
                     refinement_prompt_payload = {
                         "task": "Refine a single ambiguous cutpoint using only nearby legal boundaries.",
                         "output_contract": "Return an LLMBoundaryProposalBatch only.",
@@ -1536,10 +1768,32 @@ def build_layerwise_llm_callbacks(
                                 )
                                 if note not in refinement_notes
                             )
+                            _emit(
+                                "workflow_layered_boundary_refinement_completed",
+                                proposal_mode="boundaries",
+                                depth=int(getattr(current_layer_context, "depth", 0)),
+                                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                                split_strategy=split_strategy,
+                                target_parent_node_id=target.parent_node_id,
+                                target_source_cluster_id=target.source_cluster_id,
+                                target_cut_offset=target.cut_offset,
+                                refined_cutpoint_count=len(refinement_decisions),
+                            )
                     except Exception as refinement_exc:
                         refinement_notes.append(
                             f"boundary refinement skipped for {target.parent_node_id}:{target.source_cluster_id}:{target.cut_offset} "
                             f"due to {refinement_exc!r}"
+                        )
+                        _emit(
+                            "workflow_layered_boundary_refinement_failed",
+                            proposal_mode="boundaries",
+                            depth=int(getattr(current_layer_context, "depth", 0)),
+                            retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                            split_strategy=split_strategy,
+                            target_parent_node_id=target.parent_node_id,
+                            target_source_cluster_id=target.source_cluster_id,
+                            target_cut_offset=target.cut_offset,
+                            failure_reason=_trim_text(repr(refinement_exc), max_chars=280),
                         )
             review_batch: BoundaryReviewBatch = BoundaryReviewBatch(
                 decisions=review_decisions,
@@ -1556,6 +1810,14 @@ def build_layerwise_llm_callbacks(
                 + refinement_notes,
             )
             if boundary_parsed.satisfied is True and not boundary_parsed.cutpoints:
+                _emit(
+                    "workflow_layered_boundary_assembly_skipped",
+                    proposal_mode="boundaries",
+                    depth=int(getattr(current_layer_context, "depth", 0)),
+                    retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                    split_strategy=split_strategy,
+                    reason="atomic_no_cutpoints",
+                )
                 runtime_result = CurrentLayerResult(
                     children=[],
                     satisfied=True,
@@ -1608,6 +1870,15 @@ def build_layerwise_llm_callbacks(
                 return annotated
             runtime_result: CurrentLayerResult
             accepted_cutpoints: list[dict[str, Any]]
+            _emit(
+                "workflow_layered_boundary_assembly_start",
+                proposal_mode="boundaries",
+                depth=int(getattr(current_layer_context, "depth", 0)),
+                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                split_strategy=split_strategy,
+                review_decision_count=len(review_decisions),
+                cutpoint_count=len(boundary_parsed.cutpoints),
+            )
             runtime_result, summaries, accepted_cutpoints = _assemble_layer_result_from_boundaries(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
@@ -1620,6 +1891,14 @@ def build_layerwise_llm_callbacks(
             unresolved_interval_count = int(runtime_result.metadata.get("unresolved_interval_count", 0) or 0)
             if accepted_count + shifted_count == 0:
                 failure_reason = "boundary proposal produced no accepted cutpoints"
+                _emit(
+                    "workflow_layered_boundary_assembly_failed",
+                    proposal_mode="boundaries",
+                    depth=int(getattr(current_layer_context, "depth", 0)),
+                    retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                    split_strategy=split_strategy,
+                    failure_reason=failure_reason,
+                )
                 fallback = fallback_builder(
                     current_layer_context=current_layer_context,
                     parser_source_map=parser_source_map,
@@ -1660,6 +1939,20 @@ def build_layerwise_llm_callbacks(
                 "proposal_source": "llm",
             }
             runtime_result = runtime_result.model_copy(update={"metadata": result_metadata})
+            _emit(
+                "workflow_layered_boundary_assembly_completed",
+                proposal_mode="boundaries",
+                depth=int(getattr(current_layer_context, "depth", 0)),
+                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                split_strategy=split_strategy,
+                child_count=len(runtime_result.children),
+                accepted_boundary_count=accepted_count,
+                shifted_boundary_count=shifted_count,
+                rejected_boundary_count=rejected_count,
+                refinement_count=refinement_count,
+                unresolved_interval_count=unresolved_interval_count,
+                summary_count=len(summaries),
+            )
             annotated = _annotate_proposal_result(
                 runtime_result,
                 proposal_source="llm",
@@ -1757,6 +2050,14 @@ def build_layerwise_llm_callbacks(
             )
 
         try:
+            _emit(
+                "workflow_layered_child_proposal_start",
+                proposal_mode="children",
+                depth=int(getattr(current_layer_context, "depth", 0)),
+                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                split_strategy=split_strategy,
+                parent_count=len(getattr(current_layer_context, "parent_node_ids", []) or []),
+            )
             child_result: RetryResult[LLMCurrentLayerResult] = retry_with_context(
                 max_attempts=proposal_retry_rounds + 1,
                 build_request=_build_child_messages,
@@ -1767,10 +2068,28 @@ def build_layerwise_llm_callbacks(
                     parser_source_map=parser_source_map,
                 ),
                 on_retry=_emit_child_retry,
-            )
+                )
             child_parsed: LLMCurrentLayerResult = child_result.value
+            _emit(
+                "workflow_layered_child_proposal_completed",
+                proposal_mode="children",
+                depth=int(getattr(current_layer_context, "depth", 0)),
+                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                split_strategy=split_strategy,
+                attempt_count=child_result.retry_count + 1,
+                child_count=len(child_parsed.children),
+                satisfied=child_parsed.satisfied,
+            )
         except RetryExhaustedError as exc:
             failure_reason = exc.last_error
+            _emit(
+                "workflow_layered_child_proposal_failed",
+                proposal_mode="children",
+                depth=int(getattr(current_layer_context, "depth", 0)),
+                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                split_strategy=split_strategy,
+                failure_reason=failure_reason,
+            )
             fallback = fallback_builder(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
@@ -1804,6 +2123,15 @@ def build_layerwise_llm_callbacks(
             proposal_source="llm",
             proposal_mode="children",
             provider_child_count=len(runtime_result.children),
+        )
+        _emit(
+            "workflow_layered_child_proposal_assembled",
+            proposal_mode="children",
+            depth=int(getattr(current_layer_context, "depth", 0)),
+            retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+            split_strategy=split_strategy,
+            child_count=len(runtime_result.children),
+            satisfied=runtime_result.satisfied,
         )
         _emit(
             "workflow_layered_proposal_result",
@@ -1864,12 +2192,29 @@ def build_layerwise_llm_callbacks(
                 json.dumps(review_payload, sort_keys=True),
             ),
         ]
+        _emit(
+            "workflow_layered_review_start",
+            review_source="llm",
+            depth=int(getattr(current_layer_context, "depth", 0)),
+            retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+            split_strategy=split_strategy,
+            child_count=len(getattr(current_layer_result, "children", []) or []),
+        )
         try:
             review_result: LLMCurrentLayerReview = _structured_invoke(chat_model, LLMCurrentLayerReview, messages)
             reviewed: LLMCurrentLayerReview = review_result
             runtime_review: CurrentLayerReview = CurrentLayerReview.model_validate(reviewed.model_dump())
             _emit(
                 "workflow_layered_review_result",
+                review_source="llm",
+                depth=int(getattr(current_layer_context, "depth", 0)),
+                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                split_strategy=split_strategy,
+                satisfied=runtime_review.satisfied,
+                coverage_ok=runtime_review.coverage_ok,
+            )
+            _emit(
+                "workflow_layered_review_completed",
                 review_source="llm",
                 depth=int(getattr(current_layer_context, "depth", 0)),
                 retry_count=int(getattr(current_layer_context, "retry_count", 0)),
@@ -1889,6 +2234,16 @@ def build_layerwise_llm_callbacks(
             )
             _emit(
                 "workflow_layered_review_result",
+                review_source="fallback",
+                review_failure_reason=failure_reason,
+                depth=int(getattr(current_layer_context, "depth", 0)),
+                retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                split_strategy=split_strategy,
+                satisfied=reviewed.satisfied,
+                coverage_ok=reviewed.coverage_ok,
+            )
+            _emit(
+                "workflow_layered_review_completed",
                 review_source="fallback",
                 review_failure_reason=failure_reason,
                 depth=int(getattr(current_layer_context, "depth", 0)),
