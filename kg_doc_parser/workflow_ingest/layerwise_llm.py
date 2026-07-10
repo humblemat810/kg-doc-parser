@@ -503,6 +503,12 @@ def _normalize_boundary_cutpoints_from_candidates(
     return parsed.model_copy(update={"cutpoints": normalized})
 
 
+def _boundary_anchor_excerpt(text: str, cut_offset: int, *, window_chars: int = 20) -> tuple[str, str]:
+    start = max(0, cut_offset - window_chars)
+    end = min(len(text), cut_offset + window_chars)
+    return text[start:cut_offset], text[cut_offset:end]
+
+
 def _boundary_anchor_occurrences(text: str, needle: str) -> list[int]:
     if not needle:
         return []
@@ -587,6 +593,41 @@ def _resolve_boundary_anchor(
         match_mode="fuzzy",
         match_score=hit.score,
         reason=f"boundary anchor repaired fuzzily with score {hit.score:.2f}",
+    )
+
+
+def _repair_boundary_cutpoint_from_source(
+    cutpoint: BoundaryCutpoint,
+    *,
+    current_layer_context: Any,
+    parser_source_map: dict[str, dict[str, Any]],
+) -> BoundaryCutpoint | None:
+    parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
+    pointer = None
+    for parent_pointer in list(parent_pointers.get(cutpoint.parent_node_id) or []):
+        if str(_pointer_field(parent_pointer, "source_cluster_id") or "") == cutpoint.source_cluster_id:
+            pointer = parent_pointer
+            break
+    if pointer is None:
+        return None
+    text = _pointer_text(pointer, parser_source_map=parser_source_map)
+    if not text:
+        return None
+    start_char = int(_pointer_field(pointer, "start_char") or 0)
+    local_cut = cutpoint.cut_offset - start_char
+    if local_cut < 0 or local_cut > len(text):
+        return None
+    text_before_cut, text_after_cut = _boundary_anchor_excerpt(text, local_cut)
+    if not text_before_cut.strip() or not text_after_cut.strip():
+        return None
+    return cutpoint.model_copy(
+        update={
+            "boundary_kind": _classify_boundary_kind(text, local_cut),
+            "text_before_cut": text_before_cut,
+            "text_after_cut": text_after_cut,
+            "cut_reason": cutpoint.cut_reason or cutpoint.reason or "boundary repaired from source excerpt",
+            "reason": cutpoint.reason or "boundary repaired from source excerpt",
+        }
     )
 
 
@@ -1489,6 +1530,8 @@ def build_layerwise_llm_callbacks(
                 parser_source_map=parser_source_map,
             )
             boundary_candidate_lookup = _boundary_candidate_lookup(boundary_candidates)
+            boundary_dropped_count = 0
+            boundary_repaired_count = 0
             _emit(
                 "workflow_layered_boundary_proposal_start",
                 proposal_mode="boundaries",
@@ -1500,6 +1543,50 @@ def build_layerwise_llm_callbacks(
             )
 
             def _build_boundary_messages(attempt_number: int, previous_error: str | None) -> list[tuple[str, str]]:
+                rules = [
+                    "Operate on ONE layer only: propose cutpoints for the current parent nodes.",
+                    "Prefer choosing candidate_id values from the provided legal_cutpoints list.",
+                    "When choosing a candidate_id, copy its cut_offset, parent_node_id, and source_cluster_id exactly.",
+                    "Do not emit child text, summaries, or prose.",
+                    "For each cutpoint, emit cut_reason plus short exact text_before_cut and text_after_cut anchors.",
+                    "The anchors must uniquely identify the cut within the parent text and must not be the full child verbatim.",
+                    "Never omit either anchor: if using candidate_id, copy both anchors exactly from that candidate.",
+                    "If a proposed cut cannot be grounded to a candidate, omit that cutpoint rather than guessing.",
+                    "Cutpoints must be parent-scoped and source-cluster scoped.",
+                    "Prefer section, paragraph, list-item, and sentence boundaries over semantic guesses.",
+                    "Keep the proposal sorted and unique per parent/source cluster.",
+                    "If a parent is atomic, return no internal cutpoints for that parent and set satisfied=true only when the current layer is complete.",
+                ]
+                if previous_error:
+                    rules.extend(
+                        [
+                            "RECOVERY PASS: return only the smallest valid candidate set needed to make a real split.",
+                            "RECOVERY PASS: do not invent offsets or anchors; omit an ambiguous cutpoint instead of retrying it.",
+                        ]
+                    )
+                recovery_example: dict[str, Any] | None = None
+                if previous_error:
+                    for boundary_candidate in boundary_candidates:
+                        legal_cutpoints = list(boundary_candidate.get("legal_cutpoints") or [])
+                        if not legal_cutpoints:
+                            continue
+                        legal_cutpoint = legal_cutpoints[0]
+                        recovery_example = {
+                            "cutpoints": [
+                                {
+                                    "candidate_id": legal_cutpoint.get("candidate_id"),
+                                    "parent_node_id": boundary_candidate.get("parent_node_id"),
+                                    "source_cluster_id": boundary_candidate.get("source_cluster_id"),
+                                    "cut_offset": legal_cutpoint.get("cut_offset"),
+                                    "boundary_kind": legal_cutpoint.get("boundary_kind"),
+                                    "text_before_cut": legal_cutpoint.get("text_before_cut"),
+                                    "text_after_cut": legal_cutpoint.get("text_after_cut"),
+                                    "cut_reason": legal_cutpoint.get("reason") or "recovery example",
+                                }
+                            ],
+                            "satisfied": False,
+                        }
+                        break
                 prompt_payload = _proposal_attempt_payload(
                     {
                         "task": "Propose semantic cutpoints for the next layer. Return only boundary cutpoints, not child text.",
@@ -1529,18 +1616,8 @@ def build_layerwise_llm_callbacks(
                             max_string=280,
                         ),
                         "source_map_excerpt": _source_map_excerpt(parser_source_map),
-                        "rules": [
-                            "Operate on ONE layer only: propose cutpoints for the current parent nodes.",
-                            "Prefer choosing candidate_id values from the provided legal_cutpoints list.",
-                            "When choosing a candidate_id, copy its cut_offset, parent_node_id, and source_cluster_id exactly.",
-                            "Do not emit child text, summaries, or prose.",
-                            "For each cutpoint, emit cut_reason plus short exact text_before_cut and text_after_cut anchors.",
-                            "The anchors must uniquely identify the cut within the parent text and must not be the full child verbatim.",
-                            "Cutpoints must be parent-scoped and source-cluster scoped.",
-                            "Prefer section, paragraph, list-item, and sentence boundaries over semantic guesses.",
-                            "Keep the proposal sorted and unique per parent/source cluster.",
-                            "If a parent is atomic, return no internal cutpoints for that parent and set satisfied=true only when the current layer is complete.",
-                        ],
+                        "rules": rules,
+                        "recovery_example": recovery_example,
                     },
                     attempt_index=attempt_number - 1,
                     prior_error=previous_error,
@@ -1548,11 +1625,12 @@ def build_layerwise_llm_callbacks(
                 return [
                     (
                         "system",
-                    "You are revising ONE semantic layer in an iterative document parsing workflow. "
-                    "Return only structured data matching LLMBoundaryProposalBatch. "
-                    "Propose grounded cutpoints only; the host will review and assemble the children. "
-                    "Each cutpoint must include cut_reason plus exact text_before_cut and text_after_cut anchors.",
-                ),
+                        "You are revising ONE semantic layer in an iterative document parsing workflow. "
+                        "Return only structured data matching LLMBoundaryProposalBatch. "
+                        "Propose grounded cutpoints only; the host will review and assemble the children. "
+                        "Each cutpoint must include cut_reason plus exact text_before_cut and text_after_cut anchors. "
+                        "Never omit either anchor; copy both from the selected legal candidate when candidate_id is used.",
+                    ),
                     ("human", json.dumps(prompt_payload, sort_keys=True)),
                 ]
 
@@ -1567,6 +1645,81 @@ def build_layerwise_llm_callbacks(
                     attempt=record.attempt_number,
                     retry_budget=proposal_retry_rounds,
                     retry_reason=record.error_message,
+                )
+
+            def _invoke_boundary(messages: list[tuple[str, str]]) -> LLMBoundaryProposalBatch:
+                nonlocal boundary_dropped_count, boundary_repaired_count
+                raw_parsed: LLMBoundaryProposalBatch = _structured_invoke(
+                    chat_model,
+                    LLMBoundaryProposalBatch,
+                    messages,
+                )
+                normalized_parsed: LLMBoundaryProposalBatch = _normalize_boundary_cutpoints_from_candidates(
+                    raw_parsed,
+                    candidate_lookup=boundary_candidate_lookup,
+                )
+                usable: list[BoundaryCutpoint] = []
+                for raw_cutpoint, normalized_cutpoint in zip(
+                    raw_parsed.cutpoints,
+                    normalized_parsed.cutpoints,
+                    strict=False,
+                ):
+                    # Candidate ids are host-issued coordinates. Use their
+                    # authoritative anchors, while preserving provider anchors
+                    # when the model supplied them without a candidate id so
+                    # ambiguous repeated text remains detectable by review.
+                    cutpoint = (
+                        normalized_cutpoint
+                        if raw_cutpoint.candidate_id
+                        or not raw_cutpoint.text_before_cut.strip()
+                        or not raw_cutpoint.text_after_cut.strip()
+                        else raw_cutpoint
+                    )
+                    if (not cutpoint.text_before_cut.strip() or not cutpoint.text_after_cut.strip()) and (
+                        repaired_cutpoint := _repair_boundary_cutpoint_from_source(
+                            cutpoint,
+                            current_layer_context=current_layer_context,
+                            parser_source_map=parser_source_map,
+                        )
+                    ) is not None:
+                        cutpoint = repaired_cutpoint
+                        boundary_repaired_count += 1
+                        _emit(
+                            "workflow_layered_boundary_cutpoint_repaired",
+                            proposal_mode="boundaries",
+                            depth=int(getattr(current_layer_context, "depth", 0)),
+                            retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                            candidate_id=cutpoint.candidate_id,
+                            parent_node_id=cutpoint.parent_node_id,
+                            source_cluster_id=cutpoint.source_cluster_id,
+                            cut_offset=cutpoint.cut_offset,
+                            boundary_kind=cutpoint.boundary_kind,
+                            repair_source="source_excerpt",
+                            text_before_cut_preview=_trim_text(cutpoint.text_before_cut, max_chars=60),
+                            text_after_cut_preview=_trim_text(cutpoint.text_after_cut, max_chars=60),
+                        )
+                    if cutpoint.text_before_cut.strip() and cutpoint.text_after_cut.strip():
+                        usable.append(cutpoint)
+                        continue
+                    boundary_dropped_count += 1
+                    _emit(
+                        "workflow_layered_boundary_cutpoint_dropped",
+                        proposal_mode="boundaries",
+                        depth=int(getattr(current_layer_context, "depth", 0)),
+                        retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                        candidate_id=cutpoint.candidate_id,
+                        parent_node_id=cutpoint.parent_node_id,
+                        source_cluster_id=cutpoint.source_cluster_id,
+                        cut_offset=cutpoint.cut_offset,
+                        reason="missing source anchors after candidate normalization",
+                )
+                return normalized_parsed.model_copy(
+                    update={
+                        "cutpoints": usable,
+                        "review_rounds": int(getattr(normalized_parsed, "review_rounds", 0) or 0),
+                        "satisfied": normalized_parsed.satisfied,
+                        "reasoning_history": list(normalized_parsed.reasoning_history),
+                    }
                 )
 
             try:
@@ -1605,14 +1758,14 @@ def build_layerwise_llm_callbacks(
                 boundary_result: RetryResult[LLMBoundaryProposalBatch] = retry_with_context(
                     max_attempts=proposal_retry_rounds + 1,
                     build_request=_build_boundary_messages,
-                    invoke=lambda messages: _structured_invoke(chat_model, LLMBoundaryProposalBatch, messages),
+                    invoke=_invoke_boundary,
                     validate=_validate_boundary_parsed,
                     on_retry=_emit_boundary_retry,
                 )
-                boundary_parsed: LLMBoundaryProposalBatch = _normalize_boundary_cutpoints_from_candidates(
-                    boundary_result.value,
-                    candidate_lookup=boundary_candidate_lookup,
-                )
+                # The invoke wrapper already applies candidate authority only
+                # where needed. Preserve provider anchors otherwise so repeated
+                # text remains ambiguous and is sent through review/refinement.
+                boundary_parsed: LLMBoundaryProposalBatch = boundary_result.value
                 _emit(
                     "workflow_layered_boundary_proposal_completed",
                     proposal_mode="boundaries",
@@ -1827,6 +1980,8 @@ def build_layerwise_llm_callbacks(
                         "proposal_source": "llm",
                         "proposal_retry_count": boundary_result.retry_count,
                         "boundary_proposed_count": 0,
+                        "boundary_dropped_count": boundary_dropped_count,
+                        "boundary_repaired_count": boundary_repaired_count,
                         "boundary_accepted_count": 0,
                         "boundary_shifted_count": 0,
                         "boundary_rejected_count": 0,
@@ -1844,13 +1999,13 @@ def build_layerwise_llm_callbacks(
                     proposal_source="llm",
                     proposal_mode="boundaries",
                     boundary_count=0,
-                    accepted_boundary_count=0,
-                    shifted_boundary_count=0,
-                    rejected_boundary_count=0,
-                    refinement_count=0,
-                    unresolved_interval_count=0,
-                    summary_count=0,
-                )
+                accepted_boundary_count=0,
+                shifted_boundary_count=0,
+                rejected_boundary_count=0,
+                refinement_count=0,
+                unresolved_interval_count=0,
+                summary_count=0,
+            )
                 _emit(
                     "workflow_layered_proposal_result",
                     proposal_source="llm",
@@ -1858,15 +2013,15 @@ def build_layerwise_llm_callbacks(
                     depth=int(getattr(current_layer_context, "depth", 0)),
                     retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                     split_strategy=split_strategy,
-                    boundary_count=0,
-                    accepted_boundary_count=0,
-                    shifted_boundary_count=0,
-                    rejected_boundary_count=0,
-                    refinement_count=0,
-                    unresolved_interval_count=0,
-                    child_count=0,
-                    satisfied=True,
-                )
+                boundary_count=0,
+                accepted_boundary_count=0,
+                shifted_boundary_count=0,
+                rejected_boundary_count=0,
+                refinement_count=0,
+                unresolved_interval_count=0,
+                child_count=0,
+                satisfied=True,
+            )
                 return annotated
             runtime_result: CurrentLayerResult
             accepted_cutpoints: list[dict[str, Any]]
@@ -1927,6 +2082,8 @@ def build_layerwise_llm_callbacks(
                 "proposal_mode": "boundaries",
                 "proposal_retry_count": boundary_result.retry_count,
                 "boundary_proposed_count": len(boundary_parsed.cutpoints),
+                "boundary_dropped_count": boundary_dropped_count,
+                "boundary_repaired_count": boundary_repaired_count,
                 "boundary_accepted_count": accepted_count,
                 "boundary_shifted_count": shifted_count,
                 "boundary_rejected_count": rejected_count,

@@ -346,11 +346,19 @@ class BoundaryCutpoint(BaseModel):
     candidate_id: str | None = None
     parent_node_id: str
     source_cluster_id: str
-    cut_offset: int
-    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"]
-    text_before_cut: str
-    text_after_cut: str
-    cut_reason: str
+    cut_offset: int = Field(description="Absolute character offset of the cut inside the parent span.")
+    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] = Field(
+        description="The structural reason this cut is a legal boundary."
+    )
+    text_before_cut: str = Field(
+        default="",
+        description="Short exact text immediately before the cut, copied from the supplied source excerpt.",
+    )
+    text_after_cut: str = Field(
+        default="",
+        description="Short exact text immediately after the cut, copied from the supplied source excerpt.",
+    )
+    cut_reason: str = Field(default="", description="Why this semantic boundary separates adjacent units.")
     confidence: float | None = None
     reason: str | None = None
 

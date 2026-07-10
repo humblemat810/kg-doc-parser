@@ -472,6 +472,59 @@ def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: py
     assert [child.parent_node_id for child in result.children] == ["doc|root", "doc|root"]
 
 
+def test_boundary_mode_drops_one_unrecoverable_cutpoint_but_keeps_valid_split(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "cutpoints": [
+                    _boundary_cutpoint_payload(
+                        "Alpha clause. Beta clause.",
+                        13,
+                        boundary_kind="sentence",
+                        reason="sentence boundary",
+                    ),
+                        {
+                            "parent_node_id": "doc|root",
+                            "source_cluster_id": "cluster-1",
+                            "cut_offset": 118,
+                            "boundary_kind": "semantic",
+                        },
+                    ],
+                "satisfied": True,
+                "reasoning_history": [],
+                "review_rounds": 0,
+            }
+        }
+    )
+    events: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+    callbacks = build_layerwise_llm_callbacks(
+        _provider_settings(),
+        proposal_mode="boundaries",
+        event_sink=lambda stage, **extra: events.append({"stage": stage, **extra}),
+    )
+
+    result = callbacks["propose_layer_fn"](
+        parser_source_map=_parser_source_map(),
+        current_layer_context=_boundary_context(),
+        semantic_tree=_semantic_tree(),
+        split_strategy="boundary_first",
+        parser_input_dict=_parser_input_dict(),
+        parse_session=_parse_session(),
+    )
+
+    assert result.metadata["boundary_proposed_count"] == 1
+    assert result.metadata["boundary_dropped_count"] == 1
+    assert result.metadata["boundary_repaired_count"] == 0
+    assert result.children
+    assert any(event["stage"] == "workflow_layered_boundary_cutpoint_dropped" for event in events)
+
+
 def test_boundary_mode_accepts_candidate_id_even_when_copied_offset_is_wrong(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -576,6 +629,63 @@ def test_boundary_mode_backfills_missing_candidate_id_from_exact_offset(
     assert result.children[0].total_content_pointers[0].end_char == 12
     assert result.metadata["boundary_review_decisions"][0]["decision"] == "accept"
     assert result.metadata["boundary_review_decisions"][0]["resolved_cut_offset"] == 13
+
+
+def test_boundary_mode_repairs_missing_anchors_from_source_excerpt(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "cutpoints": [
+                    {
+                        "parent_node_id": "doc|root",
+                        "source_cluster_id": "cluster-1",
+                        "cut_offset": 13,
+                        "boundary_kind": "sentence",
+                        "cut_reason": "sentence boundary selected without anchors",
+                        "reason": "sentence boundary selected without anchors",
+                        "confidence": 0.9,
+                    }
+                ],
+                "satisfied": True,
+                "reasoning_history": [],
+                "review_rounds": 0,
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm._boundary_prompt_candidate_context",
+        lambda **kwargs: [],
+    )
+
+    events: list[dict[str, Any]] = []
+    callbacks = build_layerwise_llm_callbacks(
+        _provider_settings(),
+        proposal_mode="boundaries",
+        event_sink=lambda stage, **extra: events.append({"stage": stage, **extra}),
+    )
+    result = callbacks["propose_layer_fn"](
+        parser_source_map=_parser_source_map(),
+        current_layer_context=_boundary_context(),
+        semantic_tree=_semantic_tree(),
+        split_strategy="boundary_first",
+        parser_input_dict=_parser_input_dict(),
+        parse_session=_parse_session(),
+    )
+
+    assert result.metadata["boundary_proposed_count"] == 1
+    assert result.metadata["boundary_repaired_count"] == 1
+    assert result.metadata["boundary_dropped_count"] == 0
+    assert result.metadata["boundary_accepted_count"] == 1
+    assert len(result.children) == 2
+    assert result.metadata["boundary_review_decisions"][0]["decision"] == "accept"
+    assert result.metadata["boundary_review_decisions"][0]["anchor_match_mode"] in {"exact", "fuzzy"}
+    assert any(event["stage"] == "workflow_layered_boundary_cutpoint_repaired" for event in events)
 
 
 def test_boundary_mode_accepts_atomic_no_split_layer(monkeypatch: pytest.MonkeyPatch):
