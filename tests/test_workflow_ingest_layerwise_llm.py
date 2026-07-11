@@ -739,6 +739,32 @@ def test_boundary_mode_accepts_atomic_no_split_layer(monkeypatch: pytest.MonkeyP
     assert layer_events[-1]["satisfied"] is True
 
 
+def test_boundary_mode_detects_child_with_identical_parent_span() -> None:
+    from kg_doc_parser.workflow_ingest.layerwise_llm import (
+        _boundary_identical_parent_child_ids,
+    )
+
+    child = LayerChildCandidate(
+        node_id="doc|root|cluster-1|unit-0",
+        parent_node_id="doc|root",
+        title="same span",
+        node_type="TEXT_FLOW",
+        total_content_pointers=[
+            HydratedTextPointer(
+                source_cluster_id="cluster-1",
+                start_char=0,
+                end_char=25,
+                verbatim_text="Alpha clause. Beta clause.",
+            )
+        ],
+    )
+
+    assert _boundary_identical_parent_child_ids(
+        current_layer_context=_boundary_context(),
+        current_layer_result=CurrentLayerResult(children=[child], satisfied=True),
+    ) == ["doc|root|cluster-1|unit-0"]
+
+
 class _FakeStructuredInvoker:
     def __init__(self, owner: "_FakeChatModel"):
         self._owner = owner

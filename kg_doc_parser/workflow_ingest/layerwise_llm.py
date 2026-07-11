@@ -1339,6 +1339,39 @@ def _assemble_layer_result_from_boundaries(
     return result, summaries, accepted_cutpoints
 
 
+def _boundary_identical_parent_child_ids(
+    *,
+    current_layer_context: Any,
+    current_layer_result: CurrentLayerResult,
+) -> list[str]:
+    """Find assembled children that reproduce a complete parent pointer."""
+
+    parent_pointers_by_id = dict(
+        getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {}
+    )
+    identical_ids: list[str] = []
+    for child in current_layer_result.children:
+        child_pointers = list(child.total_content_pointers or [])
+        if len(child_pointers) != 1:
+            continue
+        child_pointer = child_pointers[0]
+        child_key = (
+            str(_pointer_field(child_pointer, "source_cluster_id") or ""),
+            int(_pointer_field(child_pointer, "start_char") or 0),
+            int(_pointer_field(child_pointer, "end_char") or -1),
+        )
+        for parent_pointer in parent_pointers_by_id.get(child.parent_node_id, []):
+            parent_key = (
+                str(_pointer_field(parent_pointer, "source_cluster_id") or ""),
+                int(_pointer_field(parent_pointer, "start_char") or 0),
+                int(_pointer_field(parent_pointer, "end_char") or -1),
+            )
+            if child_key == parent_key:
+                identical_ids.append(str(child.node_id))
+                break
+    return identical_ids
+
+
 def _annotate_proposal_result(
     result: CurrentLayerResult,
     *,
@@ -2047,6 +2080,68 @@ def build_layerwise_llm_callbacks(
                 parser_source_map=parser_source_map,
                 review_batch=review_batch,
             )
+            identical_parent_child_ids = _boundary_identical_parent_child_ids(
+                current_layer_context=current_layer_context,
+                current_layer_result=runtime_result,
+            )
+            if identical_parent_child_ids:
+                failure_reason = "boundary assembly produced child span identical to parent"
+                _emit(
+                    "workflow_layered_boundary_assembly_rejected",
+                    proposal_mode="boundaries",
+                    depth=int(getattr(current_layer_context, "depth", 0)),
+                    retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                    split_strategy=split_strategy,
+                    failure_reason=failure_reason,
+                    identical_parent_child_ids=identical_parent_child_ids,
+                )
+                fallback = fallback_builder(
+                    current_layer_context=current_layer_context,
+                    parser_source_map=parser_source_map,
+                )
+                fallback_identical_ids = _boundary_identical_parent_child_ids(
+                    current_layer_context=current_layer_context,
+                    current_layer_result=fallback,
+                )
+                if fallback_identical_ids:
+                    fallback = CurrentLayerResult(
+                        children=[],
+                        satisfied=True,
+                        reasoning_history=list(fallback.reasoning_history),
+                        metadata={
+                            **dict(fallback.metadata),
+                            "allow_empty_layer": True,
+                            "boundary_rejected_child_ids": fallback_identical_ids,
+                        },
+                    )
+                annotated = _annotate_proposal_result(
+                    fallback,
+                    proposal_source="fallback",
+                    proposal_mode="boundaries",
+                    proposal_failure_reason=failure_reason,
+                    provider_child_count=0,
+                )
+                annotated = annotated.model_copy(
+                    update={
+                        "metadata": {
+                            **dict(annotated.metadata),
+                            "boundary_rejected_child_ids": identical_parent_child_ids,
+                        }
+                    }
+                )
+                _emit(
+                    "workflow_layered_proposal_result",
+                    proposal_source="fallback",
+                    proposal_mode="boundaries",
+                    proposal_failure_reason=failure_reason,
+                    depth=int(getattr(current_layer_context, "depth", 0)),
+                    retry_count=int(getattr(current_layer_context, "retry_count", 0)),
+                    split_strategy=split_strategy,
+                    child_count=len(annotated.children),
+                    satisfied=annotated.satisfied,
+                    identical_parent_child_count=len(identical_parent_child_ids),
+                )
+                return annotated
             accepted_count = sum(1 for decision in review_decisions if decision.decision == "accept")
             shifted_count = sum(1 for decision in review_decisions if decision.decision in {"shift_left", "shift_right"})
             rejected_count = sum(1 for decision in review_decisions if decision.decision == "reject")
