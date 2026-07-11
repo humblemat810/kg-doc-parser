@@ -89,6 +89,8 @@ def run_ingest_workflow(
     knowledge_engine=None,
     workflow_id: str = DEFAULT_WORKFLOW_ID,
     deps: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    resume_from_checkpoint: bool = False,
 ) -> tuple[_RunCompat, WorkflowExportBundle | None]:
     client = DirectRuntimeIngestClient(
         workflow_engine=workflow_engine,
@@ -99,6 +101,8 @@ def run_ingest_workflow(
         inp=inp,
         workflow_id=workflow_id,
         deps=deps,
+        run_id=run_id,
+        resume_from_checkpoint=resume_from_checkpoint,
     )
     return _legacy_run_result(result)
 

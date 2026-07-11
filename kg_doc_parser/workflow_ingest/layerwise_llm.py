@@ -1483,13 +1483,21 @@ def build_layerwise_llm_callbacks(
     provider_settings: WorkflowProviderSettings,
     *,
     event_sink: Callable[..., None] | None = None,
+    model_callbacks: list[Any] | None = None,
     fallback_layer_result_fn: Callable[..., CurrentLayerResult] | None = None,
     max_depth: int = 2,
     allow_review: bool = True,
     proposal_mode: str | None = None,
     boundary_refinement_rounds: int = 1,
 ) -> LayerwiseLLMCallbacks:
-    chat_model = build_chat_model_for_role("parser", provider_settings)
+    model_callback_kwargs: dict[str, Any] = {}
+    if model_callbacks:
+        model_callback_kwargs["callbacks"] = list(model_callbacks)
+    chat_model = build_chat_model_for_role(
+        "parser",
+        provider_settings,
+        **model_callback_kwargs,
+    )
     fallback_builder = fallback_layer_result_fn or _fallback_layer_result
     proposal_mode = str(proposal_mode or getattr(provider_settings, "proposal_mode", "children") or "children")
     if proposal_mode not in {"children", "boundaries"}:

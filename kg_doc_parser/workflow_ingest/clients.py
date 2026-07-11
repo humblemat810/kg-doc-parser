@@ -161,6 +161,8 @@ class IngestExecutionClient(ABC):
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
         deps: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
         raise NotImplementedError
 
@@ -201,6 +203,8 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
         deps: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
         ensure_ingest_workflow_design(self.workflow_engine, workflow_id=workflow_id)
         from .service import build_runtime
@@ -217,22 +221,46 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
                 **(deps or {}),
             },
         )
-        run_id = f"run|{inp.request_id}|{uuid4()}"
+        effective_run_id = str(run_id or f"run|{inp.request_id}|{uuid4()}")
         emit_probe_event(
             probe,
             "workflow.run_started",
             request_id=inp.request_id,
             workflow_id=workflow_id,
             execution_mode="direct_runtime",
-            run_id=run_id,
+            run_id=effective_run_id,
         )
-        run = runtime.run(
-            workflow_id=workflow_id,
-            conversation_id=f"ingest:{inp.request_id}",
-            turn_node_id=f"ingest:{inp.request_id}:turn:{uuid4()}",
-            initial_state={"input": inp.model_dump(field_mode="backend", dump_format="json")},
-            run_id=run_id,
-        )
+        conversation_id = f"ingest:{inp.request_id}"
+        turn_node_id = f"ingest:{inp.request_id}:turn"
+        if resume_from_checkpoint:
+            try:
+                run = runtime.resume_from_latest_checkpoint(
+                    run_id=effective_run_id,
+                    workflow_id=workflow_id,
+                    conversation_id=conversation_id,
+                    turn_node_id=turn_node_id,
+                )
+            except ValueError as exc:
+                # A first attempt can die before the first checkpoint. Treat
+                # that as an ordinary fresh execution, not as a reason to
+                # discard the stable parser run identity.
+                if "no checkpoints found" not in str(exc).lower():
+                    raise
+                run = runtime.run(
+                    workflow_id=workflow_id,
+                    conversation_id=conversation_id,
+                    turn_node_id=turn_node_id,
+                    initial_state={"input": inp.model_dump(field_mode="backend", dump_format="json")},
+                    run_id=effective_run_id,
+                )
+        else:
+            run = runtime.run(
+                workflow_id=workflow_id,
+                conversation_id=conversation_id,
+                turn_node_id=turn_node_id,
+                initial_state={"input": inp.model_dump(field_mode="backend", dump_format="json")},
+                run_id=effective_run_id,
+            )
         bundle = None
         if "export_bundle" in run.final_state:
             bundle = WorkflowExportBundle.model_validate(run.final_state["export_bundle"])
