@@ -34,6 +34,9 @@ from .semantics import HydratedTextPointer
 from .service import build_default_engines
 
 
+_DEMO_JWT_SECRET = "kg-doc-parser-demo-test-secret"
+
+
 @dataclass
 class DemoHarnessConfig:
     """Configuration knobs for a demo ingest run."""
@@ -91,9 +94,27 @@ def _load_isolated_server_app(server_data_dir: Path) -> _ServerContext:
     """Start an isolated in-process server for demo runs."""
     from fastapi.testclient import TestClient
 
+    env_keys = (
+        "GKE_BACKEND",
+        "GKE_PERSIST_DIRECTORY",
+        "AUTH_MODE",
+        "JWT_SECRET",
+        "ANONYMIZED_TELEMETRY",
+        "KOGWISTAR_LOG_LEVEL",
+    )
+    previous_env = {key: os.environ.get(key) for key in env_keys}
+
+    def restore_env() -> None:
+        for key, value in previous_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
     os.environ["GKE_BACKEND"] = "chroma"
     os.environ["GKE_PERSIST_DIRECTORY"] = str(server_data_dir)
     os.environ["AUTH_MODE"] = "dev"
+    os.environ.setdefault("JWT_SECRET", _DEMO_JWT_SECRET)
     os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
     os.environ["KOGWISTAR_LOG_LEVEL"] = "WARNING"
     for module_name in (
@@ -104,12 +125,23 @@ def _load_isolated_server_app(server_data_dir: Path) -> _ServerContext:
         sys.modules.pop(module_name, None)
     server_module = importlib.import_module("kogwistar.server_mcp_with_admin")
     client = TestClient(server_module.app)
-    client.__enter__()
+    try:
+        client.__enter__()
+    except Exception:
+        restore_env()
+        raise
+
+    def cleanup(exc_type, exc, tb) -> None:
+        try:
+            client.__exit__(exc_type, exc, tb)
+        finally:
+            restore_env()
+
     return _ServerContext(
         client=client,
         transport="fastapi_testclient",
         base_url="",
-        cleanup=client.__exit__,
+        cleanup=cleanup,
     )
 
 
@@ -130,6 +162,7 @@ def _start_subprocess_server(server_data_dir: Path) -> _ServerContext:
     env["GKE_BACKEND"] = "chroma"
     env["GKE_PERSIST_DIRECTORY"] = str(server_data_dir)
     env["AUTH_MODE"] = "dev"
+    env.setdefault("JWT_SECRET", _DEMO_JWT_SECRET)
     env["ANONYMIZED_TELEMETRY"] = "FALSE"
     env["KOGWISTAR_LOG_LEVEL"] = "WARNING"
     cmd = [
@@ -326,6 +359,7 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
         engine_dir=output_dir / "engines",
         server_data_dir=output_dir / "server-data",
     )
+    engines: tuple[Any, ...] = ()
     inp = WorkflowIngestInput.from_text(
         document_id=config.document_id,
         text=config.text,
@@ -373,11 +407,12 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
             document_id=config.document_id,
             text=config.text,
         )
-        workflow_engine, conversation_engine, _knowledge_engine = build_default_engines(
+        workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
             artifacts.engine_dir,
             backend_factory=config.backend_factory,
             provider_settings=config.provider_settings,
         )
+        engines = (workflow_engine, conversation_engine, knowledge_engine)
         persistence_client = DocumentTreeApiPersistenceClient(
             client=server_ctx.client,
             base_url=server_ctx.base_url,
@@ -424,5 +459,12 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
         return artifacts
     finally:
         emit_probe_event(probe, "demo.server_stopped", server_mode=config.server_mode)
-        server_ctx.__exit__(None, None, None)
-        probe.close()
+        try:
+            server_ctx.__exit__(None, None, None)
+        finally:
+            for engine in reversed(engines):
+                try:
+                    engine.close()
+                except Exception:
+                    pass
+            probe.close()

@@ -51,13 +51,18 @@ _LOGGER = logging.getLogger(__name__)
 StepHandler = Callable[[StepContext], StepRunResult]
 
 
-def _build_export_bundle(*, ctx: StepContext) -> WorkflowExportBundle:
+def _build_export_bundle(
+    *,
+    ctx: StepContext,
+    runtime_deps: dict[str, object] | None = None,
+) -> WorkflowExportBundle:
     normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
     collection = select_primary_collection(normalized)
     tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
     graph_payload = semantic_tree_to_kge_payload(tree, doc_id=collection.collection_id)
-    persistence_mode = str(ctx.state_view.get("persistence_mode", "local_debug"))
-    kg_authority = str(ctx.state_view.get("kg_authority", "local"))
+    deps = runtime_deps or {}
+    persistence_mode = str(ctx.state_view.get("persistence_mode", deps.get("persistence_mode", "local_debug")))
+    kg_authority = str(ctx.state_view.get("kg_authority", deps.get("kg_authority", "local")))
     return WorkflowExportBundle(
         graph_payload=graph_payload,
         authoritative_source_map=ctx.state_view["authoritative_source_map"],
@@ -520,7 +525,7 @@ def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dic
             corrected_pointer_count=int(ctx.state_view.get("corrected_pointer_count", 0)),
             validation_notes=[],
         )
-        bundle = _build_export_bundle(ctx=ctx)
+        bundle = _build_export_bundle(ctx=ctx, runtime_deps=runtime_deps)
         threshold = float(runtime_deps.get("coverage_threshold", 0.99))
         if report.overall_text_coverage < threshold:
             error_message = (
@@ -544,7 +549,7 @@ def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dic
 
     @_register_step(resolver, step_name="export_graph", runtime_deps=runtime_deps)
     def _export_graph(ctx: StepContext) -> StepRunResult:
-        bundle = _build_export_bundle(ctx=ctx)
+        bundle = _build_export_bundle(ctx=ctx, runtime_deps=runtime_deps)
         with ctx.state_write as st:
             st["export_bundle"] = bundle.model_dump(field_mode="backend", dump_format="json")
         return _success("persist_canonical_graph")
@@ -559,7 +564,21 @@ def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dic
                 state_update=[],
                 errors=["no graph persistence client configured"],
             )
-        write_result = persistence_client.persist_graph_payload(bundle)
+        try:
+            write_result = persistence_client.persist_graph_payload(bundle)
+        except Exception as exc:
+            # Preserve the server-canonical authority contract on failure: a
+            # failed remote write must not silently become a local-debug write.
+            with ctx.state_write as st:
+                st["export_bundle"] = bundle.model_dump(
+                    field_mode="backend",
+                    dump_format="json",
+                )
+            return RunFailure(
+                conversation_node_id=None,
+                state_update=[],
+                errors=[f"canonical graph persistence failed: {exc}"],
+            )
         if isinstance(write_result, dict):
             write_result = CanonicalGraphWriteResult.model_validate(write_result)
         emit_probe_event(

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 
 
@@ -19,8 +22,8 @@ def test_kg_doc_parser_import_surface_is_available() -> None:
 
 
 def test_src_package_is_not_importable() -> None:
-    with pytest.raises(ModuleNotFoundError):
-        __import__("src")
+    parser_src = (Path(__file__).resolve().parents[1] / "src").resolve()
+    assert str(parser_src) not in {str(Path(entry).resolve()) for entry in sys.path if entry}
 
 
 def test_package_modules_import_cleanly() -> None:

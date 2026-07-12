@@ -2085,7 +2085,7 @@ def build_layerwise_llm_callbacks(
                 current_layer_result=runtime_result,
             )
             if identical_parent_child_ids:
-                failure_reason = "boundary assembly produced child span identical to parent"
+                failure_reason = "boundary proposal produced no accepted cutpoints: boundary assembly produced child span identical to parent"
                 _emit(
                     "workflow_layered_boundary_assembly_rejected",
                     proposal_mode="boundaries",

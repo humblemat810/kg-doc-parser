@@ -122,8 +122,10 @@ sqlite_handler.setLevel(logging.DEBUG)
 # Add the handler to the logger
 logger.addHandler(sqlite_handler)
 
-# Register the handler's close method with the logging shutdown
-logging.shutdown = sqlite_handler.close
+# Keep the standard logging shutdown lifecycle intact.  Replacing the global
+# shutdown function prevents pytest and other embedding applications from
+# closing all handlers and can leave SQLite/file descriptors behind across
+# test modules.
 
 # Log messages
 logger.info('This is an info message.')
