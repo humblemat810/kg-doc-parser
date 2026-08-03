@@ -569,8 +569,18 @@ def _run_post_ocr_semantic_smoke_case(
 @pytest.mark.parametrize(
     "parser_provider,model_names",
     [
-        pytest.param("ollama", OLLAMA_SEMANTIC_MODELS, id="ollama", marks=pytest.mark.ci_full),
-        pytest.param("gemini", GEMINI_SEMANTIC_MODELS, id="gemini", marks=pytest.mark.manual),
+        pytest.param(
+            "ollama",
+            OLLAMA_SEMANTIC_MODELS,
+            id="ollama",
+            marks=[pytest.mark.manual, pytest.mark.llm_real, pytest.mark.requires_ollama],
+        ),
+        pytest.param(
+            "gemini",
+            GEMINI_SEMANTIC_MODELS,
+            id="gemini",
+            marks=[pytest.mark.manual, pytest.mark.llm_real],
+        ),
     ],
 )
 def test_semantic_document_splitting(gemini_key, monkeypatch, parser_provider, model_names):
@@ -771,8 +781,18 @@ def test_post_ocr_semantic_document_splitting_ollama_models(monkeypatch, model_n
 @pytest.mark.parametrize(
     "parser_provider,model_names",
     [
-        pytest.param("ollama", OLLAMA_SEMANTIC_MODELS, id="ollama", marks=pytest.mark.ci_full),
-        pytest.param("gemini", GEMINI_SEMANTIC_MODELS, id="gemini", marks=pytest.mark.manual),
+        pytest.param(
+            "ollama",
+            OLLAMA_SEMANTIC_MODELS,
+            id="ollama",
+            marks=[pytest.mark.manual, pytest.mark.llm_real, pytest.mark.requires_ollama],
+        ),
+        pytest.param(
+            "gemini",
+            GEMINI_SEMANTIC_MODELS,
+            id="gemini",
+            marks=[pytest.mark.manual, pytest.mark.llm_real],
+        ),
     ],
 )
 def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser_provider, model_names):
@@ -785,7 +805,7 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
     cached by joblib under `.joblib/`; delete that directory for a fresh
     cacheless rerun, especially when retrying the manual Gemini case.
     """
-    from pdf2png import batch_split_pdf
+    from kg_doc_parser.pdf2png import batch_split_pdf
     from kg_doc_parser.utils.file_loaders import RawFileLoader
     import os
     from functools import lru_cache
@@ -892,8 +912,18 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
 @pytest.mark.parametrize(
     "parser_provider,model_names",
     [
-        pytest.param("ollama", OLLAMA_SEMANTIC_MODELS, id="ollama", marks=pytest.mark.ci_full),
-        pytest.param("gemini", GEMINI_SEMANTIC_MODELS, id="gemini", marks=pytest.mark.manual),
+        pytest.param(
+            "ollama",
+            OLLAMA_SEMANTIC_MODELS,
+            id="ollama",
+            marks=[pytest.mark.manual, pytest.mark.llm_real, pytest.mark.requires_ollama],
+        ),
+        pytest.param(
+            "gemini",
+            GEMINI_SEMANTIC_MODELS,
+            id="gemini",
+            marks=[pytest.mark.manual, pytest.mark.llm_real],
+        ),
     ],
 )
 def test_semantic_document_splitting_doc_group(gemini_key, monkeypatch, parser_provider, model_names):

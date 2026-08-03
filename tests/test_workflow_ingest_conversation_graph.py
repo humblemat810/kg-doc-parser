@@ -26,7 +26,14 @@ pytestmark = [pytest.mark.workflow]
 @pytest.fixture(
     params=[
         pytest.param("in_memory", id="in_memory", marks=pytest.mark.ci),
-        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        # This helper's Chroma backend uses a live Ollama embedding model.  It
+        # validates provider deployment, not parser/runtime semantics, so keep
+        # it out of deterministic contract CI.
+        pytest.param(
+            "chroma",
+            id="chroma",
+            marks=[pytest.mark.slow, pytest.mark.requires_ollama],
+        ),
     ]
 )
 def workflow_backend_kind(request):

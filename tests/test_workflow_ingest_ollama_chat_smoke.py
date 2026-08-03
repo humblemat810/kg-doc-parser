@@ -25,7 +25,9 @@ def _ollama_available(base_url: str) -> tuple[bool, str | None]:
     return True, None
 
 
-@pytest.mark.ci_full
+@pytest.mark.manual
+@pytest.mark.llm_real
+@pytest.mark.requires_ollama
 def test_chat_ollama_simple_invoke_smoke() -> None:
     pytest.importorskip("langchain_ollama")
 

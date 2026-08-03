@@ -14,7 +14,10 @@ from kg_doc_parser.workflow_ingest import (
 )
 
 
-pytestmark = [pytest.mark.workflow, pytest.mark.ci]
+# Provider constructors are kg-doc-parser model-selection coverage.  Several
+# adapters validate real SDK credentials during construction, so this file is
+# intentionally outside Kogwistar ADR-015 compatibility CI until fully faked.
+pytestmark = [pytest.mark.workflow, pytest.mark.llm_real]
 
 
 def _require_module(module_name: str) -> None:

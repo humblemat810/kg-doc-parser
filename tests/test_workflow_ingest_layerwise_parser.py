@@ -32,7 +32,7 @@ pytestmark = [pytest.mark.workflow]
 @pytest.fixture(
     params=[
         pytest.param("in_memory", id="in_memory", marks=pytest.mark.ci),
-        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.slow),
     ]
 )
 def workflow_backend_kind(request):

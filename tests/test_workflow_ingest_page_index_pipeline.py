@@ -1073,7 +1073,9 @@ def test_page_index_heuristic_plain_text_and_markdown_share_structure() -> None:
     assert _normalized_node_signature(text_result.semantic_tree) == _normalized_node_signature(markdown_result.semantic_tree)
 
 
-@pytest.mark.ci_full
+@pytest.mark.manual
+@pytest.mark.llm_real
+@pytest.mark.requires_ollama
 @pytest.mark.parametrize(
     "fixture_name, source_format",
     [
@@ -1125,7 +1127,9 @@ def test_page_index_ollama_smoke_parses_text_and_markdown(
     assert result.coverage["overall"] > 0.80
 
 
-@pytest.mark.ci_full
+@pytest.mark.manual
+@pytest.mark.llm_real
+@pytest.mark.requires_ollama
 @pytest.mark.parametrize(
     "fixture_name, source_format",
     [

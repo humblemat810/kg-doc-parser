@@ -602,12 +602,23 @@ def test_prepare_ocr_workflow_input_keeps_document_fingerprint_stable_in_state_d
 # - compare the regenerated `page_N.json` files with the previous run
 
 
-@pytest.mark.ci_full
+@pytest.mark.manual
+@pytest.mark.llm_real
 @pytest.mark.parametrize(
     "provider, model",
     [
-        pytest.param("ollama", "glm-ocr:latest", id="glm-ocr"),
-        pytest.param("ollama", "gemma4:e2b", id="gemma4"),
+        pytest.param(
+            "ollama",
+            "glm-ocr:latest",
+            id="glm-ocr",
+            marks=pytest.mark.requires_ollama,
+        ),
+        pytest.param(
+            "ollama",
+            "gemma4:e2b",
+            id="gemma4",
+            marks=pytest.mark.requires_ollama,
+        ),
         pytest.param("gemini", "gemini-2.5-flash", id="gemini"),
     ],
 )

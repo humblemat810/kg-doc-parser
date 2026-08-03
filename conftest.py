@@ -8,6 +8,19 @@ if str(_VENDORED_KOGWISTAR) not in sys.path:
 import pytest
 
 
+def pytest_collection_modifyitems(items):
+    """Keep model/provider quality checks out of deterministic contract CI."""
+    for item in items:
+        marker_names = {marker.name for marker in item.iter_markers()}
+        if marker_names.intersection({"ci", "ci_full"}) and marker_names.intersection(
+            {"manual", "llm_real", "requires_ollama"}
+        ):
+            raise pytest.UsageError(
+                f"{item.nodeid} mixes deterministic CI and real-provider markers; "
+                "remove ci/ci_full or replace the provider with a fake/injected model"
+            )
+
+
 @pytest.fixture
 def gemini_key():
     import dotenv
