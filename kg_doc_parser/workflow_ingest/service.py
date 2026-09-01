@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime.runtime import WorkflowRuntime
@@ -42,6 +42,7 @@ def build_default_engines(
     embedding_function=None,
     backend_factory=None,
     provider_settings: WorkflowProviderSettings | None = None,
+    conversation_persistence_mode: Literal["single_stage", "two_stage"] = "single_stage",
 ) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine, GraphKnowledgeEngine]:
     base_dir = Path(base_dir)
     provider_settings = provider_settings or WorkflowProviderSettings.from_env()
@@ -60,6 +61,7 @@ def build_default_engines(
         kg_graph_type="conversation",
         embedding_function=embedding,
         backend_factory=backend_factory,
+        persistence_mode=conversation_persistence_mode,
     )
     knowledge_engine = GraphKnowledgeEngine(
         persist_directory=str(base_dir / "knowledge"),

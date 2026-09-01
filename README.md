@@ -345,3 +345,8 @@ shell command.
 - `README.md`, env handling, and ingestion boundaries are still being cleaned up as part of the ongoing refactor.
 - Runtime outputs such as `logs/`, local `.env`, caches, and generated artifacts should remain uncommitted.
 - If behavior diverges between this repo and `kogwistar`, prefer the direction of the ongoing migration and refactor work.
+
+Two-stage conversation materialization is an engine-owned capability. The
+parser writes grounded stage-one artifacts through the supplied conversation
+engine and does not create a second embedding queue. See
+[`doc/adr_conversation_two_stage_parser_contract.md`](doc/adr_conversation_two_stage_parser_contract.md).
