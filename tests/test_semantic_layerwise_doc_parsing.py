@@ -349,9 +349,10 @@ def test_iterative_pointer_correction_uses_active_parser_model(monkeypatch: pyte
     LLMChildNodeResponseBE = parsing_module.LLMChildNodeResponseBE
     iterative_correct_children_for_level = parsing_module.iterative_correct_children_for_level
 
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"calls": 0}
 
     def fake_caller(prompt, model_names, schema, doc_id, model_json_schema, event_name, i_attempt):
+        captured["calls"] = int(captured["calls"]) + 1
         captured["model_names"] = list(model_names)
         raise RuntimeError("expected test stop")
 
@@ -382,7 +383,173 @@ def test_iterative_pointer_correction_uses_active_parser_model(monkeypatch: pyte
     )
 
     assert captured["model_names"] == ["qwen3:4b"]
+    assert captured["calls"] == 1
     assert result.pending_fix_children
+
+    repeated_result = iterative_correct_children_for_level(
+        children=[unresolved_child],
+        source_map={},
+        full_document_json={"document_filename": "dummy.pdf", "pages": []},
+        doc_id="dummy.pdf",
+        max_rounds=1,
+        call_llm_structured=fake_caller,
+    )
+
+    assert captured["calls"] == 2
+    assert repeated_result.pending_fix_children
+
+
+def test_terminal_level_correction_is_staged_but_pending_work_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kg_doc_parser.semantic_document_splitting_layerwise_edits as parsing_module
+
+    _configure_parser_env(monkeypatch, provider="ollama", model="qwen3:4b")
+    cache_dir = pathlib.Path(__file__).parent / ".tmp_semantic_layerwise_cache" / str(os.getpid())
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(parsing_module, "memory", Memory(cache_dir / "terminal-correction"))
+    calls = 0
+
+    def terminal_correction(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return parsing_module.ChildrenCorrectionResult([], [])
+
+    monkeypatch.setattr(parsing_module, "iterative_correct_children_for_level", terminal_correction)
+    args = {
+        "level_response_json": {"children": []},
+        "source_map": {},
+        "full_document_json": {"document_filename": "test.md", "pages": []},
+        "doc_id": "test.md",
+    }
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        parsing_module.correct_level_children_with_iterative_pipeline(**args)
+        parsing_module.correct_level_children_with_iterative_pipeline(**args)
+        transaction.promote()
+    with parsing_module.parser_llm_cache_transaction():
+        parsing_module.correct_level_children_with_iterative_pipeline(**args)
+    assert calls == 1
+
+    def pending_correction(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return parsing_module.ChildrenCorrectionResult([], [object()])
+
+    monkeypatch.setattr(parsing_module, "iterative_correct_children_for_level", pending_correction)
+    pending_args = {
+        **args,
+        "doc_id": "pending.md",
+        "full_document_json": {"document_filename": "pending.md", "pages": []},
+    }
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        parsing_module.correct_level_children_with_iterative_pipeline(**pending_args)
+        parsing_module.correct_level_children_with_iterative_pipeline(**pending_args)
+        transaction.promote()
+    assert calls == 3
+
+
+def test_parser_llm_cache_keys_provider_context_and_does_not_cache_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+    import types
+
+    _configure_parser_env(monkeypatch, provider="ollama", model="qwen3:4b")
+    cache_dir = pathlib.Path(__file__).parent / ".tmp_semantic_layerwise_cache" / str(os.getpid())
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = cache_dir / "cache_trace.jsonl"
+    monkeypatch.setenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("KG_DOC_PARSER_LLM_CACHE_REVISION", "test-v1")
+    monkeypatch.setenv("KG_DOC_LAYERWISE_TRACE_FILE", str(trace_path))
+
+    logger_stub = types.ModuleType("document_ingester_logger")
+
+    class _NoopDocumentIngestSQLiteCallback:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+    logger_stub.DocumentIngestSQLiteCallback = _NoopDocumentIngestSQLiteCallback
+    monkeypatch.setitem(sys.modules, "document_ingester_logger", logger_stub)
+    monkeypatch.setitem(sys.modules, "kg_doc_parser.document_ingester_logger", logger_stub)
+    sys.modules.pop("kg_doc_parser.semantic_document_splitting_layerwise_edits", None)
+    parsing_module = importlib.import_module("kg_doc_parser.semantic_document_splitting_layerwise_edits")
+
+    calls = 0
+
+    @parsing_module.parser_llm_cache
+    def cached_probe(value: str) -> str:
+        nonlocal calls
+        calls += 1
+        return f"result:{value}:{calls}"
+
+    # A successful model response is reusable only inside its current ingest
+    # transaction. Exiting without graph-persistence promotion discards it.
+    with parsing_module.parser_llm_cache_transaction():
+        assert cached_probe("same-input") == "result:same-input:1"
+        assert cached_probe("same-input") == "result:same-input:1"
+    assert calls == 1
+
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        assert cached_probe("same-input") == "result:same-input:2"
+        transaction.promote()
+    with parsing_module.parser_llm_cache_transaction():
+        assert cached_probe("same-input") == "result:same-input:2"
+    assert calls == 2
+
+    monkeypatch.setenv("KG_DOC_PARSER_PROVIDER", "openai")
+    monkeypatch.setenv("KG_DOC_PARSER_BASE_URL", "https://example.invalid/v1")
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        assert cached_probe("same-input") == "result:same-input:3"
+        transaction.promote()
+    assert calls == 3
+
+    monkeypatch.setenv("KG_DOC_PARSER_LLM_CACHE_REVISION", "test-v2")
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        assert cached_probe("same-input") == "result:same-input:4"
+        transaction.promote()
+    assert calls == 4
+
+    callback_probe_calls = 0
+
+    @parsing_module.parser_llm_cache
+    def callback_probe(value: str, call_llm_structured, max_rounds: int) -> str:
+        nonlocal callback_probe_calls
+        callback_probe_calls += 1
+        return call_llm_structured(value)
+
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        assert callback_probe("stable", lambda value: f"first:{value}", 1) == "first:stable"
+        transaction.promote()
+    with parsing_module.parser_llm_cache_transaction():
+        assert callback_probe("stable", lambda value: f"second:{value}", 99) == "first:stable"
+    assert callback_probe_calls == 1
+
+    attempts = 0
+
+    @parsing_module.parser_llm_cache
+    def flaky_probe() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient provider failure")
+        return "recovered"
+
+    with pytest.raises(RuntimeError, match="transient provider failure"):
+        with parsing_module.parser_llm_cache_transaction():
+            flaky_probe()
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        assert flaky_probe() == "recovered"
+        transaction.promote()
+    with parsing_module.parser_llm_cache_transaction():
+        assert flaky_probe() == "recovered"
+    assert attempts == 2
+
+    trace_kinds = [json.loads(line)["kind"] for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert "parser_llm_cache.staged_miss" in trace_kinds
+    assert "parser_llm_cache.staged_hit" in trace_kinds
+    assert "parser_llm_cache.committed_hit" in trace_kinds
+    assert "parser_llm_cache.promoted" in trace_kinds
+    assert "parser_llm_cache.discarded" in trace_kinds
 
 
 def _run_post_ocr_semantic_smoke_case(

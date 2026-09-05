@@ -77,6 +77,12 @@ entry func : build_document_tree
 import json
 import re
 import time
+import inspect
+from hashlib import sha256
+from functools import wraps
+from contextlib import contextmanager
+from pathlib import Path
+import tempfile
 
 from dataclasses import dataclass
 from enum import Enum
@@ -95,8 +101,9 @@ import math
 import os
 from rapidfuzz.distance import LCSseq
 from datetime import datetime
-from typing import Callable, TypeVar, ParamSpec, cast
-from joblib import Memory
+from typing import Callable, Generator, TypeVar, ParamSpec, cast
+from contextvars import ContextVar
+from joblib import Memory, dump as joblib_dump, hash as joblib_hash, load as joblib_load
 from kg_doc_parser.document_ingester_logger import DocumentIngestSQLiteCallback
 from kg_doc_parser.llm_structured_output import build_structured_output_runnable
 from kogwistar.id_provider import stable_id
@@ -528,7 +535,6 @@ class SemanticNode(BaseModel):
             "edges": edges,
         }
 SemanticNode.model_rebuild()
-from contextvars import ContextVar
 current_level_nodes = ContextVar("allowed_choices", default=[])
 
 def reject_self_recursion(parent_type: str, child: LLMChildNodeResponse) -> bool:
@@ -885,7 +891,216 @@ $parent_sections_json
 from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage
 from joblib import Memory
 memory = Memory(location = os.getenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", ".joblib"))
-@joblib_memory_cached(memory, ignore = ['model_names', 'event_name'])
+
+_PARSER_LLM_CACHE_REVISION_ENV = "KG_DOC_PARSER_LLM_CACHE_REVISION"
+_PARSER_LLM_CACHE_REVISION = "parser-llm-cache-v4"
+
+
+def _parser_llm_cache_context() -> str:
+    """Return a non-secret fingerprint for all parser LLM cache entries."""
+
+    settings = WorkflowProviderSettings.from_env()
+    payload = {
+        "cache_revision": os.getenv(
+            _PARSER_LLM_CACHE_REVISION_ENV,
+            _PARSER_LLM_CACHE_REVISION,
+        ),
+        "parser": settings.parser.model_dump(dump_format="json"),
+        "proposal_mode": settings.proposal_mode,
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _parser_llm_cache_path(cache_key: str) -> Path:
+    """Return a committed-cache path under the configured Joblib root."""
+
+    cache_root = Path(memory.location or ".joblib") / "parser_llm_committed_v3"
+    return cache_root / cache_key[:2] / f"{cache_key}.joblib"
+
+
+def _load_committed_parser_llm_result(cache_key: str) -> tuple[bool, Any]:
+    cache_path = _parser_llm_cache_path(cache_key)
+    if not cache_path.is_file():
+        return False, None
+    try:
+        return True, joblib_load(cache_path)
+    except Exception as exc:  # A corrupt cache is never authoritative.
+        _emit_layerwise_trace(
+            "parser_llm_cache.committed_load_failed",
+            cache_key=cache_key,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return False, None
+
+
+def _store_committed_parser_llm_result(cache_key: str, value: Any) -> None:
+    """Atomically publish a result only after the enclosing ingest succeeds."""
+
+    cache_path = _parser_llm_cache_path(cache_key)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{cache_key}.",
+        suffix=".tmp",
+        dir=cache_path.parent,
+        delete=False,
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        joblib_dump(value, temporary_path)
+        os.replace(temporary_path, cache_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink(missing_ok=True)
+
+
+@dataclass
+class ParserLlmCacheTransaction:
+    """Stages LLM outputs until the canonical graph write has succeeded.
+
+    A cache hit is safe only when it was promoted by an earlier successful
+    parse-and-persist transaction. Newly generated results stay local to this
+    transaction so a validation, persistence, or cancellation failure cannot
+    poison a later retry.
+    """
+
+    _staged: dict[str, Any]
+    _promoted: bool = False
+
+    def lookup(self, cache_key: str) -> tuple[str, Any]:
+        if cache_key in self._staged:
+            return "staged", self._staged[cache_key]
+        found, value = _load_committed_parser_llm_result(cache_key)
+        return ("committed", value) if found else ("miss", None)
+
+    def stage(self, cache_key: str, value: Any) -> None:
+        self._staged[cache_key] = value
+
+    def promote(self) -> int:
+        for cache_key, value in self._staged.items():
+            _store_committed_parser_llm_result(cache_key, value)
+        promoted_count = len(self._staged)
+        self._staged.clear()
+        self._promoted = True
+        _emit_layerwise_trace("parser_llm_cache.promoted", entry_count=promoted_count)
+        return promoted_count
+
+    def discard(self, *, reason: str) -> int:
+        discarded_count = len(self._staged)
+        self._staged.clear()
+        _emit_layerwise_trace(
+            "parser_llm_cache.discarded",
+            entry_count=discarded_count,
+            reason=reason,
+        )
+        return discarded_count
+
+
+_active_parser_llm_cache_transaction: ContextVar[ParserLlmCacheTransaction | None] = ContextVar(
+    "active_parser_llm_cache_transaction",
+    default=None,
+)
+
+
+@contextmanager
+def parser_llm_cache_transaction() -> Generator[ParserLlmCacheTransaction, None, None]:
+    """Stage parser LLM results and require an explicit successful promotion.
+
+    Call ``transaction.promote()`` only after canonical graph persistence has
+    completed. Exiting without promotion, including through an exception,
+    discards all newly generated values.
+    """
+
+    active = _active_parser_llm_cache_transaction.get()
+    if active is not None:
+        yield active
+        return
+    transaction = ParserLlmCacheTransaction(_staged={})
+    token = _active_parser_llm_cache_transaction.set(transaction)
+    try:
+        yield transaction
+    except BaseException:
+        transaction.discard(reason="exception")
+        raise
+    else:
+        if not transaction._promoted:
+            transaction.discard(reason="not_promoted")
+    finally:
+        _active_parser_llm_cache_transaction.reset(token)
+
+
+def _parser_llm_cache(
+    fn: Callable[P, R],
+    *,
+    should_stage: Callable[[R], bool],
+) -> Callable[P, R]:
+    """Stage successful LLM results under the active parse/persist transaction.
+
+    This deliberately performs no durable caching outside
+    :func:`parser_llm_cache_transaction`: a returned model payload alone has
+    not yet passed parser validation or canonical graph persistence.
+    """
+
+    @wraps(fn)
+    def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+        transaction = _active_parser_llm_cache_transaction.get()
+        if transaction is None:
+            _emit_layerwise_trace("parser_llm_cache.bypassed", operation=fn.__name__)
+            return fn(*args, **kwargs)
+        cache_context = _parser_llm_cache_context()
+        bound_arguments = inspect.signature(fn).bind_partial(*args, **kwargs)
+        # These control how an operation is attempted, not what its successful
+        # semantic result means. In particular, test/local callers must not
+        # fragment a replayable result merely because they inject a callback.
+        bound_arguments.arguments.pop("call_llm_structured", None)
+        bound_arguments.arguments.pop("max_rounds", None)
+        cache_key = joblib_hash(
+            (fn.__module__, fn.__qualname__, cache_context, bound_arguments.arguments)
+        )
+        state, value = transaction.lookup(cache_key)
+        if state != "miss":
+            _emit_layerwise_trace(
+                f"parser_llm_cache.{state}_hit",
+                operation=fn.__name__,
+                cache_context=cache_context,
+            )
+            return cast(R, value)
+        _emit_layerwise_trace(
+            "parser_llm_cache.staged_miss",
+            operation=fn.__name__,
+            cache_context=cache_context,
+        )
+        value = fn(*args, **kwargs)
+        if should_stage(value):
+            transaction.stage(cache_key, value)
+        else:
+            _emit_layerwise_trace(
+                "parser_llm_cache.not_staged",
+                operation=fn.__name__,
+                reason="nonterminal_result",
+            )
+        return value
+
+    return cast(Callable[P, R], wrapped)
+
+
+def parser_llm_cache(fn: Callable[P, R]) -> Callable[P, R]:
+    """Stage a completed provider result under the active ingest transaction."""
+
+    return _parser_llm_cache(fn, should_stage=lambda _value: True)
+
+
+def parser_llm_cache_terminal_correction(fn: Callable[P, R]) -> Callable[P, R]:
+    """Cache a correction layer only when it has no remaining pending nodes."""
+
+    def _is_terminal(value: R) -> bool:
+        return not bool(getattr(value, "pending_fix_children", None))
+
+    return _parser_llm_cache(fn, should_stage=_is_terminal)
+
+
+@parser_llm_cache
 def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set):
         
         i_model = 0
@@ -930,8 +1145,7 @@ def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id
                 messages.append(SystemMessage((("error: " + err_msg[:10000] + '...' + err_msg[-2000:]) if len(err_msg)>=12000 else err_msg)))
                 if i_model >= len(model_names):
                     raise Exception(f"All models ({model_names}) failed for this batch.") from e
-# @memory.cache(ignore = ['model_names'])
-@joblib_memory_cached(memory, ignore = ['model_names', 'event_name'])
+@parser_llm_cache
 def level_node_llm_parsing(
     nodes_at_level: List[dict],  # type: ignore
     source_map: Dict,
@@ -1803,7 +2017,10 @@ class StructuredLLMCaller(Protocol):
     ) -> T:
         ...
 
-@memory.cache(ignore = ['model_names', 'schema', 'event_name'])
+# Cache completed provider calls, not the correction orchestrator. Joblib does
+# not cache exceptions, so failed provider attempts remain retryable while a
+# successful structured response can be replayed without another LLM call.
+@parser_llm_cache
 def _default_call_llm_structured(
     prompt: str, model_names: List[str], schema: type[T] ,doc_id: str, model_json_schema : dict, event_name: str, i_attempt: int
 ) -> T:
@@ -1851,7 +2068,6 @@ T2 = TypeVar("T2", bound=BaseModel)
 from typing import Any, TypeVar, overload
 
 
-@memory.cache(ignore = ['call_llm_structured', 'max_rounds', 'model_names'])
 def iterative_correct_children_for_level(
     children: List[LLMChildNodeResponseBE],
     source_map: Dict,
@@ -2324,7 +2540,7 @@ def _serialize_children_for_prompt(children: List[LLMChildNodeResponse]) -> str:
     return json.dumps(slim, ensure_ascii=False, indent=2)
 
 # ---------- CUD_proposal + apply_proposal ----------
-@memory.cache(ignore = ['model_names', 'source_map'])
+@parser_llm_cache
 def CUD_proposal(
     # parent_id: str,
     children: List[LLMChildNodeResponse],
@@ -2503,7 +2719,7 @@ def apply_proposal(
 # ============================================================================
 # Convenience: correct one level from your existing `build_document_tree` loop
 # ============================================================================
-@memory.cache
+@parser_llm_cache_terminal_correction
 def correct_level_children_with_iterative_pipeline(
     level_response_json: dict,
     source_map: Dict,
@@ -2512,7 +2728,9 @@ def correct_level_children_with_iterative_pipeline(
     model_names: List[str] | None = None,
 ) -> ChildrenCorrectionResult:
     """Helper to be used right after a level LLM call in your BFS.
-    This layer is a cacheable layer
+
+    A fully corrected level is staged as one cache unit. Results containing
+    ``pending_fix_children`` remain retryable and are never staged.
     Example integration:
         level_response = LLMLevelResponse.model_validate(llm_response_json)
         corrected_children = correct_level_children_with_iterative_pipeline(
@@ -2800,7 +3018,7 @@ def print_tree(node: SemanticNode, indent=""):
     print(f"{indent} L- {node.title} ({node.node_type}) | Text: '{reconstructed_text[:150].strip()}...'")
     for child in node.child_nodes:
         print_tree(child, indent + "  ")
-@memory.cache()
+@parser_llm_cache
 def parse_doc(
     doc_id: str,
     raw_doc_dict,
@@ -3304,7 +3522,7 @@ def _parent_payload(node_dict: dict[str, Any], child_digests: list[dict[str, Any
         "children": child_digests,
     }
 
-@memory.cache(ignore=["model_names"])
+@parser_llm_cache
 def build_index_terms_for_semantic_node(
     sem_nodes: list["SemanticNode"],
     doc_id: str,
@@ -3345,7 +3563,7 @@ def build_index_terms_for_semantic_node(
 
     )
 
-    @memory.cache(ignore=["model_names"])
+    @parser_llm_cache
     def get_minibatch_result(messages, doc_id: str, model_names: list[str], all_ids: tuple[str, ...]):
         retries = 0
         retry_max = 3
