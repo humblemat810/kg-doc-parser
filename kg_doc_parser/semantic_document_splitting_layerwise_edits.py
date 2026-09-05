@@ -915,7 +915,7 @@ def _parser_llm_cache_context() -> str:
 def _parser_llm_cache_path(cache_key: str) -> Path:
     """Return a committed-cache path under the configured Joblib root."""
 
-    cache_root = Path(memory.location or ".joblib") / "parser_llm_committed_v3"
+    cache_root = Path(memory.location or ".joblib") / "parser_llm_committed_v4"
     return cache_root / cache_key[:2] / f"{cache_key}.joblib"
 
 
