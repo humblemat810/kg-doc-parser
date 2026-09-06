@@ -31,7 +31,7 @@ pydantic-extension = "^0.0.7"
 rapidfuzz = "^3.14.3"
 mcp = "^1.25.0"
 kogwistar = "^0.2.4"
-fastmcp = "^3.2.3"
+fastmcp = "3.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"
@@ -43,4 +43,3 @@ workflow-ingest = "kg_doc_parser.workflow_ingest.cli:main"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-
