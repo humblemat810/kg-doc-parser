@@ -1134,10 +1134,16 @@ def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id
                     except Exception as e:
                         err_msg = str(e)
                         messages.append(SystemMessage((("error: " + err_msg[:10000] + '...' + err_msg[-2000:]) if len(err_msg)>=12000 else err_msg)))
-                        if retries == max_retry -1 :
-                            messages.append(SystemMessage("retry"))
-                        else:
-                            raise Exception ("retried too many times single model, switching to next llm model")
+                        if retries < max_retry - 1:
+                            messages.append(
+                                SystemMessage(
+                                    "The previous response was invalid. Retry the same request and return only the required structured payload."
+                                )
+                            )
+                            continue
+                        raise Exception(
+                            "retried too many times with single model, switching to next llm model"
+                        )
             except Exception as e:
                 print(f"⚠️ Model {model_name} failed: {e}")
                 i_model += 1

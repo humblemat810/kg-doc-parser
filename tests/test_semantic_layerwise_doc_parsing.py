@@ -448,6 +448,47 @@ def test_terminal_level_correction_is_staged_but_pending_work_is_not(
     assert calls == 3
 
 
+def test_batched_level_parser_retries_same_model_before_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kg_doc_parser.semantic_document_splitting_layerwise_edits as parsing_module
+
+    calls = 0
+
+    class Parsed:
+        children: list[object] = []
+
+        def model_dump(self) -> dict[str, object]:
+            return {"children": []}
+
+    class Runnable:
+        def invoke(self, _messages, config=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("transient provider failure")
+            return {"parsed": Parsed(), "parsing_error": None}
+
+    monkeypatch.setattr(parsing_module, "get_llm", lambda _model: object())
+    monkeypatch.setattr(
+        parsing_module,
+        "build_structured_output_runnable",
+        lambda *_args, **_kwargs: Runnable(),
+    )
+
+    result = parsing_module.retried_level_node_llm_parsing(
+        ["test-model"],
+        [],
+        [],
+        "doc-1",
+        "retry-regression",
+        set(),
+    )
+
+    assert calls == 2
+    assert result == {"children": []}
+
+
 def test_parser_llm_cache_keys_provider_context_and_does_not_cache_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
