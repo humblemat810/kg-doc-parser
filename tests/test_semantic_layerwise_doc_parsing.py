@@ -2,7 +2,12 @@ import sys, pathlib
 
 
         
-from typing import Callable, TypeVar, ParamSpec, cast
+from typing import Callable, TypeVar, ParamSpec, cast, Any
+from contextlib import contextmanager
+import json
+import os
+import subprocess
+import threading
 import time
 from joblib import Memory
 import pytest
@@ -106,6 +111,146 @@ def _wait_for_local_server(base_urls: tuple[str, ...] = LOCAL_KOGWISTAR_BASE_URL
     )
 
 
+def _prepend_env_path(env: dict[str, str], key: str, value: str) -> None:
+    current = env.get(key, "").strip()
+    env[key] = value if not current else f"{value}{os.pathsep}{current}"
+
+
+class TraceWriter:
+    def __init__(self, path: pathlib.Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = self.path.open("a", encoding="utf-8")
+        self._started_at = time.perf_counter()
+
+    def emit(self, kind: str, **data: Any) -> None:
+        record = {
+            "kind": kind,
+            "ts": time.time(),
+            "elapsed_s": round(time.perf_counter() - self._started_at, 3),
+            **data,
+        }
+        self._fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        self._fh.flush()
+
+    def close(self) -> None:
+        try:
+            self._fh.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _shutdown_subprocess_server(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+@contextmanager
+def _ensure_local_server(base_urls: tuple[str, ...] = LOCAL_KOGWISTAR_BASE_URLS):
+    try:
+        yield _wait_for_local_server(base_urls, timeout_s=1.0)
+        return
+    except pytest.skip.Exception:
+        pass
+
+    import requests
+    from urllib.parse import urlparse
+
+    workspace_root = pathlib.Path(__file__).resolve().parents[1]
+    vendored_kogwistar = workspace_root / "kogwistar"
+    target_url = base_urls[0]
+    parsed = urlparse(target_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 28110
+    log_dir = workspace_root / ".tmp_vscode_server" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"kogwistar-autostart-{port}.log"
+
+    env = os.environ.copy()
+    env["HOST"] = host
+    env["PORT"] = str(port)
+    env["AUTH_MODE"] = "dev"
+    env["JWT_SECRET"] = "dev-secret"
+    env["JWT_ALG"] = "HS256"
+    env["GKE_BACKEND"] = "chroma"
+    env["GKE_PERSIST_DIRECTORY"] = str(workspace_root / ".tmp_vscode_server" / "gke")
+    env["MCP_CHROMA_DIR"] = str(workspace_root / ".tmp_vscode_server" / "mcp" / "docs")
+    env["MCP_CHROMA_DIR_CONVERSATION"] = str(workspace_root / ".tmp_vscode_server" / "mcp" / "conversation")
+    env["MCP_CHROMA_DIR_WORKFLOW"] = str(workspace_root / ".tmp_vscode_server" / "mcp" / "workflow")
+    env["MCP_CHROMA_DIR_WISDOM"] = str(workspace_root / ".tmp_vscode_server" / "mcp" / "wisdom")
+    env["DEV_AUTH_NS"] = "docs,conversation,workflow,wisdom"
+    env["LOG_LEVEL"] = "DEBUG"
+    env["UVICORN_LOG_LEVEL"] = "DEBUG"
+    env["PYTHONUNBUFFERED"] = "1"
+    _prepend_env_path(env, "PYTHONPATH", str(vendored_kogwistar))
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "kogwistar.server_mcp_with_admin:app",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--log-level",
+        "warning",
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(workspace_root),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    lines: list[str] = []
+
+    def _reader() -> None:
+        if proc.stdout is None:
+            return
+        with log_path.open("a", encoding="utf-8") as fh:
+            for line in proc.stdout:
+                stripped = line.rstrip()
+                lines.append(stripped)
+                fh.write(stripped + "\n")
+
+    thread = threading.Thread(target=_reader, daemon=True)
+    thread.start()
+
+    deadline = time.perf_counter() + 60.0
+    last_error: Exception | None = None
+    try:
+        while time.perf_counter() < deadline:
+            if proc.poll() is not None:
+                pytest.fail(
+                    "auto-started Kogwistar server exited before becoming healthy.\n"
+                    f"log: {log_path}\n"
+                    + "\n".join(lines[-50:])
+                )
+            try:
+                response = requests.get(f"{target_url}/health", timeout=1.5)
+                if response.ok:
+                    yield target_url
+                    return
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+            time.sleep(0.2)
+        pytest.fail(
+            "auto-started Kogwistar server never became healthy.\n"
+            f"url: {target_url}\n"
+            f"log: {log_path}\n"
+            f"last error: {last_error}"
+        )
+    finally:
+        _shutdown_subprocess_server(proc)
+
+
 
 def _load_version_chain_db():
     """Load the legacy VersionChainDB helper if it exists, otherwise skip.
@@ -204,9 +349,10 @@ def test_iterative_pointer_correction_uses_active_parser_model(monkeypatch: pyte
     LLMChildNodeResponseBE = parsing_module.LLMChildNodeResponseBE
     iterative_correct_children_for_level = parsing_module.iterative_correct_children_for_level
 
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"calls": 0}
 
     def fake_caller(prompt, model_names, schema, doc_id, model_json_schema, event_name, i_attempt):
+        captured["calls"] = int(captured["calls"]) + 1
         captured["model_names"] = list(model_names)
         raise RuntimeError("expected test stop")
 
@@ -237,7 +383,173 @@ def test_iterative_pointer_correction_uses_active_parser_model(monkeypatch: pyte
     )
 
     assert captured["model_names"] == ["qwen3:4b"]
+    assert captured["calls"] == 1
     assert result.pending_fix_children
+
+    repeated_result = iterative_correct_children_for_level(
+        children=[unresolved_child],
+        source_map={},
+        full_document_json={"document_filename": "dummy.pdf", "pages": []},
+        doc_id="dummy.pdf",
+        max_rounds=1,
+        call_llm_structured=fake_caller,
+    )
+
+    assert captured["calls"] == 2
+    assert repeated_result.pending_fix_children
+
+
+def test_terminal_level_correction_is_staged_but_pending_work_is_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kg_doc_parser.semantic_document_splitting_layerwise_edits as parsing_module
+
+    _configure_parser_env(monkeypatch, provider="ollama", model="qwen3:4b")
+    cache_dir = pathlib.Path(__file__).parent / ".tmp_semantic_layerwise_cache" / str(os.getpid())
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(parsing_module, "memory", Memory(cache_dir / "terminal-correction"))
+    calls = 0
+
+    def terminal_correction(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return parsing_module.ChildrenCorrectionResult([], [])
+
+    monkeypatch.setattr(parsing_module, "iterative_correct_children_for_level", terminal_correction)
+    args = {
+        "level_response_json": {"children": []},
+        "source_map": {},
+        "full_document_json": {"document_filename": "test.md", "pages": []},
+        "doc_id": "test.md",
+    }
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        parsing_module.correct_level_children_with_iterative_pipeline(**args)
+        parsing_module.correct_level_children_with_iterative_pipeline(**args)
+        transaction.promote()
+    with parsing_module.parser_llm_cache_transaction():
+        parsing_module.correct_level_children_with_iterative_pipeline(**args)
+    assert calls == 1
+
+    def pending_correction(**_kwargs):
+        nonlocal calls
+        calls += 1
+        return parsing_module.ChildrenCorrectionResult([], [object()])
+
+    monkeypatch.setattr(parsing_module, "iterative_correct_children_for_level", pending_correction)
+    pending_args = {
+        **args,
+        "doc_id": "pending.md",
+        "full_document_json": {"document_filename": "pending.md", "pages": []},
+    }
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        parsing_module.correct_level_children_with_iterative_pipeline(**pending_args)
+        parsing_module.correct_level_children_with_iterative_pipeline(**pending_args)
+        transaction.promote()
+    assert calls == 3
+
+
+def test_parser_llm_cache_keys_provider_context_and_does_not_cache_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib
+    import types
+
+    _configure_parser_env(monkeypatch, provider="ollama", model="qwen3:4b")
+    cache_dir = pathlib.Path(__file__).parent / ".tmp_semantic_layerwise_cache" / str(os.getpid())
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = cache_dir / "cache_trace.jsonl"
+    monkeypatch.setenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("KG_DOC_PARSER_LLM_CACHE_REVISION", "test-v1")
+    monkeypatch.setenv("KG_DOC_LAYERWISE_TRACE_FILE", str(trace_path))
+
+    logger_stub = types.ModuleType("document_ingester_logger")
+
+    class _NoopDocumentIngestSQLiteCallback:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+    logger_stub.DocumentIngestSQLiteCallback = _NoopDocumentIngestSQLiteCallback
+    monkeypatch.setitem(sys.modules, "document_ingester_logger", logger_stub)
+    monkeypatch.setitem(sys.modules, "kg_doc_parser.document_ingester_logger", logger_stub)
+    sys.modules.pop("kg_doc_parser.semantic_document_splitting_layerwise_edits", None)
+    parsing_module = importlib.import_module("kg_doc_parser.semantic_document_splitting_layerwise_edits")
+
+    calls = 0
+
+    @parsing_module.parser_llm_cache
+    def cached_probe(value: str) -> str:
+        nonlocal calls
+        calls += 1
+        return f"result:{value}:{calls}"
+
+    # A successful model response is reusable only inside its current ingest
+    # transaction. Exiting without graph-persistence promotion discards it.
+    with parsing_module.parser_llm_cache_transaction():
+        assert cached_probe("same-input") == "result:same-input:1"
+        assert cached_probe("same-input") == "result:same-input:1"
+    assert calls == 1
+
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        assert cached_probe("same-input") == "result:same-input:2"
+        transaction.promote()
+    with parsing_module.parser_llm_cache_transaction():
+        assert cached_probe("same-input") == "result:same-input:2"
+    assert calls == 2
+
+    monkeypatch.setenv("KG_DOC_PARSER_PROVIDER", "openai")
+    monkeypatch.setenv("KG_DOC_PARSER_BASE_URL", "https://example.invalid/v1")
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        assert cached_probe("same-input") == "result:same-input:3"
+        transaction.promote()
+    assert calls == 3
+
+    monkeypatch.setenv("KG_DOC_PARSER_LLM_CACHE_REVISION", "test-v2")
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        assert cached_probe("same-input") == "result:same-input:4"
+        transaction.promote()
+    assert calls == 4
+
+    callback_probe_calls = 0
+
+    @parsing_module.parser_llm_cache
+    def callback_probe(value: str, call_llm_structured, max_rounds: int) -> str:
+        nonlocal callback_probe_calls
+        callback_probe_calls += 1
+        return call_llm_structured(value)
+
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        assert callback_probe("stable", lambda value: f"first:{value}", 1) == "first:stable"
+        transaction.promote()
+    with parsing_module.parser_llm_cache_transaction():
+        assert callback_probe("stable", lambda value: f"second:{value}", 99) == "first:stable"
+    assert callback_probe_calls == 1
+
+    attempts = 0
+
+    @parsing_module.parser_llm_cache
+    def flaky_probe() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient provider failure")
+        return "recovered"
+
+    with pytest.raises(RuntimeError, match="transient provider failure"):
+        with parsing_module.parser_llm_cache_transaction():
+            flaky_probe()
+    with parsing_module.parser_llm_cache_transaction() as transaction:
+        assert flaky_probe() == "recovered"
+        transaction.promote()
+    with parsing_module.parser_llm_cache_transaction():
+        assert flaky_probe() == "recovered"
+    assert attempts == 2
+
+    trace_kinds = [json.loads(line)["kind"] for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    assert "parser_llm_cache.staged_miss" in trace_kinds
+    assert "parser_llm_cache.staged_hit" in trace_kinds
+    assert "parser_llm_cache.committed_hit" in trace_kinds
+    assert "parser_llm_cache.promoted" in trace_kinds
+    assert "parser_llm_cache.discarded" in trace_kinds
 
 
 def _run_post_ocr_semantic_smoke_case(
@@ -248,8 +560,6 @@ def _run_post_ocr_semantic_smoke_case(
     cache_key: str,
 ) -> None:
     from kg_doc_parser.utils.file_loaders import RawFileLoader
-    import os
-    import json
     from joblib import Memory
 
     compare_root = os.path.join("..", "doc_data", "split_pages")
@@ -284,91 +594,160 @@ def _run_post_ocr_semantic_smoke_case(
         gemini_key=None,
     )
     _require_local_ollama_model(model_names[0])
-    _wait_for_local_server()
     selected_docs = list(loader)
     if not selected_docs:
         pytest.skip("no split-page OCR documents matched the selector")
 
     import requests
-
-    base_url = _wait_for_local_server()
-    progress = ProgressPrinter(title=f"post OCR semantic splitting [{model_names[0]}]", total=1)
-    progress.banner()
-    f = selected_docs[0]
-    f_name = pathlib.Path(f).name
-    progress.item(f_name)
-    progress.substage("load raw OCR split page bundle")
-    doc = {f_name: regen_doc(os.path.join(compare_root, f), use_raw=True)}
-
-    progress.substage("parse document tree")
-    document_tree, source_map = parse_doc(doc_id=f_name, raw_doc_dict=doc, model_names=model_names)
-
-    progress.substage("serialize tree to graph payload")
-    cached_semantic_tree_to_kge_payload = cached(memory, semantic_tree_to_kge_payload)
-    graph_to_persist = cached_semantic_tree_to_kge_payload(document_tree)
-
-    progress.substage("round-trip graph payload back to semantic tree")
-    reconstrcted_root = kge_payload_to_semantic_tree(graph_to_persist)
-    assert reconstrcted_root.model_dump() == document_tree.model_dump()
-
-    progress.substage("validate graph with local service")
-    res = requests.post(f"{base_url}/api/document.validate_graph", json=graph_to_persist)
-    _raise_for_status_with_detail(res, stage="validate_graph")
-
-    progress.substage("build index terms")
-    all_child_nodes = all_child_from_root(reconstrcted_root)
-    all_nodes = all_child_nodes + [reconstrcted_root]
-    batch_index_list = build_index_terms_for_semantic_node(
-        all_nodes,
-        doc_id=f_name,
+    workspace_root = pathlib.Path(__file__).resolve().parents[1]
+    trace_dir = workspace_root / ".tmp_vscode_server" / "traces"
+    trace_path = trace_dir / f"{cache_key}_{_safe_cache_token('__'.join(model_names))}.jsonl"
+    trace = TraceWriter(trace_path)
+    trace.emit(
+        "test.start",
+        cache_key=cache_key,
         model_names=model_names,
-        mode="bottom_up_digest",
+        selected_docs=[pathlib.Path(doc).name for doc in selected_docs[:5]],
     )
-    payload = {"index": [i.model_dump(mode="json") for i in batch_index_list]}
-    for k in payload["index"]:
-        k.update({"doc_id": f_name})
+    trace.emit("artifact.path", path=str(trace_path))
+    print(f"Trace artifact: {trace_path}", flush=True)
 
-    @memory.cache
-    def get_index_entries(payload):
-        res = requests.post(f"{base_url}/api/add_index_entries", json=payload)
-        return res
+    try:
+        monkeypatch.setenv("KG_DOC_LAYERWISE_TRACE_FILE", str(trace_path))
+        with _ensure_local_server() as base_url:
+            trace.emit("server.ready", base_url=base_url)
+            progress = ProgressPrinter(title=f"post OCR semantic splitting [{model_names[0]}]", total=1)
+            progress.banner()
+            f = selected_docs[0]
+            f_name = pathlib.Path(f).name
+            progress.item(f_name)
 
-    progress.substage("push index entries")
-    res = get_index_entries(payload)
-    _raise_for_status_with_detail(res, stage="add_index_entries")
+            steps = [
+                "load raw OCR split page bundle",
+                "parse document tree",
+                "serialize tree to graph payload",
+                "round-trip graph payload back to semantic tree",
+                "validate graph with local service",
+                "build index terms",
+                "push index entries",
+                "upsert document record",
+                "upsert semantic tree",
+                "search index and resolve node",
+            ]
 
-    progress.substage("upsert document record")
-    res = requests.post(
-        f"{base_url}/api/document",
-        json={
-            "doc_id": f_name,
-            "doc_type": "ocr",
-            "insertion_method": "document_parser_v1",
-            "content": json.dumps(doc),
-        },
-    )
-    _raise_for_status_with_detail(res, stage="document_upsert")
+            def _step(name: str):
+                trace.emit("step.start", step=name, doc=f_name)
+                progress.substage(name)
+                return time.perf_counter()
 
-    progress.substage("upsert semantic tree")
-    graph_payload = _rewrite_doc_id_recursive(graph_to_persist, f_name)
-    res = requests.post(f"{base_url}/api/document.upsert_tree", json=graph_payload)
-    _raise_for_status_with_detail(res, stage="document_upsert_tree")
+            def _step_done(name: str, started: float, **data: Any) -> None:
+                trace.emit(
+                    "step.done",
+                    step=name,
+                    doc=f_name,
+                    duration_s=round(time.perf_counter() - started, 3),
+                    **data,
+                )
 
-    progress.substage("search index and resolve node")
-    res = requests.get(f"{base_url}/api/search_index_hybrid", params={"q": '"6.7"'})
-    _raise_for_status_with_detail(res, stage="search_index_hybrid")
-    res = requests.get(
-        f"{base_url}/api/search_index_hybrid",
-        params={"q": '"6.7"', "resolve_node": True},
-    )
-    _raise_for_status_with_detail(res, stage="search_index_hybrid(resolve_node)")
-    progress.finish()
+            started = _step(steps[0])
+            doc = {f_name: regen_doc(os.path.join(compare_root, f), use_raw=True)}
+            pages = len(doc[f_name].get("pages", [])) if isinstance(doc.get(f_name), dict) else 0
+            _step_done(steps[0], started, pages=pages)
+
+            started = _step(steps[1])
+            document_tree, source_map = parse_doc(doc_id=f_name, raw_doc_dict=doc, model_names=model_names)
+            _step_done(steps[1], started, source_units=len(source_map))
+
+            started = _step(steps[2])
+            cached_semantic_tree_to_kge_payload = cached(memory, semantic_tree_to_kge_payload)
+            graph_to_persist = cached_semantic_tree_to_kge_payload(document_tree)
+            _step_done(steps[2], started, nodes=len(graph_to_persist.get("nodes", [])), edges=len(graph_to_persist.get("edges", [])))
+
+            started = _step(steps[3])
+            reconstrcted_root = kge_payload_to_semantic_tree(graph_to_persist)
+            assert reconstrcted_root.model_dump() == document_tree.model_dump()
+            _step_done(steps[3], started)
+
+            started = _step(steps[4])
+            res = requests.post(f"{base_url}/api/document.validate_graph", json=graph_to_persist)
+            _raise_for_status_with_detail(res, stage="validate_graph")
+            _step_done(steps[4], started, status_code=res.status_code)
+
+            started = _step(steps[5])
+            all_child_nodes = all_child_from_root(reconstrcted_root)
+            all_nodes = all_child_nodes + [reconstrcted_root]
+            batch_index_list = build_index_terms_for_semantic_node(
+                all_nodes,
+                doc_id=f_name,
+                model_names=model_names,
+                mode="bottom_up_digest",
+            )
+            payload = {"index": [i.model_dump(mode="json") for i in batch_index_list]}
+            for k in payload["index"]:
+                k.update({"doc_id": f_name})
+            _step_done(steps[5], started, index_entries=len(payload["index"]))
+
+            @memory.cache
+            def get_index_entries(payload):
+                res = requests.post(f"{base_url}/api/add_index_entries", json=payload)
+                return res
+
+            started = _step(steps[6])
+            res = get_index_entries(payload)
+            _raise_for_status_with_detail(res, stage="add_index_entries")
+            _step_done(steps[6], started, status_code=res.status_code)
+
+            started = _step(steps[7])
+            res = requests.post(
+                f"{base_url}/api/document",
+                json={
+                    "doc_id": f_name,
+                    "doc_type": "ocr",
+                    "insertion_method": "document_parser_v1",
+                    "content": json.dumps(doc),
+                },
+            )
+            _raise_for_status_with_detail(res, stage="document_upsert")
+            _step_done(steps[7], started, status_code=res.status_code)
+
+            started = _step(steps[8])
+            graph_payload = _rewrite_doc_id_recursive(graph_to_persist, f_name)
+            res = requests.post(f"{base_url}/api/document.upsert_tree", json=graph_payload)
+            _raise_for_status_with_detail(res, stage="document_upsert_tree")
+            _step_done(steps[8], started, status_code=res.status_code)
+
+            started = _step(steps[9])
+            res = requests.get(f"{base_url}/api/search_index_hybrid", params={"q": '"6.7"'})
+            _raise_for_status_with_detail(res, stage="search_index_hybrid")
+            res = requests.get(
+                f"{base_url}/api/search_index_hybrid",
+                params={"q": '"6.7"', "resolve_node": True},
+            )
+            _raise_for_status_with_detail(res, stage="search_index_hybrid(resolve_node)")
+            _step_done(steps[9], started, status_code=res.status_code)
+            progress.finish()
+            trace.emit("test.done", doc=f_name, result="passed")
+    except BaseException as exc:  # noqa: BLE001
+        trace.emit("test.error", error=type(exc).__name__, message=str(exc))
+        raise
+    finally:
+        trace.close()
 
 @pytest.mark.parametrize(
     "parser_provider,model_names",
     [
-        pytest.param("ollama", OLLAMA_SEMANTIC_MODELS, id="ollama", marks=pytest.mark.ci_full),
-        pytest.param("gemini", GEMINI_SEMANTIC_MODELS, id="gemini", marks=pytest.mark.manual),
+        pytest.param(
+            "ollama",
+            OLLAMA_SEMANTIC_MODELS,
+            id="ollama",
+            marks=[pytest.mark.manual, pytest.mark.llm_real, pytest.mark.requires_ollama],
+        ),
+        pytest.param(
+            "gemini",
+            GEMINI_SEMANTIC_MODELS,
+            id="gemini",
+            marks=[pytest.mark.manual, pytest.mark.llm_real],
+        ),
     ],
 )
 def test_semantic_document_splitting(gemini_key, monkeypatch, parser_provider, model_names):
@@ -569,8 +948,18 @@ def test_post_ocr_semantic_document_splitting_ollama_models(monkeypatch, model_n
 @pytest.mark.parametrize(
     "parser_provider,model_names",
     [
-        pytest.param("ollama", OLLAMA_SEMANTIC_MODELS, id="ollama", marks=pytest.mark.ci_full),
-        pytest.param("gemini", GEMINI_SEMANTIC_MODELS, id="gemini", marks=pytest.mark.manual),
+        pytest.param(
+            "ollama",
+            OLLAMA_SEMANTIC_MODELS,
+            id="ollama",
+            marks=[pytest.mark.manual, pytest.mark.llm_real, pytest.mark.requires_ollama],
+        ),
+        pytest.param(
+            "gemini",
+            GEMINI_SEMANTIC_MODELS,
+            id="gemini",
+            marks=[pytest.mark.manual, pytest.mark.llm_real],
+        ),
     ],
 )
 def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser_provider, model_names):
@@ -583,7 +972,7 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
     cached by joblib under `.joblib/`; delete that directory for a fresh
     cacheless rerun, especially when retrying the manual Gemini case.
     """
-    from pdf2png import batch_split_pdf
+    from kg_doc_parser.pdf2png import batch_split_pdf
     from kg_doc_parser.utils.file_loaders import RawFileLoader
     import os
     from functools import lru_cache
@@ -690,8 +1079,18 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
 @pytest.mark.parametrize(
     "parser_provider,model_names",
     [
-        pytest.param("ollama", OLLAMA_SEMANTIC_MODELS, id="ollama", marks=pytest.mark.ci_full),
-        pytest.param("gemini", GEMINI_SEMANTIC_MODELS, id="gemini", marks=pytest.mark.manual),
+        pytest.param(
+            "ollama",
+            OLLAMA_SEMANTIC_MODELS,
+            id="ollama",
+            marks=[pytest.mark.manual, pytest.mark.llm_real, pytest.mark.requires_ollama],
+        ),
+        pytest.param(
+            "gemini",
+            GEMINI_SEMANTIC_MODELS,
+            id="gemini",
+            marks=[pytest.mark.manual, pytest.mark.llm_real],
+        ),
     ],
 )
 def test_semantic_document_splitting_doc_group(gemini_key, monkeypatch, parser_provider, model_names):

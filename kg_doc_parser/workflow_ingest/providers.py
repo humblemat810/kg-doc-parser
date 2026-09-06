@@ -58,20 +58,22 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Annotated, Any, Callable, ClassVar, Literal, Optional, Protocol, Union, runtime_checkable, get_args, get_origin
+from typing import Annotated, Any, Callable, ClassVar, Literal, Optional, Protocol, TypeVar, Union, runtime_checkable, get_args, get_origin
 
 from pydantic import BaseModel, Field
 from pydantic_core import PydanticUndefined
 from pydantic_extension.model_slicing import BackendField, FrontendField
 from pydantic_extension.model_slicing.mixin import DtoField, ExcludeMode, LLMField, ModeSlicingMixin
 
+TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
+
 
 class _FakeStructuredResponse:
-    def __init__(self, schema, payload: dict[str, Any]):
+    def __init__(self, schema: type[TStructuredModel], payload: dict[str, Any]) -> None:
         self.schema = schema
         self.payload = payload
 
-    def invoke(self, messages, config=None):
+    def invoke(self, messages: Any, config: Any = None) -> dict[str, Any]:
         parsed = self.schema.model_validate(self.payload)
         return {"parsed": parsed, "raw": None, "parsing_error": None}
 
@@ -82,13 +84,19 @@ class FakeChatModel:
     def __init__(self, *, payload_factory: Callable[[Any], dict[str, Any]] | None = None) -> None:
         self.payload_factory = payload_factory or _default_schema_payload
 
-    def with_structured_output(self, schema, include_raw: bool = True):
+    def with_structured_output(
+        self,
+        schema: type[TStructuredModel],
+        include_raw: bool = True,
+        **kwargs: Any,
+    ) -> _FakeStructuredResponse:
+        _ = kwargs
         payload = self.payload_factory(schema)
         return _FakeStructuredResponse(schema, payload)
 
 
-def _default_schema_payload(schema) -> dict[str, Any]:
-    def _value_for_field(field) -> Any:
+def _default_schema_payload(schema: type[BaseModel]) -> dict[str, Any]:
+    def _value_for_field(field: Any) -> Any:
         annotation = getattr(field, "annotation", None)
         origin = get_origin(annotation)
         args = get_args(annotation)
@@ -127,7 +135,17 @@ def _default_schema_payload(schema) -> dict[str, Any]:
 
 @runtime_checkable
 class ChatModelProvider(Protocol):
-    def build(self, *, callbacks: list[Any] | None = None) -> Any: ...
+    def build(self, *, callbacks: list[Any] | None = None) -> SupportsStructuredOutput: ...
+
+
+@runtime_checkable
+class SupportsStructuredOutput(Protocol):
+    def with_structured_output(
+        self,
+        schema: type[TStructuredModel],
+        include_raw: bool = True,
+        **kwargs: Any,
+    ) -> Any: ...
 
 
 @runtime_checkable
@@ -140,7 +158,7 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
     provider: Annotated[
-        Literal["gemini", "ollama", "openai", "vertex", "fake"],
+        Literal["gemini", "ollama", "openai", "azure", "vertex", "fake"],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -156,6 +174,13 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
         ExcludeMode("llm"),
     ] = None
     api_key_env: Annotated[
+        Optional[str],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
+    api_version: Annotated[
         Optional[str],
         DtoField(),
         BackendField(),
@@ -208,10 +233,35 @@ class EmbeddingProviderConfig(ModeSlicingMixin, BaseModel):
     ] = None
 
 
+def _normalize_provider_name(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "azure_openai":
+        return "azure"
+    return normalized
+
+
+def _is_gpt5_model(model: str | None) -> bool:
+    normalized = str(model or "").strip().lower()
+    return normalized.startswith("gpt-5") or normalized.startswith("gpt5")
+
+
+def _chat_temperature_for_model(model: str | None, requested_temperature: float) -> float:
+    if _is_gpt5_model(model):
+        return 1.0
+    return requested_temperature
+
+
 class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
+    proposal_mode: Annotated[
+        Literal["children", "boundaries"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = "children"
     ocr: Annotated[ProviderEndpointConfig, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
         default_factory=ProviderEndpointConfig
     )
@@ -229,22 +279,25 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
             return value if value not in {None, ""} else default
 
         return cls(
+            proposal_mode=str(_env("KG_DOC_PARSER_PROPOSAL_MODE", "children")),
             ocr=ProviderEndpointConfig(
-                provider=str(_env("KG_DOC_OCR_PROVIDER", "gemini")),
+                provider=_normalize_provider_name(_env("KG_DOC_OCR_PROVIDER", "gemini")),
                 model=str(_env("KG_DOC_OCR_MODEL", "gemini-2.5-flash")),
                 temperature=float(_env("KG_DOC_OCR_TEMPERATURE", "0.1")),
                 base_url=_env("KG_DOC_OCR_BASE_URL"),
                 api_key_env=_env("KG_DOC_OCR_API_KEY_ENV"),
+                api_version=_env("KG_DOC_OCR_API_VERSION"),
                 project=_env("KG_DOC_OCR_PROJECT"),
                 location=_env("KG_DOC_OCR_LOCATION"),
                 max_retries=int(_env("KG_DOC_OCR_MAX_RETRIES", "2")),
             ),
             parser=ProviderEndpointConfig(
-                provider=str(_env("KG_DOC_PARSER_PROVIDER", "gemini")),
+                provider=_normalize_provider_name(_env("KG_DOC_PARSER_PROVIDER", "gemini")),
                 model=str(_env("KG_DOC_PARSER_MODEL", "gemini-2.5-flash")),
                 temperature=float(_env("KG_DOC_PARSER_TEMPERATURE", "0.1")),
                 base_url=_env("KG_DOC_PARSER_BASE_URL"),
                 api_key_env=_env("KG_DOC_PARSER_API_KEY_ENV"),
+                api_version=_env("KG_DOC_PARSER_API_VERSION"),
                 project=_env("KG_DOC_PARSER_PROJECT"),
                 location=_env("KG_DOC_PARSER_LOCATION"),
                 max_retries=int(_env("KG_DOC_PARSER_MAX_RETRIES", "2")),
@@ -276,7 +329,7 @@ class _CallableEmbeddingFunction:
     def name(self) -> str:
         return self.name_value
 
-    def __call__(self, input):
+    def __call__(self, input: list[str]) -> list[list[float]]:
         vectors = []
         for value in input:
             vectors.append(_embedding_vector(str(value or ""), dimension=self.dimension))
@@ -333,7 +386,7 @@ def build_embedding_function(
         def name(self) -> str:
             return spec.model
 
-        def __call__(self, input):
+        def __call__(self, input: list[str]) -> list[list[float]]:
             texts = [str(value or "") for value in input]
             if hasattr(embeddings, "embed_documents"):
                 return embeddings.embed_documents(texts)
@@ -348,7 +401,7 @@ def build_chat_model(
     spec: ProviderEndpointConfig | None = None,
     *,
     callbacks: list[Any] | None = None,
-):
+) -> SupportsStructuredOutput:
     """Build a vendor-specific chat model behind a stable adapter boundary.
 
     Supported providers currently include gemini, openai, ollama, vertex, and
@@ -369,23 +422,54 @@ def build_chat_model(
     if spec.provider == "openai":
         from langchain_openai import ChatOpenAI
 
-        kwargs = {"model": spec.model, "temperature": spec.temperature, "callbacks": callbacks}
+        kwargs = {
+            "model": spec.model,
+            "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
+            "callbacks": callbacks,
+        }
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["api_key"] = os.getenv(spec.api_key_env)
         return ChatOpenAI(**kwargs)
+    if spec.provider == "azure":
+        from langchain_openai import AzureChatOpenAI
+
+        kwargs = {
+            "azure_deployment": spec.model,
+            "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
+            "callbacks": callbacks,
+        }
+        if spec.base_url:
+            kwargs["azure_endpoint"] = spec.base_url
+        if spec.api_version:
+            kwargs["api_version"] = spec.api_version
+        elif os.getenv("OPENAI_API_VERSION"):
+            kwargs["api_version"] = os.getenv("OPENAI_API_VERSION")
+        elif os.getenv("AZURE_OPENAI_API_VERSION"):
+            kwargs["api_version"] = os.getenv("AZURE_OPENAI_API_VERSION")
+        if spec.api_key_env and os.getenv(spec.api_key_env):
+            kwargs["api_key"] = os.getenv(spec.api_key_env)
+        return AzureChatOpenAI(**kwargs)
     if spec.provider == "ollama":
         from langchain_ollama import ChatOllama
 
-        kwargs = {"model": spec.model, "temperature": spec.temperature, "callbacks": callbacks}
+        kwargs = {
+            "model": spec.model,
+            "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
+            "callbacks": callbacks,
+        }
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
         return ChatOllama(**kwargs)
     if spec.provider == "vertex":
         from langchain_google_vertexai import ChatVertexAI
 
-        kwargs = {"model": spec.model, "temperature": spec.temperature, "callbacks": callbacks}
+        kwargs = {
+            "model": spec.model,
+            "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
+            "callbacks": callbacks,
+        }
         if spec.project:
             kwargs["project"] = spec.project
         if spec.location:
@@ -399,7 +483,7 @@ def build_chat_model_for_role(
     spec: WorkflowProviderSettings | None = None,
     *,
     callbacks: list[Any] | None = None,
-):
+) -> SupportsStructuredOutput:
     """Build the chat model used for either OCR or parsing.
 
     Examples:

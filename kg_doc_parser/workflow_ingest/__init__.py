@@ -48,7 +48,15 @@ from .runners import (
     run_page_index_source_workflow,
 )
 from .smoke_assets import generate_ocr_smoke_assets
-from .page_index import PageIndexBlockSpec, PageIndexParseResult, build_page_index_workflow_input
+from .page_index import (
+    BlockAssignment,
+    BlockAssignmentBatch,
+    CandidateBlock,
+    PageIndexBlockSpec,
+    PageIndexParseResult,
+    PageIndexValidationResult,
+    build_page_index_workflow_input,
+)
 from .models import (
     BoundingBox,
     CanonicalGraphWriteResult,
@@ -128,6 +136,7 @@ __all__ = [
     "PageIndexParseRequest",
     "PageIndexBlockSpec",
     "PageIndexParseResult",
+    "PageIndexValidationResult",
     "ParseMode",
     "TreeParseRequest",
     "SemanticNode",
@@ -144,6 +153,9 @@ __all__ = [
     "OcrWorkflowCommandResult",
     "PageIndexWorkflowCommandResult",
     "LayerwiseWorkflowCommandResult",
+    "CandidateBlock",
+    "BlockAssignment",
+    "BlockAssignmentBatch",
     "DEFAULT_WORKFLOW_ID",
     "build_chat_model",
     "build_chat_model_for_role",

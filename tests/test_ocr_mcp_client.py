@@ -19,6 +19,8 @@ if True:
 
 from typing import Optional
 from joblib.memory import Memory
+
+pytestmark = [pytest.mark.manual, pytest.mark.legacy]
 @pytest.mark.asyncio
 async def test_regen_doc_group_and_send_to_engine_for_storing():
     from pydantic import BaseModel, Field

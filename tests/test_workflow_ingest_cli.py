@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -12,6 +12,7 @@ import pytest
 from kg_doc_parser.workflow_ingest import OCRWorkflowArtifacts, ProviderEndpointConfig, WorkflowProviderSettings
 from kg_doc_parser.workflow_ingest import cli as workflow_cli
 from kg_doc_parser.workflow_ingest import runners
+from kg_doc_parser.workflow_ingest.cli import _provider_settings_from_args, build_parser
 
 
 pytestmark = [pytest.mark.workflow]
@@ -27,7 +28,8 @@ class _FakeRun:
 class _FakeBundle:
     payload: dict[str, object] | None = None
 
-    def model_dump(self, mode: str = "json"):
+    def model_dump(self, mode: str = "json", **kwargs):
+        _ = kwargs
         return self.payload or {"bundle": "ok"}
 
 
@@ -249,3 +251,35 @@ def test_cli_ocr_smoke_assets_writes_expected_files() -> None:
     assert (output_dir / "ocr_smoke_page_1.png").exists()
     assert (output_dir / "ocr_smoke_page_2.png").exists()
     assert (output_dir / "ocr_smoke_document.pdf").exists()
+
+
+def test_demo_cli_accepts_proposal_mode_and_builds_provider_settings() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "demo",
+            "--output-dir",
+            "tests/.tmp-workflow-ingest-cli",
+            "--proposal-mode",
+            "boundaries",
+            "--parser-provider",
+            "azure",
+            "--parser-model",
+            "gpt-5-nano",
+            "--parser-base-url",
+            "https://example.openai.azure.com",
+            "--parser-api-key-env",
+            "AZURE_OPENAI_API_KEY",
+        ]
+    )
+
+    settings = _provider_settings_from_args(args)
+
+    assert args.command == "demo"
+    assert args.proposal_mode == "boundaries"
+    assert settings is not None
+    assert settings.proposal_mode == "boundaries"
+    assert settings.parser.provider == "azure"
+    assert settings.parser.model == "gpt-5-nano"
+    assert settings.parser.base_url == "https://example.openai.azure.com"
+    assert settings.parser.api_key_env == "AZURE_OPENAI_API_KEY"

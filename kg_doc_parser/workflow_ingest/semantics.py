@@ -28,6 +28,7 @@ class SemanticNode(BaseModel):
     total_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
     child_nodes: list["SemanticNode"] = Field(default_factory=list)
     level_from_root: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _ensure_stable_node_id(self) -> "SemanticNode":
@@ -191,6 +192,7 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
                     "doc_id": doc_id,
                     "parent_id": node.parent_id,
                     "level_from_root": node.level_from_root,
+                    **dict(node.metadata or {}),
                 },
                 "mentions": [{"spans": spans(node.total_content_pointers)}],
             }

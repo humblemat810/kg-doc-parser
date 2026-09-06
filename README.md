@@ -255,6 +255,25 @@ Note:
 
 Some tests are integration-style and expect local document folders and API credentials to exist. That means not every test is portable in a clean checkout.
 
+Deterministic CI covers parser contracts with fake or injected model responses.
+Model choice and output quality are parser-repository concerns, not core migration
+gates. Any test that invokes Ollama, Gemini, OpenAI, Azure, Vertex, or another real
+provider must use `llm_real` or `manual`; Ollama tests must also use
+`requires_ollama`. Such tests must not carry `ci` or `ci_full`. Collection fails if
+these marker classes are mixed, preventing accidental live-model calls in CI.
+
+Run deterministic contract CI with:
+
+```powershell
+pytest -m "(ci or ci_full) and not manual and not llm_real and not requires_ollama"
+```
+
+Run provider/model checks only when explicitly requested, for example:
+
+```powershell
+pytest -m "llm_real and requires_ollama"
+```
+
 To run the test suite:
 
 ```powershell
@@ -326,3 +345,8 @@ shell command.
 - `README.md`, env handling, and ingestion boundaries are still being cleaned up as part of the ongoing refactor.
 - Runtime outputs such as `logs/`, local `.env`, caches, and generated artifacts should remain uncommitted.
 - If behavior diverges between this repo and `kogwistar`, prefer the direction of the ongoing migration and refactor work.
+
+Two-stage conversation materialization is an engine-owned capability. The
+parser writes grounded stage-one artifacts through the supplied conversation
+engine and does not create a second embedding queue. See
+[`doc/adr_conversation_two_stage_parser_contract.md`](doc/adr_conversation_two_stage_parser_contract.md).

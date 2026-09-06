@@ -15,7 +15,7 @@ The facade keeps provider/model selection explicit while still falling back to
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any, Iterator, Literal, Sequence
 from contextlib import contextmanager
 import os
 
@@ -57,6 +57,7 @@ class PageIndexParseRequest:
     provider_settings: WorkflowProviderSettings | None = None
     provider: str | None = None
     model: str | None = None
+    refine_excerpts: bool = False
 
 
 @dataclass(slots=True)
@@ -95,7 +96,7 @@ def _resolve_provider_settings(
 
 
 @contextmanager
-def _temporary_env(overrides: dict[str, str | None]):
+def _temporary_env(overrides: dict[str, str | None]) -> Iterator[None]:
     previous: dict[str, str | None] = {}
     try:
         for key, value in overrides.items():
@@ -160,6 +161,7 @@ def parse_page_index_document(
     provider_settings: WorkflowProviderSettings | None = None,
     provider: str | None = None,
     model: str | None = None,
+    refine_excerpts: bool = False,
 ) -> PageIndexParseResult:
     """Parse a text / Markdown page-index document into a semantic tree."""
 
@@ -176,6 +178,7 @@ def parse_page_index_document(
         source_format=source_format,
         mode=mode,
         provider_settings=settings,
+        refine_excerpts=refine_excerpts,
     )
 
 
@@ -221,7 +224,7 @@ def parse_tree_document(
         )
 
 
-def parse_document(*, mode: ParseMode, **kwargs):
+def parse_document(*, mode: ParseMode, **kwargs: Any) -> ParseDocumentResult:
     """Dispatch to the requested parse mode and return the mode-specific result."""
 
     if mode == "ocr":

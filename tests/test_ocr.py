@@ -16,6 +16,10 @@ if True:
 
 from typing import Optional, cast
 
+import pytest
+
+pytestmark = [pytest.mark.manual, pytest.mark.legacy]
+
 def test_batch_ocr_one_by_one(gemini_key):
     from kg_doc_parser.utils.bounded_threadpool_executor import BoundedExecutor
     bounded_executor = None# BoundedExecutor(max_workers= 6, max_pending= 100)

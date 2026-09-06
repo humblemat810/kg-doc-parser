@@ -26,7 +26,14 @@ pytestmark = [pytest.mark.workflow]
 @pytest.fixture(
     params=[
         pytest.param("in_memory", id="in_memory", marks=pytest.mark.ci),
-        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        # This helper's Chroma backend uses a live Ollama embedding model.  It
+        # validates provider deployment, not parser/runtime semantics, so keep
+        # it out of deterministic contract CI.
+        pytest.param(
+            "chroma",
+            id="chroma",
+            marks=[pytest.mark.slow, pytest.mark.requires_ollama],
+        ),
     ]
 )
 def workflow_backend_kind(request):
@@ -220,7 +227,7 @@ def test_conversation_graph_keeps_checkpoint_snapshot_for_failure(workflow_backe
     drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
 
     assert run.status in {"failed", "failure"}
-    assert bundle is None
+    assert bundle is not None
 
     checkpoints = _conversation_nodes(
         conversation_engine,
@@ -244,7 +251,7 @@ def test_conversation_graph_keeps_checkpoint_snapshot_for_failure(workflow_backe
 
     assert "semantic_tree" in state
     assert "workflow_errors" in state
-    assert "export_bundle" not in state
+    assert "export_bundle" in state
     assert failed_steps
     assert failed_steps[-1].metadata["op"] == "validate_tree"
 

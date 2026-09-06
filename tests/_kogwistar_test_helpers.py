@@ -187,13 +187,10 @@ def build_workflow_engine_triplet(base_dir: Path, backend_kind: str):
 
 
 def load_kogwistar_fake_backend():
-    helper_path = (
-        Path(__file__).resolve().parents[1]
-        / "kogwistar"
-        / "tests"
-        / "_helpers"
-        / "fake_backend.py"
-    )
+    repo_root = Path(__file__).resolve().parents[2]
+    helper_path = repo_root / "kogwistar" / "kogwistar" / "tests" / "_helpers" / "fake_backend.py"
+    if not helper_path.exists():
+        helper_path = repo_root / "kogwistar" / "tests" / "_helpers" / "fake_backend.py"
     if not helper_path.exists():
         raise FileNotFoundError(f"kogwistar fake backend helper not found: {helper_path}")
 

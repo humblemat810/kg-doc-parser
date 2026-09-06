@@ -20,6 +20,7 @@ import hashlib
 import dotenv
 from typing import Literal, Optional, List, Dict, Any
 from joblib import Memory
+from kg_doc_parser.llm_structured_output import build_structured_output_runnable
 memory = Memory(location = "./.version_chain")
 
 dotenv.load_dotenv()
@@ -932,7 +933,7 @@ def version_chain(metadata_list: list[FileMetadata], model = 'gemini-2.5-pro', a
     cnt = 0
     max_cnt = 4
     while cnt <= max_cnt:
-        chaining_result = llm.with_structured_output(FileVersionChainingResponse, include_raw = True).invoke(messages)
+        chaining_result = build_structured_output_runnable(llm, FileVersionChainingResponse, include_raw=True).invoke(messages)
         chains = chaining_result['parsed'].model_dump()['chains']
         files = [cc['filename'] for c in chains for cc in c['chain']]
         from collections import Counter
@@ -968,7 +969,7 @@ def dedup_llm_pick_newest(meta_list_dumped, model = 'gemini-2.5-flash'):
         messages = [SystemMessage("You are given a list of files sharing the same file hash and you need to choose one that is the most representative. "),
                     HumanMessage(f"{meta_list_dumped}")]
         llm = ChatGoogleGenerativeAI(model = model)
-        res = llm.with_structured_output(DedupResponse, include_raw = True).invoke(messages)
+        res = build_structured_output_runnable(llm, DedupResponse, include_raw=True).invoke(messages)
         if not res.get('parsing_error'):
             representative_file_name = res['parsed'].representative_file_name
             if representative_file_name not in name_list:
@@ -1056,7 +1057,7 @@ def add_new_file_to_existing_chains(chains, all_d_hash_to_meta: dict[str, FileMe
     n = 0
     while True:
         llm = ChatGoogleGenerativeAI(model = model)
-        res = llm.with_structured_output(AddFilesResponse, include_raw = True).invoke(messages)
+        res = build_structured_output_runnable(llm, AddFilesResponse, include_raw=True).invoke(messages)
         if res.get("parsing_error"):
             n += 1
             if n >= max_retry:

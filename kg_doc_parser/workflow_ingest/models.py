@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, ClassVar, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_extension.model_slicing import BackendField, FrontendField
 from pydantic_extension.model_slicing.mixin import DtoField, ExcludeMode, LLMField, ModeSlicingMixin
 
@@ -340,6 +340,110 @@ class LayerChildCandidate(ModeSlicingMixin, BaseModel):
     ] = Field(default_factory=dict)
 
 
+class BoundaryCutpoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str | None = None
+    parent_node_id: str
+    source_cluster_id: str
+    cut_offset: int = Field(description="Absolute character offset of the cut inside the parent span.")
+    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] = Field(
+        description="The structural reason this cut is a legal boundary."
+    )
+    text_before_cut: str = Field(
+        default="",
+        description="Short exact text immediately before the cut, copied from the supplied source excerpt.",
+    )
+    text_after_cut: str = Field(
+        default="",
+        description="Short exact text immediately after the cut, copied from the supplied source excerpt.",
+    )
+    cut_reason: str = Field(default="", description="Why this semantic boundary separates adjacent units.")
+    confidence: float | None = None
+    reason: str | None = None
+
+
+class LLMBoundaryProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent_node_id: str
+    source_cluster_id: str
+    cutpoints: list[BoundaryCutpoint] = Field(default_factory=list)
+    satisfied: bool | None = None
+    reasoning_history: list["LayerReasoningEntry"] = Field(default_factory=list)
+    review_rounds: int = 0
+
+
+class LLMBoundaryProposalBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cutpoints: list[BoundaryCutpoint] = Field(default_factory=list)
+    satisfied: bool | None = None
+    reasoning_history: list["LayerReasoningEntry"] = Field(default_factory=list)
+    review_rounds: int = 0
+
+
+class BoundaryReviewDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str | None = None
+    parent_node_id: str
+    source_cluster_id: str
+    input_cut_offset: int | None = None
+    cut_offset: int
+    decision: Literal["accept", "shift_left", "shift_right", "reject", "needs_refinement"]
+    resolved_cut_offset: int | None = None
+    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] | None = None
+    anchor_match_mode: Literal["exact", "fuzzy"] | None = None
+    anchor_match_score: float | None = None
+    text_before_cut: str | None = None
+    text_after_cut: str | None = None
+    reason: str | None = None
+
+
+class BoundaryReviewBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[BoundaryReviewDecision] = Field(default_factory=list)
+    satisfied: bool | None = None
+    coverage_ok: bool | None = None
+    review_notes: list[str] = Field(default_factory=list)
+
+
+class BoundaryUnitSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent_node_id: str
+    source_cluster_id: str
+    start_char: int
+    end_char: int
+    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] = "semantic"
+    summary_text: str = ""
+    exact_text: str = ""
+    expandable: bool = False
+
+
+class LayerReasoningEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str | None = None
+    stage: str | None = None
+    proposal_source: Literal["llm", "fallback"] | None = None
+    proposal_mode: Literal["children", "boundaries"] | None = None
+    proposal_failure_reason: str | None = None
+    provider_child_count: int | None = None
+    boundary_count: int | None = None
+    accepted_boundary_count: int | None = None
+    shifted_boundary_count: int | None = None
+    rejected_boundary_count: int | None = None
+    refinement_count: int | None = None
+    unresolved_interval_count: int | None = None
+    assembled_child_count: int | None = None
+    summary_count: int | None = None
+    depth: int | None = None
+    lines: int | None = None
+
+
 class CurrentLayerContext(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
@@ -378,7 +482,7 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
 
     children: Annotated[list[LayerChildCandidate], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     satisfied: Annotated[Optional[bool], DtoField(), BackendField(), FrontendField(), LLMField()] = None
-    reasoning_history: Annotated[list[dict[str, Any]], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
+    reasoning_history: Annotated[list[LayerReasoningEntry], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     review_rounds: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     metadata: Annotated[
         dict[str, Any],
@@ -387,6 +491,26 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+
+
+class LLMLayerChildCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: str
+    parent_node_id: str
+    title: str
+    node_type: str
+    total_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
+    expandable: bool = True
+
+
+class LLMCurrentLayerResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    children: list[LLMLayerChildCandidate] = Field(default_factory=list)
+    satisfied: bool | None = None
+    reasoning_history: list[LayerReasoningEntry] = Field(default_factory=list)
+    review_rounds: int = 0
 
 
 class CurrentLayerReview(ModeSlicingMixin, BaseModel):
@@ -432,6 +556,19 @@ class CurrentLayerReview(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+
+
+class LLMCurrentLayerReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updated_result: LLMCurrentLayerResult | None = None
+    coverage_ok: bool | None = None
+    satisfied: bool | None = None
+    strategy_used: Literal["excerpt_first", "boundary_first"] = "excerpt_first"
+    overlap_conflicts: list[LayerSpanConflict] = Field(default_factory=list)
+    coverage_gap_notes: list[LayerCoverageGap] = Field(default_factory=list)
+    duplicate_child_notes: list[LayerDuplicateChildNote] = Field(default_factory=list)
+    review_notes: list[str] = Field(default_factory=list)
 
 
 class CanonicalGraphWriteResult(ModeSlicingMixin, BaseModel):

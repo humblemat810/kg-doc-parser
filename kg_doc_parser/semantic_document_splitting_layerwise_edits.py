@@ -76,6 +76,13 @@ entry func : build_document_tree
 # ==============================================================================
 import json
 import re
+import time
+import inspect
+from hashlib import sha256
+from functools import wraps
+from contextlib import contextmanager
+from pathlib import Path
+import tempfile
 
 from dataclasses import dataclass
 from enum import Enum
@@ -94,11 +101,34 @@ import math
 import os
 from rapidfuzz.distance import LCSseq
 from datetime import datetime
-from typing import Callable, TypeVar, ParamSpec, cast
-from joblib import Memory
+from typing import Callable, Generator, TypeVar, ParamSpec, cast
+from contextvars import ContextVar
+from joblib import Memory, dump as joblib_dump, hash as joblib_hash, load as joblib_load
 from kg_doc_parser.document_ingester_logger import DocumentIngestSQLiteCallback
+from kg_doc_parser.llm_structured_output import build_structured_output_runnable
 from kogwistar.id_provider import stable_id
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+
+_LAYERWISE_TRACE_ENV = "KG_DOC_LAYERWISE_TRACE_FILE"
+
+
+def _emit_layerwise_trace(kind: str, **data: Any) -> None:
+    trace_path = os.environ.get(_LAYERWISE_TRACE_ENV)
+    if not trace_path:
+        return
+    try:
+        trace_dir = os.path.dirname(trace_path)
+        if trace_dir:
+            os.makedirs(trace_dir, exist_ok=True)
+        record = {
+            "kind": kind,
+            "ts": time.time(),
+            **data,
+        }
+        with open(trace_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+    except Exception:
+        pass
 
 def get_llm(model_name:str):
     settings = WorkflowProviderSettings.from_env()
@@ -505,7 +535,6 @@ class SemanticNode(BaseModel):
             "edges": edges,
         }
 SemanticNode.model_rebuild()
-from contextvars import ContextVar
 current_level_nodes = ContextVar("allowed_choices", default=[])
 
 def reject_self_recursion(parent_type: str, child: LLMChildNodeResponse) -> bool:
@@ -862,7 +891,216 @@ $parent_sections_json
 from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage
 from joblib import Memory
 memory = Memory(location = os.getenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", ".joblib"))
-@joblib_memory_cached(memory, ignore = ['model_names', 'event_name'])
+
+_PARSER_LLM_CACHE_REVISION_ENV = "KG_DOC_PARSER_LLM_CACHE_REVISION"
+_PARSER_LLM_CACHE_REVISION = "parser-llm-cache-v4"
+
+
+def _parser_llm_cache_context() -> str:
+    """Return a non-secret fingerprint for all parser LLM cache entries."""
+
+    settings = WorkflowProviderSettings.from_env()
+    payload = {
+        "cache_revision": os.getenv(
+            _PARSER_LLM_CACHE_REVISION_ENV,
+            _PARSER_LLM_CACHE_REVISION,
+        ),
+        "parser": settings.parser.model_dump(dump_format="json"),
+        "proposal_mode": settings.proposal_mode,
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _parser_llm_cache_path(cache_key: str) -> Path:
+    """Return a committed-cache path under the configured Joblib root."""
+
+    cache_root = Path(memory.location or ".joblib") / "parser_llm_committed_v4"
+    return cache_root / cache_key[:2] / f"{cache_key}.joblib"
+
+
+def _load_committed_parser_llm_result(cache_key: str) -> tuple[bool, Any]:
+    cache_path = _parser_llm_cache_path(cache_key)
+    if not cache_path.is_file():
+        return False, None
+    try:
+        return True, joblib_load(cache_path)
+    except Exception as exc:  # A corrupt cache is never authoritative.
+        _emit_layerwise_trace(
+            "parser_llm_cache.committed_load_failed",
+            cache_key=cache_key,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return False, None
+
+
+def _store_committed_parser_llm_result(cache_key: str, value: Any) -> None:
+    """Atomically publish a result only after the enclosing ingest succeeds."""
+
+    cache_path = _parser_llm_cache_path(cache_key)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        prefix=f".{cache_key}.",
+        suffix=".tmp",
+        dir=cache_path.parent,
+        delete=False,
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        joblib_dump(value, temporary_path)
+        os.replace(temporary_path, cache_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink(missing_ok=True)
+
+
+@dataclass
+class ParserLlmCacheTransaction:
+    """Stages LLM outputs until the canonical graph write has succeeded.
+
+    A cache hit is safe only when it was promoted by an earlier successful
+    parse-and-persist transaction. Newly generated results stay local to this
+    transaction so a validation, persistence, or cancellation failure cannot
+    poison a later retry.
+    """
+
+    _staged: dict[str, Any]
+    _promoted: bool = False
+
+    def lookup(self, cache_key: str) -> tuple[str, Any]:
+        if cache_key in self._staged:
+            return "staged", self._staged[cache_key]
+        found, value = _load_committed_parser_llm_result(cache_key)
+        return ("committed", value) if found else ("miss", None)
+
+    def stage(self, cache_key: str, value: Any) -> None:
+        self._staged[cache_key] = value
+
+    def promote(self) -> int:
+        for cache_key, value in self._staged.items():
+            _store_committed_parser_llm_result(cache_key, value)
+        promoted_count = len(self._staged)
+        self._staged.clear()
+        self._promoted = True
+        _emit_layerwise_trace("parser_llm_cache.promoted", entry_count=promoted_count)
+        return promoted_count
+
+    def discard(self, *, reason: str) -> int:
+        discarded_count = len(self._staged)
+        self._staged.clear()
+        _emit_layerwise_trace(
+            "parser_llm_cache.discarded",
+            entry_count=discarded_count,
+            reason=reason,
+        )
+        return discarded_count
+
+
+_active_parser_llm_cache_transaction: ContextVar[ParserLlmCacheTransaction | None] = ContextVar(
+    "active_parser_llm_cache_transaction",
+    default=None,
+)
+
+
+@contextmanager
+def parser_llm_cache_transaction() -> Generator[ParserLlmCacheTransaction, None, None]:
+    """Stage parser LLM results and require an explicit successful promotion.
+
+    Call ``transaction.promote()`` only after canonical graph persistence has
+    completed. Exiting without promotion, including through an exception,
+    discards all newly generated values.
+    """
+
+    active = _active_parser_llm_cache_transaction.get()
+    if active is not None:
+        yield active
+        return
+    transaction = ParserLlmCacheTransaction(_staged={})
+    token = _active_parser_llm_cache_transaction.set(transaction)
+    try:
+        yield transaction
+    except BaseException:
+        transaction.discard(reason="exception")
+        raise
+    else:
+        if not transaction._promoted:
+            transaction.discard(reason="not_promoted")
+    finally:
+        _active_parser_llm_cache_transaction.reset(token)
+
+
+def _parser_llm_cache(
+    fn: Callable[P, R],
+    *,
+    should_stage: Callable[[R], bool],
+) -> Callable[P, R]:
+    """Stage successful LLM results under the active parse/persist transaction.
+
+    This deliberately performs no durable caching outside
+    :func:`parser_llm_cache_transaction`: a returned model payload alone has
+    not yet passed parser validation or canonical graph persistence.
+    """
+
+    @wraps(fn)
+    def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+        transaction = _active_parser_llm_cache_transaction.get()
+        if transaction is None:
+            _emit_layerwise_trace("parser_llm_cache.bypassed", operation=fn.__name__)
+            return fn(*args, **kwargs)
+        cache_context = _parser_llm_cache_context()
+        bound_arguments = inspect.signature(fn).bind_partial(*args, **kwargs)
+        # These control how an operation is attempted, not what its successful
+        # semantic result means. In particular, test/local callers must not
+        # fragment a replayable result merely because they inject a callback.
+        bound_arguments.arguments.pop("call_llm_structured", None)
+        bound_arguments.arguments.pop("max_rounds", None)
+        cache_key = joblib_hash(
+            (fn.__module__, fn.__qualname__, cache_context, bound_arguments.arguments)
+        )
+        state, value = transaction.lookup(cache_key)
+        if state != "miss":
+            _emit_layerwise_trace(
+                f"parser_llm_cache.{state}_hit",
+                operation=fn.__name__,
+                cache_context=cache_context,
+            )
+            return cast(R, value)
+        _emit_layerwise_trace(
+            "parser_llm_cache.staged_miss",
+            operation=fn.__name__,
+            cache_context=cache_context,
+        )
+        value = fn(*args, **kwargs)
+        if should_stage(value):
+            transaction.stage(cache_key, value)
+        else:
+            _emit_layerwise_trace(
+                "parser_llm_cache.not_staged",
+                operation=fn.__name__,
+                reason="nonterminal_result",
+            )
+        return value
+
+    return cast(Callable[P, R], wrapped)
+
+
+def parser_llm_cache(fn: Callable[P, R]) -> Callable[P, R]:
+    """Stage a completed provider result under the active ingest transaction."""
+
+    return _parser_llm_cache(fn, should_stage=lambda _value: True)
+
+
+def parser_llm_cache_terminal_correction(fn: Callable[P, R]) -> Callable[P, R]:
+    """Cache a correction layer only when it has no remaining pending nodes."""
+
+    def _is_terminal(value: R) -> bool:
+        return not bool(getattr(value, "pending_fix_children", None))
+
+    return _parser_llm_cache(fn, should_stage=_is_terminal)
+
+
+@parser_llm_cache
 def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set):
         
         i_model = 0
@@ -878,7 +1116,7 @@ def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id
                 # Use with_structured_output with our new batch response model
                 for retries in range(max_retry):
                     try:
-                        response: dict = llm.with_structured_output(LLMLevelResponse["llm"], include_raw=True).invoke(messages,
+                        response: dict = build_structured_output_runnable(llm, LLMLevelResponse["llm"], include_raw=True).invoke(messages,
                                                 config={
                                                         "metadata": {
                                                         "document_id": doc_id,
@@ -907,8 +1145,7 @@ def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id
                 messages.append(SystemMessage((("error: " + err_msg[:10000] + '...' + err_msg[-2000:]) if len(err_msg)>=12000 else err_msg)))
                 if i_model >= len(model_names):
                     raise Exception(f"All models ({model_names}) failed for this batch.") from e
-# @memory.cache(ignore = ['model_names'])
-@joblib_memory_cached(memory, ignore = ['model_names', 'event_name'])
+@parser_llm_cache
 def level_node_llm_parsing(
     nodes_at_level: List[dict],  # type: ignore
     source_map: Dict,
@@ -1043,6 +1280,15 @@ def build_document_tree(
     output structure
         layers of nodes from coarse to fine grained
     """
+    _emit_layerwise_trace(
+        "build_document_tree.start",
+        doc_id=doc_id,
+        max_depth=max_depth,
+        parsing_mode=parsing_mode,
+        allow_review=allow_review,
+        source_cluster_count=len(source_map),
+        model_names=model_names,
+    )
     root_node : SemanticNode= SemanticNode.model_validate(get_root_node(title=llm_input_dict['document_filename'], source_map=source_map))
     # SemanticNode(
     #     title=llm_input_dict['document_filename'],
@@ -1057,12 +1303,25 @@ def build_document_tree(
     while nodes_for_next_level and current_depth < max_depth:
         
         print(f"\nProcessing Level {current_depth} with {len(nodes_for_next_level)} nodes...")
+        _emit_layerwise_trace(
+            "build_document_tree.level.start",
+            doc_id=doc_id,
+            level=current_depth,
+            node_count=len(nodes_for_next_level),
+        )
         
         nodes_at_this_level: list[SemanticNode] = nodes_for_next_level
         current_level_node_context_reset_token = current_level_nodes.set(nodes_at_this_level)
         nodes_for_next_level: list[SemanticNode] = []
         node_this_level_lookup_by_id = {str(node.node_id): node for node in nodes_at_this_level}
         # This is the single, batched call for the entire level
+        _emit_layerwise_trace(
+            "build_document_tree.level_node_llm_parsing.start",
+            doc_id=doc_id,
+            level=current_depth,
+            node_count=len(nodes_at_this_level),
+            model_names=model_names,
+        )
         llm_response_json = level_node_llm_parsing(
             [i.model_dump() for i in nodes_at_this_level], 
             source_map, 
@@ -1072,6 +1331,11 @@ def build_document_tree(
             "level_parsing",
             parsing_mode=parsing_mode
         )
+        _emit_layerwise_trace(
+            "build_document_tree.level_node_llm_parsing.done",
+            doc_id=doc_id,
+            level=current_depth,
+        )
         @joblib_memory_cached(memory)
         def get_level_response(llm_response_json) -> Dict[str, Any]:
             response_cacheable = LLMLevelResponseBE.model_validate(llm_response_json).model_dump() # only dumped version cacheable by joblib
@@ -1080,6 +1344,12 @@ def build_document_tree(
         level_response : LLMLevelResponseBE= LLMLevelResponseBE.model_validate(response_cacheable)
         # [{i.title + "|" + i.node_type: [j.verbatim_text for j in i.pointers]} for i in level_response.children]
         # correct excerpts
+        _emit_layerwise_trace(
+            "build_document_tree.correct_level_children.start",
+            doc_id=doc_id,
+            level=current_depth,
+            child_count=len(level_response.children),
+        )
         corrected_children, unfixed_children = correct_level_children_with_iterative_pipeline(
             
             level_response_json=level_response.model_dump(),
@@ -1088,6 +1358,13 @@ def build_document_tree(
             doc_id=doc_id,
             model_names=model_names,
             # model_names=["gpt-4.1", "gpt-4o-mini"]  # or keep your Gemini list; it’s pluggable
+        )
+        _emit_layerwise_trace(
+            "build_document_tree.correct_level_children.done",
+            doc_id=doc_id,
+            level=current_depth,
+            fixed_count=len(corrected_children),
+            unfixed_count=len(unfixed_children),
         )
 
         corrected_children : list[LLMChildNodeResponseBE]
@@ -1100,8 +1377,20 @@ def build_document_tree(
         fe_children, layer_parent_types, layer_parent_sigs = prepare_frontend_children(nodes_at_this_level, level_response, fixed_children) # for next level of LLM
         
         if allow_review:
+            _emit_layerwise_trace(
+                "build_document_tree.iterative_review.start",
+                doc_id=doc_id,
+                level=current_depth,
+                child_count=len(fe_children),
+            )
             fixed_children, _reasoning_history= iterative_review_loop(fe_children, layer_parent_types, layer_parent_sigs, source_map,
                                                     model_names, doc_id, full_document_json_str, current_depth, llm_input_dict, nodes_at_this_level)
+            _emit_layerwise_trace(
+                "build_document_tree.iterative_review.done",
+                doc_id=doc_id,
+                level=current_depth,
+                child_count=len(fixed_children),
+            )
         for ch in fixed_children:
             ch: LLMChildNodeResponseBE
             child_def = ch.model_dump()
@@ -1115,8 +1404,19 @@ def build_document_tree(
             else:
                 nodes_for_next_level.append(child_node)
         current_level_nodes.reset(current_level_node_context_reset_token)
+        _emit_layerwise_trace(
+            "build_document_tree.level.done",
+            doc_id=doc_id,
+            level=current_depth,
+            next_level_count=len(nodes_for_next_level),
+        )
         current_depth += 1
         
+    _emit_layerwise_trace(
+        "build_document_tree.done",
+        doc_id=doc_id,
+        depth=current_depth,
+    )
     return root_node    
 def prepare_frontend_children(nodes_at_this_level, level_response, fixed_children: List[LLMChildNodeResponseBE]):
         # RUN LLM loop make sure missing content will be guarded by LLM
@@ -1189,6 +1489,12 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
     # after the loop, at the end, just like the initial run, have to check the verbatim/excepts really exists 
     # and correct check the except really exists again
 
+    _emit_layerwise_trace(
+        "iterative_review_loop.start",
+        doc_id=doc_id,
+        current_depth=current_depth,
+        child_count=len(fe_children),
+    )
     edited = False
     proposals = True
     retries = 0
@@ -1220,6 +1526,13 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
                           for node in nodes_at_this_level],
             attempt = retries
         )
+        _emit_layerwise_trace(
+            "iterative_review_loop.proposal.done",
+            doc_id=doc_id,
+            current_depth=current_depth,
+            retry=retries,
+            proposal_count=len(getattr(proposals_response, "proposals", []) or []),
+        )
         CUD_reasoning_history.append({"role": "ai_assistant", 'content': proposals_response.reasoning})
         # current_level_nodes.reset(token)
         if not (proposals_response.is_empty()):# 
@@ -1243,6 +1556,14 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
         retries += 1
     # --- END CUD loop ---   then post CUD validate below
     if not fe_children or (not edited): 
+        _emit_layerwise_trace(
+            "iterative_review_loop.done",
+            doc_id=doc_id,
+            current_depth=current_depth,
+            fixed_count=len(fe_children),
+            edited=edited,
+            reasoning_steps=len(CUD_reasoning_history),
+        )
         return  [LLMChildNodeResponseBE.model_validate(i) for i in fe_children] , CUD_reasoning_history# no children even after re-check in iterative pipeline, time to early stop
     # Create SemanticNode children for this parent
     else:
@@ -1272,6 +1593,14 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
         # ids = [str(c.id) for c in corrected_children]
         # corrected_children_map: dict[str, LLMChildNodeResponseBE] = {str(i.id) : i for i in corrected_children}
         fixed_children: list[LLMChildNodeResponseBE] = corrected_children #[corrected_children_map[str(i)] for i in ids]
+    _emit_layerwise_trace(
+        "iterative_review_loop.done",
+        doc_id=doc_id,
+        current_depth=current_depth,
+        fixed_count=len(fixed_children),
+        edited=edited,
+        reasoning_steps=len(CUD_reasoning_history),
+    )
     return fixed_children, CUD_reasoning_history
         
 from typing import Dict, List, Optional, Tuple, Callable, Iterable
@@ -1688,7 +2017,10 @@ class StructuredLLMCaller(Protocol):
     ) -> T:
         ...
 
-@memory.cache(ignore = ['model_names', 'schema', 'event_name'])
+# Cache completed provider calls, not the correction orchestrator. Joblib does
+# not cache exceptions, so failed provider attempts remain retryable while a
+# successful structured response can be replayed without another LLM call.
+@parser_llm_cache
 def _default_call_llm_structured(
     prompt: str, model_names: List[str], schema: type[T] ,doc_id: str, model_json_schema : dict, event_name: str, i_attempt: int
 ) -> T:
@@ -1707,7 +2039,7 @@ def _default_call_llm_structured(
             line_no = cf.f_lineno if cf else None
             try:
                 llm = get_llm(name)
-                resp: dict = llm.with_structured_output(schema, include_raw=True).invoke(messages, 
+                resp: dict = build_structured_output_runnable(llm, schema, include_raw=True).invoke(messages, 
                                     config={
                                             "metadata": {
                                             "document_id": doc_id,
@@ -1736,7 +2068,6 @@ T2 = TypeVar("T2", bound=BaseModel)
 from typing import Any, TypeVar, overload
 
 
-@memory.cache(ignore = ['call_llm_structured', 'max_rounds', 'model_names'])
 def iterative_correct_children_for_level(
     children: List[LLMChildNodeResponseBE],
     source_map: Dict,
@@ -1756,6 +2087,13 @@ def iterative_correct_children_for_level(
     if doc_id is None:
         raise Exception("Missing doc_id")
     model_names = model_names or _default_parser_model_names()
+    _emit_layerwise_trace(
+        "iterative_correct_children_for_level.start",
+        doc_id=doc_id,
+        child_count=len(children),
+        max_rounds=max_rounds,
+        model_names=model_names,
+    )
 
     fixed: Dict[str, LLMChildNodeResponseBE] = {}
     pending: Dict[str, LLMChildNodeResponseBE] = {f"{i.parent_node_id}|{i.title}": i for i in children}
@@ -1765,6 +2103,13 @@ def iterative_correct_children_for_level(
         if not pending:
             break
         pending_length_history.append({'round_idx': round_idx, "stage":'pre-deterministic', 'length_pending': len(pending), "still_unsolved_same_cnt": still_unsolved_same_cnt})
+        _emit_layerwise_trace(
+            "iterative_correct_children_for_level.round.start",
+            doc_id=doc_id,
+            round_idx=round_idx,
+            pending_count=len(pending),
+            still_unsolved_same_cnt=still_unsolved_same_cnt,
+        )
         # ----- 1) deterministic pass
         still_unresolved: Dict[str, LLMChildNodeResponseBE] = {}
         for key, child in list(pending.items()):
@@ -1782,6 +2127,13 @@ def iterative_correct_children_for_level(
             break # short circuit if all resovled correctly
         pending_length_history.append({'round_idx': round_idx, "stage":'pre-llm-correct', 'length_pending': len(pending), "still_unsolved_same_cnt": still_unsolved_same_cnt})
         # ----- 2) LLM batch pass over *only* unresolved children
+        _emit_layerwise_trace(
+            "iterative_correct_children_for_level.llm.start",
+            doc_id=doc_id,
+            round_idx=round_idx,
+            pending_count=len(pending),
+            still_unsolved_same_cnt=still_unsolved_same_cnt,
+        )
         nodes_to_correct = [
             {
                 "parent_node_id": c.parent_node_id,
@@ -1800,6 +2152,12 @@ def iterative_correct_children_for_level(
             parsed: LLMLevelResponse = call_llm_structured(
                 prompt, model_names, LLMLevelResponse, doc_id, schema, "correct_level_children_schema", still_unsolved_same_cnt
             )
+            _emit_layerwise_trace(
+                "iterative_correct_children_for_level.llm.done",
+                doc_id=doc_id,
+                round_idx=round_idx,
+                returned_count=len(getattr(parsed, "children", []) or []),
+            )
             parsed_be = LLMLevelResponseBE.model_validate(parsed.model_dump())
             # validate each returned child again deterministically (trust but verify)
             returned_by_key: Dict[str, LLMChildNodeResponseBE] = {}
@@ -1815,6 +2173,13 @@ def iterative_correct_children_for_level(
         except Exception as e:  # noqa: BLE001
             # LLM failed this round; keep items pending for next round or exit
             print(f"LLM correction round {round_idx+1} failed: {e}")
+            _emit_layerwise_trace(
+                "iterative_correct_children_for_level.llm.error",
+                doc_id=doc_id,
+                round_idx=round_idx,
+                error=type(e).__name__,
+                message=str(e),
+            )
             # fall through; next round will retry or terminate
 
     # Final set = fixed + whatever remains pending (keep originals for transparency)
@@ -1825,6 +2190,12 @@ def iterative_correct_children_for_level(
 
     out = ChildrenCorrectionResult(fixed_children = list(fixed.values()) ,
                                     pending_fix_children= list(pending.values()))
+    _emit_layerwise_trace(
+        "iterative_correct_children_for_level.done",
+        doc_id=doc_id,
+        fixed_count=len(out.fixed_children),
+        pending_count=len(out.pending_fix_children),
+    )
     return out
 # ======== Minimal additions to support your CUD loop (matching your usage) ========
 from string import Template as _CUDTemplate
@@ -2169,7 +2540,7 @@ def _serialize_children_for_prompt(children: List[LLMChildNodeResponse]) -> str:
     return json.dumps(slim, ensure_ascii=False, indent=2)
 
 # ---------- CUD_proposal + apply_proposal ----------
-@memory.cache(ignore = ['model_names', 'source_map'])
+@parser_llm_cache
 def CUD_proposal(
     # parent_id: str,
     children: List[LLMChildNodeResponse],
@@ -2185,6 +2556,13 @@ def CUD_proposal(
     Ask LLM for CUD proposals (single round) for the CURRENT LAYER.
     Returns a list of CUDProposal, or [] if none.
     """
+    _emit_layerwise_trace(
+        "CUD_proposal.start",
+        doc_id=doc_id,
+        attempt=attempt,
+        child_count=len(children),
+        has_reasoning_history=bool(reasoning_history),
+    )
     # build small prompt from current layer only
     if children:
         prompt = _CUD_PROMPT.substitute(current_layer_json=_serialize_children_for_prompt(children),
@@ -2197,9 +2575,22 @@ def CUD_proposal(
                                         full_document_json_str = full_document_json_str,
                                         ancestors = last_layer, reasoning_history = str(reasoning_history))
         ResponseModel = CResponse
+    _emit_layerwise_trace(
+        "CUD_proposal.prompt.ready",
+        doc_id=doc_id,
+        attempt=attempt,
+        prompt_chars=len(prompt),
+        response_model=ResponseModel.__name__,
+    )
     # Prefer your structured invoker if available
 
     try:
+        _emit_layerwise_trace(
+            "CUD_proposal.llm.start",
+            doc_id=doc_id,
+            attempt=attempt,
+            model_names=model_names,
+        )
         resp:CUDResponse['llm'] | CResponse['llm']  = _default_call_llm_structured(
             prompt=prompt,
             model_names=model_names,
@@ -2210,11 +2601,23 @@ def CUD_proposal(
             i_attempt=attempt,
             
         )
+        _emit_layerwise_trace(
+            "CUD_proposal.llm.done",
+            doc_id=doc_id,
+            attempt=attempt,
+        )
         return ResponseModel.model_validate(resp.model_dump())
     except Exception as e:
         print("error " + str(e))
         # logger.error(e)
         # fail-safe: no proposals means exit loop on your side
+        _emit_layerwise_trace(
+            "CUD_proposal.error",
+            doc_id=doc_id,
+            attempt=attempt,
+            error=type(e).__name__,
+            message=str(e),
+        )
         raise e
         return []
 from typing import Sequence
@@ -2316,7 +2719,7 @@ def apply_proposal(
 # ============================================================================
 # Convenience: correct one level from your existing `build_document_tree` loop
 # ============================================================================
-@memory.cache
+@parser_llm_cache_terminal_correction
 def correct_level_children_with_iterative_pipeline(
     level_response_json: dict,
     source_map: Dict,
@@ -2325,7 +2728,9 @@ def correct_level_children_with_iterative_pipeline(
     model_names: List[str] | None = None,
 ) -> ChildrenCorrectionResult:
     """Helper to be used right after a level LLM call in your BFS.
-    This layer is a cacheable layer
+
+    A fully corrected level is staged as one cache unit. Results containing
+    ``pending_fix_children`` remain retryable and are never staged.
     Example integration:
         level_response = LLMLevelResponse.model_validate(llm_response_json)
         corrected_children = correct_level_children_with_iterative_pipeline(
@@ -2334,12 +2739,23 @@ def correct_level_children_with_iterative_pipeline(
     """
     level = LLMLevelResponseBE.model_validate(level_response_json)
     children = [LLMChildNodeResponseBE.model_validate(c.model_dump()) for c in level.children]
+    _emit_layerwise_trace(
+        "correct_level_children_with_iterative_pipeline.start",
+        doc_id=doc_id,
+        child_count=len(children),
+    )
     to_return = iterative_correct_children_for_level(
         children=children,
         source_map=source_map,
         full_document_json=full_document_json,
         doc_id = doc_id,
         model_names=model_names,
+    )
+    _emit_layerwise_trace(
+        "correct_level_children_with_iterative_pipeline.done",
+        doc_id=doc_id,
+        fixed_count=len(to_return.fixed_children),
+        pending_count=len(to_return.pending_fix_children),
     )
     
     return to_return
@@ -2602,7 +3018,7 @@ def print_tree(node: SemanticNode, indent=""):
     print(f"{indent} L- {node.title} ({node.node_type}) | Text: '{reconstructed_text[:150].strip()}...'")
     for child in node.child_nodes:
         print_tree(child, indent + "  ")
-@memory.cache()
+@parser_llm_cache
 def parse_doc(
     doc_id: str,
     raw_doc_dict,
@@ -2613,10 +3029,24 @@ def parse_doc(
     
     
     try:
+        _emit_layerwise_trace(
+            "parse_doc.start",
+            doc_id=doc_id,
+            parsing_mode=parsing_mode,
+            max_depth=max_depth,
+            model_names=model_names,
+        )
         print("--- Phase 2: Preparing Document ---")
+        _emit_layerwise_trace("parse_doc.prepare_document_for_llm.start", doc_id=doc_id)
         llm_input_dict, source_map = prepare_document_for_llm(raw_doc_dict)
+        _emit_layerwise_trace(
+            "parse_doc.prepare_document_for_llm.done",
+            doc_id=doc_id,
+            source_cluster_count=len(source_map),
+        )
 
         print("\n--- Phase 3: Building Document Tree (Layer-wise) ---")
+        _emit_layerwise_trace("parse_doc.build_document_tree.start", doc_id=doc_id)
         document_tree = build_document_tree(
             doc_id,
             llm_input_dict,
@@ -2625,6 +3055,7 @@ def parse_doc(
             max_depth=max_depth,
             model_names=model_names,
         )
+        _emit_layerwise_trace("parse_doc.build_document_tree.done", doc_id=doc_id)
         cov: CoverageResponse = compute_pointer_coverage(document_tree, source_map)
         print("Overall coverage:", cov.overall)
         for cid, r in cov.per_cluster.items():
@@ -2643,14 +3074,27 @@ def parse_doc(
         # if is_valid:
         print("\n--- Phase 5: Visualizing the Reconstructed Tree ---")
         print_tree(document_tree)
+        _emit_layerwise_trace("parse_doc.done", doc_id=doc_id)
         
     except (ValidationError, json.JSONDecodeError) as e:
         print("\n--- ERROR: Failed to parse or validate LLM response. ---")
         print(f"Details: {e}")
+        _emit_layerwise_trace(
+            "parse_doc.error",
+            doc_id=doc_id,
+            error=type(e).__name__,
+            message=str(e),
+        )
         raise e
     except Exception as e:
         print("\n--- ERROR: A critical error occurred. ---")
         print(f"Details: {e}")
+        _emit_layerwise_trace(
+            "parse_doc.error",
+            doc_id=doc_id,
+            error=type(e).__name__,
+            message=str(e),
+        )
         raise e
     return document_tree, source_map
 
@@ -3078,7 +3522,7 @@ def _parent_payload(node_dict: dict[str, Any], child_digests: list[dict[str, Any
         "children": child_digests,
     }
 
-@memory.cache(ignore=["model_names"])
+@parser_llm_cache
 def build_index_terms_for_semantic_node(
     sem_nodes: list["SemanticNode"],
     doc_id: str,
@@ -3119,7 +3563,7 @@ def build_index_terms_for_semantic_node(
 
     )
 
-    @memory.cache(ignore=["model_names"])
+    @parser_llm_cache
     def get_minibatch_result(messages, doc_id: str, model_names: list[str], all_ids: tuple[str, ...]):
         retries = 0
         retry_max = 3
@@ -3135,7 +3579,7 @@ def build_index_terms_for_semantic_node(
             llm: BaseChatModel = get_llm(model_name)
 
             try:
-                res: dict = llm.with_structured_output(BatchIndexResponse, include_raw=True).invoke(
+                res: dict = build_structured_output_runnable(llm, BatchIndexResponse, include_raw=True).invoke(
                     cur_messages,
                     config={
                         "metadata": {
