@@ -730,6 +730,7 @@ def test_workflow_first_ocr_manual_matrix(provider: str, model: str, input_kind:
 
 
 @pytest.mark.ci
+@pytest.mark.slow
 def test_ocr_workflow_reuses_cached_pages_but_regenerates_grounded_parse_tree() -> None:
     scratch = _scratch("ocr_grounded_cache")
     images_dir = scratch / "images"
