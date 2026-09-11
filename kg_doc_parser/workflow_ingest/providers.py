@@ -60,7 +60,7 @@ import os
 from dataclasses import dataclass
 from typing import Annotated, Any, Callable, ClassVar, Literal, Optional, Protocol, TypeVar, Union, runtime_checkable, get_args, get_origin
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_core import PydanticUndefined
 from pydantic_extension.model_slicing import BackendField, FrontendField
 from pydantic_extension.model_slicing.mixin import DtoField, ExcludeMode, LLMField, ModeSlicingMixin
@@ -231,6 +231,29 @@ class EmbeddingProviderConfig(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
+    max_sequence_length: Annotated[
+        Optional[int], DtoField(), BackendField(), FrontendField(), LLMField()
+    ] = None
+    crop_token_budget: Annotated[
+        Optional[int], DtoField(), BackendField(), FrontendField(), LLMField()
+    ] = None
+    tokenizer_fingerprint: Annotated[
+        Optional[str], DtoField(), BackendField(), FrontendField(), LLMField()
+    ] = None
+
+    @model_validator(mode="after")
+    def validate_token_limits(self) -> "EmbeddingProviderConfig":
+        if self.max_sequence_length is not None and self.max_sequence_length <= 0:
+            raise ValueError("embedding max_sequence_length must be positive")
+        if self.crop_token_budget is not None and self.crop_token_budget <= 0:
+            raise ValueError("embedding crop_token_budget must be positive")
+        if (
+            self.max_sequence_length is not None
+            and self.crop_token_budget is not None
+            and self.crop_token_budget > self.max_sequence_length
+        ):
+            raise ValueError("embedding crop_token_budget cannot exceed max_sequence_length")
+        return self
 
 
 def _normalize_provider_name(value: str | None) -> str:
@@ -308,6 +331,13 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 dimension=int(_env("KG_DOC_EMBED_DIMENSION", "2")),
                 base_url=_env("KG_DOC_EMBED_BASE_URL"),
                 api_key_env=_env("KG_DOC_EMBED_API_KEY_ENV"),
+                max_sequence_length=(
+                    int(value) if (value := _env("KG_DOC_EMBED_MAX_SEQUENCE_LENGTH")) else None
+                ),
+                crop_token_budget=(
+                    int(value) if (value := _env("KG_DOC_EMBED_CROP_TOKEN_BUDGET")) else None
+                ),
+                tokenizer_fingerprint=_env("KG_DOC_EMBED_TOKENIZER_FINGERPRINT"),
             ),
         )
 

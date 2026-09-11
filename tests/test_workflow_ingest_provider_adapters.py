@@ -176,6 +176,18 @@ def test_workflow_provider_settings_from_env_normalizes_azure_openai(monkeypatch
     assert settings.parser.api_key_env == "OPENAI_API_KEY_GPT5_MINI"
 
 
+def test_workflow_embedding_settings_include_token_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KG_DOC_EMBED_MAX_SEQUENCE_LENGTH", "8192")
+    monkeypatch.setenv("KG_DOC_EMBED_CROP_TOKEN_BUDGET", "7680")
+    monkeypatch.setenv("KG_DOC_EMBED_TOKENIZER_FINGERPRINT", "qwen-tokenizer-v1")
+
+    settings = WorkflowProviderSettings.from_env()
+
+    assert settings.embedding.max_sequence_length == 8192
+    assert settings.embedding.crop_token_budget == 7680
+    assert settings.embedding.tokenizer_fingerprint == "qwen-tokenizer-v1"
+
+
 def test_azure_chat_model_uses_gpt5_temperature_one(monkeypatch: pytest.MonkeyPatch) -> None:
     module = importlib.import_module("langchain_openai")
     captured: dict[str, object] = {}
