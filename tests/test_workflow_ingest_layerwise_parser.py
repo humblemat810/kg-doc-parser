@@ -924,6 +924,7 @@ def test_layerwise_workflow_retries_when_cud_coverage_check_fails(workflow_backe
     assert review_calls["count"] == 2
 
 
+@pytest.mark.slow
 def test_legacy_compat_and_layerwise_paths_produce_equivalent_labels(workflow_backend_kind):
     scratch = _scratch("layer_equivalent")
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(

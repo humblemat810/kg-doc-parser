@@ -169,7 +169,7 @@ def calculate_cost_usd(
 @dataclass(frozen=True)
 class _IngestEvent:
     """
-    Internal event representation queued from callback thread(s) to writer thread.
+    Internal event embedding queued from callback thread(s) to writer thread.
     """
     ts_iso: str
     document_id: Optional[str]

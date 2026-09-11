@@ -239,6 +239,7 @@ def test_demo_harness_writes_probe_summary_and_cache():
 
 @pytest.mark.workflow
 @pytest.mark.integration
+@pytest.mark.slow
 def test_demo_harness_second_run_hits_llm_cache():
     pytest.importorskip("chromadb")
     pytest.importorskip("fastapi")
