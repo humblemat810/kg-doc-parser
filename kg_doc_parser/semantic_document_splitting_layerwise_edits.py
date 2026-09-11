@@ -59,7 +59,7 @@ Data Structures
    - A lookup dictionary mapping unique cluster IDs to their original OCR data.
    - Format: `Dict[str, TextClusterDict]`
    - Key format: `"p{page_num}_c{cluster_index}"` (e.g., "p1_c0")
-   - Value: Dictionary representation of `TextCluster` (including text and bbox).
+   - Value: Dictionary embedding of `TextCluster` (including text and bbox).
 """
 '''
 parsedoc pipeline:
