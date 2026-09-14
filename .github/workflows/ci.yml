@@ -16,6 +16,8 @@ jobs:
     name: Python 3.13
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PYTHONPATH: ${{ github.workspace }}/kogwistar
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -40,6 +42,9 @@ jobs:
 
       - name: Install Ruff
         run: poetry run pip install ruff
+
+      - name: Verify pinned Kogwistar import
+        run: poetry run python -c "from kogwistar.llm_tasks.providers import ProviderChainChatModel; print(ProviderChainChatModel.__name__)"
 
       - name: Check changed provider style
         run: poetry run ruff check kg_doc_parser/workflow_ingest/providers.py
