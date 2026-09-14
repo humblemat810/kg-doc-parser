@@ -57,13 +57,41 @@ and inferred sections without changing workflow orchestration.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Annotated, Any, Callable, ClassVar, Literal, Optional, Protocol, TypeVar, Union, runtime_checkable, get_args, get_origin
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Literal,
+    Protocol,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+    runtime_checkable,
+)
 
+from kogwistar.llm_tasks.providers import (
+    ProviderChainChatModel,
+    StructuredBridgeChatModel,
+    SupportsStructuredOutput,
+    bridge_messages,
+)
 from pydantic import BaseModel, Field, model_validator
 from pydantic_core import PydanticUndefined
 from pydantic_extension.model_slicing import BackendField, FrontendField
-from pydantic_extension.model_slicing.mixin import DtoField, ExcludeMode, LLMField, ModeSlicingMixin
+from pydantic_extension.model_slicing.mixin import (
+    DtoField,
+    ExcludeMode,
+    LLMField,
+    ModeSlicingMixin,
+)
+
+# Compatibility aliases keep older parser integrations source-compatible while
+# the implementations now live in the shared Kogwistar layer.
+CodexBridgeChatModel = StructuredBridgeChatModel
+_codex_messages = bridge_messages
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 
@@ -139,16 +167,6 @@ class ChatModelProvider(Protocol):
 
 
 @runtime_checkable
-class SupportsStructuredOutput(Protocol):
-    def with_structured_output(
-        self,
-        schema: type[TStructuredModel],
-        include_raw: bool = True,
-        **kwargs: Any,
-    ) -> Any: ...
-
-
-@runtime_checkable
 class EmbeddingFunctionProvider(Protocol):
     def build(self) -> Callable[[list[str]], list[list[float]]]: ...
 
@@ -158,7 +176,7 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
     provider: Annotated[
-        Literal["gemini", "ollama", "openai", "azure", "vertex", "fake"],
+        Literal["gemini", "ollama", "openai", "azure", "vertex", "fake", "codex"],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -167,41 +185,42 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
     model: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()] = "gemini-2.5-flash"
     temperature: Annotated[float, DtoField(), BackendField(), FrontendField(), LLMField()] = 0.1
     base_url: Annotated[
-        Optional[str],
+        str | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     api_key_env: Annotated[
-        Optional[str],
+        str | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     api_version: Annotated[
-        Optional[str],
+        str | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     project: Annotated[
-        Optional[str],
+        str | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     location: Annotated[
-        Optional[str],
+        str | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     max_retries: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 2
+    fallback_specs: list[ProviderEndpointConfig] = Field(default_factory=list, exclude=True)
 
 
 class EmbeddingProviderConfig(ModeSlicingMixin, BaseModel):
@@ -218,31 +237,31 @@ class EmbeddingProviderConfig(ModeSlicingMixin, BaseModel):
     model: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()] = "kg-doc-parser-workflow-embedding-v1"
     dimension: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 2
     base_url: Annotated[
-        Optional[str],
+        str | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     api_key_env: Annotated[
-        Optional[str],
+        str | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     max_sequence_length: Annotated[
-        Optional[int], DtoField(), BackendField(), FrontendField(), LLMField()
+        int | None, DtoField(), BackendField(), FrontendField(), LLMField()
     ] = None
     crop_token_budget: Annotated[
-        Optional[int], DtoField(), BackendField(), FrontendField(), LLMField()
+        int | None, DtoField(), BackendField(), FrontendField(), LLMField()
     ] = None
     tokenizer_fingerprint: Annotated[
-        Optional[str], DtoField(), BackendField(), FrontendField(), LLMField()
+        str | None, DtoField(), BackendField(), FrontendField(), LLMField()
     ] = None
 
     @model_validator(mode="after")
-    def validate_token_limits(self) -> "EmbeddingProviderConfig":
+    def validate_token_limits(self) -> EmbeddingProviderConfig:
         if self.max_sequence_length is not None and self.max_sequence_length <= 0:
             raise ValueError("embedding max_sequence_length must be positive")
         if self.crop_token_budget is not None and self.crop_token_budget <= 0:
@@ -265,7 +284,7 @@ def _normalize_provider_name(value: str | None) -> str:
 
 def _is_gpt5_model(model: str | None) -> bool:
     normalized = str(model or "").strip().lower()
-    return normalized.startswith("gpt-5") or normalized.startswith("gpt5")
+    return normalized.startswith(("gpt-5", "gpt5"))
 
 
 def _chat_temperature_for_model(model: str | None, requested_temperature: float) -> float:
@@ -296,7 +315,7 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
     )
 
     @classmethod
-    def from_env(cls) -> "WorkflowProviderSettings":
+    def from_env(cls) -> WorkflowProviderSettings:
         def _env(name: str, default: str | None = None) -> str | None:
             value = os.getenv(name)
             return value if value not in {None, ""} else default
@@ -442,6 +461,17 @@ def build_chat_model(
     callbacks = callbacks or []
     if spec.provider == "fake":
         return FakeChatModel()
+    if spec.provider == "codex":
+        if not spec.base_url or not spec.api_key_env or not os.getenv(spec.api_key_env):
+            raise ValueError("codex provider requires base_url and a configured api_key_env token")
+        timeout = float(os.getenv("KOGWISTAR_MAINTENANCE_CODEX_TIMEOUT_SECONDS", "300"))
+        return StructuredBridgeChatModel(
+            endpoint=spec.base_url,
+            token=os.environ[spec.api_key_env],
+            model=spec.model,
+            timeout_seconds=timeout,
+            max_retries=spec.max_retries,
+        )
     if spec.provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -523,4 +553,10 @@ def build_chat_model_for_role(
     """
     settings = spec or WorkflowProviderSettings.from_env()
     chat_spec = settings.ocr if role == "ocr" else settings.parser
+    if chat_spec.fallback_specs:
+        models = [
+            (item.provider, build_chat_model(item, callbacks=callbacks))
+            for item in [chat_spec, *chat_spec.fallback_specs]
+        ]
+        return ProviderChainChatModel(models)
     return build_chat_model(chat_spec, callbacks=callbacks)

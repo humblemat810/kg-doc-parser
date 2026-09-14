@@ -1,0 +1,62 @@
+name: Parser CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python 3.13
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: ${{ github.workspace }}/kogwistar
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check out pinned Kogwistar dependency
+        uses: actions/checkout@v4
+        with:
+          repository: humblemat810/kogwistar
+          ref: 78c897cf1069f8a5a0cd2ec4bc05e59bd560394d
+          path: kogwistar
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Poetry
+        run: python -m pip install --upgrade poetry
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Install Ruff
+        run: poetry run pip install ruff
+
+      - name: Verify pinned Kogwistar import
+        run: poetry run python -c "from kogwistar.llm_tasks.providers import ProviderChainChatModel; print(ProviderChainChatModel.__name__)"
+
+      - name: Check changed provider style
+        run: poetry run ruff check kg_doc_parser/workflow_ingest/providers.py
+
+      - name: Run deterministic CI tests
+        run: >-
+          poetry run pytest -m "ci and not ci_full"
+          tests/test_packaging_imports.py
+          tests/test_workflow_ingest_contracts.py
+          tests/test_workflow_ingest_conversation_graph.py
+          tests/test_workflow_ingest_layerwise_parser.py
+          tests/test_workflow_ingest_ocr_pipeline.py
+          tests/test_workflow_ingest_page_index_pipeline.py
+          tests/test_workflow_ingest_resolver_invariants.py
+          -q --durations=25 --durations-min=0 -p no:cacheprovider
