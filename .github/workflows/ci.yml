@@ -47,4 +47,4 @@ jobs:
       - name: Run deterministic CI tests
         run: >-
           poetry run pytest -m "ci and not ci_full"
-          -q --durations=25 --duration-min=0 -p no:cacheprovider
+          -q --durations=25 --durations-min=0 -p no:cacheprovider
