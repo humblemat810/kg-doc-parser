@@ -56,6 +56,7 @@ and inferred sections without changing workflow orchestration.
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -369,6 +370,36 @@ def _embedding_vector(text: str, *, dimension: int) -> list[float]:
     ]
 
 
+def _validate_embedding_vectors(
+    value: Any,
+    *,
+    dimension: int,
+    provider: str,
+) -> list[list[float]]:
+    """Reject provider output that cannot satisfy the declared vector profile."""
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"{provider} embedding response must be a sequence of vectors")
+    vectors: list[list[float]] = []
+    for index, vector in enumerate(value):
+        if not isinstance(vector, (list, tuple)):
+            raise TypeError(f"{provider} embedding {index} must be a numeric vector")
+        if len(vector) != dimension:
+            raise ValueError(
+                f"{provider} returned embedding dimension {len(vector)}; "
+                f"expected configured dimension {dimension}"
+            )
+        row: list[float] = []
+        for coordinate in vector:
+            if isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)):
+                raise TypeError(f"{provider} returned a non-numeric embedding value")
+            numeric = float(coordinate)
+            if not math.isfinite(numeric):
+                raise ValueError(f"{provider} returned a non-finite embedding value")
+            row.append(numeric)
+        vectors.append(row)
+    return vectors
+
+
 @dataclass
 class _CallableEmbeddingFunction:
     name_value: str
@@ -405,7 +436,10 @@ def build_embedding_function(
         if spec.provider == "openai":
             from langchain_openai import OpenAIEmbeddings
 
-            kwargs: dict[str, Any] = {"model": spec.model}
+            kwargs: dict[str, Any] = {
+                "model": spec.model,
+                "dimensions": spec.dimension,
+            }
             if spec.base_url:
                 kwargs["base_url"] = spec.base_url
             if spec.api_key_env and os.getenv(spec.api_key_env):
@@ -438,9 +472,15 @@ def build_embedding_function(
         def __call__(self, input: list[str]) -> list[list[float]]:
             texts = [str(value or "") for value in input]
             if hasattr(embeddings, "embed_documents"):
-                return embeddings.embed_documents(texts)
+                result = embeddings.embed_documents(texts)
+                return _validate_embedding_vectors(
+                    result, dimension=spec.dimension, provider=spec.provider
+                )
             if hasattr(embeddings, "embed_query"):
-                return [embeddings.embed_query(text) for text in texts]
+                result = [embeddings.embed_query(text) for text in texts]
+                return _validate_embedding_vectors(
+                    result, dimension=spec.dimension, provider=spec.provider
+                )
             raise TypeError(f"unsupported embedding backend: {type(embeddings)!r}")
 
     return _LangChainEmbeddingFunction()

@@ -4,7 +4,6 @@ import importlib
 import importlib.util
 
 import pytest
-
 from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     ProviderEndpointConfig,
@@ -12,7 +11,6 @@ from kg_doc_parser.workflow_ingest import (
     build_chat_model_for_role,
     build_embedding_function,
 )
-
 
 # Provider constructors are kg-doc-parser model-selection coverage.  Several
 # adapters validate real SDK credentials during construction, so this file is
@@ -137,10 +135,12 @@ def test_embedding_provider_matrix_skips_if_backend_missing(
     _require_module(module_name)
 
     module = importlib.import_module(module_name)
+    constructor_kwargs: list[dict[str, object]] = []
 
     class _FakeEmbeddings:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            constructor_kwargs.append(kwargs)
 
         def embed_documents(self, texts):
             return [[float(len(text)), float(index + 1), 0.0] for index, text in enumerate(texts)]
@@ -160,6 +160,34 @@ def test_embedding_provider_matrix_skips_if_backend_missing(
     assert len(vectors) == 2, case_name
     assert len(vectors[0]) > 0, case_name
     assert len(vectors[1]) == len(vectors[0]), case_name
+    if provider == "openai":
+        assert constructor_kwargs == [{"model": model, "dimensions": 3}]
+
+
+def test_embedding_provider_rejects_dimension_mismatch_before_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _require_module("langchain_openai")
+    module = importlib.import_module("langchain_openai")
+
+    class _WrongDimensionEmbeddings:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def embed_documents(self, texts):
+            return [[float(len(text)), 0.0] for text in texts]
+
+    monkeypatch.setattr(module, "OpenAIEmbeddings", _WrongDimensionEmbeddings)
+    embedding = build_embedding_function(
+        EmbeddingProviderConfig(
+            provider="openai",
+            model="text-embedding-3-small",
+            dimension=3,
+        )
+    )
+
+    with pytest.raises(ValueError, match="expected configured dimension 3"):
+        embedding(["alpha"])
 
 
 def test_workflow_provider_settings_from_env_normalizes_azure_openai(monkeypatch: pytest.MonkeyPatch) -> None:
