@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .cache import WorkflowLLMCallCache
 from .models import (
     CurrentLayerContext,
-    CurrentLayerReview,
     CurrentLayerResult,
+    CurrentLayerReview,
+    LayerChildCandidate,
     LayerCoverageGap,
     LayerDuplicateChildNote,
-    LayerChildCandidate,
     LayerFrontierItem,
     LayerSpanConflict,
     NormalizedSourceCollection,
@@ -136,8 +137,9 @@ def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
     if not intervals:
         return []
     merged: list[tuple[int, int]] = []
-    cur_s, cur_e = sorted(intervals)[0]
-    for s, e in sorted(intervals)[1:]:
+    ordered_intervals = sorted(intervals)
+    cur_s, cur_e = min(ordered_intervals)
+    for s, e in ordered_intervals[1:]:
         if s <= cur_e + 1:
             cur_e = max(cur_e, e)
         else:
@@ -385,27 +387,36 @@ def prepare_layer_frontier(
     frontier_queue: list[LayerFrontierItem],
     semantic_tree: SemanticNode,
     max_retries: int = 3,
+    max_items: int | None = None,
 ) -> tuple[CurrentLayerContext, list[LayerFrontierItem], ParseSessionState]:
     if not frontier_queue:
         raise ValueError("frontier queue is empty")
     sorted_queue = sorted(frontier_queue, key=lambda item: (item.depth, item.order))
     current_depth = sorted_queue[0].depth
     current_items = [item for item in sorted_queue if item.depth == current_depth]
-    remaining = [item for item in sorted_queue if item.depth != current_depth]
+    if max_items is not None:
+        if max_items < 1:
+            raise ValueError("max_items must be positive")
+        selected_items = current_items[:max_items]
+    else:
+        selected_items = current_items
+    # Preserve both same-depth items that did not fit in this batch and all
+    # deeper work. Dropping the former loses durable parser work.
+    remaining = [item for item in sorted_queue if item not in selected_items]
     parent_titles = []
-    for parent_id in [item.parent_node_id for item in current_items]:
+    for parent_id in [item.parent_node_id for item in selected_items]:
         node = find_semantic_node(semantic_tree, parent_id)
         parent_titles.append(node.title if node is not None else parent_id)
     session = parse_session.model_copy(update={"current_depth": current_depth})
     context = CurrentLayerContext(
         depth=current_depth,
-        parent_node_ids=[item.parent_node_id for item in current_items],
+        parent_node_ids=[item.parent_node_id for item in selected_items],
         parent_titles=parent_titles,
         parent_content_pointers_by_id={
             item.parent_node_id: list(find_semantic_node(semantic_tree, item.parent_node_id).total_content_pointers)
             if find_semantic_node(semantic_tree, item.parent_node_id) is not None
             else []
-            for item in current_items
+            for item in selected_items
         },
         split_strategy=parse_session.split_strategy,
         retry_count=int(parse_session.layer_attempts.get(str(current_depth), 0)),
