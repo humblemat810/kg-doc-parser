@@ -2,8 +2,6 @@ name: Experimental PyPy 3.11 parser profile
 
 on:
   push:
-    branches:
-      - main
   pull_request:
   schedule:
     - cron: "0 7 * * 1"
