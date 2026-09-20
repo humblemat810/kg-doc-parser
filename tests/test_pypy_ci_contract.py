@@ -27,6 +27,20 @@ def test_parser_ci_uses_the_declared_kogwistar_revision() -> None:
 
     assert f"ref: {revision}" in workflow
 
+    exported_requirements = (ROOT / "req.txt").read_text(encoding="utf-8")
+    assert f"kogwistar.git@{revision}" in exported_requirements
+
+
+def test_parser_mcp_dependency_is_official_sdk_only() -> None:
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = metadata["tool"]["poetry"]["dependencies"]
+    assert dependencies["mcp"] == "^1.27.0"
+    assert "fastmcp" not in metadata["tool"]["poetry"].get("dependencies", {})
+
+    exported_requirements = (ROOT / "req.txt").read_text(encoding="utf-8").lower()
+    assert "fastmcp" not in exported_requirements
+    assert "mcp==1.30.0" in exported_requirements
+
 
 def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None:
     requirements = "\n".join(
