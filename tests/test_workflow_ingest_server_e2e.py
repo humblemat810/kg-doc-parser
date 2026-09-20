@@ -36,7 +36,7 @@ if str(os.getenv("KG_DOC_ENABLE_SERVER_E2E_CI_FULL") or "").strip().lower() not 
 
 pytest.importorskip("chromadb")
 pytest.importorskip("fastapi")
-pytest.importorskip("fastmcp")
+pytest.importorskip("mcp")
 
 
 def _scratch(name: str) -> Path:

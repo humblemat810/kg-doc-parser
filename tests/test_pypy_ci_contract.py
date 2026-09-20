@@ -37,5 +37,11 @@ def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None
         .splitlines()
     )
 
-    for forbidden in ("numpy", "chromadb", "pgvector", "torch", "pikepdf"):
+    for forbidden in (
+        "numpy",
+        "chromadb",
+        "pgvector",
+        "torch",
+        "pikepdf",
+    ):
         assert forbidden not in requirements

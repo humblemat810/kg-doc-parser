@@ -195,7 +195,7 @@ def test_document_tree_client_adapts_export_ids_to_temp_batch_tokens():
 def test_demo_harness_writes_probe_summary_and_cache():
     pytest.importorskip("chromadb")
     pytest.importorskip("fastapi")
-    pytest.importorskip("fastmcp")
+    pytest.importorskip("mcp")
 
     scratch = _scratch("demo_harness")
     artifacts = run_demo_harness(
@@ -243,7 +243,7 @@ def test_demo_harness_writes_probe_summary_and_cache():
 def test_demo_harness_second_run_hits_llm_cache():
     pytest.importorskip("chromadb")
     pytest.importorskip("fastapi")
-    pytest.importorskip("fastmcp")
+    pytest.importorskip("mcp")
 
     scratch = _scratch("demo_harness_cache")
     config = DemoHarnessConfig(
@@ -281,7 +281,7 @@ def test_demo_harness_second_run_hits_llm_cache():
 def test_demo_harness_subprocess_server_mode_ci_full():
     pytest.importorskip("chromadb")
     pytest.importorskip("fastapi")
-    pytest.importorskip("fastmcp")
+    pytest.importorskip("mcp")
     pytest.importorskip("requests")
     pytest.importorskip("uvicorn")
 
@@ -308,7 +308,7 @@ def test_demo_harness_subprocess_server_mode_ci_full():
 def test_demo_harness_external_http_mode_ci_full():
     pytest.importorskip("chromadb")
     pytest.importorskip("fastapi")
-    pytest.importorskip("fastmcp")
+    pytest.importorskip("mcp")
     pytest.importorskip("requests")
     pytest.importorskip("uvicorn")
 
