@@ -27,6 +27,11 @@ def test_parser_ci_uses_the_declared_kogwistar_revision() -> None:
 
     assert f"ref: {revision}" in workflow
 
+    pypy_workflow = (ROOT / ".github" / "workflows" / "pypy-311-experimental.yml").read_text(
+        encoding="utf-8"
+    )
+    assert f"ref: {revision}" in pypy_workflow
+
     exported_requirements = (ROOT / "req.txt").read_text(encoding="utf-8")
     assert f"kogwistar.git@{revision}" in exported_requirements
 
