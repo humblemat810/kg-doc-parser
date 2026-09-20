@@ -13,26 +13,30 @@ permissions:
 
 jobs:
   test:
-    name: Python 3.13
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     env:
       PYTHONPATH: ${{ github.workspace }}/kogwistar
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check out pinned Kogwistar dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: fd47df2894ea020ef4199d9a8e1d089242467df4
+          ref: 428e15de42ed0fd4d64e0f4549403493108afc93
           path: kogwistar
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Poetry
         run: python -m pip install --upgrade poetry
@@ -51,7 +55,7 @@ jobs:
 
       - name: Run deterministic CI tests
         run: >-
-          poetry run pytest -m "ci and not ci_full"
+          poetry run pytest -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           tests/test_packaging_imports.py
           tests/test_workflow_ingest_contracts.py
           tests/test_workflow_ingest_conversation_graph.py

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -32,3 +34,14 @@ def test_package_modules_import_cleanly() -> None:
 
     assert kg_doc_parser.workflow_ingest.parse_document is not None
     assert kg_doc_parser.ocr.regen_doc is not None
+
+
+def test_ci_checks_out_the_declared_kogwistar_revision() -> None:
+    root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    declared_revision = metadata["tool"]["poetry"]["dependencies"]["kogwistar"]["rev"]
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    checkout_revision = re.search(r"ref:\s*([0-9a-f]{40})", workflow)
+
+    assert checkout_revision is not None
+    assert checkout_revision.group(1) == declared_revision

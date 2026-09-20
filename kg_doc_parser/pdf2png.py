@@ -12,7 +12,6 @@ import platform
 import pathlib
 from pypdf import PdfReader, PdfWriter
 import threading
-import pikepdf
 
 from .utils.file_loaders import RawFileLoader
 
@@ -76,6 +75,13 @@ def batch_split_pdf(document_folder: pathlib.Path | str | None = None, outfolder
 
 
 def split_pdf_with_pikepdf(input_pdf_path, output_folder, exists_ok='skip'):
+    try:
+        import pikepdf
+    except ImportError as exc:
+        raise RuntimeError(
+            "pikepdf is required for encrypted or fallback PDF splitting; "
+            "install the parser PDF extra on CPython"
+        ) from exc
     # Ensure output folder exists
     os.makedirs(output_folder, exist_ok=True)
 
