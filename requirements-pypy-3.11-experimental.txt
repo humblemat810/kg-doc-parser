@@ -18,7 +18,7 @@ PyJWT>=2.8
 python-dotenv>=1.0.1
 requests>=2.32
 typing-extensions>=4.8
-mcp>=1.27.0
+mcp>=1.27,<2
 pytest>=8
 
 # The parser source lane shares the official MCP dependency when its server

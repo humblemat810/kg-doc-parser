@@ -871,7 +871,7 @@ fastapi = ">=0.111"
 httpx = ">=0.28.1"
 Jinja2 = ">=3.1"
 joblib = ">=1.3"
-mcp = ">=1.27.0"
+mcp = ">=1.27,<2"
 pydantic = ">=2.6"
 pydantic-extension = ">=0.0.7"
 PyJWT = ">=2.8"
@@ -905,8 +905,8 @@ viz = ["pygraphviz (>=1.14)"]
 [package.source]
 type = "git"
 url = "https://github.com/humblemat810/kogwistar.git"
-reference = "40f42513181a7ae27f8a1bfd192dd2cbe73952a3"
-resolved_reference = "40f42513181a7ae27f8a1bfd192dd2cbe73952a3"
+reference = "c3e7c298afef1a5f3f20181c05e3c378554190c7"
+resolved_reference = "c3e7c298afef1a5f3f20181c05e3c378554190c7"
 
 [[package]]
 name = "langchain-core"
@@ -3144,4 +3144,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "23dde3eafc4cf42ddb7012e31b24f402ab4aa1e454f39fc901c8caf4829c63cf"
+content-hash = "8e37af4e65da29571a2b786f012a6cad6d5956df2cb2640a0a1bead87c4f5455"
