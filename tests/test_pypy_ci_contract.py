@@ -16,8 +16,12 @@ def test_pypy_311_parser_workflow_is_pinned_and_nonblocking() -> None:
     )
 
     assert "continue-on-error: true" in workflow
-    assert "pypy3.11-v7.3.20-linux64.tar.bz2" in workflow
-    assert "1410db3a7ae47603e2b7cbfd7ff6390b891b2e041c9eb4f1599f333677bccb3e" in workflow
+    assert "uses: actions/setup-python@v7" in workflow
+    assert "python-version: pypy-3.11-v7.3.20" in workflow
+    assert "cache: pip" in workflow
+    assert "Install official PyPy 3.11 release" not in workflow
+    assert "pypy_url" not in workflow
+    assert "pypy_sha256" not in workflow
 
 
 def test_parser_ci_uses_the_declared_kogwistar_revision() -> None:
