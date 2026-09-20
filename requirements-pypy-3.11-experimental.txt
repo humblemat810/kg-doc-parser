@@ -22,4 +22,4 @@ mcp>=1.27.0
 pytest>=8
 
 # The parser source lane shares the official MCP dependency when its server
-# integration is exercised; standalone FastMCP is not supported.
+# integration is exercised; the legacy standalone MCP framework is not supported.
