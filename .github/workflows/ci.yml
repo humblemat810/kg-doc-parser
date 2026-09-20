@@ -24,17 +24,17 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}/kogwistar
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check out pinned Kogwistar dependency
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: 471079627f6671e461639495635f795d08dabb64
+          ref: fe4643ba32a4f031940add6555b928a6ba58694b
           path: kogwistar
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 

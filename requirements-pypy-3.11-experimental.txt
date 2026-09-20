@@ -1,0 +1,14 @@
+# PyPy 3.11 source-profile dependencies.  Native PDF and GPU/NumPy extras are
+# intentionally excluded; this lane exercises the parser's text/control path.
+pydantic>=2.12.5
+pydantic-extension>=0.0.7
+joblib>=1.5.3
+pdf2image>=1.17.0
+pypdf>=6.5.0
+pathspec>=0.12.1
+langchain-core>=1.2.5
+langchain-google-genai>=4.1.2
+rapidfuzz>=3.14.3
+mcp>=1.27.0
+fastmcp==3.2.4
+pytest>=8
