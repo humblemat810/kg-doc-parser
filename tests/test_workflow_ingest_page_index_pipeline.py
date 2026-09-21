@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 
 from _kogwistar_test_helpers import build_workflow_engine_triplet, drain_phase1_indexes_until_idle
 import kg_doc_parser.workflow_ingest.page_index as page_index_module

@@ -9,7 +9,7 @@ import os
 import subprocess
 import threading
 import time
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 import pytest
 
 P = ParamSpec("P")
@@ -601,7 +601,7 @@ def _run_post_ocr_semantic_smoke_case(
     cache_key: str,
 ) -> None:
     from kg_doc_parser.utils.file_loaders import RawFileLoader
-    from joblib import Memory
+    from kogwistar.utils.cache_backend import Memory
 
     compare_root = os.path.join("..", "doc_data", "split_pages")
     loader = RawFileLoader(
@@ -841,7 +841,7 @@ def test_semantic_document_splitting(gemini_key, monkeypatch, parser_provider, m
                                                                  all_child_from_root,
                                                                  SemanticNode)
     from kg_doc_parser.ocr import regen_doc
-    from joblib import Memory
+    from kogwistar.utils.cache_backend import Memory
     import uuid, os
     memory = Memory(
         location=os.path.join(
@@ -1017,7 +1017,7 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
     from kg_doc_parser.utils.file_loaders import RawFileLoader
     import os
     from functools import lru_cache
-    from joblib import Memory
+    from kogwistar.utils.cache_backend import Memory
 
     _configure_parser_env(
         monkeypatch,
@@ -1148,7 +1148,7 @@ def test_semantic_document_splitting_doc_group(gemini_key, monkeypatch, parser_p
     from kg_doc_parser.utils.file_loaders import RawFileLoader
     import os
     from functools import lru_cache
-    from joblib import Memory
+    from kogwistar.utils.cache_backend import Memory
 
     _configure_parser_env(
         monkeypatch,

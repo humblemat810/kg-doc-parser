@@ -22,7 +22,8 @@ classifiers = [
 [tool.poetry.dependencies]
 python = "^3.12"
 pydantic = "^2.12.5"
-joblib = "^1.5.3"
+joblib = { version = "^1.5.3", markers = "platform_python_implementation == 'CPython'" }
+diskcache = { version = "^5.6", markers = "platform_python_implementation == 'PyPy'" }
 pdf2image = "^1.17.0"
 pypdf = "^6.5.0"
 pathspec = "^0.12.1"
@@ -32,7 +33,7 @@ langchain-google-genai = "^4.1.2"
 pydantic-extension = "^0.0.7"
 rapidfuzz = "^3.14.3"
 mcp = "^1.27.0"
-kogwistar = { git = "https://github.com/humblemat810/kogwistar.git", rev = "428e15de42ed0fd4d64e0f4549403493108afc93" }
+kogwistar = { git = "https://github.com/humblemat810/kogwistar.git", rev = "3bddf97f402d549c3cf1f34f38c99fcf42bcd02f" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"

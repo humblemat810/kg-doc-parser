@@ -19,7 +19,7 @@ import datetime
 import hashlib
 import dotenv
 from typing import Literal, Optional, List, Dict, Any
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 from kg_doc_parser.llm_structured_output import build_structured_output_runnable
 memory = Memory(location = "./.version_chain")
 

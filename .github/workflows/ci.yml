@@ -13,13 +13,25 @@ permissions:
 
 jobs:
   test:
-    name: Python ${{ matrix.python-version }}
+    name: Python ${{ matrix.label }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        include:
+          - label: cpython312
+            python-version: "3.12"
+            is_pypy: false
+          - label: cpython313
+            python-version: "3.13"
+            is_pypy: false
+          - label: cpython314
+            python-version: "3.14"
+            is_pypy: false
+          - label: pypy311
+            python-version: pypy-3.11-v7.3.20
+            is_pypy: true
     env:
       PYTHONPATH: ${{ github.workspace }}/kogwistar
     steps:
@@ -30,32 +42,69 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: 428e15de42ed0fd4d64e0f4549403493108afc93
+          ref: 3bddf97f402d549c3cf1f34f38c99fcf42bcd02f
           path: kogwistar
 
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install Poetry
+        if: matrix.is_pypy == false
         run: python -m pip install --upgrade poetry
 
-      - name: Install dependencies
+      - name: Install CPython dependencies
+        if: matrix.is_pypy == false
         run: poetry install --no-interaction --no-root
 
       - name: Install Ruff
+        if: matrix.is_pypy == false
         run: poetry run pip install ruff
 
-      - name: Verify pinned Kogwistar import
+      - name: Install PyPy 3.11 Python-authority dependencies
+        if: matrix.is_pypy
+        env:
+          KOGWISTAR_IMPL_MODE: python
+        run: |
+          python -c 'import sys; assert sys.implementation.name == "pypy"; assert sys.version_info[:2] == (3, 11); print(sys.implementation); print(sys.version)'
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-pypy-3.11-experimental.txt
+
+      - name: Verify pinned Kogwistar import on CPython
+        if: matrix.is_pypy == false
         run: poetry run python -c "from kogwistar.llm_tasks.providers import ProviderChainChatModel; print(ProviderChainChatModel.__name__)"
 
       - name: Check changed provider style
+        if: matrix.is_pypy == false
         run: poetry run ruff check kg_doc_parser/workflow_ingest/providers.py
 
-      - name: Run deterministic CI tests
+      - name: Verify pinned Kogwistar import on PyPy
+        if: matrix.is_pypy
+        env:
+          KOGWISTAR_IMPL_MODE: python
+        run: python -c "from kogwistar.llm_tasks.providers import ProviderChainChatModel; print(ProviderChainChatModel.__name__)"
+
+      - name: Run deterministic CPython CI tests
+        if: matrix.is_pypy == false
         run: >-
           poetry run pytest -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
+          tests/test_packaging_imports.py
+          tests/test_workflow_ingest_contracts.py
+          tests/test_workflow_ingest_conversation_graph.py
+          tests/test_workflow_ingest_layerwise_parser.py
+          tests/test_workflow_ingest_ocr_pipeline.py
+          tests/test_workflow_ingest_page_index_pipeline.py
+          tests/test_workflow_ingest_resolver_invariants.py
+          -q --durations=25 --durations-min=0 -p no:cacheprovider
+
+      - name: Run deterministic PyPy 3.11 CI tests
+        if: matrix.is_pypy
+        env:
+          KOGWISTAR_IMPL_MODE: python
+        run: >-
+          python -m pytest -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           tests/test_packaging_imports.py
           tests/test_workflow_ingest_contracts.py
           tests/test_workflow_ingest_conversation_graph.py

@@ -10,14 +10,17 @@ pytestmark = pytest.mark.ci
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_pypy_311_parser_workflow_is_pinned_and_nonblocking() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "pypy-311-experimental.yml").read_text(
-        encoding="utf-8"
-    )
+def test_parser_ci_pypy311_matrix_leg_is_required() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert "continue-on-error: true" in workflow
-    assert "pypy3.11-v7.3.20-linux64.tar.bz2" in workflow
-    assert "1410db3a7ae47603e2b7cbfd7ff6390b891b2e041c9eb4f1599f333677bccb3e" in workflow
+    assert "continue-on-error: ${{ matrix.is_pypy }}" not in workflow
+    assert "label: pypy311" in workflow
+    assert "uses: actions/setup-python@v7" in workflow
+    assert "python-version: pypy-3.11-v7.3.20" in workflow
+    assert "cache: pip" in workflow
+    assert "Install official PyPy 3.11 release" not in workflow
+    assert "pypy_url" not in workflow
+    assert "pypy_sha256" not in workflow
 
 
 def test_parser_ci_uses_the_declared_kogwistar_revision() -> None:
@@ -29,6 +32,32 @@ def test_parser_ci_uses_the_declared_kogwistar_revision() -> None:
 
     exported_requirements = (ROOT / "req.txt").read_text(encoding="utf-8")
     assert f"kogwistar.git@{revision}" in exported_requirements
+
+
+def test_parser_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "label: cpython312" in workflow
+    assert "label: cpython313" in workflow
+    assert "label: cpython314" in workflow
+    assert "python-version: pypy-3.11-v7.3.20" in workflow
+    assert "uses: actions/setup-python@v7" in workflow
+    assert "Install PyPy 3.11 Python-authority dependencies" in workflow
+    assert "Run deterministic PyPy 3.11 CI tests" in workflow
+
+    deterministic_tests = (
+        "tests/test_packaging_imports.py",
+        "tests/test_workflow_ingest_contracts.py",
+        "tests/test_workflow_ingest_conversation_graph.py",
+        "tests/test_workflow_ingest_layerwise_parser.py",
+        "tests/test_workflow_ingest_ocr_pipeline.py",
+        "tests/test_workflow_ingest_page_index_pipeline.py",
+        "tests/test_workflow_ingest_resolver_invariants.py",
+    )
+    pypy_block = workflow.split("Run deterministic PyPy 3.11 CI tests", 1)[1]
+    for test_path in deterministic_tests:
+        assert test_path in pypy_block
+    assert "\n          tests\n" not in pypy_block
 
 
 def test_parser_mcp_dependency_is_official_sdk_only() -> None:
@@ -43,13 +72,17 @@ def test_parser_mcp_dependency_is_official_sdk_only() -> None:
 
 
 def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None:
+    requirements_path = ROOT / "requirements-pypy-3.11-experimental.txt"
     requirements = "\n".join(
-        line.split("#", 1)[0]
-        for line in (ROOT / "requirements-pypy-3.11-experimental.txt")
+        line.split("#", 1)[0].strip()
+        for line in requirements_path
         .read_text(encoding="utf-8")
         .lower()
         .splitlines()
     )
+
+    assert "diskcache>=5.6,<6" in requirements
+    assert "joblib" not in requirements
 
     for forbidden in (
         "numpy",
@@ -59,3 +92,15 @@ def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None
         "pikepdf",
     ):
         assert forbidden not in requirements
+
+
+def test_parser_cache_selects_a_provider_without_hard_coding_joblib() -> None:
+    source = (ROOT / "kg_doc_parser" / "semantic_document_splitting_layerwise_edits.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "KG_DOC_PARSER_CACHE_DIR" in source
+    assert "KG_DOC_PARSER_CACHE_BACKEND" in source
+    assert "KG_DOC_PARSER_JOBLIB_CACHE_DIR" in source
+    assert "Memory(location=_PARSER_CACHE_DIR, backend=_PARSER_CACHE_BACKEND)" in source
+    assert "def memory_cached(" in source

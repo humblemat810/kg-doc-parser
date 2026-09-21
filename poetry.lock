@@ -464,6 +464,19 @@ cffi = {version = ">=2.0.0", markers = "platform_python_implementation != \"PyPy
 ssh = ["bcrypt (>=3.1.5)"]
 
 [[package]]
+name = "diskcache"
+version = "5.6.3"
+description = "Disk Cache -- Disk and file backed persistent cache."
+optional = false
+python-versions = ">=3"
+groups = ["main"]
+markers = "platform_python_implementation == \"PyPy\""
+files = [
+    {file = "diskcache-5.6.3-py3-none-any.whl", hash = "sha256:5e31b2d5fbad117cc363ebaf6b689474db18a1f6438bc82358b024abd4c2ca19"},
+    {file = "diskcache-5.6.3.tar.gz", hash = "sha256:2c3a3fa2743d8535d832ec61c2054a1641f41775aa7c556758a109941e33e4fc"},
+]
+
+[[package]]
 name = "distro"
 version = "1.9.0"
 description = "Distro - an OS platform information API"
@@ -905,8 +918,8 @@ viz = ["pygraphviz (>=1.14)"]
 [package.source]
 type = "git"
 url = "https://github.com/humblemat810/kogwistar.git"
-reference = "428e15de42ed0fd4d64e0f4549403493108afc93"
-resolved_reference = "428e15de42ed0fd4d64e0f4549403493108afc93"
+reference = "3bddf97f402d549c3cf1f34f38c99fcf42bcd02f"
+resolved_reference = "3bddf97f402d549c3cf1f34f38c99fcf42bcd02f"
 
 [[package]]
 name = "langchain-core"
@@ -3144,4 +3157,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "d2373260ca49923938aeab14c6c715bfdfdb19545d803389858b2f619d246ec3"
+content-hash = "efa39c8df313f7570bab9420a874b5476597d81c030c67f026e87b5797f83eca"

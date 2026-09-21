@@ -18,7 +18,7 @@ if True:
 
 
 from typing import Optional
-from joblib.memory import Memory
+from kogwistar.utils.cache_backend import Memory
 
 pytestmark = [pytest.mark.manual, pytest.mark.legacy]
 @pytest.mark.asyncio
