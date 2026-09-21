@@ -68,7 +68,7 @@ def test_parser_mcp_dependency_is_official_sdk_only() -> None:
 
     exported_requirements = (ROOT / "req.txt").read_text(encoding="utf-8").lower()
     assert "fastmcp" not in exported_requirements
-    assert "mcp>=2.2.0,<3" in exported_requirements
+    assert "mcp==2.2.0" in exported_requirements
 
 
 def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None:
