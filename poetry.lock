@@ -860,7 +860,7 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.4.1"
+version = "0.5.0"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
@@ -909,8 +909,8 @@ viz = ["pygraphviz (>=1.14)"]
 [package.source]
 type = "git"
 url = "https://github.com/humblemat810/kogwistar.git"
-reference = "e7356c240c0f2443ec372e1ea290e4535ec7fd1a"
-resolved_reference = "e7356c240c0f2443ec372e1ea290e4535ec7fd1a"
+reference = "894549db6255273c49ec2b502f04ee67191502f3"
+resolved_reference = "894549db6255273c49ec2b502f04ee67191502f3"
 
 [[package]]
 name = "langchain-core"
@@ -3151,4 +3151,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "9b782f39f674fcf8b8062638873590fb13a536ee2c5be1ec6b8443e4727fffed"
+content-hash = "d33b82f2fb8476acb859f8bae8565783f656bbe054b5209707401e69dc1fce5d"
