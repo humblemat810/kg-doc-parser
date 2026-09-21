@@ -47,7 +47,7 @@ async def test_regen_doc_group_and_send_to_engine_for_storing():
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
         async with streamable_http_client(f"http://127.0.0.1:{graph_rag_port}/mcp" #,sse_read_timeout = None, timeout = None,
-                                         ) as (read, write, _):
+                                         ) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()  # SDK negotiates protocol
                 pages['file_name'] = fname # flatten page with file name
@@ -86,7 +86,7 @@ async def test_regen_doc_group_and_send_to_engine_for_kg_extract():
         from mcp import ClientSession
         from mcp.client.streamable_http import streamable_http_client
         async with streamable_http_client(f"http://127.0.0.1:{graph_rag_port}/mcp"# ,sse_read_timeout = None, timeout = None,
-                                         ) as (read, write, _):
+                                         ) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()  # SDK negotiates protocol
 
