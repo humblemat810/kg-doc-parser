@@ -10,12 +10,11 @@ pytestmark = pytest.mark.ci
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_pypy_311_parser_workflow_is_pinned_and_nonblocking() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "pypy-311-experimental.yml").read_text(
-        encoding="utf-8"
-    )
+def test_parser_ci_pypy311_matrix_leg_is_required() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert "continue-on-error: true" in workflow
+    assert "continue-on-error: ${{ matrix.is_pypy }}" not in workflow
+    assert "label: pypy311" in workflow
     assert "uses: actions/setup-python@v7" in workflow
     assert "python-version: pypy-3.11-v7.3.20" in workflow
     assert "cache: pip" in workflow

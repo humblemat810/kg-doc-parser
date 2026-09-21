@@ -14,7 +14,6 @@ permissions:
 jobs:
   test:
     name: Python ${{ matrix.label }}
-    continue-on-error: ${{ matrix.is_pypy }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -50,6 +49,7 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install Poetry
         if: matrix.is_pypy == false
