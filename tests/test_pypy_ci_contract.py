@@ -45,6 +45,20 @@ def test_parser_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes() -> None:
     assert "Install PyPy 3.11 Python-authority dependencies" in workflow
     assert "Run deterministic PyPy 3.11 CI tests" in workflow
 
+    deterministic_tests = (
+        "tests/test_packaging_imports.py",
+        "tests/test_workflow_ingest_contracts.py",
+        "tests/test_workflow_ingest_conversation_graph.py",
+        "tests/test_workflow_ingest_layerwise_parser.py",
+        "tests/test_workflow_ingest_ocr_pipeline.py",
+        "tests/test_workflow_ingest_page_index_pipeline.py",
+        "tests/test_workflow_ingest_resolver_invariants.py",
+    )
+    pypy_block = workflow.split("Run deterministic PyPy 3.11 CI tests", 1)[1]
+    for test_path in deterministic_tests:
+        assert test_path in pypy_block
+    assert "\n          tests\n" not in pypy_block
+
 
 def test_parser_mcp_dependency_is_official_sdk_only() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
