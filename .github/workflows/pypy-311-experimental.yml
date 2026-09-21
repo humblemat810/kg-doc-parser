@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: 3276b6f2c88dd5330e57b9d3d148f8af021c8f4a
+          ref: 3bddf97f402d549c3cf1f34f38c99fcf42bcd02f
           path: kogwistar
           persist-credentials: false
 

@@ -33,7 +33,7 @@ langchain-google-genai = "^4.1.2"
 pydantic-extension = "^0.0.7"
 rapidfuzz = "^3.14.3"
 mcp = "^1.27.0"
-kogwistar = { git = "https://github.com/humblemat810/kogwistar.git", rev = "579ff0a8e77df18bb8db6fa201cd210a5ac98db5" }
+kogwistar = { git = "https://github.com/humblemat810/kogwistar.git", rev = "3bddf97f402d549c3cf1f34f38c99fcf42bcd02f" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"
