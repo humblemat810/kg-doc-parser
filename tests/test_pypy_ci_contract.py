@@ -35,6 +35,18 @@ def test_parser_ci_uses_the_declared_kogwistar_revision() -> None:
     assert f"kogwistar.git@{revision}" in exported_requirements
 
 
+def test_parser_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "label: cpython312" in workflow
+    assert "label: cpython313" in workflow
+    assert "label: cpython314" in workflow
+    assert "python-version: pypy-3.11-v7.3.20" in workflow
+    assert "uses: actions/setup-python@v7" in workflow
+    assert "Install PyPy 3.11 Python-authority dependencies" in workflow
+    assert "Run deterministic PyPy 3.11 CI tests" in workflow
+
+
 def test_parser_mcp_dependency_is_official_sdk_only() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = metadata["tool"]["poetry"]["dependencies"]
