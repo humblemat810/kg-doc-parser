@@ -171,7 +171,7 @@ cb = DocumentIngestSQLiteCallback(db_path=_DOCUMENT_INGEST_LOG_DB,
 P = ParamSpec("P")
 R = TypeVar("R")
 
-def joblib_memory_cached(memory: Memory, *arg, **kwarg):
+def memory_cached(memory: Memory, *arg, **kwarg):
     def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
         return cast(Callable[P, R], memory.cache(fn, *arg, **kwarg))
     return wrapper
@@ -894,7 +894,12 @@ $parent_sections_json
 # """
 
 from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage
-memory = Memory(location = os.getenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", ".joblib"))
+_PARSER_CACHE_DIR = os.getenv(
+    "KG_DOC_PARSER_CACHE_DIR",
+    os.getenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", ".joblib"),
+)
+_PARSER_CACHE_BACKEND = os.getenv("KG_DOC_PARSER_CACHE_BACKEND", "auto")
+memory = Memory(location=_PARSER_CACHE_DIR, backend=_PARSER_CACHE_BACKEND)
 
 _PARSER_LLM_CACHE_REVISION_ENV = "KG_DOC_PARSER_LLM_CACHE_REVISION"
 _PARSER_LLM_CACHE_REVISION = "parser-llm-cache-v4"
@@ -917,7 +922,7 @@ def _parser_llm_cache_context() -> str:
 
 
 def _parser_llm_cache_path(cache_key: str) -> Path:
-    """Return a committed-cache path under the configured Joblib root."""
+    """Return a committed-cache path under the configured cache root."""
 
     cache_root = Path(memory.location or ".joblib") / "parser_llm_committed_v4"
     return cache_root / cache_key[:2] / f"{cache_key}.joblib"
@@ -1346,7 +1351,7 @@ def build_document_tree(
             doc_id=doc_id,
             level=current_depth,
         )
-        @joblib_memory_cached(memory)
+        @memory_cached(memory)
         def get_level_response(llm_response_json) -> Dict[str, Any]:
             response_cacheable = LLMLevelResponseBE.model_validate(llm_response_json).model_dump() # only dumped version cacheable by joblib
             return response_cacheable

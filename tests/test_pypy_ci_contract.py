@@ -59,13 +59,17 @@ def test_parser_mcp_dependency_is_official_sdk_only() -> None:
 
 
 def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None:
+    requirements_path = ROOT / "requirements-pypy-3.11-experimental.txt"
     requirements = "\n".join(
-        line.split("#", 1)[0]
-        for line in (ROOT / "requirements-pypy-3.11-experimental.txt")
+        line.split("#", 1)[0].strip()
+        for line in requirements_path
         .read_text(encoding="utf-8")
         .lower()
         .splitlines()
     )
+
+    assert "diskcache>=5.6,<6" in requirements
+    assert "joblib" not in requirements
 
     for forbidden in (
         "numpy",
@@ -75,3 +79,15 @@ def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None
         "pikepdf",
     ):
         assert forbidden not in requirements
+
+
+def test_parser_cache_selects_a_provider_without_hard_coding_joblib() -> None:
+    source = (ROOT / "kg_doc_parser" / "semantic_document_splitting_layerwise_edits.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "KG_DOC_PARSER_CACHE_DIR" in source
+    assert "KG_DOC_PARSER_CACHE_BACKEND" in source
+    assert "KG_DOC_PARSER_JOBLIB_CACHE_DIR" in source
+    assert "Memory(location=_PARSER_CACHE_DIR, backend=_PARSER_CACHE_BACKEND)" in source
+    assert "def memory_cached(" in source

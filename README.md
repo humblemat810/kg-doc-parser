@@ -319,7 +319,11 @@ Demo artifacts are written into the chosen output directory:
 Notes:
 
 - The workflow-native layer proposal/review path uses deterministic file-backed caching to reduce repeated token cost and compute time.
-- The legacy parser path also supports a redirected `joblib` cache via `KG_DOC_PARSER_JOBLIB_CACHE_DIR`.
+- The legacy parser path uses the shared Kogwistar cache facade. Set
+  `KG_DOC_PARSER_CACHE_BACKEND=auto|joblib|diskcache|none` and
+  `KG_DOC_PARSER_CACHE_DIR` to choose the provider and location. `auto` selects
+  DiskCache on PyPy and Joblib on CPython. The older
+  `KG_DOC_PARSER_JOBLIB_CACHE_DIR` variable remains a compatibility alias.
 - Probe logging is separate from CDC and conversation graph traces, so demos can show a short readable event trail without digging into runtime internals.
 
 ## OCR And Parsing Workflows
