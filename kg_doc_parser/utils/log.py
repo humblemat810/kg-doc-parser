@@ -59,7 +59,7 @@ class SQLiteHandler(logging.Handler):
         """
         Creates the logs table if it doesn't already exist.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             with closing(conn.cursor()) as cursor:
                 cursor.execute('''
                     CREATE TABLE IF NOT EXISTS logs (
@@ -84,7 +84,7 @@ class SQLiteHandler(logging.Handler):
             # Format the timestamp using the formatter
             timestamp = self.formatter.formatTime(record)
             #with self.lock:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 with closing(conn.cursor()) as cursor:
                     cursor.execute('''
                         INSERT INTO logs (timestamp, level, module, filename, line_number, message)
@@ -99,7 +99,7 @@ class SQLiteHandler(logging.Handler):
         Destructor to perform a WAL checkpoint when the handler is destroyed.
         """
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 with closing(conn.execute('PRAGMA wal_checkpoint;')):
                     pass
                 conn.commit()

@@ -245,7 +245,7 @@ class SQLiteIngestEventWriter:
         return conn
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             with closing(
                 conn.execute(
                     """
@@ -323,7 +323,7 @@ class SQLiteIngestEventWriter:
 
         # Optional checkpoint
         try:
-            with self._connect() as conn:
+            with closing(self._connect()) as conn:
                 with closing(conn.execute("PRAGMA wal_checkpoint;")):
                     pass
                 conn.commit()
@@ -349,7 +349,7 @@ class SQLiteIngestEventWriter:
             )
             for e in batch
         ]
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             with closing(
                 conn.executemany(
                     """
