@@ -383,6 +383,7 @@ description = "Pickler class to extend the standard pickle.Pickler functionality
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
+markers = "platform_python_implementation == \"CPython\" or implementation_name == \"cpython\""
 files = [
     {file = "cloudpickle-3.1.2-py3-none-any.whl", hash = "sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a"},
     {file = "cloudpickle-3.1.2.tar.gz", hash = "sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414"},
@@ -470,7 +471,7 @@ description = "Disk Cache -- Disk and file backed persistent cache."
 optional = false
 python-versions = ">=3"
 groups = ["main"]
-markers = "platform_python_implementation == \"PyPy\""
+markers = "platform_python_implementation == \"PyPy\" or implementation_name == \"pypy\""
 files = [
     {file = "diskcache-5.6.3-py3-none-any.whl", hash = "sha256:5e31b2d5fbad117cc363ebaf6b689474db18a1f6438bc82358b024abd4c2ca19"},
     {file = "diskcache-5.6.3.tar.gz", hash = "sha256:2c3a3fa2743d8535d832ec61c2054a1641f41775aa7c556758a109941e33e4fc"},
@@ -792,6 +793,7 @@ description = "Lightweight pipelining with Python functions"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
+markers = "platform_python_implementation == \"CPython\" or implementation_name == \"cpython\""
 files = [
     {file = "joblib-1.6.0-py3-none-any.whl", hash = "sha256:3dbbf9f6e4b592a2357b854608e980fe6390d131d7a82f011a377ef2ebef7aba"},
     {file = "joblib-1.6.0.tar.gz", hash = "sha256:2ccc96785b12046c08fd6d55839c12857831b54a3c1673ffadd2f04bfc4eda03"},
@@ -870,7 +872,7 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.2.5"
+version = "0.4.1"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
@@ -880,10 +882,11 @@ develop = false
 
 [package.dependencies]
 anyio = ">=4.0"
+diskcache = {version = ">=5.6,<6", markers = "implementation_name == \"pypy\""}
 fastapi = ">=0.111"
 httpx = ">=0.28.1"
 Jinja2 = ">=3.1"
-joblib = ">=1.3"
+joblib = {version = ">=1.3", markers = "implementation_name == \"cpython\""}
 mcp = ">=1.27,<2"
 pydantic = ">=2.6"
 pydantic-extension = ">=0.0.7"
@@ -918,8 +921,8 @@ viz = ["pygraphviz (>=1.14)"]
 [package.source]
 type = "git"
 url = "https://github.com/humblemat810/kogwistar.git"
-reference = "ad0a68bff590fe625897fc5c3e775f2ab3ad5b6a"
-resolved_reference = "ad0a68bff590fe625897fc5c3e775f2ab3ad5b6a"
+reference = "519f69de352f61e12ab316b300818e1564650650"
+resolved_reference = "519f69de352f61e12ab316b300818e1564650650"
 
 [[package]]
 name = "langchain-core"
@@ -3157,4 +3160,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "26ee26510552e95fa37a4421e07eccb49acf6624b8843ea0662184fd89217a0c"
+content-hash = "2ae09896ef54371655294aa4d96d6579e2749e7a142c51b18db6073663ced01a"
