@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Callable, TypeVar, ParamSpec, cast
-from joblib import Memory
+from kogwistar.utils.cache_backend import Memory
 
 P = ParamSpec("P")
 R = TypeVar("R")

@@ -103,10 +103,15 @@ from rapidfuzz.distance import LCSseq
 from datetime import datetime
 from typing import Callable, Generator, TypeVar, ParamSpec, cast
 from contextvars import ContextVar
-from joblib import Memory, dump as joblib_dump, hash as joblib_hash, load as joblib_load
 from kg_doc_parser.document_ingester_logger import DocumentIngestSQLiteCallback
 from kg_doc_parser.llm_structured_output import build_structured_output_runnable
 from kogwistar.id_provider import stable_id
+from kogwistar.utils.cache_backend import (
+    Memory,
+    cache_dump,
+    cache_hash,
+    cache_load,
+)
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 
 _LAYERWISE_TRACE_ENV = "KG_DOC_LAYERWISE_TRACE_FILE"
@@ -889,7 +894,6 @@ $parent_sections_json
 # """
 
 from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage
-from joblib import Memory
 memory = Memory(location = os.getenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", ".joblib"))
 
 _PARSER_LLM_CACHE_REVISION_ENV = "KG_DOC_PARSER_LLM_CACHE_REVISION"
@@ -924,7 +928,7 @@ def _load_committed_parser_llm_result(cache_key: str) -> tuple[bool, Any]:
     if not cache_path.is_file():
         return False, None
     try:
-        return True, joblib_load(cache_path)
+        return True, cache_load(cache_path)
     except Exception as exc:  # A corrupt cache is never authoritative.
         _emit_layerwise_trace(
             "parser_llm_cache.committed_load_failed",
@@ -948,7 +952,7 @@ def _store_committed_parser_llm_result(cache_key: str, value: Any) -> None:
     ) as temporary:
         temporary_path = Path(temporary.name)
     try:
-        joblib_dump(value, temporary_path)
+        cache_dump(value, temporary_path)
         os.replace(temporary_path, cache_path)
     finally:
         if temporary_path.exists():
@@ -1055,7 +1059,7 @@ def _parser_llm_cache(
         # fragment a replayable result merely because they inject a callback.
         bound_arguments.arguments.pop("call_llm_structured", None)
         bound_arguments.arguments.pop("max_rounds", None)
-        cache_key = joblib_hash(
+        cache_key = cache_hash(
             (fn.__module__, fn.__qualname__, cache_context, bound_arguments.arguments)
         )
         state, value = transaction.lookup(cache_key)
