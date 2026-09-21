@@ -89,6 +89,7 @@ import sqlite3
 import threading
 import time
 import traceback
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple, Callable
@@ -234,34 +235,45 @@ class SQLiteIngestEventWriter:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
         # Pragmas for better concurrency and fewer "database is locked" errors.
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=5000;")
+        for statement in (
+            "PRAGMA journal_mode=WAL;",
+            "PRAGMA synchronous=NORMAL;",
+            "PRAGMA busy_timeout=5000;",
+        ):
+            with closing(conn.execute(statement)):
+                pass
         return conn
 
     def _init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS ingest_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts_iso TEXT NOT NULL,
-                    document_id TEXT,
-                    run_id TEXT,
-                    parent_run_id TEXT,
-                    event_name TEXT NOT NULL,
-                    model_name TEXT,
-                    filename TEXT,
-                    line_number INTEGER,
-                    token_count INTEGER NOT NULL,
-                    cost_usd REAL NOT NULL,
-                    n_try REAL NOT NULL,
-                    metadata_json TEXT NOT NULL
-                );
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_ingest_events_doc ON ingest_events(document_id);")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_ingest_events_run ON ingest_events(run_id);")
+            with closing(
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS ingest_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts_iso TEXT NOT NULL,
+                        document_id TEXT,
+                        run_id TEXT,
+                        parent_run_id TEXT,
+                        event_name TEXT NOT NULL,
+                        model_name TEXT,
+                        filename TEXT,
+                        line_number INTEGER,
+                        token_count INTEGER NOT NULL,
+                        cost_usd REAL NOT NULL,
+                        n_try REAL NOT NULL,
+                        metadata_json TEXT NOT NULL
+                    );
+                    """
+                )
+            ):
+                pass
+            for statement in (
+                "CREATE INDEX IF NOT EXISTS idx_ingest_events_doc ON ingest_events(document_id);",
+                "CREATE INDEX IF NOT EXISTS idx_ingest_events_run ON ingest_events(run_id);",
+            ):
+                with closing(conn.execute(statement)):
+                    pass
             conn.commit()
 
     def enqueue(self, event: _IngestEvent) -> None:
@@ -312,7 +324,8 @@ class SQLiteIngestEventWriter:
         # Optional checkpoint
         try:
             with self._connect() as conn:
-                conn.execute("PRAGMA wal_checkpoint;")
+                with closing(conn.execute("PRAGMA wal_checkpoint;")):
+                    pass
                 conn.commit()
         except Exception:
             # Swallow writer shutdown errors; don't crash application exit.
@@ -337,15 +350,18 @@ class SQLiteIngestEventWriter:
             for e in batch
         ]
         with self._connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO ingest_events (
-                    ts_iso, document_id, run_id, parent_run_id, event_name,
-                    model_name, filename, line_number, token_count, cost_usd, n_try, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                rows,
-            )
+            with closing(
+                conn.executemany(
+                    """
+                    INSERT INTO ingest_events (
+                        ts_iso, document_id, run_id, parent_run_id, event_name,
+                        model_name, filename, line_number, token_count, cost_usd, n_try, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    rows,
+                )
+            ):
+                pass
             conn.commit()
 
 
