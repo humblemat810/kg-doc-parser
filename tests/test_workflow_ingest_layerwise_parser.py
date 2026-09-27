@@ -17,6 +17,7 @@ from kg_doc_parser.workflow_ingest.models import (
     WorkflowIngestInput,
 )
 from kg_doc_parser.workflow_ingest.parser_core import (
+    check_layer_coverage,
     initialize_parse_session,
     prepare_layer_frontier,
     review_layer,
@@ -27,6 +28,39 @@ from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
 
 
 pytestmark = [pytest.mark.workflow]
+
+
+@pytest.mark.ci
+def test_provider_review_failure_is_persisted_and_fails_closed() -> None:
+    parse_session = ParseSessionState(collection_id="doc", root_node_id="doc|root")
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        split_strategy="excerpt_first",
+    )
+    result = CurrentLayerResult()
+
+    def failing_review(**_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    review, updated_session = review_layer(
+        parse_session=parse_session,
+        current_layer_context=context,
+        current_layer_result=result,
+        review_layer_fn=failing_review,
+    )
+
+    assert review.coverage_ok is None
+    assert review.satisfied is None
+    assert review.metadata["review_failure"] == "provider_failure"
+    assert updated_session.last_review["metadata"]["review_failure"] == "provider_failure"
+    coverage_ok, notes = check_layer_coverage(
+        current_layer_context=context,
+        current_layer_result=result,
+        current_layer_review=review,
+    )
+    assert coverage_ok is False
+    assert notes == ["layer review unavailable; quality is unknown"]
 
 
 @pytest.fixture(
@@ -441,7 +475,6 @@ def test_layerwise_workflow_boundary_mode_runs_end_to_end(monkeypatch: pytest.Mo
         title="Layer Boundary Doc",
     )
     unit_id = f"{inp.request_id}|p1_t0"
-    text = inp.collections[0].pages[0].units[0].text or ""
     fake_model = _SequencedFakeChatModel(
         responses=[
             {
@@ -449,18 +482,12 @@ def test_layerwise_workflow_boundary_mode_runs_end_to_end(monkeypatch: pytest.Mo
                     {
                         "parent_node_id": f"{inp.request_id}|root",
                         "source_cluster_id": unit_id,
-                        "cut_offset": 1,
-                        "boundary_kind": "word",
-                        "confidence": 0.25,
-                        "reason": "ambiguous early cutpoint",
-                    },
-                    {
-                        "parent_node_id": f"{inp.request_id}|root",
-                        "source_cluster_id": unit_id,
                         "cut_offset": 14,
                         "boundary_kind": "sentence",
                         "confidence": 0.99,
                         "reason": "sentence boundary before the second clause",
+                        "text_before_cut": "Alpha clause. ",
+                        "text_after_cut": "Beta clause.",
                     },
                 ],
                 "satisfied": True,
@@ -468,10 +495,10 @@ def test_layerwise_workflow_boundary_mode_runs_end_to_end(monkeypatch: pytest.Mo
                 "review_rounds": 0,
             },
             {
-                "cutpoints": [],
+                "coverage_ok": True,
                 "satisfied": True,
-                "reasoning_history": [],
-                "review_rounds": 0,
+                "strategy_used": "boundary_first",
+                "review_notes": ["boundary proposal is source-grounded"],
             },
         ]
     )
@@ -497,7 +524,8 @@ def test_layerwise_workflow_boundary_mode_runs_end_to_end(monkeypatch: pytest.Mo
             "split_strategy": "boundary_first",
             "fallback_split_strategy": "excerpt_first",
             "max_review_retries": 1,
-        },
+            "max_depth": 1,
+            },
     )
 
     assert run.status == "succeeded"

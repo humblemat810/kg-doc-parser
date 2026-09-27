@@ -378,7 +378,10 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         current_layer_review = CurrentLayerReview.model_validate(ctx.state_view["current_layer_review"])
-        coverage_ok = current_layer_review.coverage_ok is not False
+        coverage_ok = (
+            current_layer_review.coverage_ok is True
+            and not current_layer_review.metadata.get("review_failure")
+        )
         has_conflicts = bool(
             current_layer_review.overlap_conflicts
             or current_layer_review.coverage_gap_notes
