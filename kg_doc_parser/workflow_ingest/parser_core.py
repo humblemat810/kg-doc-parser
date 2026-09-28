@@ -532,19 +532,35 @@ def review_layer(
             current_layer_result=current_layer_result,
             split_strategy=current_layer_context.split_strategy,
         )
-        if llm_cache is not None:
-            reviewed = llm_cache.cached_call(
-                operation=f"review_cud_proposal:{current_layer_context.split_strategy}",
-                fingerprint={
-                    "parse_session": parse_session,
-                    "current_layer_context": current_layer_context,
-                    "current_layer_result": current_layer_result,
-                    "split_strategy": current_layer_context.split_strategy,
+        try:
+            if llm_cache is not None:
+                reviewed = llm_cache.cached_call(
+                    operation=f"review_cud_proposal:{current_layer_context.split_strategy}",
+                    fingerprint={
+                        "parse_session": parse_session,
+                        "current_layer_context": current_layer_context,
+                        "current_layer_result": current_layer_result,
+                        "split_strategy": current_layer_context.split_strategy,
+                    },
+                    fn=call,
+                )
+            else:
+                reviewed = call()
+        except Exception as exc:
+            reviewed = CurrentLayerReview(
+                updated_result=current_layer_result,
+                coverage_ok=None,
+                satisfied=None,
+                strategy_used=current_layer_context.split_strategy,
+                review_notes=[
+                    "quality_unknown: semantic layer review provider failed",
+                    "deterministic checks did not authorize successful review",
+                ],
+                metadata={
+                    "review_failure": "provider_failure",
+                    "review_failure_reason": repr(exc)[:500],
                 },
-                fn=call,
             )
-        else:
-            reviewed = call()
     if isinstance(reviewed, CurrentLayerReview):
         result = reviewed
     elif isinstance(reviewed, CurrentLayerResult):
@@ -574,13 +590,20 @@ def review_layer(
     for note in invariant_notes:
         if note not in merged_notes:
             merged_notes.append(note)
+    provider_failure = bool(result.metadata.get("review_failure"))
     base_satisfied = result.satisfied if result.satisfied is not None else invariant_satisfied
-    satisfied = bool(base_satisfied and not (overlap_conflicts or coverage_gaps or duplicate_notes))
+    satisfied = (
+        None
+        if provider_failure
+        else bool(base_satisfied and not (overlap_conflicts or coverage_gaps or duplicate_notes))
+    )
+    effective_coverage_ok = None if provider_failure else coverage_ok
     updated_result = (result.updated_result or current_layer_result).model_copy(
         update={
             "satisfied": satisfied,
             "metadata": {
                 **(result.updated_result or current_layer_result).metadata,
+                **result.metadata,
                 "split_strategy": current_layer_context.split_strategy,
                 "overlap_conflicts": [
                     item.model_dump(field_mode="backend", dump_format="json") for item in overlap_conflicts
@@ -597,7 +620,7 @@ def review_layer(
     result = result.model_copy(
         update={
             "updated_result": updated_result,
-            "coverage_ok": coverage_ok,
+            "coverage_ok": effective_coverage_ok,
             "satisfied": satisfied,
             "strategy_used": current_layer_context.split_strategy,
             "overlap_conflicts": overlap_conflicts,
@@ -608,7 +631,28 @@ def review_layer(
     )
     attempts = dict(parse_session.layer_attempts)
     attempts[str(current_layer_context.depth)] = current_layer_context.retry_count + 1
-    return result, parse_session.model_copy(update={"layer_attempts": attempts})
+    review_packet = {
+        "strategy": result.strategy_used,
+        "coverage_ok": result.coverage_ok,
+        "satisfied": result.satisfied,
+        "review_notes": list(result.review_notes),
+        "overlap_conflicts": [
+            item.model_dump(field_mode="backend", dump_format="json")
+            for item in result.overlap_conflicts
+        ],
+        "coverage_gap_notes": [
+            item.model_dump(field_mode="backend", dump_format="json")
+            for item in result.coverage_gap_notes
+        ],
+        "duplicate_child_notes": [
+            item.model_dump(field_mode="backend", dump_format="json")
+            for item in result.duplicate_child_notes
+        ],
+        "metadata": dict(result.metadata),
+    }
+    return result, parse_session.model_copy(
+        update={"layer_attempts": attempts, "last_review": review_packet}
+    )
 
 
 def apply_cud_update(
@@ -659,6 +703,8 @@ def check_layer_coverage(
     current_layer_result: CurrentLayerResult,
     current_layer_review: CurrentLayerReview | None = None,
 ) -> tuple[bool, list[str]]:
+    if current_layer_review is not None and current_layer_review.metadata.get("review_failure"):
+        return False, ["layer review unavailable; quality is unknown"]
     if current_layer_review is not None and current_layer_review.coverage_ok is not None:
         notes = list(current_layer_review.review_notes)
         notes.extend(

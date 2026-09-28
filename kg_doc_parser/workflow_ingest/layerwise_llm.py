@@ -734,6 +734,7 @@ def _proposal_attempt_context(*, parse_session: Any, current_layer_context: Any)
         "strategy_history": list(parse_session_dump.get("strategy_history") or []),
         "fallback_split_strategy": parse_session_dump.get("fallback_split_strategy"),
         "workflow_mode": parse_session_dump.get("mode"),
+        "prior_review": parse_session_dump.get("last_review") or {},
     }
 
 
@@ -2487,10 +2488,14 @@ def build_layerwise_llm_callbacks(
             failure_reason = _trim_text(repr(exc), max_chars=500)
             reviewed = CurrentLayerReview(
                 updated_result=current_layer_result,
-                coverage_ok=True,
-                satisfied=True,
+                coverage_ok=None,
+                satisfied=None,
                 strategy_used=split_strategy,
-                review_notes=["deterministic review fallback after provider failure"],
+                review_notes=[
+                    "quality_unknown: semantic layer review provider failed",
+                    "deterministic checks did not authorize successful review",
+                ],
+                metadata={"review_failure": "provider_failure"},
             )
             _emit(
                 "workflow_layered_review_result",

@@ -248,6 +248,14 @@ class ParseSessionState(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+    # Normalized critic output carried into the next bounded proposal retry.
+    last_review: Annotated[
+        dict[str, Any],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default_factory=dict)
     compat_full_tree: Annotated[
         Optional[dict[str, Any]],
         DtoField(),
