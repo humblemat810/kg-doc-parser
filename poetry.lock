@@ -909,8 +909,8 @@ viz = ["pygraphviz (>=1.14)"]
 [package.source]
 type = "git"
 url = "https://github.com/humblemat810/kogwistar.git"
-reference = "ae24e1663a66deb0e65d6e2bf74a2e5ef317e1ea"
-resolved_reference = "ae24e1663a66deb0e65d6e2bf74a2e5ef317e1ea"
+reference = "3a9dfb8951175a35f7be9299208ac31d849c288f"
+resolved_reference = "3a9dfb8951175a35f7be9299208ac31d849c288f"
 
 [[package]]
 name = "langchain-core"
@@ -3151,4 +3151,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "5a75bd2b93636ffd6624db38c555c700be38be3c936bb9105cef7205c36e82cd"
+content-hash = "6a179022b3fde5845e2abfc4d3debb3908cc6351d80a54b27708d75a3110f5e4"
