@@ -860,7 +860,7 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.0"
+version = "0.6.1"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
@@ -889,7 +889,7 @@ typing-extensions = ">=4.8"
 browser = ["playwright (>=1.45,<2)"]
 build = ["build", "twine"]
 chroma = ["chromadb (>=1.0.15)"]
-full = ["chromadb (>=1.0.15)", "fastapi (>=0.111)", "langchain-core (>=0.3.0)", "langchain-google-genai (>=2.0.0)", "langchain-mcp-adapters (>=0.0.8)", "langchain-ollama (>=0.3.0)", "langchain-openai (>=0.3.0)", "langgraph (>=0.6.5)", "mcp (>=2.2.0,<3)", "pgvector (>=0.3.6)", "psycopg[binary] (>=3.1)", "sqlalchemy (>=2.0)", "uvicorn[standard] (>=0.30)"]
+full = ["chromadb (>=1.0.15)", "fastapi (>=0.111)", "langchain-core (>=0.3.0)", "langchain-google-genai (>=2.0.0)", "langchain-mcp-adapters (>=0.0.8)", "langchain-ollama (>=0.3.0)", "langchain-openai (>=0.3.0)", "langgraph (>=0.6.5)", "mcp (>=2.2.0,<3)", "pgvector (>=0.3.6)", "psycopg[binary] (>=3.1)", "sqlalchemy[asyncio] (>=2.0)", "uvicorn[standard] (>=0.30)"]
 gemini = ["langchain-core (>=0.3.0)", "langchain-google-genai (>=2.0.0)"]
 ingestion-gemini = ["langchain-core (>=0.3.0)", "langchain-google-genai (>=2.0.0)"]
 ingestion-openai = ["langchain-core (>=0.3.0)", "langchain-openai (>=0.3.0)"]
@@ -899,7 +899,7 @@ mcp-adapter = ["langchain-mcp-adapters (>=0.0.8)"]
 ollama = ["langchain-core (>=0.3.0)", "langchain-ollama (>=0.3.0)", "ollama (>=0.5.3)"]
 openai = ["langchain-core (>=0.3.0)", "langchain-openai (>=0.3.0)"]
 otel = ["opentelemetry-api (>=1.24)", "opentelemetry-exporter-otlp (>=1.24)", "opentelemetry-sdk (>=1.24)"]
-pgvector = ["pgvector (>=0.3.6)", "psycopg[binary] (>=3.1)", "sqlalchemy (>=2.0)"]
+pgvector = ["pgvector (>=0.3.6)", "psycopg[binary] (>=3.1)", "sqlalchemy[asyncio] (>=2.0)"]
 rust = ["maturin (>=1.7,<2)"]
 server = ["mcp (>=2.2.0,<3)", "uvicorn[standard] (>=0.30)"]
 test = ["numpy (>=1.26)", "pytest (>=8)", "pytest-asyncio (>=1.1.0)", "pytest-dotenv (>=0.5.2)", "pytest-xdist (>=3.8,<4)", "testcontainers (>=4.0)"]
@@ -909,8 +909,8 @@ viz = ["pygraphviz (>=1.14)"]
 [package.source]
 type = "git"
 url = "https://github.com/humblemat810/kogwistar.git"
-reference = "3a9dfb8951175a35f7be9299208ac31d849c288f"
-resolved_reference = "3a9dfb8951175a35f7be9299208ac31d849c288f"
+reference = "6066d1161d3520e61c33bf2c5b8dcb428e21a345"
+resolved_reference = "6066d1161d3520e61c33bf2c5b8dcb428e21a345"
 
 [[package]]
 name = "langchain-core"
@@ -3151,4 +3151,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "6a179022b3fde5845e2abfc4d3debb3908cc6351d80a54b27708d75a3110f5e4"
+content-hash = "3418f95b6c0a6461db29c4b7cb4d5f0a3100f3b8ad6105227b07d394a789de29"
