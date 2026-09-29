@@ -13,14 +13,26 @@ The facade keeps provider/model selection explicit while still falling back to
 ``WorkflowProviderSettings.from_env()`` when callers omit overrides.
 """
 
+import os
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Literal, Sequence
-from contextlib import contextmanager
-import os
+from typing import Any, Literal
 
-from .ocr_pipeline import OCRImagePayload, OCRWorkflowArtifacts, prepare_ocr_workflow_input
-from .page_index import PageIndexParseResult, PageIndexSourceFormat, parse_page_index_document as _parse_page_index_document
+from .ocr_pipeline import (
+    OCRImagePayload,
+    OCRWorkflowArtifacts,
+    prepare_ocr_workflow_input,
+)
+from .page_index import (
+    PageIndexMode,
+    PageIndexParseResult,
+    PageIndexSourceFormat,
+)
+from .page_index import (
+    parse_page_index_document as _parse_page_index_document,
+)
 from .providers import WorkflowProviderSettings
 from .semantics import SemanticNode
 
@@ -53,10 +65,11 @@ class PageIndexParseRequest:
     title: str
     raw_text: str
     source_format: PageIndexSourceFormat = "text"
-    mode: Literal["heuristic", "ollama"] = "heuristic"
+    mode: PageIndexMode = "heuristic"
     provider_settings: WorkflowProviderSettings | None = None
     provider: str | None = None
     model: str | None = None
+    callbacks: list[Any] | None = None
     refine_excerpts: bool = False
 
 
@@ -157,10 +170,11 @@ def parse_page_index_document(
     title: str,
     raw_text: str,
     source_format: PageIndexSourceFormat = "text",
-    mode: Literal["heuristic", "ollama"] = "heuristic",
+    mode: PageIndexMode = "heuristic",
     provider_settings: WorkflowProviderSettings | None = None,
     provider: str | None = None,
     model: str | None = None,
+    callbacks: list[Any] | None = None,
     refine_excerpts: bool = False,
 ) -> PageIndexParseResult:
     """Parse a text / Markdown page-index document into a semantic tree."""
@@ -178,6 +192,7 @@ def parse_page_index_document(
         source_format=source_format,
         mode=mode,
         provider_settings=settings,
+        callbacks=callbacks,
         refine_excerpts=refine_excerpts,
     )
 
@@ -212,7 +227,9 @@ def parse_tree_document(
         "KG_DOC_PARSER_LOCATION": settings.parser.location,
         "KG_DOC_PARSER_MAX_RETRIES": str(settings.parser.max_retries),
     }
-    from kg_doc_parser.semantic_document_splitting_layerwise_edits import parse_doc as legacy_parse_doc
+    from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
+        parse_doc as legacy_parse_doc,
+    )
 
     with _temporary_env(env_overrides):
         return legacy_parse_doc(
@@ -241,8 +258,8 @@ __all__ = [
     "OCRParseResult",
     "PageIndexParseRequest",
     "PageIndexParseResultType",
-    "ParseMode",
     "ParseDocumentResult",
+    "ParseMode",
     "TreeParseRequest",
     "TreeParseResult",
     "parse_document",

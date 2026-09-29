@@ -1,12 +1,11 @@
-from __future__ import annotations
-
 """Reusable page-index document parsing for text and Markdown inputs.
 
 The pipeline keeps a fast heuristic mode for deterministic structure extraction
-and an Ollama-backed mode that reuses the existing parser provider boundary.
-Both modes normalize raw content into page-aware source units and return a
-semantic tree with hydrated spans. Ollama mode uses candidate extraction plus
-flat block assignment, with optional excerpt refinement disabled by default.
+and provider-backed modes that reuse the existing parser provider boundary.
+All modes normalize raw content into page-aware source units and return a
+semantic tree with hydrated spans. Provider-backed modes use candidate
+extraction plus flat block assignment, with optional excerpt refinement
+disabled by default.
 
 Example CLI
 -----------
@@ -33,24 +32,79 @@ tests/test_workflow_ingest_page_index_pipeline.py::test_page_index_ollama_smoke_
 tests/test_workflow_ingest_page_index_pipeline.py::test_page_index_ollama_smoke_parses_text_and_markdown[markdown] -q
 """
 
-import re
+from __future__ import annotations
+
 import json
+import re
+from collections.abc import Callable, Iterator
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Iterator, Literal
+from typing import Any, Literal
 
+from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
+from kogwistar.utils.fuzzy_offsets import find_best_fuzzy_span
 from pydantic import BaseModel, Field
 
-from .adapters import build_authoritative_source_map, build_parser_input_dict, build_parser_source_map
 from ..llm_structured_output import build_structured_output_runnable
-from .models import GroundedSourceRecord, NormalizedPage, NormalizedSourceCollection, SourceUnit, WorkflowIngestInput
+from .adapters import (
+    build_authoritative_source_map,
+    build_parser_input_dict,
+    build_parser_source_map,
+)
+from .models import (
+    GroundedSourceRecord,
+    NormalizedPage,
+    NormalizedSourceCollection,
+    SourceUnit,
+    WorkflowIngestInput,
+)
 from .providers import WorkflowProviderSettings, build_chat_model_for_role
-from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit, find_best_fuzzy_span
-from .semantics import HydratedTextPointer, SemanticNode, compute_pointer_coverage, correct_and_validate_pointer
+from .semantics import (
+    HydratedTextPointer,
+    SemanticNode,
+    compute_pointer_coverage,
+    correct_and_validate_pointer,
+)
 
-PageIndexMode = Literal["heuristic", "ollama"]
+PageIndexMode = Literal[
+    "heuristic",
+    "fake",
+    "ollama",
+    "openai",
+    "azure",
+    "gemini",
+    "vertex",
+    "codex",
+]
+_PAGE_INDEX_PROVIDER_MODES = {"fake", "ollama", "openai", "azure", "gemini", "vertex", "codex"}
 PageIndexSourceFormat = Literal["text", "markdown"]
 PageIndexNodeType = Literal["SECTION", "SUBSECTION", "PARAGRAPH", "TERM"]
+
+
+def _callback_call_counts(callbacks: list[Any] | None) -> dict[int, int | None]:
+    """Snapshot callback accounting before a provider invocation."""
+
+    return {
+        id(callback): getattr(callback, "recorded_call_count", None)
+        for callback in callbacks or []
+    }
+
+
+def _notify_untracked_provider_call(
+    callbacks: list[Any] | None,
+    before_counts: dict[int, int | None],
+    call_key: str,
+) -> None:
+    """Account for successful adapters that do not emit LangChain callbacks."""
+
+    for callback in callbacks or []:
+        recorder = getattr(callback, "record_untracked_call", None)
+        if not callable(recorder):
+            continue
+        before = before_counts.get(id(callback))
+        after = getattr(callback, "recorded_call_count", None)
+        if before is not None and after == before:
+            recorder(call_key)
 
 
 class PageIndexBlockSpec(BaseModel):
@@ -65,7 +119,7 @@ class PageIndexBlockSpec(BaseModel):
     excerpt: str = Field(
         description="A short verbatim excerpt from the source page that grounds this block. Do not use the whole page text; keep it tight and exact."
     )
-    child_nodes: list["PageIndexBlockSpec"] = Field(
+    child_nodes: list[PageIndexBlockSpec] = Field(
         default_factory=list,
         description="Direct children only. Use nested children for substructure; do not duplicate the same excerpt across siblings.",
     )
@@ -314,9 +368,7 @@ def _is_numeric_heavy_or_table_like(text: str) -> bool:
         return True
     if digit_count >= 6 and digit_count > alpha_count:
         return True
-    if re.search(r"\b\d+\b(?:\s+\b\d+\b){2,}", compact):
-        return True
-    return False
+    return bool(re.search(r"\b\d+\b(?:\s+\b\d+\b){2,}", compact))
 
 
 def _page_index_normalize_text(text: str) -> str:
@@ -953,6 +1005,7 @@ def _refine_page_index_block_excerpts(
     page_number: int,
     unit_id: str,
     provider_settings: WorkflowProviderSettings,
+    callbacks: list[Any] | None = None,
     trace_log: Callable[[str], None] | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
     entries = [
@@ -978,10 +1031,12 @@ def _refine_page_index_block_excerpts(
         trace_log(
             f"page_index_refine_prepare page_number={page_number} unit_id={unit_id} block_count={len(entries)}"
         )
-    chat = build_chat_model_for_role("parser", provider_settings)
+    chat_kwargs = {"callbacks": callbacks} if callbacks is not None else {}
+    chat = build_chat_model_for_role("parser", provider_settings, **chat_kwargs)
     structured = build_structured_output_runnable(chat, ExcerptRefinementBatch, include_raw=True)
-    from langchain_core.messages import HumanMessage, SystemMessage
     import json as _json
+
+    from langchain_core.messages import HumanMessage, SystemMessage
 
     prompt = (
         "You refine excerpts for a page-index tree.\n"
@@ -998,12 +1053,16 @@ def _refine_page_index_block_excerpts(
         f"Blocks: {_json.dumps(entries, ensure_ascii=False, sort_keys=True)}"
     )
     try:
-        payload = structured.invoke(
-            [
-                SystemMessage(content="You are a grounded excerpt refiner."),
-                HumanMessage(content=prompt),
-            ]
-        )
+        callback_counts = _callback_call_counts(callbacks)
+        try:
+            payload = structured.invoke(
+                [
+                    SystemMessage(content="You are a grounded excerpt refiner."),
+                    HumanMessage(content=prompt),
+                ]
+            )
+        finally:
+            _notify_untracked_provider_call(callbacks, callback_counts, f"refine-page-{page_number}")
         parsed = payload.get("parsed") if isinstance(payload, dict) else payload
         if parsed is None:
             error = payload.get("parsing_error") if isinstance(payload, dict) else None
@@ -1013,7 +1072,7 @@ def _refine_page_index_block_excerpts(
             if isinstance(parsed, ExcerptRefinementBatch)
             else ExcerptRefinementBatch.model_validate(parsed)
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - provider/parser failures use deterministic excerpt fallback.
         diagnostics["refine_excerpts_fallback"] = True
         diagnostics["refine_excerpts_rejected"] = diagnostics["refine_excerpts_attempted"]
         diagnostics["refine_excerpts_error"] = f"{type(exc).__name__}: {exc}"
@@ -1043,7 +1102,7 @@ def _refine_page_index_block_excerpts(
             continue
         try:
             _resolve_pointer(unit_id=unit_id, page_text=page_text, excerpt=proposed)
-        except Exception:
+        except Exception:  # noqa: BLE001 - an invalid grounded pointer rejects only this candidate.
             diagnostics["refine_excerpts_rejected"] += 1
             continue
 
@@ -1143,6 +1202,7 @@ def _llm_page_outline(
     page_number: int,
     source_format: PageIndexSourceFormat,
     provider_settings: WorkflowProviderSettings,
+    callbacks: list[Any] | None = None,
     trace_log: Callable[[str], None] | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
@@ -1169,7 +1229,8 @@ def _llm_page_outline(
         }
     if trace_log is not None:
         trace_log(f"page_index_llm_chat_build_start page_number={page_number} candidate_count={len(candidates)}")
-    chat = build_chat_model_for_role("parser", provider_settings)
+    chat_kwargs = {"callbacks": callbacks} if callbacks is not None else {}
+    chat = build_chat_model_for_role("parser", provider_settings, **chat_kwargs)
     if trace_log is not None:
         trace_log(f"page_index_llm_chat_build_done page_number={page_number}")
         trace_log(f"page_index_llm_structured_wrap_start page_number={page_number}")
@@ -1195,17 +1256,23 @@ def _llm_page_outline(
             trace_log(f"page_index_llm_prompt_ready page_number={page_number} attempt={attempt_label}")
             trace_log(
                 f"page_index_llm_invoke_start page_number={page_number} attempt={attempt_label} source_format={source_format}"
-            )
+        )
         try:
-            payload = structured.invoke(
-                [
-                    SystemMessage(content="You are a grounded page-index block assigner."),
-                    HumanMessage(content=prompt),
-                ]
-            )
+            callback_counts = _callback_call_counts(callbacks)
+            try:
+                payload = structured.invoke(
+                    [
+                        SystemMessage(content="You are a grounded page-index block assigner."),
+                        HumanMessage(content=prompt),
+                    ]
+                )
+            finally:
+                _notify_untracked_provider_call(
+                    callbacks, callback_counts, f"page-{page_number}-{attempt_label}"
+                )
             if trace_log is not None:
                 trace_log(f"page_index_llm_invoke_end page_number={page_number} attempt={attempt_label}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - provider failures trigger bounded deterministic fallback.
             return None, f"{type(exc).__name__}: {exc}"
 
         parsed = payload.get("parsed") if isinstance(payload, dict) else payload
@@ -1689,6 +1756,7 @@ def parse_page_index_document(
     source_format: PageIndexSourceFormat = "text",
     mode: PageIndexMode = "heuristic",
     provider_settings: WorkflowProviderSettings | None = None,
+    callbacks: list[Any] | None = None,
     trace_log: Callable[[str], None] | None = None,
     refine_excerpts: bool = False,
 ) -> PageIndexParseResult:
@@ -1736,17 +1804,21 @@ def parse_page_index_document(
                 page_number=page_number,
                 source_format=source_format,
             )
-        elif mode == "ollama":
+        elif mode in _PAGE_INDEX_PROVIDER_MODES:
             settings = provider_settings or WorkflowProviderSettings.from_env()
-            if settings.parser.provider != "ollama":
-                raise ValueError("ollama mode requires KG_DOC_PARSER_PROVIDER=ollama")
+            if settings.parser.provider != mode:
+                raise ValueError(
+                    f"{mode} mode requires parser provider={mode!r}; "
+                    f"got {settings.parser.provider!r}"
+                )
             if trace_log is not None:
-                trace_log(f"page_index_llm_prepare page_number={page_number} provider=ollama")
+                trace_log(f"page_index_llm_prepare page_number={page_number} provider={mode}")
             block_specs, page_diagnostics_item = _llm_page_outline(
                 page_text=page_text,
                 page_number=page_number,
                 source_format=source_format,
                 provider_settings=settings,
+                callbacks=callbacks,
                 trace_log=trace_log,
             )
         else:  # pragma: no cover - Literal guards this in type-checked code.
@@ -1758,13 +1830,14 @@ def parse_page_index_document(
             "refine_excerpts_rejected": 0,
             "refine_excerpts_fallback": False,
         }
-        if mode == "ollama" and refine_excerpts:
+        if mode in _PAGE_INDEX_PROVIDER_MODES and refine_excerpts:
             block_specs, page_refinement_diagnostics = _refine_page_index_block_excerpts(
                 block_specs=block_specs,
                 page_text=page_text,
                 page_number=page_number,
                 unit_id=unit_id,
                 provider_settings=settings,
+                callbacks=callbacks,
                 trace_log=trace_log,
             )
         page_diagnostics_item = dict(page_diagnostics_item)

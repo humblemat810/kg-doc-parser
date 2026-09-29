@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-
 from kg_doc_parser.workflow_ingest import (
     OCRImagePayload,
     OCRWorkflowArtifacts,
@@ -16,11 +15,10 @@ from kg_doc_parser.workflow_ingest import (
     parse_ocr_document,
     parse_page_index_document,
     parse_tree_document,
+    runners,
 )
 from kg_doc_parser.workflow_ingest import cli as workflow_cli
-from kg_doc_parser.workflow_ingest import runners
 from kg_doc_parser.workflow_ingest import parsing as parsing_api
-
 
 pytestmark = [pytest.mark.workflow]
 
@@ -142,8 +140,12 @@ def test_parse_page_index_document_resolves_explicit_provider_and_model(
     captured: dict[str, object] = {}
     sentinel = object()
 
+    callbacks = [object()]
+
     def _fake_page_index_parse(**kwargs):
         captured["provider_settings"] = kwargs["provider_settings"]
+        captured["mode"] = kwargs["mode"]
+        captured["callbacks"] = kwargs["callbacks"]
         return sentinel
 
     monkeypatch.setattr(parsing_api, "_parse_page_index_document", _fake_page_index_parse)
@@ -154,8 +156,10 @@ def test_parse_page_index_document_resolves_explicit_provider_and_model(
         document_id="page-doc",
         title="Page Doc",
         raw_text="Alpha",
+        mode="vertex",
         provider="vertex",
         model="gemini-2.5-pro",
+        callbacks=callbacks,
     )
 
     assert result is sentinel
@@ -163,6 +167,8 @@ def test_parse_page_index_document_resolves_explicit_provider_and_model(
     assert isinstance(settings, WorkflowProviderSettings)
     assert settings.parser.provider == "vertex"
     assert settings.parser.model == "gemini-2.5-pro"
+    assert captured["mode"] == "vertex"
+    assert captured["callbacks"] is callbacks
 
 
 @pytest.mark.parametrize("provider", ["ollama", "gemini", "openai", "vertex"])
@@ -312,9 +318,12 @@ def test_cli_page_index_command_uses_parse_page_index_document(
 
     monkeypatch.setattr(runners, "parse_page_index_document", _fake_parse_page_index_document)
 
-    exit_code = workflow_cli.main(["page-index", str(source), "--output-dir", str(output_dir)])
+    exit_code = workflow_cli.main(
+        ["page-index", str(source), "--output-dir", str(output_dir), "--mode", "gemini"]
+    )
 
     assert exit_code == 0
     assert captured["parse_called"] is True
     assert captured["kwargs"]["document_id"] == source.stem
     assert captured["kwargs"]["title"] == source.stem
+    assert captured["kwargs"]["mode"] == "gemini"

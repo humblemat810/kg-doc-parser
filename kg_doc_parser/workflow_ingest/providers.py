@@ -294,6 +294,25 @@ def _chat_temperature_for_model(model: str | None, requested_temperature: float)
     return requested_temperature
 
 
+def _configured_max_output_tokens() -> int | None:
+    """Return an optional cap for OpenAI-compatible structured responses.
+
+    Local OpenAI-compatible servers otherwise choose a large default, which
+    can let malformed structured-output responses consume a worker lease.
+    Keep this opt-in so existing provider behavior is unchanged.
+    """
+
+    raw = os.getenv("KOGWISTAR_MAINTENANCE_MAX_OUTPUT_TOKENS") or os.getenv(
+        "KG_DOC_PARSER_MAX_OUTPUT_TOKENS"
+    )
+    if raw in {None, ""}:
+        return None
+    value = int(raw)
+    if value < 1:
+        raise ValueError("max output tokens must be positive")
+    return value
+
+
 class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
@@ -527,6 +546,9 @@ def build_chat_model(
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callbacks,
         }
+        max_output_tokens = _configured_max_output_tokens()
+        if max_output_tokens is not None:
+            kwargs["max_tokens"] = max_output_tokens
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
         if spec.api_key_env and os.getenv(spec.api_key_env):
@@ -540,6 +562,9 @@ def build_chat_model(
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callbacks,
         }
+        max_output_tokens = _configured_max_output_tokens()
+        if max_output_tokens is not None:
+            kwargs["max_tokens"] = max_output_tokens
         if spec.base_url:
             kwargs["azure_endpoint"] = spec.base_url
         if spec.api_version:
