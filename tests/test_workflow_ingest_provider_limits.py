@@ -5,8 +5,12 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+
 from kg_doc_parser.workflow_ingest import ProviderEndpointConfig
-from kg_doc_parser.workflow_ingest.providers import build_chat_model
+from kg_doc_parser.workflow_ingest.providers import (
+    _normalize_provider_name,
+    build_chat_model,
+)
 
 pytestmark = pytest.mark.ci
 
@@ -106,4 +110,5 @@ def test_provider_retry_count_cannot_be_negative(value: int) -> None:
 
 
 def test_claude_provider_name_normalizes_to_optional_anthropic_adapter() -> None:
+    assert _normalize_provider_name("Claude") == "anthropic"
     assert ProviderEndpointConfig(provider="anthropic", model="claude-sonnet").provider == "anthropic"
