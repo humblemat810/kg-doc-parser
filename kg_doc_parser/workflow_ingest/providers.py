@@ -177,7 +177,16 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
     provider: Annotated[
-        Literal["gemini", "ollama", "openai", "azure", "vertex", "fake", "codex"],
+        Literal[
+            "anthropic",
+            "gemini",
+            "ollama",
+            "openai",
+            "azure",
+            "vertex",
+            "fake",
+            "codex",
+        ],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -220,7 +229,12 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
-    max_retries: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 2
+    max_retries: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
+        default=2, ge=0
+    )
+    max_output_tokens: Annotated[
+        int | None, DtoField(), BackendField(), FrontendField(), LLMField()
+    ] = Field(default=None, gt=0)
     fallback_specs: list[ProviderEndpointConfig] = Field(default_factory=list, exclude=True)
 
 
@@ -280,6 +294,8 @@ def _normalize_provider_name(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
     if normalized == "azure_openai":
         return "azure"
+    if normalized == "claude":
+        return "anthropic"
     return normalized
 
 
@@ -512,9 +528,9 @@ def build_chat_model(
 ) -> SupportsStructuredOutput:
     """Build a vendor-specific chat model behind a stable adapter boundary.
 
-    Supported providers currently include gemini, openai, ollama, vertex, and
-    fake. Callers should choose the provider via config and treat the returned
-    object as a LangChain-compatible chat model.
+    Supported providers include Anthropic, Gemini, OpenAI-compatible, Ollama,
+    Vertex, the Codex bridge, and fake. Vendor integrations are imported only
+    when selected; optional provider packages need not be installed otherwise.
     """
     spec = spec or ProviderEndpointConfig()
     callbacks = callbacks or []
@@ -534,7 +550,14 @@ def build_chat_model(
     if spec.provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        kwargs: dict[str, Any] = {"model": spec.model, "temperature": spec.temperature, "callbacks": callbacks}
+        kwargs: dict[str, Any] = {
+            "model": spec.model,
+            "temperature": spec.temperature,
+            "callbacks": callbacks,
+            "max_retries": spec.max_retries,
+        }
+        if spec.max_output_tokens is not None:
+            kwargs["max_output_tokens"] = spec.max_output_tokens
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["google_api_key"] = os.getenv(spec.api_key_env)
         return ChatGoogleGenerativeAI(**kwargs)
@@ -545,6 +568,7 @@ def build_chat_model(
             "model": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callbacks,
+            "max_retries": spec.max_retries,
         }
         max_output_tokens = _configured_max_output_tokens()
         if max_output_tokens is not None:
@@ -561,6 +585,7 @@ def build_chat_model(
             "azure_deployment": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callbacks,
+            "max_retries": spec.max_retries,
         }
         max_output_tokens = _configured_max_output_tokens()
         if max_output_tokens is not None:
@@ -576,6 +601,27 @@ def build_chat_model(
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["api_key"] = os.getenv(spec.api_key_env)
         return AzureChatOpenAI(**kwargs)
+    if spec.provider == "anthropic":
+        try:
+            from langchain_anthropic import ChatAnthropic
+        except ImportError as exc:
+            raise RuntimeError(
+                "Anthropic provider selected; install the optional langchain-anthropic package"
+            ) from exc
+
+        kwargs = {
+            "model": spec.model,
+            "temperature": spec.temperature,
+            "callbacks": callbacks,
+            "max_retries": spec.max_retries,
+        }
+        if spec.max_output_tokens is not None:
+            kwargs["max_tokens"] = spec.max_output_tokens
+        if spec.base_url:
+            kwargs["base_url"] = spec.base_url
+        if spec.api_key_env and os.getenv(spec.api_key_env):
+            kwargs["anthropic_api_key"] = os.getenv(spec.api_key_env)
+        return ChatAnthropic(**kwargs)
     if spec.provider == "ollama":
         from langchain_ollama import ChatOllama
 
@@ -584,6 +630,8 @@ def build_chat_model(
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callbacks,
         }
+        if spec.max_output_tokens is not None:
+            kwargs["num_predict"] = spec.max_output_tokens
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
         return ChatOllama(**kwargs)
@@ -594,7 +642,10 @@ def build_chat_model(
             "model": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callbacks,
+            "max_retries": spec.max_retries,
         }
+        if spec.max_output_tokens is not None:
+            kwargs["max_output_tokens"] = spec.max_output_tokens
         if spec.project:
             kwargs["project"] = spec.project
         if spec.location:
