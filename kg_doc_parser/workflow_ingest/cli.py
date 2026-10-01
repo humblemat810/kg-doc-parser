@@ -10,23 +10,25 @@ while still giving humans a simple command family to run locally.
 
 import argparse
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
+from typing import get_args
 
 from .demo_harness import DemoHarnessConfig
+from .page_index import PageIndexMode
+from .probe import WorkflowProbe
 from .providers import WorkflowProviderSettings
 from .runners import (
+    _fallback_parse_semantic_fn,
+    build_legacy_parse_semantic_fn,
     run_demo_harness_workflow,
     run_layerwise_batch_workflow,
     run_layerwise_source_workflow,
-    build_legacy_parse_semantic_fn,
     run_ocr_batch_workflow,
     run_ocr_source_workflow,
     run_page_index_batch_workflow,
     run_page_index_source_workflow,
 )
-from .runners import _fallback_parse_semantic_fn
-from .probe import WorkflowProbe
 from .smoke_assets import generate_ocr_smoke_assets
 
 
@@ -288,7 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     page_index.add_argument("inputs", nargs="+", help="One file or a folder of text/markdown files")
     _add_common_output_args(page_index)
     _add_provider_args(page_index)
-    page_index.add_argument("--mode", choices=["heuristic", "ollama"], default="heuristic")
+    page_index.add_argument("--mode", choices=get_args(PageIndexMode), default="heuristic")
     page_index.add_argument("--source-format", choices=["auto", "text", "markdown"], default="auto")
     page_index.set_defaults(func=_page_index_command)
 

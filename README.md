@@ -32,6 +32,12 @@ The reusable helpers live under `src/workflow_ingest/` and are designed so the
 same core logic can be called from tests, scripts, and higher-level workflow
 code without duplicating orchestration.
 
+For an adoption path that starts with parser-grounded source units and later
+adds LLM-Wiki cross-document maintenance, see
+[`doc/progressive_adoption_guide.md`](doc/progressive_adoption_guide.md). The
+guide also explains which vector-RAG and source-import responsibilities remain
+with the integrating application.
+
 ## CLI Cheatsheet
 
 | Command | What it does | Main tests |

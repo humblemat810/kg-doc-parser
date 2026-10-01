@@ -4,11 +4,12 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
-from kogwistar.utils.cache_backend import Memory
-
-from _kogwistar_test_helpers import build_workflow_engine_triplet, drain_phase1_indexes_until_idle
 import kg_doc_parser.workflow_ingest.page_index as page_index_module
+import pytest
+from _kogwistar_test_helpers import (
+    build_workflow_engine_triplet,
+    drain_phase1_indexes_until_idle,
+)
 from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
     BlockAssignmentBatch,
@@ -18,9 +19,9 @@ from kg_doc_parser.workflow_ingest import (
     WorkflowProviderSettings,
     parse_page_index_document,
 )
-from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
 from kg_doc_parser.workflow_ingest.semantics import semantic_tree_to_kge_payload
-
+from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
+from kogwistar.utils.cache_backend import Memory
 
 pytestmark = [pytest.mark.workflow]
 
@@ -970,16 +971,28 @@ def test_page_index_refinement_reports_counts(monkeypatch: pytest.MonkeyPatch) -
     )
     _install_fake_page_index_chat(monkeypatch, assignment_payload=assignments, refinement_payload=refinement)
 
+    class _UsageCallback:
+        recorded_call_count = 0
+
+        def __init__(self) -> None:
+            self.call_keys: list[str] = []
+
+        def record_untracked_call(self, call_key: str) -> None:
+            self.call_keys.append(call_key)
+            self.recorded_call_count += 1
+
+    usage_callback = _UsageCallback()
     provider_settings = WorkflowProviderSettings(
-        parser=ProviderEndpointConfig(provider="ollama", model="fake", base_url="http://127.0.0.1:11434")
+        parser=ProviderEndpointConfig(provider="openai", model="fake")
     )
     result = parse_page_index_document(
-        document_id="page-index-ollama-refine-counts",
+        document_id="page-index-openai-refine-counts",
         title="Page Index Document",
         raw_text=raw_text,
         source_format="markdown",
-        mode="ollama",
+        mode="openai",
         provider_settings=provider_settings,
+        callbacks=[usage_callback],
         refine_excerpts=True,
     )
 
@@ -988,6 +1001,7 @@ def test_page_index_refinement_reports_counts(monkeypatch: pytest.MonkeyPatch) -
     assert result.diagnostics["refine_excerpts_accepted"] == 1
     assert result.diagnostics["refine_excerpts_rejected"] == 0
     assert result.diagnostics["refine_excerpts_fallback"] is False
+    assert usage_callback.call_keys == ["page-1-first", "refine-page-1"]
 
 
 def test_page_index_ollama_flat_but_shallow_assignment_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
