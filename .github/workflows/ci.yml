@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: 6066d1161d3520e61c33bf2c5b8dcb428e21a345
+          ref: 5923ea69d859512525b6ee3a7f682db884bea8ff
           path: kogwistar
 
       - name: Set up Python
