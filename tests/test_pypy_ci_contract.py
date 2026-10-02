@@ -35,6 +35,19 @@ def test_parser_ci_uses_the_declared_kogwistar_release() -> None:
     assert "kogwistar==0.6.2" in exported_requirements
 
 
+def test_parser_has_gated_pypi_release_workflow() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "pypi-release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'tags:\n      - "v*.*.*"' in workflow
+    assert "graph-knowledge-doc-parser" in workflow
+    assert "actions/upload-artifact@v6" in workflow
+    assert "actions/download-artifact@v7" in workflow
+    assert "pypa/gh-action-pypi-publish@release/v1" in workflow
+    assert "audit-artifacts" in workflow
+
+
 def test_parser_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
