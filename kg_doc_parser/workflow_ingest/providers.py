@@ -570,7 +570,11 @@ def build_chat_model(
             "callbacks": callbacks,
             "max_retries": spec.max_retries,
         }
-        max_output_tokens = _configured_max_output_tokens()
+        max_output_tokens = (
+            spec.max_output_tokens
+            if spec.max_output_tokens is not None
+            else _configured_max_output_tokens()
+        )
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
         if spec.base_url:
@@ -587,7 +591,11 @@ def build_chat_model(
             "callbacks": callbacks,
             "max_retries": spec.max_retries,
         }
-        max_output_tokens = _configured_max_output_tokens()
+        max_output_tokens = (
+            spec.max_output_tokens
+            if spec.max_output_tokens is not None
+            else _configured_max_output_tokens()
+        )
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
         if spec.base_url:
