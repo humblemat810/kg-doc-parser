@@ -39,7 +39,13 @@ def test_ci_uses_the_released_kogwistar_package_and_pypy_source_tag() -> None:
     root = Path(__file__).resolve().parents[1]
     metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     declared_version = metadata["tool"]["poetry"]["dependencies"]["kogwistar"]
+    lock = tomllib.loads((root / "poetry.lock").read_text(encoding="utf-8"))
+    locked_package = next(
+        package for package in lock["package"] if package["name"] == "kogwistar"
+    )
     workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
     assert declared_version == "0.6.2"
+    assert locked_package["version"] == declared_version
+    assert "source" not in locked_package
     assert "ref: v0.6.2" in workflow
