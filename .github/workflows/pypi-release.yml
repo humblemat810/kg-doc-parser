@@ -1,0 +1,155 @@
+name: PyPI Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version in pyproject.toml and tag v<version>
+        required: true
+        type: string
+      publish:
+        description: Publish with PyPI Trusted Publishing after artifact checks
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - id: version
+        name: Verify tag, package version, and PyPI availability
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            release_version="${GITHUB_REF_NAME#v}"
+          else
+            release_version="$INPUT_VERSION"
+            test "$GITHUB_REF_TYPE" = tag
+            test "$GITHUB_REF_NAME" = "v$release_version"
+          fi
+          export RELEASE_VERSION="$release_version"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib.error import HTTPError
+          from urllib.request import urlopen
+
+          version = os.environ["RELEASE_VERSION"]
+          metadata = Path("pyproject.toml").read_text(encoding="utf-8")
+          if f'version = "{version}"' not in metadata:
+              raise SystemExit(f"pyproject.toml must contain version {version!r}")
+          if 'name = "graph-knowledge-doc-parser"' not in metadata:
+              raise SystemExit("unexpected package name")
+          try:
+              with urlopen(
+                  "https://pypi.org/pypi/graph-knowledge-doc-parser/json", timeout=20
+              ) as response:
+                  releases = json.load(response).get("releases", {})
+          except HTTPError as error:
+              if error.code != 404:
+                  raise
+              releases = {}
+          if version in releases:
+              raise SystemExit(f"graph-knowledge-doc-parser {version} already exists on PyPI")
+          print(f"version={version}")
+          PY
+          echo "version=$release_version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: verify-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel and source distribution
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build --sdist --wheel --outdir dist
+          python -m twine check dist/*
+
+      - name: Upload tested release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: parser-release-artifacts
+          path: dist/*
+          if-no-files-found: error
+
+  audit-artifacts:
+    needs: [verify-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Download tested release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: parser-release-artifacts
+          path: dist
+
+      - name: Audit exact publish set
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip twine
+          python -m twine check dist/*
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+          find dist -maxdepth 1 -type f -printf '%f\n' | sort
+
+  publish:
+    needs: [verify-release, audit-artifacts]
+    if: github.event_name == 'push' || inputs.publish == true
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/graph-knowledge-doc-parser
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Download audited release artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: parser-release-artifacts
+          path: dist
+
+      - name: Final artifact validation
+        run: |
+          python -m pip install --upgrade pip twine
+          python -m twine check dist/*
+
+      - name: Publish to PyPI through Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
