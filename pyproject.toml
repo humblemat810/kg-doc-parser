@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "graph-knowledge-doc-parser"
-version = "0.2.0"
+version = "0.2.1"
 description = "doc parser using llm driven engine with graph knowledge awareness"
 authors = ["humblemat810 <67593116+humblemat810@users.noreply.github.com>"]
 readme = "README.md"
@@ -33,7 +33,7 @@ langchain-google-genai = "^4.1.2"
 pydantic-extension = "^0.0.7"
 rapidfuzz = "^3.14.3"
 mcp = "^2.2.0"
-kogwistar = { git = "https://github.com/humblemat810/kogwistar.git", rev = "5923ea69d859512525b6ee3a7f682db884bea8ff" }
+kogwistar = "0.6.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"

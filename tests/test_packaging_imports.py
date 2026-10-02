@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import sys
 import tomllib
 from pathlib import Path
@@ -36,12 +35,11 @@ def test_package_modules_import_cleanly() -> None:
     assert kg_doc_parser.ocr.regen_doc is not None
 
 
-def test_ci_checks_out_the_declared_kogwistar_revision() -> None:
+def test_ci_uses_the_released_kogwistar_package_and_pypy_source_tag() -> None:
     root = Path(__file__).resolve().parents[1]
     metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    declared_revision = metadata["tool"]["poetry"]["dependencies"]["kogwistar"]["rev"]
+    declared_version = metadata["tool"]["poetry"]["dependencies"]["kogwistar"]
     workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    checkout_revision = re.search(r"ref:\s*([0-9a-f]{40})", workflow)
 
-    assert checkout_revision is not None
-    assert checkout_revision.group(1) == declared_revision
+    assert declared_version == "0.6.2"
+    assert "ref: v0.6.2" in workflow

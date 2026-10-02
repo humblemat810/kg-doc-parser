@@ -32,17 +32,16 @@ jobs:
           - label: pypy311
             python-version: pypy-3.11-v7.3.20
             is_pypy: true
-    env:
-      PYTHONPATH: ${{ github.workspace }}/kogwistar
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Check out pinned Kogwistar dependency
+      - name: Check out Kogwistar 0.6.2 source profile for PyPy
+        if: matrix.is_pypy
         uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: 5923ea69d859512525b6ee3a7f682db884bea8ff
+          ref: v0.6.2
           path: kogwistar
 
       - name: Set up Python
@@ -72,7 +71,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-pypy-3.11-experimental.txt
 
-      - name: Verify pinned Kogwistar import on CPython
+      - name: Verify released Kogwistar import on CPython
         if: matrix.is_pypy == false
         run: poetry run python -c "from kogwistar.llm_tasks.providers import ProviderChainChatModel; print(ProviderChainChatModel.__name__)"
 
@@ -80,10 +79,11 @@ jobs:
         if: matrix.is_pypy == false
         run: poetry run ruff check kg_doc_parser/workflow_ingest/providers.py
 
-      - name: Verify pinned Kogwistar import on PyPy
+      - name: Verify Kogwistar 0.6.2 source-profile import on PyPy
         if: matrix.is_pypy
         env:
           KOGWISTAR_IMPL_MODE: python
+          PYTHONPATH: ${{ github.workspace }}/kogwistar
         run: python -c "from kogwistar.llm_tasks.providers import ProviderChainChatModel; print(ProviderChainChatModel.__name__)"
 
       - name: Run deterministic CPython CI tests
@@ -103,6 +103,7 @@ jobs:
         if: matrix.is_pypy
         env:
           KOGWISTAR_IMPL_MODE: python
+          PYTHONPATH: ${{ github.workspace }}/kogwistar
         run: >-
           python -m pytest -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           tests/test_packaging_imports.py
