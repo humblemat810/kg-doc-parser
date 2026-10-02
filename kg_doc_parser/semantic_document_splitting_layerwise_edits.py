@@ -112,6 +112,7 @@ from kogwistar.utils.cache_backend import (
     cache_hash,
     cache_load,
 )
+from .document_ingest_log_config import configured_document_ingest_log_db
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 
 _LAYERWISE_TRACE_ENV = "KG_DOC_LAYERWISE_TRACE_FILE"
@@ -157,7 +158,7 @@ def _default_parser_model_names() -> List[str]:
         "gemini-2.5-flash-lite",
     ]
     
-_DOCUMENT_INGEST_LOG_DB = os.path.join("logs", "document_ingest.sqlite")
+_DOCUMENT_INGEST_LOG_DB = configured_document_ingest_log_db()
 os.makedirs(os.path.dirname(_DOCUMENT_INGEST_LOG_DB), exist_ok=True)
 
 cb = DocumentIngestSQLiteCallback(db_path=_DOCUMENT_INGEST_LOG_DB,
