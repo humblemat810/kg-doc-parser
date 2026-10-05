@@ -2,32 +2,39 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, Sequence, TypeVar, TypedDict, cast
+from typing import Any, Literal, Protocol, TypedDict, TypeVar, cast
 
+from kogwistar.fuzzy_offsets import find_fuzzy_spans, offset_repair_threshold
+from kogwistar.runtime import RetryExhaustedError, RetryResult, retry_with_context
+from kogwistar.utils import SourcePointerValidationError, validate_source_pointer
 from pydantic import BaseModel
 
 from kg_doc_parser.llm_structured_output import build_structured_output_runnable
-from kogwistar.fuzzy_offsets import find_fuzzy_spans, offset_repair_threshold
-from kogwistar.utils import SourcePointerValidationError, validate_source_pointer
 
 from .models import (
     BoundaryCutpoint,
     BoundaryReviewBatch,
     BoundaryReviewDecision,
     BoundaryUnitSummary,
+    CurrentLayerContext,
     CurrentLayerResult,
     CurrentLayerReview,
+    LayerChildCandidate,
+    LayerReasoningEntry,
     LLMBoundaryProposalBatch,
     LLMCurrentLayerResult,
     LLMCurrentLayerReview,
-    LayerChildCandidate,
-    LayerReasoningEntry,
+    ParseSessionState,
 )
-from kogwistar.runtime import RetryExhaustedError, RetryResult, retry_with_context
-from .providers import SupportsStructuredOutput, WorkflowProviderSettings, build_chat_model_for_role
-from .semantics import HydratedTextPointer
-from .parser_core import SplitStrategy
+from .parser_core import ParserPayload, ParserSourceMap, SplitStrategy
+from .providers import (
+    SupportsStructuredOutput,
+    WorkflowProviderSettings,
+    build_chat_model_for_role,
+)
+from .semantics import HydratedTextPointer, SemanticNode
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 
@@ -38,13 +45,13 @@ class LayerwiseProposeCallback(Protocol):
     def __call__(
         self,
         *,
-        parser_source_map: dict[str, dict[str, Any]],
-        current_layer_context: Any,
-        semantic_tree: Any,
+        parser_source_map: ParserSourceMap,
+        current_layer_context: CurrentLayerContext,
+        semantic_tree: SemanticNode,
         split_strategy: SplitStrategy,
-        parser_input_dict: dict[str, Any],
-        parse_session: Any,
-        **kwargs: Any,
+        parser_input_dict: ParserPayload,
+        parse_session: ParseSessionState,
+        **kwargs: object,
     ) -> CurrentLayerResult: ...
 
 
@@ -54,19 +61,19 @@ class LayerwiseReviewCallback(Protocol):
     def __call__(
         self,
         *,
-        current_layer_context: Any,
+        current_layer_context: CurrentLayerContext,
         current_layer_result: CurrentLayerResult,
         split_strategy: SplitStrategy,
-        parser_source_map: dict[str, dict[str, Any]] | None = None,
-        parse_session: Any = None,
-        **kwargs: Any,
+        parser_source_map: ParserSourceMap | None = None,
+        parse_session: ParseSessionState | None = None,
+        **kwargs: object,
     ) -> CurrentLayerReview: ...
 
 
 class LayerwiseEventSink(Protocol):
     """Structured event callback used by parser orchestration."""
 
-    def __call__(self, stage: str, **extra: Any) -> None: ...
+    def __call__(self, stage: str, **extra: object) -> None: ...
 
 
 class LayerwiseFallbackBuilder(Protocol):
@@ -75,8 +82,8 @@ class LayerwiseFallbackBuilder(Protocol):
     def __call__(
         self,
         *,
-        current_layer_context: Any,
-        parser_source_map: dict[str, dict[str, Any]],
+        current_layer_context: CurrentLayerContext,
+        parser_source_map: ParserSourceMap,
     ) -> CurrentLayerResult: ...
 
 
