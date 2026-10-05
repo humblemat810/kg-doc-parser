@@ -54,7 +54,7 @@ class HttpClientLike(Protocol):
     and ``requests`` expose different concrete request types.
     """
 
-    def post(self, endpoint: str, **kwargs: Any) -> HttpResponseLike: ...
+    def post(self, endpoint: str, **kwargs: object) -> HttpResponseLike: ...
 
 
 def _ingest_status(value: str) -> IngestStatus:
@@ -197,7 +197,7 @@ class IngestExecutionClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def resume_ingest(self, **kwargs: Any) -> IngestRunResult:
+    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
         raise NotImplementedError
 
     @abstractmethod
