@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Sequence, TypeVar, TypedDict
+from typing import Any, Literal, Protocol, Sequence, TypeVar, TypedDict, cast
 
 from pydantic import BaseModel
 
@@ -27,10 +27,57 @@ from .models import (
 from kogwistar.runtime import RetryExhaustedError, RetryResult, retry_with_context
 from .providers import SupportsStructuredOutput, WorkflowProviderSettings, build_chat_model_for_role
 from .semantics import HydratedTextPointer
+from .parser_core import SplitStrategy
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
-LayerwiseProposeCallback = Callable[..., CurrentLayerResult]
-LayerwiseReviewCallback = Callable[..., CurrentLayerReview]
+
+
+class LayerwiseProposeCallback(Protocol):
+    """Provider callback for a bounded layer proposal."""
+
+    def __call__(
+        self,
+        *,
+        parser_source_map: dict[str, dict[str, Any]],
+        current_layer_context: Any,
+        semantic_tree: Any,
+        split_strategy: SplitStrategy,
+        parser_input_dict: dict[str, Any],
+        parse_session: Any,
+        **kwargs: Any,
+    ) -> CurrentLayerResult: ...
+
+
+class LayerwiseReviewCallback(Protocol):
+    """Provider callback for reviewing a bounded layer proposal."""
+
+    def __call__(
+        self,
+        *,
+        current_layer_context: Any,
+        current_layer_result: CurrentLayerResult,
+        split_strategy: SplitStrategy,
+        parser_source_map: dict[str, dict[str, Any]] | None = None,
+        parse_session: Any = None,
+        **kwargs: Any,
+    ) -> CurrentLayerReview: ...
+
+
+class LayerwiseEventSink(Protocol):
+    """Structured event callback used by parser orchestration."""
+
+    def __call__(self, stage: str, **extra: Any) -> None: ...
+
+
+class LayerwiseFallbackBuilder(Protocol):
+    """Deterministic fallback for unavailable or invalid provider output."""
+
+    def __call__(
+        self,
+        *,
+        current_layer_context: Any,
+        parser_source_map: dict[str, dict[str, Any]],
+    ) -> CurrentLayerResult: ...
 
 
 class LayerwiseLLMCallbacks(TypedDict):
@@ -44,6 +91,8 @@ LayerwiseCallback = LayerwiseLLMCallbacks
 
 
 MAX_BOUNDARY_REPAIR_SHIFT_CHARS = 8
+BoundaryKind = Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"]
+AnchorMatchMode = Literal["exact", "fuzzy"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,7 +379,7 @@ def _legal_cutpoints_for_text(
             parent_node_id="",
             source_cluster_id="",
             cut_offset=offset,
-            boundary_kind=kind,
+            boundary_kind=cast(BoundaryKind, kind),
             text_before_cut=text[max(0, offset - 80) : offset],
             text_after_cut=text[offset : offset + 80],
             cut_reason="deterministic legal boundary",
@@ -672,7 +721,7 @@ def _make_boundary_summary(
         source_cluster_id=source_cluster_id,
         start_char=start_char,
         end_char=end_char,
-        boundary_kind=normalized_kind,
+        boundary_kind=cast(BoundaryKind, normalized_kind),
         summary_text=summary,
         exact_text=_trim_text(exact_text, max_chars=600),
         expandable=False,
@@ -999,7 +1048,7 @@ def _boundary_review_decision(
             cut_offset=cutpoint.cut_offset,
             decision=unresolved_decision,
             reason=unresolved_reason,
-            anchor_match_mode=resolution.match_mode,
+            anchor_match_mode=cast(AnchorMatchMode, resolution.match_mode),
             anchor_match_score=resolution.match_score,
             text_before_cut=cutpoint.text_before_cut,
             text_after_cut=cutpoint.text_after_cut,
@@ -1016,7 +1065,7 @@ def _boundary_review_decision(
             cut_offset=cutpoint.cut_offset,
             decision="reject",
             resolved_cut_offset=resolved_cut_offset,
-            anchor_match_mode=resolution.match_mode,
+            anchor_match_mode=cast(AnchorMatchMode, resolution.match_mode),
             anchor_match_score=resolution.match_score,
             text_before_cut=cutpoint.text_before_cut,
             text_after_cut=cutpoint.text_after_cut,
@@ -1033,7 +1082,7 @@ def _boundary_review_decision(
             cut_offset=cutpoint.cut_offset,
             decision="reject",
             resolved_cut_offset=resolved_cut_offset,
-            anchor_match_mode=resolution.match_mode,
+            anchor_match_mode=cast(AnchorMatchMode, resolution.match_mode),
             anchor_match_score=resolution.match_score,
             text_before_cut=cutpoint.text_before_cut,
             text_after_cut=cutpoint.text_after_cut,
@@ -1053,7 +1102,7 @@ def _boundary_review_decision(
             cut_offset=cutpoint.cut_offset,
             decision="reject",
             resolved_cut_offset=resolved_cut_offset,
-            anchor_match_mode=resolution.match_mode,
+            anchor_match_mode=cast(AnchorMatchMode, resolution.match_mode),
             anchor_match_score=resolution.match_score,
             text_before_cut=cutpoint.text_before_cut,
             text_after_cut=cutpoint.text_after_cut,
@@ -1078,8 +1127,8 @@ def _boundary_review_decision(
         cut_offset=cutpoint.cut_offset,
         decision=decision,
         resolved_cut_offset=resolved_cut_offset,
-        boundary_kind=normalized_kind,
-        anchor_match_mode=resolution.match_mode,
+        boundary_kind=cast(BoundaryKind, normalized_kind),
+        anchor_match_mode=cast(AnchorMatchMode, resolution.match_mode),
         anchor_match_score=resolution.match_score,
         text_before_cut=cutpoint.text_before_cut,
         text_after_cut=cutpoint.text_after_cut,
@@ -1291,7 +1340,7 @@ def _assemble_layer_result_from_boundaries(
         return CurrentLayerResult(
             children=[],
             satisfied=True,
-            reasoning_history=[{"source": "boundary_first_deterministic_empty"}],
+            reasoning_history=[LayerReasoningEntry(source="boundary_first_deterministic_empty")],
             metadata={"fallback": "boundary_empty", "allow_empty_layer": True},
         ), [], []
 
@@ -1474,7 +1523,7 @@ def _fallback_layer_result(
         return CurrentLayerResult(
             children=[],
             satisfied=True,
-            reasoning_history=[{"source": "deterministic_depth_stop"}],
+            reasoning_history=[LayerReasoningEntry(source="deterministic_depth_stop")],
             metadata={"fallback": "depth_stop", "allow_empty_layer": True},
         )
     parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
@@ -1508,7 +1557,7 @@ def _fallback_layer_result(
     return CurrentLayerResult(
         children=children,
         satisfied=True,
-        reasoning_history=[{"source": "deterministic_fallback"}],
+        reasoning_history=[LayerReasoningEntry(source="deterministic_fallback")],
         metadata={"fallback": "llm_empty_or_unavailable", "allow_empty_layer": False},
     )
 
@@ -1516,9 +1565,9 @@ def _fallback_layer_result(
 def build_layerwise_llm_callbacks(
     provider_settings: WorkflowProviderSettings,
     *,
-    event_sink: Callable[..., None] | None = None,
+    event_sink: LayerwiseEventSink | None = None,
     model_callbacks: list[Any] | None = None,
-    fallback_layer_result_fn: Callable[..., CurrentLayerResult] | None = None,
+    fallback_layer_result_fn: LayerwiseFallbackBuilder | None = None,
     max_depth: int = 2,
     allow_review: bool = True,
     proposal_mode: str | None = None,
@@ -2486,7 +2535,7 @@ def build_layerwise_llm_callbacks(
             return runtime_review
         except Exception as exc:
             failure_reason = _trim_text(repr(exc), max_chars=500)
-            reviewed = CurrentLayerReview(
+            fallback_review = CurrentLayerReview(
                 updated_result=current_layer_result,
                 coverage_ok=None,
                 satisfied=None,
@@ -2504,8 +2553,8 @@ def build_layerwise_llm_callbacks(
                 depth=int(getattr(current_layer_context, "depth", 0)),
                 retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                 split_strategy=split_strategy,
-                satisfied=reviewed.satisfied,
-                coverage_ok=reviewed.coverage_ok,
+                satisfied=fallback_review.satisfied,
+                coverage_ok=fallback_review.coverage_ok,
             )
             _emit(
                 "workflow_layered_review_completed",
@@ -2514,10 +2563,10 @@ def build_layerwise_llm_callbacks(
                 depth=int(getattr(current_layer_context, "depth", 0)),
                 retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                 split_strategy=split_strategy,
-                satisfied=reviewed.satisfied,
-                coverage_ok=reviewed.coverage_ok,
+                satisfied=fallback_review.satisfied,
+                coverage_ok=fallback_review.coverage_ok,
             )
-            return reviewed
+            return fallback_review
 
     return {
         "propose_layer_fn": _propose_layer_fn,

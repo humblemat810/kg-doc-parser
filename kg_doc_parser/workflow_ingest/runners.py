@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Reusable workflow runners for CLI and higher-level orchestration.
 
 These helpers compose the existing workflow ingest primitives without changing
@@ -7,22 +5,29 @@ their core behavior. The CLI calls into this module, but test code and other
 workflow code can also reuse the same wrappers directly.
 """
 
+from __future__ import annotations
+
 import json
 import os
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator, Literal, Sequence
+from typing import Any, Literal
 
 from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
 from .ocr_pipeline import OCRImagePayload, OCRWorkflowArtifacts, run_ocr_ingest_workflow
 from .page_index import PageIndexParseResult, PageIndexSourceFormat
+from .parser_core import (
+    ParseSemanticFn,
+    SourceCollectionLike,
+    default_parse_semantic_fn,
+)
 from .parsing import parse_page_index_document, parse_tree_document
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
-from .parser_core import default_parse_semantic_fn
-from .service import build_default_engines
 from .semantics import HydratedTextPointer, SemanticNode
+from .service import build_default_engines
 
 SupportedOCRInput = Literal["image", "pdf"]
 SupportedPageIndexInput = Literal["text", "markdown"]
@@ -151,16 +156,17 @@ def build_legacy_parse_semantic_fn(
     *,
     provider_settings: WorkflowProviderSettings,
     model_names: Sequence[str] | None = None,
-) -> Callable[..., SemanticNode]:
+) -> ParseSemanticFn:
     parser_spec = provider_settings.parser
     parser_model_names = list(model_names) if model_names else [parser_spec.model]
 
     def _parse_semantic_fn(
         *,
-        collection,
+        collection: SourceCollectionLike,
         parser_input_dict: dict[str, Any],
         parser_source_map: dict[str, dict[str, Any]],
-    ) -> SemanticNode:
+        model_names: list[str] | None = None,
+    ) -> object:
         env_overrides = {
             "KG_DOC_PARSER_PROVIDER": parser_spec.provider,
             "KG_DOC_PARSER_MODEL": parser_spec.model,
@@ -176,7 +182,7 @@ def build_legacy_parse_semantic_fn(
                 collection=collection,
                 parser_input_dict=parser_input_dict,
                 parser_source_map=parser_source_map,
-                model_names=parser_model_names,
+                model_names=model_names or parser_model_names,
             )
 
     return _parse_semantic_fn

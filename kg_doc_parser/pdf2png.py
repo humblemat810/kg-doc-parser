@@ -12,6 +12,7 @@ import platform
 import pathlib
 from pypdf import PdfReader, PdfWriter
 import threading
+from typing import Any, Generator
 
 from .utils.file_loaders import RawFileLoader
 
@@ -31,7 +32,14 @@ def batch_split_pdf(document_folder: pathlib.Path | str | None = None, outfolder
                 self.walk_root = walk_root
             if compare_root is None:
                 self.compare_root = self.walk_root
-        def __iter__(self):
+        def __iter__(
+            self,
+            leaf_only: bool = False,
+            file_non_exist_ok: bool = False,
+            include=None,
+            allowed_files: list[str] | None = None,
+            allowed_relative_paths: list[str] | None = None,
+        ) -> Generator[str, Any, None]:
             
             for root, dirs, files  in os.walk(self.walk_root):
                 for f in files:
@@ -46,7 +54,7 @@ def batch_split_pdf(document_folder: pathlib.Path | str | None = None, outfolder
                             pass
                         else:
                             continue
-                    yield rel_path
+                    yield str(rel_path)
     if file_loader is None: # document_folder must not be None
         if document_folder is None:
             raise Exception("unreacheable")
@@ -192,11 +200,11 @@ if platform.system() == "Windows":
 else:
     import fcntl
     def lock_file(file_handle):
-        fcntl.flock(file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
 
     def unlock_file(file_handle):
         try:
-            fcntl.flock(file_handle, fcntl.LOCK_UN)
+            fcntl.flock(file_handle, fcntl.LOCK_UN)  # type: ignore[attr-defined]
         except Exception:
             pass
 

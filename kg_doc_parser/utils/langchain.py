@@ -3,6 +3,7 @@ from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.outputs.chat_generation import ChatGeneration
 from langchain_core.outputs.llm_result import LLMResult
 
+from collections.abc import Mapping
 from typing import Any
 
 GEMINI_PRO_INPUT_COST_PER_1K_TOKENS = 0.0001
@@ -19,6 +20,20 @@ cost_table = {
     "gemini-2.5-pro": {"input": 0.001250, "output": 0.0100, "cache": 0.00031, "storage_per_hour": 0.0045},
     "gemini-2.5-flash-lite": {"input": 0.0001, "output": 0.0040, "cache": 0.00025, "storage_per_hour": 0.001}
 }
+
+
+def _usage_metadata(message: object) -> Mapping[str, Any] | None:
+    value = getattr(message, "usage_metadata", None)
+    return value if isinstance(value, Mapping) else None
+
+
+def _model_name(generation: ChatGeneration) -> str:
+    value = generation.generation_info
+    if isinstance(value, Mapping):
+        model = value.get("model_name")
+        if isinstance(model, str):
+            return model
+    return "unknown"
 keys = list(cost_table.keys())
 for k in keys:
     if k.startswith('models/'):
@@ -61,33 +76,36 @@ class GeminiCostCallbackHandler(BaseCallbackHandler):
                 # and has the 'usage_metadata' attribute.
                 if isinstance(gen, ChatGeneration) and hasattr(gen, 'message'):
                     message = gen.message
-                    if hasattr(message, 'usage_metadata'):
-                        usage_metadata = message.usage_metadata
-                        if usage_metadata is not None:
+                    usage_metadata = _usage_metadata(message)
+                    if usage_metadata is not None:
                                     
                     
                             input_tokens = usage_metadata.get("input_tokens", 0)
                             output_tokens = usage_metadata.get("output_tokens", 0)
 
-                            try:
-                                cached_tokens = usage_metadata['input_token_details']['cache_read']
-                            except KeyError:
-                                cached_tokens = 0
+                            input_details = usage_metadata.get("input_token_details")
+                            cached_tokens = (
+                                input_details.get("cache_read", 0)
+                                if isinstance(input_details, Mapping)
+                                else 0
+                            )
                             output_tokens = usage_metadata.get("output_tokens", 0)
-                            try:
-                                reasoning_tokens = usage_metadata['output_token_details']['reasoning']
-                            except KeyError:
-                                reasoning_tokens = 0
+                            output_details = usage_metadata.get("output_token_details")
+                            reasoning_tokens = (
+                                output_details.get("reasoning", 0)
+                                if isinstance(output_details, Mapping)
+                                else 0
+                            )
 
                             if input_tokens > 0 or output_tokens > 0:
-                                cost = calculate_gemini_cost(input_tokens, output_tokens, cached_tokens, model_name = gen.generation_info['model_name'])
+                                cost = calculate_gemini_cost(input_tokens, output_tokens, cached_tokens, model_name=_model_name(gen))
                                 self.total_input_tokens += input_tokens
                                 self.total_output_tokens += output_tokens
                                 self.reasoning_tokens += reasoning_tokens
                                 self.cache_tokens += cached_tokens
                                 self.total_cost += cost
                                 self.usage_history.append({
-                                    "model_name": gen.generation_info['model_name'],
+                                    "model_name": _model_name(gen),
                                     "input_tokens" : input_tokens,
                                     "output_tokens":output_tokens,
                                     "cached_tokens":cached_tokens,
@@ -169,11 +187,12 @@ class PromptCostTokenLogger(BaseCallbackHandler):
         for g in response.generations:
             for gg in g:
                 
-                to_log = {'response_metadata': None, 'usage_metadata': None}
+                to_log: dict[str, str | None] = {'response_metadata': None, 'usage_metadata': None}
                 if hasattr(gg.message, "response_metadata"):
                     to_log["response_metadata"] = f"{gg.message.response_metadata}"
-                if hasattr(gg.message, "usage_metadata"):
-                    to_log["usage_metadata"] = f"{gg.message.usage_metadata}"
+                usage = _usage_metadata(gg.message)
+                if usage is not None:
+                    to_log["usage_metadata"] = f"{usage}"
                 if to_log:
                     self.cost_token_logger.info(str(to_log))
 # example "{'input_tokens': 106170, 'output_tokens': 7652, 'total_tokens': 118594, 'input_token_details': {'cache_read': 106164}, 'output_token_details': {'reasoning': 4772}}"
@@ -182,22 +201,28 @@ class PromptCostTokenLogger(BaseCallbackHandler):
             for gen in generation:
                 # Check if the generation object is a ChatGeneration instance
                 # and has the 'usage_metadata' attribute.
-                if isinstance(gen, ChatGeneration) and hasattr(gen.message, 'usage_metadata') and gen.message.usage_metadata is not None:
+                if isinstance(gen, ChatGeneration) and _usage_metadata(gen.message) is not None:
                     
-                    usage_metadata = gen.message.usage_metadata
+                    usage_metadata = _usage_metadata(gen.message)
+                    if usage_metadata is None:
+                        continue
                     
                     input_tokens = usage_metadata.get("input_tokens", 0)
-                    try:
-                        cached_tokens = usage_metadata['input_token_details']['cache_read']
-                    except KeyError:
-                        cached_tokens = 0
+                    input_details = usage_metadata.get("input_token_details")
+                    cached_tokens = (
+                        input_details.get("cache_read", 0)
+                        if isinstance(input_details, Mapping)
+                        else 0
+                    )
                     output_tokens = usage_metadata.get("output_tokens", 0)
-                    try:
-                        reasoning_tokens = usage_metadata['output_token_details']['reasoning']
-                    except KeyError:
-                        reasoning_tokens = 0
+                    output_details = usage_metadata.get("output_token_details")
+                    reasoning_tokens = (
+                        output_details.get("reasoning", 0)
+                        if isinstance(output_details, Mapping)
+                        else 0
+                    )
                     if input_tokens > 0 or output_tokens > 0:
-                        cost = calculate_gemini_cost(input_tokens, output_tokens, cached_tokens, model_name = gen.generation_info['model_name'])
+                        cost = calculate_gemini_cost(input_tokens, output_tokens, cached_tokens, model_name=_model_name(gen))
                         self.total_input_tokens += input_tokens
                         self.total_cached_tokens += cached_tokens
                         self.total_output_tokens += output_tokens

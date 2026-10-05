@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Unified public parsing facade for workflow-ingest.
 
 This module exposes one parse-first surface for the three parsing lanes that
@@ -13,12 +11,14 @@ The facade keeps provider/model selection explicit while still falling back to
 ``WorkflowProviderSettings.from_env()`` when callers omit overrides.
 """
 
+from __future__ import annotations
+
 import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .ocr_pipeline import (
     OCRImagePayload,
@@ -34,12 +34,16 @@ from .page_index import (
     parse_page_index_document as _parse_page_index_document,
 )
 from .providers import WorkflowProviderSettings
-from .semantics import SemanticNode
+
+if TYPE_CHECKING:
+    from ..semantic_document_splitting_layerwise_edits import (
+        SemanticNode as LegacySemanticNode,
+    )
 
 ParseMode = Literal["ocr", "page_index", "tree"]
 OCRParseResult = OCRWorkflowArtifacts
 PageIndexParseResultType = PageIndexParseResult
-TreeParseResult = tuple[SemanticNode, dict[str, Any]]
+TreeParseResult = tuple["LegacySemanticNode", dict[str, Any]]
 ParseDocumentResult = OCRParseResult | PageIndexParseResultType | TreeParseResult
 
 
@@ -207,7 +211,7 @@ def parse_tree_document(
     provider_settings: WorkflowProviderSettings | None = None,
     provider: str | None = None,
     model: str | None = None,
-) -> tuple[SemanticNode, dict[str, Any]]:
+) -> TreeParseResult:
     """Parse a legacy split-page OCR document with the layerwise tree parser."""
 
     settings = _resolve_provider_settings(

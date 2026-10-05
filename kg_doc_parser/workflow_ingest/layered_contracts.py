@@ -7,7 +7,8 @@ recovery.  These DTOs make a single seed or frontier expansion safe to retry.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,8 +26,15 @@ from .parser_core import (
     legacy_children_for_context,
     prepare_layer_frontier,
     propose_layer_breakdown,
+    ProposeLayerFn,
 )
 from .semantics import SemanticNode
+
+
+@dataclass(frozen=True, slots=True)
+class _LayeredCollection:
+    collection_id: str
+    title: str
 
 
 class LayeredParseLimits(BaseModel):
@@ -126,7 +134,7 @@ def initialize_layered_parse(request: LayeredParseSeedRequest) -> LayeredParseSe
 def expand_layered_frontier(
     request: LayeredParseExpandRequest,
     *,
-    propose_layer_fn: Callable[..., CurrentLayerResult] | None = None,
+    propose_layer_fn: ProposeLayerFn | None = None,
 ) -> LayeredParseExpandResult:
     """Expand at most ``max_frontier_items`` items and return JSON-safe state."""
 
@@ -235,10 +243,14 @@ def _estimate_context_tokens(context: object) -> int:
     return max(1, (len(text) + 3) // 4)
 
 
-def _model_or_mapping(value: Mapping[str, Any], name: str) -> Any:
+def _model_or_mapping(value: Mapping[str, Any], name: str) -> _LayeredCollection:
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be an object")
-    return type("LayeredContractObject", (), dict(value))()
+    collection_id = value.get("collection_id")
+    title = value.get("title")
+    if not isinstance(collection_id, str) or not isinstance(title, str):
+        raise TypeError(f"{name} must include string collection_id and title")
+    return _LayeredCollection(collection_id=collection_id, title=title)
 
 
 def _attach_children(tree: SemanticNode, result: CurrentLayerResult) -> SemanticNode:
@@ -251,12 +263,7 @@ def _attach_children(tree: SemanticNode, result: CurrentLayerResult) -> Semantic
                 title=child.title,
                 node_type=child.node_type,
                 total_content_pointers=[
-                    {
-                        "source_cluster_id": pointer.source_cluster_id,
-                        "start_char": pointer.start_char,
-                        "end_char": pointer.end_char,
-                        "verbatim_text": pointer.verbatim_text,
-                    }
+                    pointer.model_copy()
                     for pointer in child.total_content_pointers
                 ],
                 metadata=dict(child.metadata or {}),

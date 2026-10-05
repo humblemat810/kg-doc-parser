@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from collections.abc import Callable, Mapping
+from typing import Protocol, TypedDict, cast
 
 from kogwistar.runtime import MappingStepResolver
-from kogwistar.runtime.runtime import StepContext
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
+from kogwistar.runtime.runtime import StepContext
 
 from .adapters import (
     build_authoritative_source_map,
@@ -13,11 +14,13 @@ from .adapters import (
     build_parser_source_map,
     select_primary_collection,
 )
+from .cache import WorkflowLLMCallCache
+from .clients import CanonicalGraphPersistenceClient
 from .models import (
     CanonicalGraphWriteResult,
     CurrentLayerContext,
-    CurrentLayerReview,
     CurrentLayerResult,
+    CurrentLayerReview,
     LayerFrontierItem,
     ParseSessionState,
     ValidationReport,
@@ -25,6 +28,10 @@ from .models import (
     WorkflowIngestInput,
 )
 from .parser_core import (
+    ParseSemanticFn,
+    ProposeLayerFn,
+    ReviewLayerFn,
+    SplitStrategy,
     apply_cud_update,
     check_layer_coverage,
     commit_layer_children,
@@ -39,7 +46,7 @@ from .parser_core import (
     review_layer,
     switch_split_strategy,
 )
-from .probe import emit_probe_event
+from .probe import WorkflowProbe, emit_probe_event
 from .semantics import (
     SemanticNode,
     compute_pointer_coverage,
@@ -48,13 +55,43 @@ from .semantics import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-StepHandler = Callable[[StepContext], StepRunResult]
+
+
+class StepHandler(Protocol):
+    """Execute one parser workflow step against the runtime context."""
+
+    def __call__(self, context: StepContext, /) -> StepRunResult: ...
+
+
+class WorkflowRuntimeDeps(TypedDict, total=False):
+    """Optional, typed dependencies injected into workflow steps.
+
+    The state carried by the runtime remains JSON-like and intentionally
+    dynamic. This contract applies only to executable collaborators and
+    bounded workflow policy, so a malformed dependency cannot silently pass
+    through as an arbitrary object.
+    """
+
+    probe: WorkflowProbe | None
+    parse_semantic_fn: ParseSemanticFn
+    propose_layer_fn: ProposeLayerFn
+    review_layer_fn: ReviewLayerFn
+    llm_cache: WorkflowLLMCallCache
+    graph_persistence_client: CanonicalGraphPersistenceClient
+    persistence_mode: str
+    kg_authority: str
+    max_depth: int
+    allow_review: bool
+    split_strategy: SplitStrategy
+    fallback_split_strategy: SplitStrategy
+    max_review_retries: int
+    coverage_threshold: float
 
 
 def _build_export_bundle(
     *,
     ctx: StepContext,
-    runtime_deps: dict[str, object] | None = None,
+    runtime_deps: WorkflowRuntimeDeps | None = None,
 ) -> WorkflowExportBundle:
     normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
     collection = select_primary_collection(normalized)
@@ -154,8 +191,8 @@ def _register_step(
     resolver: MappingStepResolver,
     *,
     step_name: str,
-    runtime_deps: dict[str, object],
-)-> Callable[[StepHandler], StepHandler]:
+    runtime_deps: WorkflowRuntimeDeps,
+) -> Callable[[StepHandler], StepHandler]:
     probe = runtime_deps.get("probe")
 
     def decorator(fn: StepHandler) -> StepHandler:
@@ -200,7 +237,11 @@ def _register_step(
     return decorator
 
 
-def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: dict[str, object]) -> None:
+def register_base_ingest_steps(
+    resolver: MappingStepResolver,
+    *,
+    runtime_deps: WorkflowRuntimeDeps,
+) -> None:
     @_register_step(resolver, step_name="start", runtime_deps=runtime_deps)
     def _start(ctx: StepContext) -> StepRunResult:
         return _success("normalize_input")
@@ -243,8 +284,8 @@ def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: d
             parser_source_map=ctx.state_view["parser_source_map"],
             max_depth=int(runtime_deps.get("max_depth", 10)),
             allow_review=bool(runtime_deps.get("allow_review", True)),
-            split_strategy=str(runtime_deps.get("split_strategy", "excerpt_first")),
-            fallback_split_strategy=str(runtime_deps.get("fallback_split_strategy", "boundary_first")),
+            split_strategy=runtime_deps.get("split_strategy", "excerpt_first"),
+            fallback_split_strategy=runtime_deps.get("fallback_split_strategy", "boundary_first"),
             parse_semantic_fn=parse_semantic_fn if propose_layer_fn is None else None,
         )
         with ctx.state_write as st:
@@ -256,7 +297,11 @@ def register_base_ingest_steps(resolver: MappingStepResolver, *, runtime_deps: d
         return _success("check_frontier_remaining")
 
 
-def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_deps: dict[str, object]) -> None:
+def register_layerwise_parser_steps(
+    resolver: MappingStepResolver,
+    *,
+    runtime_deps: WorkflowRuntimeDeps,
+) -> None:
     @_register_step(resolver, step_name="check_frontier_remaining", runtime_deps=runtime_deps)
     def _check_frontier_remaining(ctx: StepContext) -> StepRunResult:
         queue = ctx.state_view.get("layer_frontier_queue") or []
@@ -511,7 +556,11 @@ def register_layerwise_parser_steps(resolver: MappingStepResolver, *, runtime_de
         return _success("validate_tree")
 
 
-def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dict[str, object]) -> None:
+def register_postparse_steps(
+    resolver: MappingStepResolver,
+    *,
+    runtime_deps: WorkflowRuntimeDeps,
+) -> None:
     @_register_step(resolver, step_name="validate_tree", runtime_deps=runtime_deps)
     def _validate_tree(ctx: StepContext) -> StepRunResult:
         tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
@@ -569,7 +618,7 @@ def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dic
             )
         try:
             write_result = persistence_client.persist_graph_payload(bundle)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - persistence failures become workflow failures
             # Preserve the server-canonical authority contract on failure: a
             # failed remote write must not silently become a local-debug write.
             with ctx.state_write as st:
@@ -621,8 +670,11 @@ def register_postparse_steps(resolver: MappingStepResolver, *, runtime_deps: dic
         return _success(None)
 
 
-def build_ingest_step_resolver(*, deps: dict[str, object] | None = None) -> MappingStepResolver:
-    runtime_deps = dict(deps or {})
+def build_ingest_step_resolver(
+    *,
+    deps: Mapping[str, object] | None = None,
+) -> MappingStepResolver:
+    runtime_deps = cast(WorkflowRuntimeDeps, dict(deps or {}))
     resolver = MappingStepResolver()
     resolver.set_state_schema(
         {

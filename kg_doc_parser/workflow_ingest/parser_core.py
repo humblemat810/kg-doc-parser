@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal, Protocol, cast
 
 from .cache import WorkflowLLMCallCache
 from .models import (
@@ -15,25 +15,96 @@ from .models import (
     LayerDuplicateChildNote,
     LayerFrontierItem,
     LayerSpanConflict,
-    NormalizedSourceCollection,
     ParseSessionState,
 )
 from .semantics import HydratedTextPointer, SemanticNode
 
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
-ParseSemanticFn = Callable[..., SemanticNode]
-ProposeLayerFn = Callable[..., CurrentLayerResult]
-ReviewLayerFn = Callable[..., CurrentLayerReview]
+SplitStrategy = Literal["excerpt_first", "boundary_first"]
+
+
+class ParseSemanticFn(Protocol):
+    """Provider callback for the legacy whole-document parse path."""
+
+    def __call__(
+        self,
+        *,
+        collection: SourceCollectionLike,
+        parser_input_dict: dict[str, Any],
+        parser_source_map: dict[str, dict[str, Any]],
+        model_names: list[str] | None = None,
+    ) -> object: ...
+
+
+class ProposeLayerFn(Protocol):
+    """Provider callback for one bounded semantic-layer proposal."""
+
+    def __call__(
+        self,
+        *,
+        collection: SourceCollectionLike,
+        parser_input_dict: dict[str, Any],
+        parser_source_map: dict[str, dict[str, Any]],
+        parse_session: ParseSessionState,
+        current_layer_context: CurrentLayerContext,
+        semantic_tree: SemanticNode,
+        split_strategy: SplitStrategy,
+    ) -> CurrentLayerResult | Mapping[str, object] | Sequence[object]: ...
+
+
+class ReviewLayerFn(Protocol):
+    """Provider callback for reviewing one bounded semantic layer."""
+
+    def __call__(
+        self,
+        *,
+        parse_session: ParseSessionState,
+        current_layer_context: CurrentLayerContext,
+        current_layer_result: CurrentLayerResult,
+        split_strategy: SplitStrategy,
+    ) -> CurrentLayerReview: ...
+
+
+class PointerCorrector(Protocol):
+    """Repair one grounded pointer against the authoritative source map."""
+
+    def __call__(
+        self,
+        pointer: HydratedTextPointer,
+        parser_source_map: dict[str, dict[str, Any]],
+        /,
+    ) -> HydratedTextPointer | None: ...
+
+
+class SourceCollectionLike(Protocol):
+    """Minimum collection identity needed by the parser core."""
+
+    @property
+    def collection_id(self) -> str: ...
+
+    @property
+    def title(self) -> str: ...
+
+
+class _NodeWithOptionalId(Protocol):
+    @property
+    def node_id(self) -> str | None: ...
+
+
+def _required_node_id(node: _NodeWithOptionalId) -> str:
+    if node.node_id is None:
+        raise ValueError("semantic node must have a stable node_id")
+    return node.node_id
 
 
 def default_parse_semantic_fn(
     *,
-    collection: NormalizedSourceCollection,
+    collection: SourceCollectionLike,
     parser_input_dict: dict[str, Any],
     parser_source_map: dict[str, dict[str, Any]],
     model_names: list[str] | None = None,
-) -> SemanticNode:
+) -> object:
     from ..semantic_document_splitting_layerwise_edits import build_document_tree
 
     return build_document_tree(
@@ -44,14 +115,17 @@ def default_parse_semantic_fn(
     )
 
 
-def _coerce_semantic_tree(tree: Any) -> SemanticNode:
+def _coerce_semantic_tree(tree: object) -> SemanticNode:
     if isinstance(tree, tuple):
         tree = tree[0]
-    if hasattr(tree, "model_dump"):
-        tree = tree.model_dump(mode="json")
+    model_dump = getattr(tree, "model_dump", None)
+    if callable(model_dump):
+        tree = model_dump(mode="json")
     if isinstance(tree, dict):
         tree = SemanticNode.model_validate(tree)
-    return tree
+    if isinstance(tree, SemanticNode):
+        return tree
+    raise TypeError(f"unsupported semantic tree result: {type(tree)!r}")
 
 
 def _root_only(tree: SemanticNode) -> SemanticNode:
@@ -170,7 +244,7 @@ def detect_layer_invariants(
     coverage_gaps: list[LayerCoverageGap] = []
     duplicate_notes: list[LayerDuplicateChildNote] = []
     review_notes: list[str] = []
-    seen_overlap_pairs: set[tuple[str, str, str, int, int, str]] = set()
+    seen_overlap_pairs: set[tuple[str, str, str, str, int, int, str]] = set()
 
     parent_pointers = current_layer_context.parent_content_pointers_by_id or {}
     for parent_id in current_layer_context.parent_node_ids:
@@ -231,8 +305,8 @@ def detect_layer_invariants(
                         overlap_conflicts.append(
                             LayerSpanConflict(
                                 parent_node_id=parent_id,
-                                left_child_id=left_child.node_id,
-                                right_child_id=right_child.node_id,
+                                left_child_id=_required_node_id(left_child),
+                                right_child_id=_required_node_id(right_child),
                                 source_cluster_id=left_ptr.source_cluster_id,
                                 left_span=left_ptr,
                                 right_span=right_ptr,
@@ -242,7 +316,8 @@ def detect_layer_invariants(
                             )
                         )
                         review_notes.append(
-                            f"{conflict_kind} between {left_child.node_id} and {right_child.node_id} "
+                            f"{conflict_kind} between {_required_node_id(left_child)} and "
+                            f"{_required_node_id(right_child)} "
                             f"on {left_ptr.source_cluster_id}:{overlap_start}-{overlap_end}"
                         )
 
@@ -310,13 +385,13 @@ def detect_layer_invariants(
 
 def initialize_parse_session(
     *,
-    collection,
+    collection: SourceCollectionLike,
     parser_input_dict: dict[str, Any],
     parser_source_map: dict[str, dict[str, Any]],
     max_depth: int = 10,
     allow_review: bool = True,
-    split_strategy: str = "excerpt_first",
-    fallback_split_strategy: str = "boundary_first",
+    split_strategy: SplitStrategy = "excerpt_first",
+    fallback_split_strategy: SplitStrategy = "boundary_first",
     parse_semantic_fn: ParseSemanticFn | None = None,
 ) -> tuple[ParseSessionState, list[LayerFrontierItem], SemanticNode]:
     if parse_semantic_fn is not None:
@@ -334,17 +409,17 @@ def initialize_parse_session(
         root = _root_only(full_tree)
         session = ParseSessionState(
             collection_id=collection.collection_id,
-            root_node_id=root.node_id,
+            root_node_id=_required_node_id(root),
             current_depth=0,
             max_depth=max_depth,
             allow_review=allow_review,
             split_strategy=split_strategy,
             fallback_split_strategy=fallback_split_strategy,
-            strategy_history=[split_strategy],
+            strategy_history=[cast(SplitStrategy, split_strategy)],
             mode="legacy_compat",
             compat_full_tree=full_tree.model_dump(),
         )
-        frontier = [LayerFrontierItem(parent_node_id=root.node_id, depth=0, order=0)]
+        frontier = [LayerFrontierItem(parent_node_id=_required_node_id(root), depth=0, order=0)]
         return session, frontier, root
 
     root = SemanticNode(
@@ -368,16 +443,16 @@ def initialize_parse_session(
     )
     session = ParseSessionState(
         collection_id=collection.collection_id,
-        root_node_id=root.node_id,
+        root_node_id=_required_node_id(root),
         current_depth=0,
         max_depth=max_depth,
         allow_review=allow_review,
         split_strategy=split_strategy,
         fallback_split_strategy=fallback_split_strategy,
-        strategy_history=[split_strategy],
+        strategy_history=[cast(SplitStrategy, split_strategy)],
         mode="workflow_layered",
     )
-    frontier = [LayerFrontierItem(parent_node_id=root.node_id, depth=0, order=0)]
+    frontier = [LayerFrontierItem(parent_node_id=_required_node_id(root), depth=0, order=0)]
     return session, frontier, root
 
 
@@ -408,15 +483,16 @@ def prepare_layer_frontier(
         node = find_semantic_node(semantic_tree, parent_id)
         parent_titles.append(node.title if node is not None else parent_id)
     session = parse_session.model_copy(update={"current_depth": current_depth})
+    def _pointers_for(parent_node_id: str) -> list[HydratedTextPointer]:
+        parent = find_semantic_node(semantic_tree, parent_node_id)
+        return list(parent.total_content_pointers) if parent is not None else []
+
     context = CurrentLayerContext(
         depth=current_depth,
         parent_node_ids=[item.parent_node_id for item in selected_items],
         parent_titles=parent_titles,
         parent_content_pointers_by_id={
-            item.parent_node_id: list(find_semantic_node(semantic_tree, item.parent_node_id).total_content_pointers)
-            if find_semantic_node(semantic_tree, item.parent_node_id) is not None
-            else []
-            for item in selected_items
+            item.parent_node_id: _pointers_for(item.parent_node_id) for item in selected_items
         },
         split_strategy=parse_session.split_strategy,
         retry_count=int(parse_session.layer_attempts.get(str(current_depth), 0)),
@@ -441,7 +517,7 @@ def legacy_children_for_context(
         for child in parent.child_nodes:
             children.append(
                 LayerChildCandidate(
-                    node_id=child.node_id,
+                    node_id=_required_node_id(child),
                     parent_node_id=parent_id,
                     title=child.title,
                     node_type=child.node_type,
@@ -455,7 +531,7 @@ def legacy_children_for_context(
 
 def propose_layer_breakdown(
     *,
-    collection,
+    collection: SourceCollectionLike,
     parser_input_dict: dict[str, Any],
     parser_source_map: dict[str, dict[str, Any]],
     parse_session: ParseSessionState,
@@ -471,15 +547,16 @@ def propose_layer_breakdown(
         )
     if propose_layer_fn is None:
         raise ValueError("workflow_layered mode requires propose_layer_fn")
-    call = lambda: propose_layer_fn(
-        collection=collection,
-        parser_input_dict=parser_input_dict,
-        parser_source_map=parser_source_map,
-        parse_session=parse_session,
-        current_layer_context=current_layer_context,
-        semantic_tree=semantic_tree,
-        split_strategy=current_layer_context.split_strategy,
-    )
+    def call() -> CurrentLayerResult | Mapping[str, object] | Sequence[object]:
+        return propose_layer_fn(
+            collection=collection,
+            parser_input_dict=parser_input_dict,
+            parser_source_map=parser_source_map,
+            parse_session=parse_session,
+            current_layer_context=current_layer_context,
+            semantic_tree=semantic_tree,
+            split_strategy=current_layer_context.split_strategy,
+        )
     if llm_cache is not None:
         proposed = llm_cache.cached_call(
             operation="propose_layer_breakdown",
@@ -500,7 +577,7 @@ def propose_layer_breakdown(
     if isinstance(proposed, dict):
         return CurrentLayerResult.model_validate(proposed)
     if isinstance(proposed, list):
-        return CurrentLayerResult(children=[_coerce_layer_child(child) for child in proposed])
+        return CurrentLayerResult(children=[_coerce_layer_child(child) for child in cast(list[Any], proposed)])
     raise TypeError("unsupported proposed layer result")
 
 
@@ -526,12 +603,13 @@ def review_layer(
     if review_layer_fn is None:
         reviewed = current_layer_result
     else:
-        call = lambda: review_layer_fn(
-            parse_session=parse_session,
-            current_layer_context=current_layer_context,
-            current_layer_result=current_layer_result,
-            split_strategy=current_layer_context.split_strategy,
-        )
+        def call() -> CurrentLayerReview:
+            return review_layer_fn(
+                parse_session=parse_session,
+                current_layer_context=current_layer_context,
+                current_layer_result=current_layer_result,
+                split_strategy=current_layer_context.split_strategy,
+            )
         try:
             if llm_cache is not None:
                 reviewed = llm_cache.cached_call(
@@ -546,7 +624,7 @@ def review_layer(
                 )
             else:
                 reviewed = call()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - provider failures become review-unknown state
             reviewed = CurrentLayerReview(
                 updated_result=current_layer_result,
                 coverage_ok=None,
@@ -783,7 +861,7 @@ def repair_layer_candidates(
     *,
     current_layer_result: CurrentLayerResult,
     parser_source_map: dict[str, dict[str, Any]],
-    correct_pointer_fn: Callable[[HydratedTextPointer, dict[str, dict[str, Any]]], HydratedTextPointer | None],
+    correct_pointer_fn: PointerCorrector,
 ) -> tuple[CurrentLayerResult, int]:
     def _pointer_context(pointer: HydratedTextPointer) -> str:
         source = parser_source_map.get(pointer.source_cluster_id, {})

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from .models import (
     BoundingBox,
@@ -12,15 +12,15 @@ from .models import (
 )
 
 
-class OCRPageJSON(TypedDict, total=False):
+class OCRPageJSON(TypedDict):
     """Serialized OCR page payload produced by the OCR preparation layer."""
 
     pdf_page_num: int
-    printed_page_number: str
-    contains_table: bool
-    OCR_text_clusters: list[dict[str, Any]]
-    non_text_objects: list[dict[str, Any]]
-    text: str
+    printed_page_number: NotRequired[str]
+    contains_table: NotRequired[bool]
+    OCR_text_clusters: NotRequired[list[dict[str, Any]]]
+    non_text_objects: NotRequired[list[dict[str, Any]]]
+    text: NotRequired[str]
 
 
 def normalize_ocr_pages(
@@ -155,8 +155,7 @@ def build_parser_input_dict(
     for page in collection.pages:
         text_clusters = []
         non_text_objects = []
-        next_cluster = 0
-        for unit in page.units:
+        for next_cluster, unit in enumerate(page.units):
             bbox = unit.bbox
             cluster_number = unit.cluster_number if unit.cluster_number is not None else next_cluster
             if unit.modality in {"text", "ocr_text"}:
@@ -181,7 +180,6 @@ def build_parser_input_dict(
                         "cluster_number": cluster_number,
                     }
                 )
-            next_cluster += 1
         pages.append(
             {
                 "pdf_page_num": page.page_number,

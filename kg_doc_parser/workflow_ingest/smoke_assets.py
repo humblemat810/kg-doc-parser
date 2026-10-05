@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Reusable OCR smoke asset generation for manual and CLI workflows."""
+
+from __future__ import annotations
 
 from pathlib import Path
 

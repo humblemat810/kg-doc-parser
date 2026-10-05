@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.storage_backend import StorageBackend
 from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.typing_interfaces import EmbeddingFunctionLike
 
 from .clients import DirectRuntimeIngestClient
 from .design import DEFAULT_WORKFLOW_ID
@@ -27,20 +29,26 @@ class _TinyEmbeddingFunction:
     def name(self) -> str:
         return self._name
 
-    def __call__(self, input: list[str]) -> list[list[float]]:
+    def __call__(self, documents_or_texts: list[str], /) -> list[list[float]]:
         vectors = []
-        for value in input:
+        for value in documents_or_texts:
             text = str(value or "")
             checksum = float((sum(ord(ch) for ch in text) % 97) + 1)
             vectors.append([float(len(text) + 1), checksum])
         return vectors
 
 
+class StorageBackendFactory(Protocol):
+    """Build the parser's selected storage backend for one graph engine."""
+
+    def __call__(self, engine: GraphKnowledgeEngine, /) -> StorageBackend: ...
+
+
 def build_default_engines(
     base_dir: str | Path,
     *,
-    embedding_function=None,
-    backend_factory=None,
+    embedding_function: EmbeddingFunctionLike | None = None,
+    backend_factory: StorageBackendFactory | None = None,
     provider_settings: WorkflowProviderSettings | None = None,
     conversation_persistence_mode: Literal["single_stage", "two_stage"] = "single_stage",
 ) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine, GraphKnowledgeEngine]:
@@ -72,7 +80,12 @@ def build_default_engines(
     return workflow_engine, conversation_engine, knowledge_engine
 
 
-def build_runtime(*, workflow_engine, conversation_engine, deps: dict[str, Any] | None = None) -> WorkflowRuntime:
+def build_runtime(
+    *,
+    workflow_engine: GraphKnowledgeEngine,
+    conversation_engine: GraphKnowledgeEngine,
+    deps: dict[str, Any] | None = None,
+) -> WorkflowRuntime:
     resolver = build_ingest_step_resolver(deps=deps)
     return WorkflowRuntime(
         workflow_engine=workflow_engine,
@@ -86,9 +99,9 @@ def build_runtime(*, workflow_engine, conversation_engine, deps: dict[str, Any] 
 def run_ingest_workflow(
     *,
     inp: WorkflowIngestInput,
-    workflow_engine,
-    conversation_engine,
-    knowledge_engine=None,
+    workflow_engine: GraphKnowledgeEngine,
+    conversation_engine: GraphKnowledgeEngine,
+    knowledge_engine: GraphKnowledgeEngine | None = None,
     workflow_id: str = DEFAULT_WORKFLOW_ID,
     deps: dict[str, Any] | None = None,
     run_id: str | None = None,
