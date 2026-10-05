@@ -314,7 +314,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             final_state=dict(run.final_state),
         )
 
-    def resume_ingest(self, **kwargs: Any) -> IngestRunResult:
+    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
         from .service import build_runtime
 
         deps = dict(kwargs.pop("deps", {}) or {})
@@ -489,7 +489,7 @@ class ServerCanonicalKgClient(IngestExecutionClient):
             final_state=dict(run.final_state),
         )
 
-    def resume_ingest(self, **kwargs: Any) -> IngestRunResult:
+    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
         raise UnsupportedClientOperation(
             "remote/server-backed runtime resume is not implemented in this repo"
         )
