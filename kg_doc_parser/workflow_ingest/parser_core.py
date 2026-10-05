@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, Protocol, cast
+from typing import Literal, Protocol, cast
 
 from .cache import WorkflowLLMCallCache
 from .models import (
@@ -22,6 +22,8 @@ from .semantics import HydratedTextPointer, SemanticNode
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
 SplitStrategy = Literal["excerpt_first", "boundary_first"]
+ParserPayload = dict[str, object]
+ParserSourceMap = dict[str, ParserPayload]
 
 
 class ParseSemanticFn(Protocol):
@@ -31,8 +33,8 @@ class ParseSemanticFn(Protocol):
         self,
         *,
         collection: SourceCollectionLike,
-        parser_input_dict: dict[str, Any],
-        parser_source_map: dict[str, dict[str, Any]],
+        parser_input_dict: ParserPayload,
+        parser_source_map: ParserSourceMap,
         model_names: list[str] | None = None,
     ) -> object: ...
 
@@ -44,8 +46,8 @@ class ProposeLayerFn(Protocol):
         self,
         *,
         collection: SourceCollectionLike,
-        parser_input_dict: dict[str, Any],
-        parser_source_map: dict[str, dict[str, Any]],
+        parser_input_dict: ParserPayload,
+        parser_source_map: ParserSourceMap,
         parse_session: ParseSessionState,
         current_layer_context: CurrentLayerContext,
         semantic_tree: SemanticNode,
@@ -72,7 +74,7 @@ class PointerCorrector(Protocol):
     def __call__(
         self,
         pointer: HydratedTextPointer,
-        parser_source_map: dict[str, dict[str, Any]],
+        parser_source_map: ParserSourceMap,
         /,
     ) -> HydratedTextPointer | None: ...
 
@@ -101,8 +103,8 @@ def _required_node_id(node: _NodeWithOptionalId) -> str:
 def default_parse_semantic_fn(
     *,
     collection: SourceCollectionLike,
-    parser_input_dict: dict[str, Any],
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_input_dict: ParserPayload,
+    parser_source_map: ParserSourceMap,
     model_names: list[str] | None = None,
 ) -> object:
     from ..semantic_document_splitting_layerwise_edits import build_document_tree
@@ -134,7 +136,7 @@ def _root_only(tree: SemanticNode) -> SemanticNode:
     return SemanticNode.model_validate(payload)
 
 
-def _legacy_pointer_aliases(parser_source_map: dict[str, dict[str, Any]]) -> dict[str, str]:
+def _legacy_pointer_aliases(parser_source_map: ParserSourceMap) -> dict[str, str]:
     aliases: dict[str, str] = {}
     for unit_id, record in parser_source_map.items():
         page_number = record.get("page_number")
@@ -149,7 +151,7 @@ def _legacy_pointer_aliases(parser_source_map: dict[str, dict[str, Any]]) -> dic
 def _canonicalize_legacy_pointer_tree(
     tree: SemanticNode,
     *,
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_source_map: ParserSourceMap,
 ) -> SemanticNode:
     aliases = _legacy_pointer_aliases(parser_source_map)
     if not aliases:
@@ -181,7 +183,7 @@ def _canonicalize_legacy_pointer_tree(
     return _remap_node(tree)
 
 
-def _pointer_end(pointer: HydratedTextPointer, source_map: dict[str, dict[str, Any]] | None = None) -> int:
+def _pointer_end(pointer: HydratedTextPointer, source_map: ParserSourceMap | None = None) -> int:
     if pointer.end_char != -1:
         return pointer.end_char
     if source_map is not None:
@@ -231,7 +233,7 @@ def detect_layer_invariants(
     *,
     current_layer_context: CurrentLayerContext,
     current_layer_result: CurrentLayerResult,
-    parser_source_map: dict[str, dict[str, Any]] | None = None,
+    parser_source_map: ParserSourceMap | None = None,
 ) -> tuple[
     bool,
     bool,
@@ -386,8 +388,8 @@ def detect_layer_invariants(
 def initialize_parse_session(
     *,
     collection: SourceCollectionLike,
-    parser_input_dict: dict[str, Any],
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_input_dict: ParserPayload,
+    parser_source_map: ParserSourceMap,
     max_depth: int = 10,
     allow_review: bool = True,
     split_strategy: SplitStrategy = "excerpt_first",
@@ -532,8 +534,8 @@ def legacy_children_for_context(
 def propose_layer_breakdown(
     *,
     collection: SourceCollectionLike,
-    parser_input_dict: dict[str, Any],
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_input_dict: ParserPayload,
+    parser_source_map: ParserSourceMap,
     parse_session: ParseSessionState,
     current_layer_context: CurrentLayerContext,
     semantic_tree: SemanticNode,
@@ -577,7 +579,7 @@ def propose_layer_breakdown(
     if isinstance(proposed, dict):
         return CurrentLayerResult.model_validate(proposed)
     if isinstance(proposed, list):
-        return CurrentLayerResult(children=[_coerce_layer_child(child) for child in cast(list[Any], proposed)])
+        return CurrentLayerResult(children=[_coerce_layer_child(child) for child in cast(list[object], proposed)])
     raise TypeError("unsupported proposed layer result")
 
 
@@ -586,7 +588,7 @@ def review_layer(
     parse_session: ParseSessionState,
     current_layer_context: CurrentLayerContext,
     current_layer_result: CurrentLayerResult,
-    parser_source_map: dict[str, dict[str, Any]] | None = None,
+    parser_source_map: ParserSourceMap | None = None,
     review_layer_fn: ReviewLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
 ) -> tuple[CurrentLayerReview, ParseSessionState]:
@@ -860,7 +862,7 @@ def switch_split_strategy(
 def repair_layer_candidates(
     *,
     current_layer_result: CurrentLayerResult,
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_source_map: ParserSourceMap,
     correct_pointer_fn: PointerCorrector,
 ) -> tuple[CurrentLayerResult, int]:
     def _pointer_context(pointer: HydratedTextPointer) -> str:
@@ -994,7 +996,7 @@ def finalize_semantic_tree(semantic_tree: SemanticNode) -> SemanticNode:
     return semantic_tree
 
 
-def _coerce_layer_child(value: Any) -> LayerChildCandidate:
+def _coerce_layer_child(value: object) -> LayerChildCandidate:
     if isinstance(value, LayerChildCandidate):
         return value
     if isinstance(value, dict):
