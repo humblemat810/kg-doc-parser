@@ -29,7 +29,7 @@ def test_parser_ci_uses_the_declared_kogwistar_release() -> None:
     assert version == "0.6.2"
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "ref: v0.6.2" in workflow
+    assert "ref: c3275c74c73b33502e9f94900e0973000ec94a5e" in workflow
 
     exported_requirements = (ROOT / "req.txt").read_text(encoding="utf-8")
     assert "kogwistar==0.6.2" in exported_requirements
