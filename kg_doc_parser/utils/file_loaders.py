@@ -1,15 +1,22 @@
-
 import logging
+import os
+import pathlib
+from collections.abc import Callable, Iterator
+from functools import partial
+from json import JSONDecodeError
+from typing import Optional
+
+import pathspec
+
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 logger.debug("library loading")
-from json import JSONDecodeError
-import os
-import pathlib
-import pathspec
-from typing import Iterable, Tuple, Optional, Generator, Any
-from typing import Callable
-from functools import partial
+
+
+WalkEntry = tuple[str, list[str], list[str]]
+FileWalker = Callable[[str], Iterator[WalkEntry]]
+PathFilter = Callable[[str], bool]
 
 def bool2yn(maybe_bool: bool):
     if type(maybe_bool) is bool:
@@ -37,7 +44,7 @@ def nullable_concat(a: list| None, b: list| None) -> list | None:
         return None
     return (a or []) + (b or [])
 
-def fast_walk(path, prune_condition=None):
+def fast_walk(path: str, prune_condition: PathFilter | None = None) -> Iterator[WalkEntry]:
     stack = [path]
     while stack:
         current = stack.pop()  # DFS, or use `.pop(0)` for BFS
@@ -56,7 +63,9 @@ def fast_walk(path, prune_condition=None):
                 stack.extend(reversed(dirs))  # DFS
         except PermissionError:
             continue
-def find_folders_two_levels_from_leaves_mem_optimized(root_path: str, required_level: int = 2) -> Generator[Tuple[str , list[str],list[str]], Any, None]:
+def find_folders_two_levels_from_leaves_mem_optimized(
+    root_path: str, required_level: int = 2
+) -> Iterator[WalkEntry]:
     """
     Yields folders that are exactly two levels away from leaf nodes using a
     highly memory-efficient iterator.
@@ -136,7 +145,7 @@ class RawFileLoader():
                  walk_root:Optional[str] = None, compare_root:Optional[str] = None,
                  include = None,
                  bucket_blob_connection_str = None,
-                 file_walker_callback: Callable[[str, int], Generator[Tuple[str , list[str],list[str]], Any, None]] | None = None,
+                 file_walker_callback: FileWalker | None = None,
                  pattern = None,
                  allow_startwith_relative_paths = False,
                  filtering_callbacks : Optional[list[Callable]] = None):
@@ -156,7 +165,7 @@ class RawFileLoader():
         self.oldest_datetime = oldest_datetime
         self.newest_datetime = newest_datetime
         self.bucket_blob_connection_str = bucket_blob_connection_str
-        self.file_walker_callback: Optional[Callable] = file_walker_callback
+        self.file_walker_callback: FileWalker | None = file_walker_callback
         if root_folder_name is None:
             root_folder_name = os.getcwd()
         if walk_root is None:
@@ -185,10 +194,10 @@ class RawFileLoader():
                         allow_file_list = flist # type: ignore
                     else:
                         need_attempt_readlines = True
-                except JSONDecodeError as e:
+                except JSONDecodeError:
                     need_attempt_readlines = True
                 
-                except Exception as e:
+                except Exception:
                     raise
                 if need_attempt_readlines:
                     with open(allow_file_list_ref, 'r') as f:
