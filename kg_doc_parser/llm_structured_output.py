@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
 
 
 class StructuredOutputRunnable(Protocol):
     """Runnable returned by a structured-output model adapter."""
 
-    steps: list[Any]
+    steps: list[object]
 
-    def invoke(self, *args: object, **kwargs: object) -> Any: ...
+    def invoke(self, *args: object, **kwargs: object) -> object: ...
 
 
 class StructuredOutputModel(Protocol):
@@ -16,14 +16,14 @@ class StructuredOutputModel(Protocol):
 
     def with_structured_output(
         self,
-        schema: Any,
-        **kwargs: Any,
-    ) -> Any: ...
+        schema: object,
+        **kwargs: object,
+    ) -> StructuredOutputRunnable: ...
 
 
 def build_structured_output_runnable(
     model: StructuredOutputModel,
-    schema: Any,
+    schema: object,
     *,
     include_raw: bool = True,
     prefer_json_schema: bool = True,
