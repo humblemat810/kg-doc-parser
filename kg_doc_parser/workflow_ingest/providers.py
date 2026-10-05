@@ -104,15 +104,15 @@ ProposalMode = Literal["children", "boundaries"]
 class StructuredPayloadFactory(Protocol):
     """Build a deterministic structured-output payload for one schema."""
 
-    def __call__(self, schema: type[BaseModel], /) -> dict[str, Any]: ...
+    def __call__(self, schema: type[BaseModel], /) -> dict[str, object]: ...
 
 
 class _FakeStructuredResponse:
-    def __init__(self, schema: type[TStructuredModel], payload: dict[str, Any]) -> None:
+    def __init__(self, schema: type[TStructuredModel], payload: dict[str, object]) -> None:
         self.schema = schema
         self.payload = payload
 
-    def invoke(self, messages: Any, config: Any = None) -> dict[str, Any]:
+    def invoke(self, messages: object, config: object = None) -> dict[str, object]:
         parsed = self.schema.model_validate(self.payload)
         return {"parsed": parsed, "raw": None, "parsing_error": None}
 
@@ -129,15 +129,15 @@ class FakeChatModel:
         self,
         schema: type[TStructuredModel],
         include_raw: bool = True,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> _FakeStructuredResponse:
         _ = kwargs
         payload = self.payload_factory(schema)
         return _FakeStructuredResponse(schema, payload)
 
 
-def _default_schema_payload(schema: type[BaseModel]) -> dict[str, Any]:
-    def _value_for_field(field: Any) -> Any:
+def _default_schema_payload(schema: type[BaseModel]) -> dict[str, object]:
+    def _value_for_field(field: object) -> object:
         annotation = getattr(field, "annotation", None)
         origin = get_origin(annotation)
         args = get_args(annotation)
@@ -166,7 +166,7 @@ def _default_schema_payload(schema: type[BaseModel]) -> dict[str, Any]:
             return default
         return None
 
-    payload: dict[str, Any] = {}
+    payload: dict[str, object] = {}
     for name, field in getattr(schema, "model_fields", {}).items():
         value = _value_for_field(field)
         if value is not None:
@@ -176,7 +176,7 @@ def _default_schema_payload(schema: type[BaseModel]) -> dict[str, Any]:
 
 @runtime_checkable
 class ChatModelProvider(Protocol):
-    def build(self, *, callbacks: list[Any] | None = None) -> SupportsStructuredOutput: ...
+    def build(self, *, callbacks: list[object] | None = None) -> SupportsStructuredOutput: ...
 
 
 @runtime_checkable
@@ -556,7 +556,7 @@ def build_embedding_function(
 def build_chat_model(
     spec: ProviderEndpointConfig | None = None,
     *,
-    callbacks: list[Any] | None = None,
+    callbacks: list[object] | None = None,
 ) -> SupportsStructuredOutput:
     """Build a vendor-specific chat model behind a stable adapter boundary.
 
@@ -700,7 +700,7 @@ def build_chat_model_for_role(
     role: Literal["ocr", "parser"],
     spec: WorkflowProviderSettings | None = None,
     *,
-    callbacks: list[Any] | None = None,
+    callbacks: list[object] | None = None,
 ) -> SupportsStructuredOutput:
     """Build the chat model used for either OCR or parsing.
 
