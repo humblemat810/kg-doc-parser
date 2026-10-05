@@ -1,17 +1,35 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Protocol
+
+
+class StructuredOutputRunnable(Protocol):
+    """Runnable returned by a structured-output model adapter."""
+
+    steps: list[object]
+
+    def invoke(self, *args: object, **kwargs: object) -> object: ...
+
+
+class StructuredOutputModel(Protocol):
+    """Minimum model surface required by the parser's structured-output path."""
+
+    def with_structured_output(
+        self,
+        schema: object,
+        **kwargs: object,
+    ) -> StructuredOutputRunnable: ...
 
 
 def build_structured_output_runnable(
-    model: Any,
-    schema: Any,
+    model: StructuredOutputModel,
+    schema: object,
     *,
     include_raw: bool = True,
     prefer_json_schema: bool = True,
-) -> Any:
+) -> StructuredOutputRunnable:
     """Build a structured-output runnable with strict-schema-first fallback."""
-    attempts: list[dict[str, Any]] = []
+    attempts: list[dict[str, object]] = []
     if prefer_json_schema:
         attempts.append({"include_raw": include_raw, "method": "json_schema"})
     attempts.append({"include_raw": include_raw, "method": "function_calling"})

@@ -36,13 +36,15 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
 from kogwistar.utils.fuzzy_offsets import find_best_fuzzy_span
+
+
 from pydantic import BaseModel, Field
 
 from ..llm_structured_output import build_structured_output_runnable
@@ -65,6 +67,13 @@ from .semantics import (
     compute_pointer_coverage,
     correct_and_validate_pointer,
 )
+
+
+class PageIndexTraceLogger(Protocol):
+    """Receive bounded diagnostic messages from page-index parsing."""
+
+    def __call__(self, message: str, /) -> None: ...
+
 
 PageIndexMode = Literal[
     "heuristic",
@@ -1006,7 +1015,7 @@ def _refine_page_index_block_excerpts(
     unit_id: str,
     provider_settings: WorkflowProviderSettings,
     callbacks: list[Any] | None = None,
-    trace_log: Callable[[str], None] | None = None,
+    trace_log: PageIndexTraceLogger | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
     entries = [
         {
@@ -1203,7 +1212,7 @@ def _llm_page_outline(
     source_format: PageIndexSourceFormat,
     provider_settings: WorkflowProviderSettings,
     callbacks: list[Any] | None = None,
-    trace_log: Callable[[str], None] | None = None,
+    trace_log: PageIndexTraceLogger | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     assignment_mode_prefix = "ollama" if provider_settings.parser.provider == "ollama" else "llm"
@@ -1600,7 +1609,7 @@ def _resolve_pointer(
     excerpt: str,
     start_at: int = 0,
     repair_stats: dict[str, int] | None = None,
-    trace_log: Callable[[str], None] | None = None,
+    trace_log: PageIndexTraceLogger | None = None,
 ) -> HydratedTextPointer:
     needle = excerpt.strip() or excerpt or page_text.strip()
     candidate = HydratedTextPointer(
@@ -1668,7 +1677,7 @@ def _materialize_block_tree(
     level_from_root: int,
     start_at: int = 0,
     repair_stats: dict[str, int] | None = None,
-    trace_log: Callable[[str], None] | None = None,
+    trace_log: PageIndexTraceLogger | None = None,
 ) -> tuple[list[SemanticNode], int]:
     nodes: list[SemanticNode] = []
     cursor = start_at
@@ -1757,11 +1766,12 @@ def parse_page_index_document(
     mode: PageIndexMode = "heuristic",
     provider_settings: WorkflowProviderSettings | None = None,
     callbacks: list[Any] | None = None,
-    trace_log: Callable[[str], None] | None = None,
+    trace_log: PageIndexTraceLogger | None = None,
     refine_excerpts: bool = False,
 ) -> PageIndexParseResult:
     """Parse a plain text or Markdown document into a page-index semantic tree."""
 
+    settings = provider_settings or WorkflowProviderSettings.from_env()
     workflow_input = build_page_index_workflow_input(
         document_id=document_id,
         title=title,
@@ -1805,7 +1815,6 @@ def parse_page_index_document(
                 source_format=source_format,
             )
         elif mode in _PAGE_INDEX_PROVIDER_MODES:
-            settings = provider_settings or WorkflowProviderSettings.from_env()
             if settings.parser.provider != mode:
                 raise ValueError(
                     f"{mode} mode requires parser provider={mode!r}; "
@@ -1925,19 +1934,19 @@ def parse_page_index_document(
     elif fallback_reasons:
         overall_assignment_mode = "deterministic_fallback"
     elif structure_retry_succeeded:
-        overall_assignment_mode = f"{provider_settings.parser.provider}_flat_assignment_structure_retry"
+        overall_assignment_mode = f"{settings.parser.provider}_flat_assignment_structure_retry"
     elif assignment_retry_succeeded:
-        overall_assignment_mode = f"{provider_settings.parser.provider}_flat_assignment_retry"
+        overall_assignment_mode = f"{settings.parser.provider}_flat_assignment_retry"
     elif retry_used:
         overall_assignment_mode = "deterministic_fallback"
     else:
         expected_assignment_modes = {
-            f"{provider_settings.parser.provider}_flat_assignment",
-            f"{provider_settings.parser.provider}_flat_assignment_retry",
-            f"{provider_settings.parser.provider}_flat_assignment_structure_retry",
+            f"{settings.parser.provider}_flat_assignment",
+            f"{settings.parser.provider}_flat_assignment_retry",
+            f"{settings.parser.provider}_flat_assignment_structure_retry",
         }
         overall_assignment_mode = (
-            f"{provider_settings.parser.provider}_flat_assignment"
+            f"{settings.parser.provider}_flat_assignment"
             if assignment_modes.issubset(expected_assignment_modes) and assignment_modes
             else "deterministic_fallback"
         )

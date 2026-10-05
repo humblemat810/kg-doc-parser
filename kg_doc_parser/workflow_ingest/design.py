@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+from collections.abc import Iterable
 
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
-
 
 DEFAULT_WORKFLOW_ID = "kg_doc_parser.ingest.v1"
 _LOGGER = logging.getLogger(__name__)
@@ -125,7 +124,7 @@ def build_ingest_workflow_design(
         )
         for suffix, op, start, terminal in node_specs
     ]
-    node_by_suffix = {node.id.split("|")[-1]: node for node in nodes}
+    node_by_suffix = {node.safe_get_id().split("|")[-1]: node for node in nodes}
     edge_pairs: Iterable[tuple[str, str]] = [
         ("start", "normalize_input"),
         ("normalize_input", "build_source_map"),

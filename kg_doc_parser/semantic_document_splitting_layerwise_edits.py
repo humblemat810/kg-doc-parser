@@ -91,7 +91,7 @@ try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover
     from typing_extensions import TypeAlias
-from langchain_core.language_models import BaseChatModel
+from kogwistar.llm_tasks.providers import SupportsStructuredOutput
 from pydantic import BaseModel, Field, ValidationError, validator, field_validator
 from typing import ClassVar
 from uuid import UUID
@@ -107,6 +107,7 @@ from kg_doc_parser.document_ingester_logger import DocumentIngestSQLiteCallback
 from kg_doc_parser.llm_structured_output import build_structured_output_runnable
 from kogwistar.id_provider import stable_id
 from kogwistar.utils.cache_backend import (
+    CacheBackend,
     Memory,
     cache_dump,
     cache_hash,
@@ -238,7 +239,7 @@ class HydratedTextPointer(ModeSlicingMixin, BaseModel):
             "end_page": end_page,
             "start_char": self.start_char,
             "end_char": end_char,
-            "snippet": self.verbatim_text[:400],
+            "snippet": (self.verbatim_text or "")[:400],
         }
 
     # --------------------------
@@ -268,6 +269,8 @@ class HydratedTextPointer(ModeSlicingMixin, BaseModel):
             start_char=start_char,
             end_char=end_char,
             verbatim_text=ref.get("excerpt") or "",
+            start_delimiter=None,
+            end_delimiter=None,
             validation_method = ref.get('verification')
         )
 HydratedTextPointerLLM : TypeAlias = HydratedTextPointer['llm']
@@ -460,6 +463,7 @@ class SemanticNode(BaseModel):
                 HydratedTextPointer.model_validate(p) for p in pointers_raw
             ],
             child_nodes=[],
+            level_from_root=0,
         )
 
     # -------------------------------------------------
@@ -899,7 +903,10 @@ _PARSER_CACHE_DIR = os.getenv(
     "KG_DOC_PARSER_CACHE_DIR",
     os.getenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", ".joblib"),
 )
-_PARSER_CACHE_BACKEND = os.getenv("KG_DOC_PARSER_CACHE_BACKEND", "auto")
+_PARSER_CACHE_BACKEND = cast(
+    CacheBackend,
+    os.getenv("KG_DOC_PARSER_CACHE_BACKEND", "auto"),
+)
 memory = Memory(location=_PARSER_CACHE_DIR, backend=_PARSER_CACHE_BACKEND)
 
 _PARSER_LLM_CACHE_REVISION_ENV = "KG_DOC_PARSER_LLM_CACHE_REVISION"
@@ -1261,6 +1268,8 @@ def get_root_node(title, source_map):
                 start_char=0, 
                 end_char=-1, 
                 verbatim_text=_source_map_entry_text(source_map[cid]),
+                start_delimiter=None,
+                end_delimiter=None,
                 validation_method = None
             ) for cid in sorted(source_map.keys())
         ],
@@ -1720,7 +1729,7 @@ def _soft_exact_positions(
 
     # 3) Optional fuzzy fallback on collapsed_text
     if fuzzy_threshold is None:
-        return []
+        return [], None
 
     # --- helper to map collapsed [s,e] -> original inclusive span
     def _map_back(s_idx: int, e_idx: int) -> Tuple[int, int]:
@@ -1960,6 +1969,8 @@ def correct_and_validate_pointer(
                     start_char=s,
                     end_char=e,
                     verbatim_text=_safe_slice(source_text, s, e),
+                    start_delimiter=None,
+                    end_delimiter=None,
                     validation_method = json.dumps(validation_method if verification_method else None)
                 )
 
@@ -2550,7 +2561,7 @@ def _serialize_children_for_prompt(children: List[LLMChildNodeResponse]) -> str:
                 "source_cluster_id": p.source_cluster_id,
                 "start_char": p.start_char,
                 "end_char": p.end_char,
-                "verbatim_text": (p.verbatim_text[:120] + ("…" if len(p.verbatim_text) > 120 else "")),
+                "verbatim_text": ((p.verbatim_text or "")[:120] + ("…" if len(p.verbatim_text or "") > 120 else "")),
             } for p in c.pointers[:2]],
         })
     return json.dumps(slim, ensure_ascii=False, indent=2)
@@ -3178,7 +3189,7 @@ def semantic_tree_to_kge_payload(
             "id": str(node.node_id),
             "label": node.title,
             "type": "entity",
-            "summary": node.title + ":\n" + "\n".join(p.verbatim_text for p in ptrs)[:4000],
+                "summary": node.title + ":\n" + "\n".join(p.verbatim_text or "" for p in ptrs)[:4000],
             "metadata": {
                 "semantic_node_type": node.node_type,
                 "doc_id": doc_id,
@@ -3256,6 +3267,8 @@ def _extract_pointers_from_mentions(mentions: List[dict[str, list[dict]]]):
                 start_char=span.get("start_char", 0),
                 end_char=( -1 if span.get("end_char") == 10**9 else span.get("end_char", -1) ),
                 verbatim_text=span.get("excerpt", ""),
+                start_delimiter=None,
+                end_delimiter=None,
                 validation_method=span_verification,
             )
         )
@@ -3288,6 +3301,8 @@ def _extract_pointers_from_references(refs: List[Dict[str, Any]]):
                 start_char=r.get("start_char", 0),
                 end_char=( -1 if r.get("end_char") == 10**9 else r.get("end_char", -1) ),
                 verbatim_text=r.get("snippet", ""),
+                start_delimiter=None,
+                end_delimiter=None,
                 validation_method=r_mention_verification,
             )
         )
@@ -3592,7 +3607,7 @@ def build_index_terms_for_semantic_node(
             line_no = cf.f_lineno if cf else None
 
             model_name = model_names[i_model]
-            llm: BaseChatModel = get_llm(model_name)
+            llm: SupportsStructuredOutput = get_llm(model_name)
 
             try:
                 res: dict = build_structured_output_runnable(llm, BatchIndexResponse, include_raw=True).invoke(

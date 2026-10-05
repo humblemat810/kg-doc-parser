@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Execution clients for the workflow ingest pipeline.
 
 This module keeps the execution surface explicit and testable:
@@ -14,8 +12,11 @@ tests can swap transport and persistence behavior without changing workflow
 logic.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
 from kogwistar.engine_core.models import Edge, Node
@@ -34,7 +35,32 @@ from .probe import emit_probe_event
 class UnsupportedClientOperation(RuntimeError):
     """Raised when a client path is intentionally not implemented."""
 
-    pass
+
+IngestStatus = Literal["succeeded", "failed", "failure", "suspended"]
+
+
+class HttpResponseLike(Protocol):
+    """Small response surface required from an HTTP transport adapter."""
+
+    status_code: int
+
+    def json(self) -> object: ...
+
+
+class HttpClientLike(Protocol):
+    """HTTP client boundary used by server-backed graph persistence.
+
+    The keyword payload remains opaque because transports such as ``httpx``
+    and ``requests`` expose different concrete request types.
+    """
+
+    def post(self, endpoint: str, **kwargs: object) -> HttpResponseLike: ...
+
+
+def _ingest_status(value: str) -> IngestStatus:
+    if value not in {"succeeded", "failed", "failure", "suspended"}:
+        raise ValueError(f"unsupported runtime status: {value}")
+    return cast(IngestStatus, value)
 
 
 class CanonicalGraphPersistenceClient(ABC):
@@ -106,7 +132,7 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
     def __init__(
         self,
         *,
-        client: Any,
+        client: HttpClientLike,
         endpoint: str = "/api/document.upsert_tree",
         base_url: str = "",
         transport: str = "server_http_document_tree",
@@ -130,8 +156,12 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
             raise RuntimeError(
                 f"canonical server persistence failed: status={status_code} body={body}"
             )
-        response_json = response.json()
-        engine_result = response_json.get("engine_result") or {}
+        response_payload = response.json()
+        if not isinstance(response_payload, Mapping):
+            raise TypeError("canonical server persistence returned a non-object JSON body")
+        response_json: Mapping[str, object] = response_payload
+        raw_engine_result = response_json.get("engine_result")
+        engine_result = raw_engine_result if isinstance(raw_engine_result, Mapping) else {}
         return CanonicalGraphWriteResult(
             persistence_mode="server_canonical",
             kg_authority="server",
@@ -167,7 +197,7 @@ class IngestExecutionClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def resume_ingest(self, **kwargs) -> IngestRunResult:
+    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -271,7 +301,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             workflow_id=workflow_id,
             execution_mode="direct_runtime",
             run_id=run.run_id,
-            status=run.status,
+            status=_ingest_status(run.status),
         )
         return IngestRunResult(
             handle=IngestRunHandle(
@@ -279,12 +309,12 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
                 workflow_id=workflow_id,
                 execution_mode="direct_runtime",
             ),
-            status=run.status,
+            status=_ingest_status(run.status),
             bundle=bundle,
             final_state=dict(run.final_state),
         )
 
-    def resume_ingest(self, **kwargs: Any) -> IngestRunResult:
+    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
         from .service import build_runtime
 
         deps = dict(kwargs.pop("deps", {}) or {})
@@ -316,7 +346,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             "workflow.resume_finished",
             execution_mode="direct_runtime",
             run_id=resumed.run_id,
-            status=resumed.status,
+            status=_ingest_status(resumed.status),
         )
         return IngestRunResult(
             handle=IngestRunHandle(
@@ -324,7 +354,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
                 workflow_id=workflow_id,
                 execution_mode="direct_runtime",
             ),
-            status=resumed.status,
+            status=_ingest_status(resumed.status),
             bundle=bundle,
             final_state=dict(resumed.final_state),
         )
@@ -398,7 +428,13 @@ class ServerCanonicalKgClient(IngestExecutionClient):
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
         deps: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
+        if resume_from_checkpoint:
+            raise UnsupportedClientOperation(
+                "server-backed ingest does not support local checkpoint resume"
+            )
         ensure_ingest_workflow_design(self.workflow_engine, workflow_id=workflow_id)
         from .service import build_runtime
 
@@ -414,21 +450,21 @@ class ServerCanonicalKgClient(IngestExecutionClient):
                 **(deps or {}),
             },
         )
-        run_id = f"run|{inp.request_id}|{uuid4()}"
+        effective_run_id = str(run_id or f"run|{inp.request_id}|{uuid4()}")
         emit_probe_event(
             probe,
             "workflow.run_started",
             request_id=inp.request_id,
             workflow_id=workflow_id,
             execution_mode="server_canonical_client",
-            run_id=run_id,
+            run_id=effective_run_id,
         )
         run = runtime.run(
             workflow_id=workflow_id,
             conversation_id=f"ingest:{inp.request_id}",
             turn_node_id=f"ingest:{inp.request_id}:turn:{uuid4()}",
             initial_state={"input": inp.model_dump(field_mode="backend", dump_format="json")},
-            run_id=run_id,
+            run_id=effective_run_id,
         )
         bundle = None
         if "export_bundle" in run.final_state:
@@ -440,7 +476,7 @@ class ServerCanonicalKgClient(IngestExecutionClient):
             workflow_id=workflow_id,
             execution_mode="server_canonical_client",
             run_id=run.run_id,
-            status=run.status,
+            status=_ingest_status(run.status),
         )
         return IngestRunResult(
             handle=IngestRunHandle(
@@ -448,12 +484,12 @@ class ServerCanonicalKgClient(IngestExecutionClient):
                 workflow_id=workflow_id,
                 execution_mode="server_canonical_client",
             ),
-            status=run.status,
+            status=_ingest_status(run.status),
             bundle=bundle,
             final_state=dict(run.final_state),
         )
 
-    def resume_ingest(self, **kwargs: Any) -> IngestRunResult:
+    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
         raise UnsupportedClientOperation(
             "remote/server-backed runtime resume is not implemented in this repo"
         )

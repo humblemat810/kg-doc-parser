@@ -51,7 +51,7 @@ if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
-from typing import List, Literal, Optional, Dict, Any, Type, Union, Annotated, ClassVar
+from typing import List, Literal, Optional, Dict, Any, Type, Union, Annotated, ClassVar, Self
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover
@@ -122,7 +122,7 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
     contains_table: DtoType[bool] = Field(description='Whether this page contains table. ')
 
     @model_validator(mode='after')
-    def check_cluster_meaningful_ordering_agreement(self):
+    def check_cluster_meaningful_ordering_agreement(self) -> Self:
         assert bool(self.is_empty_page) ^ (len(self.OCR_text_clusters) > 0), f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters len={len(self.OCR_text_clusters)}"
         overlap_id = set(i.cluster_number for i in self.OCR_text_clusters).intersection(set(i.cluster_number for i in self.non_text_objects))
         if overlap_id:
@@ -148,18 +148,18 @@ class SplitPageMeta(BaseModel):
     ocr_datetime: float = Field(description="unix timestamp when ocr is performed")
     ocr_json_version: str = Field(description = "the model does the OCR") 
     @field_validator('ocr_json_version', mode = "before")
-    def version_to_str(cls, v):
+    def version_to_str(cls, v: object) -> str:
         return str(v)
 class SplitPage(OCRClusterResponseBc):
     # model not for LLM response
     pdf_page_num: int
     metadata: SplitPageMeta
     refined_version: Optional[OCRClusterResponse[DtoField]] = Field(default = None, description = "refined processed/ grouped/ merged version of ocr text clusters. ")
-    def model_dump(self, *arg, **kwarg):
+    def model_dump(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:
         return self.to_doc()
-    def dump_raw(self, *arg, **kwarg):
+    def dump_raw(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:
         return super(SplitPage, self).model_dump(exclude = ["refined_version"], *arg, **kwarg)
-    def dump_supercede_parse(self, *arg, **kwarg):
+    def dump_supercede_parse(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:
         return super(SplitPage, self).model_dump(exclude = ["refined_version", "metadata"], *arg, **kwarg)
     @model_validator(mode="after")
     def roundtrip_invariant(self, info: ValidationInfo) -> "SplitPage":
@@ -185,7 +185,7 @@ class SplitPage(OCRClusterResponseBc):
             raise ValueError("Roundtrip invariant failed: dump->validate changed the model")
 
         return self
-    def to_doc(self):
+    def to_doc(self) -> dict[str, Any]:
         """Model to llm one-way serializer with manual slicing logic, can refactor using sliced view
         with some token saving logic. 
         """

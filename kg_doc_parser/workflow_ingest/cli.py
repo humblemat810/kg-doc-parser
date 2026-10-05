@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Command line entrypoints for reusable workflow ingest runners.
 
 The CLI is intentionally thin: it only parses arguments, builds provider
@@ -7,6 +5,8 @@ settings, and calls the reusable runner helpers in `kg_doc_parser.workflow_inges
 That keeps the API-first surface available to tests and orchestration code
 while still giving humans a simple command family to run locally.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -145,9 +145,10 @@ def _ocr_command(args: argparse.Namespace) -> int:
             args.parser_api_key_env,
         )
     ):
+        effective_settings = provider_settings or WorkflowProviderSettings.from_env()
         deps = {
             "parse_semantic_fn": build_legacy_parse_semantic_fn(
-                provider_settings=provider_settings,
+                provider_settings=effective_settings,
                 model_names=[args.parser_model] if args.parser_model else None,
             )
         }

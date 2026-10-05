@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Demo harness for running workflow ingest in a controlled end-to-end setup.
 
 The harness is intentionally explicit about its moving parts:
@@ -12,8 +10,11 @@ This file is closer to a reproducible scenario runner than a minimal test helper
 so the extra structure helps readers understand where the runtime boundaries are.
 """
 
+from __future__ import annotations
+
 import importlib
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -27,14 +28,20 @@ from typing import Any, Literal
 
 from .cache import WorkflowLLMCallCache
 from .clients import DocumentTreeApiPersistenceClient, ServerCanonicalKgClient
-from .models import CurrentLayerResult, CurrentLayerReview, LayerChildCandidate, WorkflowIngestInput
-from .providers import WorkflowProviderSettings
+from .models import (
+    CurrentLayerResult,
+    CurrentLayerReview,
+    LayerChildCandidate,
+    LayerReasoningEntry,
+    WorkflowIngestInput,
+)
 from .probe import WorkflowProbe, emit_probe_event
+from .providers import WorkflowProviderSettings
 from .semantics import HydratedTextPointer
-from .service import build_default_engines
-
+from .service import StorageBackendFactory, build_default_engines
 
 _DEMO_JWT_SECRET = "kg-doc-parser-demo-test-secret"
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,7 +56,7 @@ class DemoHarnessConfig:
     parser_mode: Literal["fake_layered", "legacy_cached"] = "fake_layered"
     server_mode: Literal["testclient", "subprocess_http", "external_http"] = "testclient"
     external_base_url: str | None = None
-    backend_factory: Any | None = None
+    backend_factory: StorageBackendFactory | None = None
     provider_settings: WorkflowProviderSettings | None = None
     enable_sys_monitoring: bool = True
     probe_filename: str = "probe-events.jsonl"
@@ -212,7 +219,7 @@ def _start_subprocess_server(server_data_dir: Path) -> _ServerContext:
                     client=session,
                     transport="subprocess_http",
                     base_url=base_url,
-                    cleanup=lambda *_args: _shutdown_subprocess_server(proc, session),
+                    cleanup=lambda *_args, session=session: _shutdown_subprocess_server(proc, session),
                 )
         except Exception as exc:  # noqa: BLE001
             last_error = exc
@@ -280,7 +287,9 @@ def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, Any]:
                     )
                 ],
                 satisfied=True,
-                reasoning_history=[{"stage": "proposal", "depth": 0, "lines": len(lines)}],
+                reasoning_history=[
+                    LayerReasoningEntry(stage="proposal", depth=0, lines=len(lines))
+                ],
             )
         return CurrentLayerResult(
             children=[
@@ -295,7 +304,9 @@ def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, Any]:
                 for idx, line in enumerate(lines)
             ],
             satisfied=True,
-            reasoning_history=[{"stage": "proposal", "depth": current_layer_context.depth}],
+            reasoning_history=[
+                LayerReasoningEntry(stage="proposal", depth=current_layer_context.depth)
+            ],
         )
 
     def _review_layer_fn(*, current_layer_result, **kwargs) -> CurrentLayerReview:
@@ -465,6 +476,6 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
             for engine in reversed(engines):
                 try:
                     engine.close()
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001 - cleanup must not mask the run result
+                    _LOGGER.debug("demo engine cleanup failed: %r", exc)
             probe.close()

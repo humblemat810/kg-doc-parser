@@ -30,12 +30,13 @@ import sqlite3
 # ====== optional PDF -> PNG renderers ======
 # we try pdf2image first, but fall back to PyMuPDF if needed
 try:
+    convert_from_path: Any = None
     from pdf2image import convert_from_path
     _HAS_PDF2IMAGE = True
 except Exception:
     _HAS_PDF2IMAGE = False
 try:
-    import fitz  # PyMuPDF
+    import fitz  # type: ignore[import-not-found]  # PyMuPDF is an optional extra
     _HAS_PYMUPDF = True
 except Exception:
     _HAS_PYMUPDF = False
@@ -77,7 +78,7 @@ def pdf_page_hashes_as_png(
         
         if _HAS_PYMUPDF:
             print(f"using fitz/pymupdf to convert file {file_path}")
-            import fitz
+            import fitz  # type: ignore[import-not-found]
             doc = fitz.open(file_path)
             out: list[str] = []
             for i, page in enumerate(doc):
@@ -495,6 +496,8 @@ class VersionChainDB:
         cur.execute("INSERT INTO chains (name) VALUES (?)", (name,))
         if not self.conn.in_transaction:
             self.conn.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("SQLite did not return an id for the new chain")
         return cur.lastrowid
 
     def delete_chain(self, chain_id: int):
@@ -504,9 +507,9 @@ class VersionChainDB:
         if not self.conn.in_transaction:
             self.conn.commit()
 
-    def add_node(self, chain_id: int, file_root: str, file_path: str, file_size: int, file_hash: str, 
+    def add_node(self, chain_id: int, file_path: str, file_size: int, file_hash: str,
                  position: str = "append", ref_node_id: Optional[int] = None,
-                 metadata_json: Optional[str] = None) -> int:
+                 metadata_json: Optional[str] = None, file_root: str = "") -> int:
         """
         ref_node_id : between and append is the node before the new addition, preprend is the node id prepended to
         """
@@ -550,6 +553,8 @@ class VersionChainDB:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (chain_id, file_path, file_size, file_hash, prev_id, next_id, created_at, metadata_json))
         node_id = cur.lastrowid
+        if node_id is None:
+            raise RuntimeError("SQLite did not return an id for the inserted version-chain node")
         # Update neighbors
         if position == "prepend" and next_id:
             cur.execute("UPDATE nodes SET prev_id = ? WHERE id = ?", (node_id, next_id))
@@ -600,7 +605,7 @@ class VersionChainDB:
         head = cur.fetchone()
         if not head:
             return []
-        node_id = head[0]
+        node_id = int(head[0])
         chain = []
         while node_id:
             cur.execute("SELECT id, file_path, file_size, file_hash, prev_id, next_id, created_at, metadata_json FROM nodes WHERE id = ?", (node_id,))
@@ -927,11 +932,12 @@ def version_chain(metadata_list: list[FileMetadata], model = 'gemini-2.5-pro', a
         "In case the file is purely copy and pasted with a different number at the end, try to choose latest, with largest number as the newer version. "
         "The given file list comes from os files. Each file must show up exactly once in the answer chain. "
     ),
-    HumanMessage(f"{[i.model_dump(exclude = ['file_hash']) for i in metadata_list]}")]
+    HumanMessage(f"{[i.model_dump(exclude = {'file_hash'}) for i in metadata_list]}")]
 
     llm = ChatGoogleGenerativeAI(model = model)
     cnt = 0
     max_cnt = 4
+    chaining_result: Any = None
     while cnt <= max_cnt:
         chaining_result = build_structured_output_runnable(llm, FileVersionChainingResponse, include_raw=True).invoke(messages)
         chains = chaining_result['parsed'].model_dump()['chains']
@@ -950,6 +956,8 @@ def version_chain(metadata_list: list[FileMetadata], model = 'gemini-2.5-pro', a
         cnt += 1
         if cnt == max_cnt:
             raise(Exception(f"Max retry {max_cnt} reached" ))
+    if chaining_result is None:
+        raise RuntimeError("version-chain model returned no result")
     return chaining_result['parsed'].model_dump()['chains']
 
 @memory.cache
@@ -984,9 +992,11 @@ def dedup_llm_pick_newest(meta_list_dumped, model = 'gemini-2.5-flash'):
     pass
 
 def dedup(list_meta: list[FileMetadata]):
-    d: dict[str, set[FileMetadata]] = {}
+    d: dict[str, list[dict[str, Any]]] = {}
     for meta in list_meta:
-        m = meta.model_dump(exclude = ['file_hash'])
+        if meta.file_hash is None:
+            continue
+        m = meta.model_dump(exclude = {'file_hash'})
         if meta.file_hash not in d:
             d[meta.file_hash] = [m]
         else:

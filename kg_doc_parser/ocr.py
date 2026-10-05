@@ -12,7 +12,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import Runnable
 from .models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
 from .llm_structured_output import build_structured_output_runnable
-from typing import Any, Iterable, cast, Callable, Optional,  Literal, Union
+from typing import Any, Iterable, cast, Callable, Optional,  Literal, Union, NotRequired, TypedDict, Mapping, Iterator
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover
@@ -27,26 +27,33 @@ from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, Fronten
 from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
 from pydantic import BaseModel, Field, model_validator, field_validator, field_serializer
 from langchain_core.messages import SystemMessage, BaseMessage, HumanMessage
-from langchain_core.language_models import BaseChatModel
-try:
-    from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
-except ImportError:  # pragma: no cover
-    from kg_doc_parser.pdf2png import RawFileLoader
+from kogwistar.llm_tasks.providers import SupportsStructuredOutput
+from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 from .pdf2png import RawFileLoader
 PastCompatibleSplitPage: TypeAlias = SplitPage
 
 
-def _build_ocr_llm(model_name: str, *, callbacks=None):
+class StructuredOutputPayload(TypedDict):
+    parsed: NotRequired[BaseModel | None]
+    raw: NotRequired[object]
+    parsing_error: NotRequired[object]
+
+
+def _build_ocr_llm(
+    model_name: str,
+    *,
+    callbacks: list[BaseCallbackHandler] | None = None,
+) -> SupportsStructuredOutput:
     settings = WorkflowProviderSettings.from_env()
     spec = settings.ocr.model_copy(update={"model": model_name})
     return build_chat_model(spec, callbacks=callbacks)
 
 
-def get_page_json(folder_path, page_num):
+def get_page_json(folder_path: str, page_num: int) -> dict[str, Any]:
     with open(os.path.join(folder_path, 'page_'+str(page_num)+'.json'), 'r') as f:
         file_json_raw = json.load(f)
     return file_json_raw
-def regen_page(file_json_raw, use_raw):
+def regen_page(file_json_raw: Mapping[str, Any], use_raw: bool) -> dict[str, Any]:
         # add compatible to union if want to compatible with past models
     """regen from json returned by SplitPage.to_doc(), can be view as SplitPage.FromJson(filepath)"""
     p = PastCompatibleSplitPage(**file_json_raw)
@@ -57,7 +64,7 @@ def regen_page(file_json_raw, use_raw):
     except:
         raise
     return res
-def regen_doc(folder_path, use_raw = False):
+def regen_doc(folder_path: str, use_raw: bool = False) -> list[dict[str, Any]]:
     pages_nums = sorted((int(i.rsplit(".json",1)[0].split("page_",1)[1]) for i in os.listdir(folder_path) if i.endswith('.json') and i.startswith("page_")))
     pages = []
     split_pages = []
@@ -66,7 +73,6 @@ def regen_doc(folder_path, use_raw = False):
             pages.append(get_page_json(folder_path, pn))
             split_pages.append(regen_page(pages[-1], use_raw = use_raw))
         except Exception as e:
-            folder_path,pn
             print(f'error at page {pn}')
             print(f'in file {folder_path}')
             logger.error(f'error at page {pn}')
@@ -163,7 +169,13 @@ class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
                                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
     meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of the identified text clusters. Must cover all OCR_text_clusters once and only once. ")
 
-def get_first_round_response(draft_responses, llm: BaseChatModel, model_name: str, cb: BaseCallbackHandler, 
+def _raw_content(value: object) -> object | None:
+    """Extract raw SDK content without pretending it is a parsed OCR model."""
+    content = getattr(value, "content", None)
+    return content if content is not None else value
+
+
+def get_first_round_response(draft_responses: dict[str, str], llm: SupportsStructuredOutput, model_name: str, cb: BaseCallbackHandler,
                              messages: list[BaseMessage], sys_message, img_message, usage_metadata) -> OCRClusterResponse | None:
     
                     chain = build_structured_output_runnable(llm, RawOCRResponse, include_raw=True)
@@ -177,15 +189,18 @@ def get_first_round_response(draft_responses, llm: BaseChatModel, model_name: st
                         usage_metadata.append(raw_response.usage_metadata)
                     else:
                         usage_metadata.append(None)
-                    response_with_raw: dict[str, RawOCRResponse] = after_parse.invoke(raw_response)
+                    response_with_raw = cast(StructuredOutputPayload, after_parse.invoke(raw_response))
                     response: RawOCRResponse | OCRClusterResponse | None
-                    response1 : RawOCRResponse | None = response_with_raw.get('parsed')
+                    response1 = cast(RawOCRResponse | None, response_with_raw.get('parsed'))
                     parsing_error = response_with_raw.get('parsing_error')
                     if response1 is None:
                         
                         try:
-                            raw = response_with_raw.get('raw')
-                            temp = json.loads(raw.content[0]['text'])
+                            raw = _raw_content(response_with_raw.get('raw'))
+                            payload = raw[0].get('text') if isinstance(raw, list) and raw and isinstance(raw[0], dict) else raw
+                            if not isinstance(payload, (str, bytes, bytearray)):
+                                raise TypeError("raw OCR response did not contain JSON text")
+                            temp = json.loads(payload)
                             response1 = RawOCRResponse.model_validate(temp)
                             
                         except:
@@ -207,7 +222,7 @@ def get_first_round_response(draft_responses, llm: BaseChatModel, model_name: st
                             draft_responses[model_name] = ocr_draft_response.text
                         sys_message_2.content += ("If your internal OCR fails. Focus on table parsing mode because my error analysis modes often show that the failing OCR pages are usually highly complicated tables. "
                                                  f"Try to put in as much data as possible given all text found by simple OCR for your reference:```{ocr_draft_response.text}```"  if ocr_draft_response else"")
-                        response_with_raw = cast(dict[str, RawOCRResponse], build_structured_output_runnable(llm, RawOCRResponse, include_raw=True).invoke(
+                        response_with_raw = cast(StructuredOutputPayload, build_structured_output_runnable(llm, RawOCRResponse, include_raw=True).invoke(
                             [sys_message, img_message]
                         ))
                         raw_ocr_response : None | RawOCRResponse= None
@@ -215,7 +230,10 @@ def get_first_round_response(draft_responses, llm: BaseChatModel, model_name: st
                             raw_ocr_response = cast(RawOCRResponse, response_with_raw.get('parsed'))
                         else:
                             try:
-                                raw_ocr_response = RawOCRResponse.model_validate(json.loads(response_with_raw.get('raw').content))
+                                raw = _raw_content(response_with_raw.get('raw'))
+                                if not isinstance(raw, (str, bytes, bytearray)):
+                                    raise TypeError("raw OCR response did not contain JSON text")
+                                raw_ocr_response = RawOCRResponse.model_validate(json.loads(raw))
                             except:
                                 pass
                         if raw_ocr_response is not None:
@@ -223,7 +241,13 @@ def get_first_round_response(draft_responses, llm: BaseChatModel, model_name: st
                         _raw = response_with_raw.get('raw')
                         parsing_error = response_with_raw.get('parsing_error')
                     return response
-def validate_response_mutate_inplace(response: OCRClusterResponse | None, response_dict: dict,  image_file_path, model_name, page_file_name):
+def validate_response_mutate_inplace(
+    response: OCRClusterResponse | None,
+    response_dict: dict[str, Any],
+    image_file_path: str,
+    model_name: str,
+    page_file_name: str,
+) -> SplitPage:
     
                     if response is None:
                         logger.error(f"LLM returned None as response, file name = {image_file_path}, {model_name=}")
@@ -286,7 +310,7 @@ def RawOCRResponse_to_OCRClusterResponse(raw_response: RawOCRResponse | RawOCRRe
                                                              "bb_x_max" : i['box_2d'][3],
                                                              "cluster_number" : i['id']}) for i in non_text_objects]
     return OCRClusterResponse.model_validate(temp)
-def final_resort(draft_responses: dict, messages, page_file_name, model_name, image_file_path):
+def final_resort(draft_responses: dict[str, str], messages: list[BaseMessage], page_file_name: str, model_name: str, image_file_path: str, cb: BaseCallbackHandler) -> None:
                         """
         One day gemini suddenly cannot run but return a totally different schema, ad hoc code fix to fit the transformed schema and
         break down document reading into 2 tasks, namely meta and ocr and non ocr recognition
@@ -397,7 +421,14 @@ def TextBoxResponsePlusMetaResponse_to_OCRClusterResponse(raw_response: TextBoxR
                                                              "cluster_number" : i['id']}) for i in non_text_blocks]
     return OCRClusterResponse.model_validate(temp)
 from .utils.langchain import GeminiCostCallbackHandler
-def refine_image_response(ok2, response_dict, outfile_name, image_file_path, model_names, cb: GeminiCostCallbackHandler):
+def refine_image_response(
+    ok2: bool,
+    response_dict: dict[str, Any],
+    outfile_name: str,
+    image_file_path: str,
+    model_names: list[str],
+    cb: GeminiCostCallbackHandler,
+) -> bool:
     
         # if allow_page_refine and (not preexisting):
             if not response_dict:
@@ -452,7 +483,7 @@ def refine_image_response(ok2, response_dict, outfile_name, image_file_path, mod
 
                         print(response_dict)
             return refined            
-def get_messages(image_file_path):
+def get_messages(image_file_path: str) -> tuple[SystemMessage, HumanMessage]:
     
             # Open the image in binary mode and read its content.
             with open(image_file_path, "rb") as image_file:
@@ -543,7 +574,7 @@ def ocr_single_image(gemini_key: str, page_file_name, file_name,
                     i_model += 1
                     if i_model >= min(len(model_names), 20):
                         logger.error(f"All LLM returned None as response, file name = {image_file_path}")
-                        final_resort(draft_responses, messages, page_file_name, model_name, image_file_path)
+                        final_resort(draft_responses, messages, page_file_name, model_name, image_file_path, cb)
                 finally:
                     time.sleep(5)
             assert response_dict, Exception("response_dict unbound")
@@ -560,7 +591,12 @@ def ocr_single_image(gemini_key: str, page_file_name, file_name,
                 time.sleep(5)
    
 OCRRefineResponse: TypeAlias = OCRClusterResponse[DtoField]
-def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
+def refine_table_ocr(
+    response_dict: dict[str, Any],
+    llm: SupportsStructuredOutput,
+    cb: BaseCallbackHandler,
+    error_messages: list[BaseMessage],
+) -> bool:
     if response_dict.get('refined_version'):
         return False
     else:
@@ -618,7 +654,7 @@ def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
     return True
 
 
-def index_doc_group(doc_group_dumped):
+def index_doc_group(doc_group_dumped: Mapping[str, Any]) -> dict[tuple[str, Any], Any]:
     doc_group_indexed = {(f,i['pdf_page_num']): i for f in doc_group_dumped['documents'] for i in  doc_group_dumped['documents'][f]}
     return doc_group_indexed
 class Doc(BaseModel):
@@ -626,13 +662,13 @@ class Doc(BaseModel):
     pages: list[dict[str, Any]]  = Field(description = "pages")
 
 class DocumentGroup(BaseModel):
-    documents : dict[str, list|Doc] = Field(description = 'list of documents')
-    def to_doc_group_indexed(self):
+    documents: dict[str, list[dict[str, Any]] | Doc] = Field(description="list of documents")
+    def to_doc_group_indexed(self) -> dict[tuple[str, Any], Any]:
         doc_group = self.model_dump()
         doc_group_indexed = index_doc_group(doc_group)
         return doc_group_indexed
     @staticmethod
-    def from_doc_folder(folder_path):
+    def from_doc_folder(folder_path: str) -> "DocumentGroup":
         """ Assume the dir contains a list of folder with each folder with the filename
         each subfolder contains a list of pages
 
@@ -645,7 +681,7 @@ class DocumentGroup(BaseModel):
             doc = regen_doc(os.path.join(folder_path, d)) 
             doc_group[d] = doc
         return DocumentGroup(**{"documents": doc_group})
-def regen_doc_group(folder_path, use_raw = False):
+def regen_doc_group(folder_path: str, use_raw: bool = False) -> DocumentGroup:
     """ Assume the dir contains a list of folder with each folder with the filename
     each subfolder contains a list of pages
 
@@ -665,7 +701,10 @@ except ImportError:  # pragma: no cover
     from .utils.bounded_threadpool_executor import BoundedExecutor
 
 
-def get_legacy_loader_like(folder: str, allowed_relative_paths: str | Any):
+def get_legacy_loader_like(
+    folder: str,
+    allowed_relative_paths: Iterable[str] | None,
+) -> Iterator[str]:
     
         
         # useful for old flat entry only
@@ -693,7 +732,6 @@ def get_legacy_loader_like(folder: str, allowed_relative_paths: str | Any):
                 if dirs != []:
                     continue
                 for f in files:
-                    full_path = os.path.join(root, f)
                     page_file_name = f
                     if page_file_name.endswith('.png') and not os.path.exists(os.path.join(folder, pdf_fname, page_file_name.rsplit('.',1)[0] + ".json")):
                         pass
@@ -702,11 +740,15 @@ def get_legacy_loader_like(folder: str, allowed_relative_paths: str | Any):
                     yield page_file_name
         return local_loader()
 
-def batch_gemini_ocr_image(gemini_key, folder = "split_pages", exist_behavior: Literal["ok","skip","raise", 'rerun']  = 'skip',
-                           bounded_executor: Optional[BoundedExecutor] = None,
-                           allowed_relative_paths = None,
-                           loader : RawFileLoader | None= None,
-                           ocr_callback : Callable| None= None):
+def batch_gemini_ocr_image(
+    gemini_key: str,
+    folder: str = "split_pages",
+    exist_behavior: Literal["ok", "skip", "raise", "rerun"] = "skip",
+    bounded_executor: Optional[BoundedExecutor] = None,
+    allowed_relative_paths: Iterable[str] | None = None,
+    loader: RawFileLoader | None = None,
+    ocr_callback: Callable[..., object] | None = None,
+) -> None:
     # page_file_name = "page_1.png"
     # file_name = "EXL-00-HI-MSA01-2017.PDF"
 

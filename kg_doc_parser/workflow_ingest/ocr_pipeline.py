@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Workflow-first OCR ingest helpers for image and PDF sources.
 
 This module sits at the boundary between raw OCR and the reusable workflow
@@ -33,30 +31,32 @@ The public entrypoints are intentionally explicit so tests and manual runs can
 inspect intermediate folders without needing to understand the legacy OCR code.
 """
 
+from __future__ import annotations
+
 import base64
 import contextlib
 import hashlib
 import json
 import logging
-import sqlite3
 import shutil
+import sqlite3
 import time
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Protocol, cast
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
 from PIL import Image
+from pydantic import BaseModel, Field
 from pypdf import PdfReader
 
 from ..llm_structured_output import build_structured_output_runnable
-from ..models import OCRClusterResponse, SplitPage, SplitPageMeta
-
+from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
 from .adapters import OCRPageJSON, normalize_ocr_pages
 from .models import WorkflowExportBundle, WorkflowIngestInput
-from .providers import WorkflowProviderSettings, build_chat_model_for_role
 from .probe import WorkflowProbe, emit_probe_event
+from .providers import WorkflowProviderSettings, build_chat_model_for_role
 from .service import run_ingest_workflow
 
 _LOGGER = logging.getLogger(__name__)
@@ -111,12 +111,22 @@ class OCRWorkflowArtifacts:
     reused_pages: list[int]
 
 
-# Pluggable hook for "OCR one page image and return the structured OCR model".
-# Signature: (image_path, page_number, provider_settings) -> OCRClusterResponse
-OCRRunner = Callable[[Path, int, WorkflowProviderSettings], OCRClusterResponse]
-# Pluggable hook for "render a PDF into page image paths inside a destination dir".
-# Signature: (pdf_path, rendered_dir) -> list[Path]
-PDFRasterizer = Callable[[Path, Path], list[Path]]
+class OCRRunner(Protocol):
+    """Run OCR for one page using the selected provider settings."""
+
+    def __call__(
+        self,
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+        /,
+    ) -> OCRClusterResponse: ...
+
+
+class PDFRasterizer(Protocol):
+    """Materialize a PDF into ordered page images in a destination directory."""
+
+    def __call__(self, pdf_path: Path, rendered_dir: Path, /) -> list[Path]: ...
 
 _OCR_STATE_SCHEMA_VERSION = 1
 
@@ -291,7 +301,7 @@ def _process_ocr_page(
         artifact_path=page_json_path,
     ):
         split_page = SplitPage.model_validate(json.loads(page_json_path.read_text(encoding="utf-8")))
-        raw_pages.append(split_page.dump_supercede_parse())
+        raw_pages.append(cast(OCRPageJSON, split_page.dump_supercede_parse()))
         completed_pages.append(page_number)
         reused_pages.append(page_number)
         _emit_ocr_event(
@@ -369,7 +379,7 @@ def _process_ocr_page(
             )
             # The adapter consumes plain dict pages, not the Pydantic page
             # model, so we serialize the page into the legacy-compatible shape here.
-            raw_pages.append(split_page.dump_supercede_parse())
+            raw_pages.append(cast(OCRPageJSON, split_page.dump_supercede_parse()))
             completed_pages.append(page_number)
             page_completed = True
             _emit_ocr_event(
@@ -498,7 +508,7 @@ class OCRWorkflowStateStore:
         rendered_dir: Path,
         legacy_dir: Path,
         progress_path: Path,
-    ) -> "OCRWorkflowStateStore":
+    ) -> OCRWorkflowStateStore:
         store = cls(db_path)
         rebuilt = False
         if not db_path.exists() or store._is_empty():
@@ -771,9 +781,7 @@ class OCRWorkflowStateStore:
         state = self.get_page_state(document_id=document_id, page_number=page_number, stage=stage)
         if state is None or state.status != "completed" or state.content_hash != content_hash:
             return False
-        if artifact_path is not None and not artifact_path.exists():
-            return False
-        return True
+        return artifact_path is None or artifact_path.exists()
 
     def record_attempt(
         self,
@@ -1227,14 +1235,14 @@ def _minimal_ocr_response_from_text(*, text: str, page_number: int, image_path: 
         )
     return OCRClusterResponse(
         OCR_text_clusters=[
-            {
-                "text": normalized_text,
-                "bb_x_min": 0.0,
-                "bb_x_max": float(width),
-                "bb_y_min": 0.0,
-                "bb_y_max": float(height),
-                "cluster_number": 0,
-            }
+            TextCluster(
+                text=normalized_text,
+                bb_x_min=0.0,
+                bb_x_max=float(width),
+                bb_y_min=0.0,
+                bb_y_max=float(height),
+                cluster_number=0,
+            )
         ],
         non_text_objects=[],
         is_empty_page=False,
@@ -1281,7 +1289,7 @@ def _run_live_ocr_page(image_path: Path, page_number: int, provider_settings: Wo
     )
     try:
         return _coerce_ocr_response(response)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if isinstance(response, dict):
             raw = response.get("raw")
             parsing_error = response.get("parsing_error")

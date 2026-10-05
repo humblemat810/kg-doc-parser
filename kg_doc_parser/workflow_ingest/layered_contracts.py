@@ -7,9 +7,9 @@ recovery.  These DTOs make a single seed or frontier expansion safe to retry.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,6 +20,7 @@ from .models import (
     ParseSessionState,
 )
 from .parser_core import (
+    ProposeLayerFn,
     enqueue_next_layer_frontier,
     initialize_parse_session,
     legacy_children_for_context,
@@ -27,6 +28,16 @@ from .parser_core import (
     propose_layer_breakdown,
 )
 from .semantics import SemanticNode
+
+
+@dataclass(frozen=True, slots=True)
+class _LayeredCollection:
+    collection_id: str
+    title: str
+
+
+LayeredPayload = dict[str, object]
+LayeredSourceMap = dict[str, LayeredPayload]
 
 
 class LayeredParseLimits(BaseModel):
@@ -51,9 +62,9 @@ class LayeredParseUsage(BaseModel):
 class LayeredParseSeedRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    collection: dict[str, Any]
-    parser_input: dict[str, Any]
-    source_map: dict[str, dict[str, Any]]
+    collection: LayeredPayload
+    parser_input: LayeredPayload
+    source_map: LayeredSourceMap
     limits: LayeredParseLimits = Field(default_factory=LayeredParseLimits)
 
 
@@ -63,7 +74,7 @@ class LayeredParseSeedResult(BaseModel):
     session: ParseSessionState
     frontier: list[LayerFrontierItem]
     root: SemanticNode
-    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: LayeredPayload = Field(default_factory=dict)
     usage: LayeredParseUsage = Field(default_factory=LayeredParseUsage)
 
 
@@ -72,10 +83,10 @@ class LayeredParseExpandRequest(BaseModel):
 
     session: ParseSessionState
     frontier: list[LayerFrontierItem]
-    semantic_tree: dict[str, Any]
-    collection: dict[str, Any]
-    parser_input: dict[str, Any]
-    source_map: dict[str, dict[str, Any]]
+    semantic_tree: LayeredPayload
+    collection: LayeredPayload
+    parser_input: LayeredPayload
+    source_map: LayeredSourceMap
     limits: LayeredParseLimits = Field(default_factory=LayeredParseLimits)
 
 
@@ -88,7 +99,7 @@ class LayeredParseExpandResult(BaseModel):
     children: list[LayerChildCandidate] = Field(default_factory=list)
     semantic_tree: SemanticNode
     stable: bool
-    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: LayeredPayload = Field(default_factory=dict)
     usage: LayeredParseUsage = Field(default_factory=LayeredParseUsage)
 
 
@@ -126,7 +137,7 @@ def initialize_layered_parse(request: LayeredParseSeedRequest) -> LayeredParseSe
 def expand_layered_frontier(
     request: LayeredParseExpandRequest,
     *,
-    propose_layer_fn: Callable[..., CurrentLayerResult] | None = None,
+    propose_layer_fn: ProposeLayerFn | None = None,
 ) -> LayeredParseExpandResult:
     """Expand at most ``max_frontier_items`` items and return JSON-safe state."""
 
@@ -235,10 +246,14 @@ def _estimate_context_tokens(context: object) -> int:
     return max(1, (len(text) + 3) // 4)
 
 
-def _model_or_mapping(value: Mapping[str, Any], name: str) -> Any:
+def _model_or_mapping(value: Mapping[str, object], name: str) -> _LayeredCollection:
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be an object")
-    return type("LayeredContractObject", (), dict(value))()
+    collection_id = value.get("collection_id")
+    title = value.get("title")
+    if not isinstance(collection_id, str) or not isinstance(title, str):
+        raise TypeError(f"{name} must include string collection_id and title")
+    return _LayeredCollection(collection_id=collection_id, title=title)
 
 
 def _attach_children(tree: SemanticNode, result: CurrentLayerResult) -> SemanticNode:
@@ -251,12 +266,7 @@ def _attach_children(tree: SemanticNode, result: CurrentLayerResult) -> Semantic
                 title=child.title,
                 node_type=child.node_type,
                 total_content_pointers=[
-                    {
-                        "source_cluster_id": pointer.source_cluster_id,
-                        "start_char": pointer.start_char,
-                        "end_char": pointer.end_char,
-                        "verbatim_text": pointer.verbatim_text,
-                    }
+                    pointer.model_copy()
                     for pointer in child.total_content_pointers
                 ],
                 metadata=dict(child.metadata or {}),
@@ -278,6 +288,8 @@ __all__ = [
     "LayeredParseSeedRequest",
     "LayeredParseSeedResult",
     "LayeredParseUsage",
+    "LayeredPayload",
+    "LayeredSourceMap",
     "expand_layered_frontier",
     "initialize_layered_parse",
 ]

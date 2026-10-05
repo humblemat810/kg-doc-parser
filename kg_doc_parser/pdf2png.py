@@ -5,18 +5,27 @@ if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
 
+import pathlib
+import platform
 import shutil
 import tempfile
-from pdf2image import convert_from_path
-import platform
-import pathlib
-from pypdf import PdfReader, PdfWriter
 import threading
+from collections.abc import Generator
+from typing import BinaryIO
+
+from pdf2image import convert_from_path
+from pypdf import PdfReader, PdfWriter
 
 from .utils.file_loaders import RawFileLoader
 
-def batch_split_pdf(document_folder: pathlib.Path | str | None = None, outfolder_path: str | pathlib.Path = "split_pages", exists_ok = 'skip', allowed_relative_paths: list[str] | None= None,
-                    file_loader : RawFileLoader | None = None):
+
+def batch_split_pdf(
+    document_folder: pathlib.Path | str | None = None,
+    outfolder_path: str | pathlib.Path = "split_pages",
+    exists_ok: str = "skip",
+    allowed_relative_paths: list[str] | None = None,
+    file_loader: RawFileLoader | None = None,
+) -> None:
     cnt = 0
     assert not ((document_folder is None) and (file_loader is None))
     class old_walker_inplace(RawFileLoader):
@@ -26,12 +35,19 @@ def batch_split_pdf(document_folder: pathlib.Path | str | None = None, outfolder
                 if document_folder:
                     self.walk_root = document_folder
                 else:
-                    raise Exception("unreachable")
+                    raise RuntimeError("unreachable")
             else:
                 self.walk_root = walk_root
             if compare_root is None:
                 self.compare_root = self.walk_root
-        def __iter__(self):
+        def __iter__(
+            self,
+            leaf_only: bool = False,
+            file_non_exist_ok: bool = False,
+            include=None,
+            allowed_files: list[str] | None = None,
+            allowed_relative_paths: list[str] | None = None,
+        ) -> Generator[str, None, None]:
             
             for root, dirs, files  in os.walk(self.walk_root):
                 for f in files:
@@ -46,10 +62,10 @@ def batch_split_pdf(document_folder: pathlib.Path | str | None = None, outfolder
                             pass
                         else:
                             continue
-                    yield rel_path
+                    yield str(rel_path)
     if file_loader is None: # document_folder must not be None
         if document_folder is None:
-            raise Exception("unreacheable")
+            raise RuntimeError("unreachable")
         else:
             file_loader = old_walker_inplace(document_folder)
     for rel_path in file_loader:
@@ -61,20 +77,24 @@ def batch_split_pdf(document_folder: pathlib.Path | str | None = None, outfolder
             
             try:
                 cnt += 1
-                print(f"{cnt} {str(input_pdf)}")
+                print(f"{cnt} {input_pdf!s}")
                 split_pdf(input_pdf, out_path.parent, exists_ok = exists_ok)
-            except Exception as e:
+            except Exception:  # noqa: BLE001 - use the fallback PDF splitter
                 try:
-                    logger.exception(e)
+                    logger.exception("primary PDF splitter failed")
                     split_pdf_with_pikepdf(input_pdf, out_path.parent, exists_ok = exists_ok)
                     print(f"error for file {input_pdf}")
-                except Exception as e:
-                    raise Exception("exhausted all pdf splitter")
+                except Exception as exc:
+                    raise RuntimeError("exhausted all pdf splitter") from exc
         elif str(input_pdf).endswith('.docx'):
             continue
 
 
-def split_pdf_with_pikepdf(input_pdf_path, output_folder, exists_ok='skip'):
+def split_pdf_with_pikepdf(
+    input_pdf_path: str | pathlib.Path,
+    output_folder: str | pathlib.Path,
+    exists_ok: str = "skip",
+) -> bool | None:
     try:
         import pikepdf
     except ImportError as exc:
@@ -116,7 +136,11 @@ def split_pdf_with_pikepdf(input_pdf_path, output_folder, exists_ok='skip'):
         new_pdf.save(output_pdf_path)
         print(f"Created: {output_pdf_path}")
     return True
-def split_pdf(input_pdf_path, output_folder, exists_ok = 'skip'):
+def split_pdf(
+    input_pdf_path: str | pathlib.Path,
+    output_folder: str | pathlib.Path,
+    exists_ok: str = "skip",
+) -> None:
     # Ensure output folder exists
     
 
@@ -145,8 +169,13 @@ def split_pdf(input_pdf_path, output_folder, exists_ok = 'skip'):
         print(f"Created: {output_pdf_path}")
 
 
-def batch_pdf2png(document_folder, outfolder_path = None, exists_ok = 'skip', allowed_relative_paths = None,
-                  loader = None):
+def batch_pdf2png(
+    document_folder: str | pathlib.Path,
+    outfolder_path: str | pathlib.Path | None = None,
+    exists_ok: str = "skip",
+    allowed_relative_paths: list[str] | None = None,
+    loader: RawFileLoader | None = None,
+) -> None:
 
     """_summary_
 
@@ -157,8 +186,6 @@ def batch_pdf2png(document_folder, outfolder_path = None, exists_ok = 'skip', al
     """
     if outfolder_path is None:
         outfolder_path = document_folder
-    from kg_doc_parser.utils.bounded_threadpool_executor import BoundedExecutor
-    bounded_executor = BoundedExecutor(max_workers= 2, max_pending= 5) # num of pdf
     # for pdf_file in os.listdir(document_folder):
     #     pdf_file : str
     if loader:
@@ -180,42 +207,41 @@ def batch_pdf2png(document_folder, outfolder_path = None, exists_ok = 'skip', al
 # OS-specific file locking
 if platform.system() == "Windows":
     import msvcrt
-    def lock_file(file_handle):
+    def lock_file(file_handle: BinaryIO) -> None:
         msvcrt.locking(file_handle.fileno(), msvcrt.LK_NBLCK, 1)
 
-    def unlock_file(file_handle):
+    def unlock_file(file_handle: BinaryIO) -> None:
         try:
             msvcrt.locking(file_handle.fileno(), msvcrt.LK_UNLCK, 1)
-        except Exception:
+        except OSError:
             pass
 
 else:
     import fcntl
-    def lock_file(file_handle):
-        fcntl.flock(file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    def lock_file(file_handle: BinaryIO) -> None:
+        fcntl.flock(file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
 
-    def unlock_file(file_handle):
+    def unlock_file(file_handle: BinaryIO) -> None:
         try:
-            fcntl.flock(file_handle, fcntl.LOCK_UN)
-        except Exception:
+            fcntl.flock(file_handle, fcntl.LOCK_UN)  # type: ignore[attr-defined]
+        except OSError:
             pass
 
 
-def get_thread_safe_tempfile(suffix=".pdf"):
+def get_thread_safe_tempfile(suffix: str = ".pdf") -> tuple[int, str]:
     pid = os.getpid()
     thread_name = threading.current_thread().name.replace(" ", "_")
     prefix = f"{thread_name}_{pid}_"
 
     fd, path = tempfile.mkstemp(suffix=suffix, prefix=prefix)
     return fd, path
-def process_pdf_page(pdf_path, output_path):
+def process_pdf_page(pdf_path: str | pathlib.Path, output_path: str | pathlib.Path) -> None:
     if os.path.exists(output_path):
         print(f"Skipped {output_path} (already exists)")
         return
 
     tmp_fd = None
     tmp_path = None
-    file_handle = None
 
     try:
         # Create temporary file path
@@ -225,30 +251,30 @@ def process_pdf_page(pdf_path, output_path):
         # Copy the PDF to the temporary file
         shutil.copy2(pdf_path, tmp_path)
 
-        # Open the temp file to lock
-        file_handle = open(tmp_path, 'rb')
-        lock_file(file_handle)
+        # Lock the temporary copy while the converter reads it.
+        with open(tmp_path, "rb") as file_handle:
+            lock_file(file_handle)
+            try:
+                images = convert_from_path(tmp_path, dpi=300, fmt="png")
+                for image in images:
+                    image.save(output_path, "PNG")
+                    print(f"Saved {output_path}")
+            finally:
+                unlock_file(file_handle)
 
-        # Convert using the temp file
-        images = convert_from_path(tmp_path, dpi=300, fmt='png')
-
-        # Save each page as image
-        for i, image in enumerate(images):
-            image.save(output_path, "PNG")
-            print(f"Saved {output_path}")
-
-    except Exception as e:
-        print(f"Error processing {pdf_path}: {e}")
+    except Exception as exc:  # noqa: BLE001 - worker reports conversion failures
+        print(f"Error processing {pdf_path}: {exc}")
 
     finally:
         # Always release lock and delete temp file
-        if file_handle:
-            unlock_file(file_handle)
-            file_handle.close()
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-def single_pdf2png(fname, folder_path, exists_ok = 'skip'):
+def single_pdf2png(
+    fname: str | pathlib.Path,
+    folder_path: str | pathlib.Path,
+    exists_ok: str = "skip",
+) -> None:
     """_summary_
 
     Args:

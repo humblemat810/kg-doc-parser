@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, TypeVar, cast
+from typing import TypeVar, cast
 
 from kogwistar.id_provider import stable_id
 
-from .probe import emit_probe_event
+from .probe import WorkflowProbe, emit_probe_event
 
 T = TypeVar("T")
 
 
-def _jsonable(value: Any) -> Any:
+def _jsonable(value: object) -> object:
     if hasattr(value, "model_dump"):
         try:
             return value.model_dump(field_mode="backend", dump_format="json")
@@ -25,12 +26,12 @@ def _jsonable(value: Any) -> Any:
 
 
 class WorkflowLLMCallCache:
-    def __init__(self, cache_dir: str | Path, *, probe=None) -> None:
+    def __init__(self, cache_dir: str | Path, *, probe: WorkflowProbe | None = None) -> None:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.probe = probe
 
-    def _cache_path(self, operation: str, fingerprint: dict[str, Any]) -> Path:
+    def _cache_path(self, operation: str, fingerprint: Mapping[str, object]) -> Path:
         payload = json.dumps(_jsonable(fingerprint), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
         cache_id = stable_id("workflow_ingest.llm_call", operation, payload)
         return self.cache_dir / f"{cache_id}.json"
@@ -39,7 +40,7 @@ class WorkflowLLMCallCache:
         self,
         *,
         operation: str,
-        fingerprint: dict[str, Any],
+        fingerprint: Mapping[str, object],
         fn: Callable[[], T],
     ) -> T:
         path = self._cache_path(operation, fingerprint)

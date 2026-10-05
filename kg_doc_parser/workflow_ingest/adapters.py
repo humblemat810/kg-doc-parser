@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import NotRequired, TypedDict
 
 from .models import (
     BoundingBox,
@@ -12,15 +12,33 @@ from .models import (
 )
 
 
-class OCRPageJSON(TypedDict, total=False):
+class OCRTextClusterJSON(TypedDict, total=False):
+    bb_y_min: float
+    bb_x_min: float
+    bb_y_max: float
+    bb_x_max: float
+    cluster_number: int
+    text: str
+
+
+class OCRNonTextObjectJSON(TypedDict, total=False):
+    bb_y_min: float
+    bb_x_min: float
+    bb_y_max: float
+    bb_x_max: float
+    cluster_number: int
+    description: str
+
+
+class OCRPageJSON(TypedDict):
     """Serialized OCR page payload produced by the OCR preparation layer."""
 
     pdf_page_num: int
-    printed_page_number: str
-    contains_table: bool
-    OCR_text_clusters: list[dict[str, Any]]
-    non_text_objects: list[dict[str, Any]]
-    text: str
+    printed_page_number: NotRequired[str]
+    contains_table: NotRequired[bool]
+    OCR_text_clusters: NotRequired[list[OCRTextClusterJSON]]
+    non_text_objects: NotRequired[list[OCRNonTextObjectJSON]]
+    text: NotRequired[str]
 
 
 def normalize_ocr_pages(
@@ -150,13 +168,12 @@ def select_primary_collection(inp: WorkflowIngestInput) -> NormalizedSourceColle
 
 def build_parser_input_dict(
     collection: NormalizedSourceCollection,
-) -> dict[str, Any]:
-    pages: list[dict[str, Any]] = []
+) -> dict[str, object]:
+    pages: list[dict[str, object]] = []
     for page in collection.pages:
         text_clusters = []
         non_text_objects = []
-        next_cluster = 0
-        for unit in page.units:
+        for next_cluster, unit in enumerate(page.units):
             bbox = unit.bbox
             cluster_number = unit.cluster_number if unit.cluster_number is not None else next_cluster
             if unit.modality in {"text", "ocr_text"}:
@@ -181,7 +198,6 @@ def build_parser_input_dict(
                         "cluster_number": cluster_number,
                     }
                 )
-            next_cluster += 1
         pages.append(
             {
                 "pdf_page_num": page.page_number,
@@ -196,7 +212,7 @@ def build_parser_input_dict(
 
 def build_parser_source_map(
     source_map: dict[str, GroundedSourceRecord],
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, dict[str, object]]:
     return {
         unit_id: {
             "id": record.unit_id,
