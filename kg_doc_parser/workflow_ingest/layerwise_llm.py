@@ -1846,7 +1846,9 @@ def build_layerwise_llm_callbacks(
                         parser_source_map=parser_source_map,
                     )
 
-                boundary_result: RetryResult[LLMBoundaryProposalBatch] = retry_with_context(
+                boundary_result: RetryResult[
+                    list[tuple[str, str]], LLMBoundaryProposalBatch
+                ] = retry_with_context(
                     max_attempts=proposal_retry_rounds + 1,
                     build_request=_build_boundary_messages,
                     invoke=_invoke_boundary,
@@ -2368,7 +2370,9 @@ def build_layerwise_llm_callbacks(
                 split_strategy=split_strategy,
                 parent_count=len(getattr(current_layer_context, "parent_node_ids", []) or []),
             )
-            child_result: RetryResult[LLMCurrentLayerResult] = retry_with_context(
+            child_result: RetryResult[
+                list[tuple[str, str]], LLMCurrentLayerResult
+            ] = retry_with_context(
                 max_attempts=proposal_retry_rounds + 1,
                 build_request=_build_child_messages,
                 invoke=lambda messages: _structured_invoke(chat_model, LLMCurrentLayerResult, messages),
