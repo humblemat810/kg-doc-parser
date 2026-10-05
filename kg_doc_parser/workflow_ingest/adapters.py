@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 
 from .models import (
     BoundingBox,
@@ -12,14 +12,32 @@ from .models import (
 )
 
 
+class OCRTextClusterJSON(TypedDict, total=False):
+    bb_y_min: float
+    bb_x_min: float
+    bb_y_max: float
+    bb_x_max: float
+    cluster_number: int
+    text: str
+
+
+class OCRNonTextObjectJSON(TypedDict, total=False):
+    bb_y_min: float
+    bb_x_min: float
+    bb_y_max: float
+    bb_x_max: float
+    cluster_number: int
+    description: str
+
+
 class OCRPageJSON(TypedDict):
     """Serialized OCR page payload produced by the OCR preparation layer."""
 
     pdf_page_num: int
     printed_page_number: NotRequired[str]
     contains_table: NotRequired[bool]
-    OCR_text_clusters: NotRequired[list[dict[str, Any]]]
-    non_text_objects: NotRequired[list[dict[str, Any]]]
+    OCR_text_clusters: NotRequired[list[OCRTextClusterJSON]]
+    non_text_objects: NotRequired[list[OCRNonTextObjectJSON]]
     text: NotRequired[str]
 
 
@@ -150,8 +168,8 @@ def select_primary_collection(inp: WorkflowIngestInput) -> NormalizedSourceColle
 
 def build_parser_input_dict(
     collection: NormalizedSourceCollection,
-) -> dict[str, Any]:
-    pages: list[dict[str, Any]] = []
+) -> dict[str, object]:
+    pages: list[dict[str, object]] = []
     for page in collection.pages:
         text_clusters = []
         non_text_objects = []
@@ -194,7 +212,7 @@ def build_parser_input_dict(
 
 def build_parser_source_map(
     source_map: dict[str, GroundedSourceRecord],
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, dict[str, object]]:
     return {
         unit_id: {
             "id": record.unit_id,
