@@ -26,13 +26,13 @@ def test_parser_ci_pypy311_matrix_leg_is_required() -> None:
 def test_parser_ci_uses_the_declared_kogwistar_release() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = metadata["tool"]["poetry"]["dependencies"]["kogwistar"]
-    assert version == "0.6.2"
+    assert version == "0.6.3"
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "ref: v0.6.2" in workflow
+    assert "ref: v0.6.3" in workflow
 
     exported_requirements = (ROOT / "req.txt").read_text(encoding="utf-8")
-    assert "kogwistar==0.6.2" in exported_requirements
+    assert "kogwistar==0.6.3" in exported_requirements
 
 
 def test_parser_has_gated_pypi_release_workflow() -> None:

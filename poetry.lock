@@ -860,17 +860,17 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.2"
+version = "0.6.3"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "kogwistar-0.6.2-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:842cbbbdead563edeaa996d8c2d29c0f5664a2ec4b0658e256af35aa27933fa3"},
-    {file = "kogwistar-0.6.2-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:99c76836896cb61e55b5b5d676b32ce1ff52948f19ac1e7acb019869ac4aa4e0"},
-    {file = "kogwistar-0.6.2-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:65f19b1cd181bbb2e61d312bacc96baee8b5cabc3910a75cda70b558029d1a38"},
-    {file = "kogwistar-0.6.2-cp312-abi3-win_amd64.whl", hash = "sha256:e5e98abee6f2fcda6f410c6c0ae5dbc5b331d1b6ded48d35a1bf59ce1bbc8a79"},
-    {file = "kogwistar-0.6.2.tar.gz", hash = "sha256:902b288950c74ad01e72b54465ca8d312d8c841d9ff2505012c1d9fba253ec72"},
+    {file = "kogwistar-0.6.3-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:93c24423604c0eeabf4ccdfc53d8121e3770ef12b3ef2e7e9b876cf5e45e5d47"},
+    {file = "kogwistar-0.6.3-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:eafc480007b7b61272555287c708199473604d660cdc1f790e039611a164e82f"},
+    {file = "kogwistar-0.6.3-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:addbbfa0aedb76804e93953d1a966fcc0237303e4b86ffa6cdfeab379228763a"},
+    {file = "kogwistar-0.6.3-cp312-abi3-win_amd64.whl", hash = "sha256:23b21cda1cd9cd31c36faa0583631ea55982c5bf374e7879bf508166d0fd27e1"},
+    {file = "kogwistar-0.6.3.tar.gz", hash = "sha256:25a4d51ed57bc9b10c0c4db9aac6c15f415112edff7e953108c6c4ed95ef49f3"},
 ]
 
 [package.dependencies]
@@ -3150,4 +3150,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "90daee9068992f6d475bc48bf0da680c9550917ddfe467da658d3b31f01f3fee"
+content-hash = "a9e44f6cf6e2913d9898ab90b61c170766e38d8330ece9205b3f3535d3f9bc11"
