@@ -15,7 +15,8 @@ logic.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Literal, cast
+from collections.abc import Mapping
+from typing import Any, Literal, Protocol, cast
 from uuid import uuid4
 
 from kogwistar.engine_core.models import Edge, Node
@@ -36,6 +37,24 @@ class UnsupportedClientOperation(RuntimeError):
 
 
 IngestStatus = Literal["succeeded", "failed", "failure", "suspended"]
+
+
+class HttpResponseLike(Protocol):
+    """Small response surface required from an HTTP transport adapter."""
+
+    status_code: int
+
+    def json(self) -> object: ...
+
+
+class HttpClientLike(Protocol):
+    """HTTP client boundary used by server-backed graph persistence.
+
+    The keyword payload remains opaque because transports such as ``httpx``
+    and ``requests`` expose different concrete request types.
+    """
+
+    def post(self, endpoint: str, **kwargs: Any) -> HttpResponseLike: ...
 
 
 def _ingest_status(value: str) -> IngestStatus:
@@ -113,7 +132,7 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
     def __init__(
         self,
         *,
-        client: Any,
+        client: HttpClientLike,
         endpoint: str = "/api/document.upsert_tree",
         base_url: str = "",
         transport: str = "server_http_document_tree",
@@ -137,8 +156,12 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
             raise RuntimeError(
                 f"canonical server persistence failed: status={status_code} body={body}"
             )
-        response_json = response.json()
-        engine_result = response_json.get("engine_result") or {}
+        response_payload = response.json()
+        if not isinstance(response_payload, Mapping):
+            raise TypeError("canonical server persistence returned a non-object JSON body")
+        response_json: Mapping[str, object] = response_payload
+        raw_engine_result = response_json.get("engine_result")
+        engine_result = raw_engine_result if isinstance(raw_engine_result, Mapping) else {}
         return CanonicalGraphWriteResult(
             persistence_mode="server_canonical",
             kg_authority="server",
