@@ -36,12 +36,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Check out Kogwistar 0.6.2 source profile for PyPy
+      - name: Check out pinned Kogwistar source profile for PyPy
         if: matrix.is_pypy
         uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: v0.6.2
+          ref: c3275c74c73b33502e9f94900e0973000ec94a5e
           path: kogwistar
 
       - name: Set up Python

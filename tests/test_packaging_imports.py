@@ -35,7 +35,7 @@ def test_package_modules_import_cleanly() -> None:
     assert kg_doc_parser.ocr.regen_doc is not None
 
 
-def test_ci_uses_the_released_kogwistar_package_and_pypy_source_tag() -> None:
+def test_ci_uses_the_released_kogwistar_package_and_pinned_pypy_source_revision() -> None:
     root = Path(__file__).resolve().parents[1]
     metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     declared_version = metadata["tool"]["poetry"]["dependencies"]["kogwistar"]
@@ -48,4 +48,4 @@ def test_ci_uses_the_released_kogwistar_package_and_pypy_source_tag() -> None:
     assert declared_version == "0.6.2"
     assert locked_package["version"] == declared_version
     assert "source" not in locked_package
-    assert "ref: v0.6.2" in workflow
+    assert "ref: c3275c74c73b33502e9f94900e0973000ec94a5e" in workflow
