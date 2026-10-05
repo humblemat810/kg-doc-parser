@@ -18,11 +18,13 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from .ocr_pipeline import (
     OCRImagePayload,
+    OCRRunner,
     OCRWorkflowArtifacts,
+    PDFRasterizer,
     prepare_ocr_workflow_input,
 )
 from .page_index import (
@@ -34,6 +36,7 @@ from .page_index import (
     parse_page_index_document as _parse_page_index_document,
 )
 from .providers import WorkflowProviderSettings
+from .probe import WorkflowProbe
 
 if TYPE_CHECKING:
     from ..semantic_document_splitting_layerwise_edits import (
@@ -43,7 +46,7 @@ if TYPE_CHECKING:
 ParseMode = Literal["ocr", "page_index", "tree"]
 OCRParseResult = OCRWorkflowArtifacts
 PageIndexParseResultType = PageIndexParseResult
-TreeParseResult = tuple["LegacySemanticNode", dict[str, Any]]
+TreeParseResult = tuple["LegacySemanticNode", dict[str, object]]
 ParseDocumentResult = OCRParseResult | PageIndexParseResultType | TreeParseResult
 
 
@@ -57,10 +60,10 @@ class OCRParseRequest:
     provider_settings: WorkflowProviderSettings | None = None
     provider: str | None = None
     model: str | None = None
-    ocr_runner: Any = None
-    pdf_rasterizer: Any = None
+    ocr_runner: OCRRunner | None = None
+    pdf_rasterizer: PDFRasterizer | None = None
     ocr_candidate_models: Sequence[str] | None = None
-    probe: Any = None
+    probe: WorkflowProbe | None = None
 
 
 @dataclass(slots=True)
@@ -73,14 +76,14 @@ class PageIndexParseRequest:
     provider_settings: WorkflowProviderSettings | None = None
     provider: str | None = None
     model: str | None = None
-    callbacks: list[Any] | None = None
+    callbacks: list[object] | None = None
     refine_excerpts: bool = False
 
 
 @dataclass(slots=True)
 class TreeParseRequest:
     doc_id: str
-    raw_doc_dict: dict[str, Any]
+    raw_doc_dict: dict[str, object]
     parsing_mode: Literal["snippet", "delimiter"] = "snippet"
     max_depth: int = 10
     model_names: Sequence[str] | None = None
@@ -98,7 +101,7 @@ def _resolve_provider_settings(
 ) -> WorkflowProviderSettings:
     base = provider_settings or WorkflowProviderSettings.from_env()
     endpoint = base.ocr if role == "ocr" else base.parser
-    updates: dict[str, Any] = {}
+    updates: dict[str, object] = {}
     if provider is not None:
         updates["provider"] = provider
     if model is not None:
@@ -144,7 +147,7 @@ def parse_ocr_document(
     ocr_runner=None,
     pdf_rasterizer=None,
     ocr_candidate_models: Sequence[str] | None = None,
-    probe=None,
+    probe: WorkflowProbe | None = None,
 ) -> OCRWorkflowArtifacts:
     """Parse OCR inputs into normalized workflow-ingest artifacts."""
 
@@ -178,7 +181,7 @@ def parse_page_index_document(
     provider_settings: WorkflowProviderSettings | None = None,
     provider: str | None = None,
     model: str | None = None,
-    callbacks: list[Any] | None = None,
+    callbacks: list[object] | None = None,
     refine_excerpts: bool = False,
 ) -> PageIndexParseResult:
     """Parse a text / Markdown page-index document into a semantic tree."""
@@ -204,7 +207,7 @@ def parse_page_index_document(
 def parse_tree_document(
     *,
     doc_id: str,
-    raw_doc_dict: dict[str, Any],
+    raw_doc_dict: dict[str, object],
     parsing_mode: Literal["snippet", "delimiter"] = "snippet",
     max_depth: int = 10,
     model_names: Sequence[str] | None = None,
@@ -245,7 +248,7 @@ def parse_tree_document(
         )
 
 
-def parse_document(*, mode: ParseMode, **kwargs: Any) -> ParseDocumentResult:
+def parse_document(*, mode: ParseMode, **kwargs: object) -> ParseDocumentResult:
     """Dispatch to the requested parse mode and return the mode-specific result."""
 
     if mode == "ocr":
