@@ -860,17 +860,17 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.3"
+version = "0.6.4"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "kogwistar-0.6.3-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:93c24423604c0eeabf4ccdfc53d8121e3770ef12b3ef2e7e9b876cf5e45e5d47"},
-    {file = "kogwistar-0.6.3-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:eafc480007b7b61272555287c708199473604d660cdc1f790e039611a164e82f"},
-    {file = "kogwistar-0.6.3-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:addbbfa0aedb76804e93953d1a966fcc0237303e4b86ffa6cdfeab379228763a"},
-    {file = "kogwistar-0.6.3-cp312-abi3-win_amd64.whl", hash = "sha256:23b21cda1cd9cd31c36faa0583631ea55982c5bf374e7879bf508166d0fd27e1"},
-    {file = "kogwistar-0.6.3.tar.gz", hash = "sha256:25a4d51ed57bc9b10c0c4db9aac6c15f415112edff7e953108c6c4ed95ef49f3"},
+    {file = "kogwistar-0.6.4-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:06cb6aa4148699130e6a182ca24cd532d3f961791a3ca5c4e2bd3616714f0638"},
+    {file = "kogwistar-0.6.4-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:acf7a5dbd6e53cda72cb5c7ddcc7baaed20e34ab2813e55d4158516747e38189"},
+    {file = "kogwistar-0.6.4-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:c65f8f17c5c31b4a16eab0165cd175d2c49b5f442c55af80bfe0ed161dddded8"},
+    {file = "kogwistar-0.6.4-cp312-abi3-win_amd64.whl", hash = "sha256:dc5e76a7a5621b9192db3ce27254b82b91dac6fc476ce62af6e4d174c9fd9a7e"},
+    {file = "kogwistar-0.6.4.tar.gz", hash = "sha256:3ea43a0ad1b9c41ab0a3e58cd5171a58cdda89bdd887278b95de060463159f10"},
 ]
 
 [package.dependencies]
@@ -3150,4 +3150,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "a9e44f6cf6e2913d9898ab90b61c170766e38d8330ece9205b3f3535d3f9bc11"
+content-hash = "c4e1125a7eee3be39b05626ef2d0ad2e3603057faa98c06ebe7d8a3cca373905"
