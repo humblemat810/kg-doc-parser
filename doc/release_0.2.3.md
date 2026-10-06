@@ -35,6 +35,20 @@ PageIndex summaries are advisory metadata. Source text, source-map identity,
 and hydrated pointers remain authoritative. The workflow does not accept
 model-authored source pointers or recursively materialize an unbounded tree.
 
+## Fixture And Provider Evaluation
+
+This release includes a non-sensitive adversarial Markdown corpus covering
+tables, fenced code, blockquotes, lists, inline markup, footnotes, HTML,
+Unicode, malformed syntax, and long documents. The deterministic heuristic run
+and the text-only local Bonsai run are documented in
+[`page_index_adversarial_fixture_report.md`](page_index_adversarial_fixture_report.md).
+
+The corpus confirms lossless source grounding and complete coverage. It also
+records known semantic limits: heuristic parsing is not fence-aware, tables are
+coarse grounded leaves, and the current CLI provider summary does not expose
+node-level quality metrics. The Bonsai run therefore demonstrates operational
+provider compatibility and grounding, not a complete semantic-quality gate.
+
 ## State And Diagnostics
 
 Each selected operator records its attempt count and a bounded execution event
