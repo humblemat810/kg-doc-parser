@@ -1,0 +1,33 @@
+AI Chip Revenue
+
+Metric 2023 2024 2025 2026
+Revenue 120 135 158 181
+GrossMargin 42 44 46 48
+TrainingDemand 18 24 31 39
+InferenceDemand 22 29 37 46
+DataCenterUnits 14 18 23 29
+EdgeUnits 9 11 14 17
+AcceleratorUnits 7 10 13 16
+NetworkingUnits 5 7 9 12
+MemoryUnits 11 15 20 27
+FoundryCapacity 62 68 74 81
+PackagingCapacity 31 38 46 55
+InterconnectSpeed 800 1200 1600 2000
+PowerBudget 350 370 390 410
+ThermalLimit 85 87 89 91
+SoftwareReleases 4 6 8 11
+CompilerPasses 12 17 23 30
+ModelFamilies 6 9 13 18
+CustomerPrograms 28 35 44 56
+ProductionSites 3 4 5 7
+EngineeringTeams 8 10 13 16
+ValidationRuns 45 61 80 104
+MemoryBandwidth 900 1100 1400 1800
+ProcessNodes 5 4 3 2
+YieldPercent 91 93 95 96
+LeadTimeDays 42 37 31 26
+InventoryWeeks 16 13 11 9
+ServiceIncidents 19 16 12 8
+OpenRisks 14 12 9 6
+CompletedActions 33 48 67 91
+ReviewStatus 2 3 4 5

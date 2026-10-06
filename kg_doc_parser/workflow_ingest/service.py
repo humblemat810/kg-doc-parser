@@ -16,6 +16,69 @@ from .models import IngestRunResult, WorkflowExportBundle, WorkflowIngestInput
 from .providers import WorkflowProviderSettings, build_embedding_function
 
 
+def _workflow_predicates() -> dict[str, Any]:
+    """Guards for parser strategy transitions.
+
+    These are deliberately derived from persisted state only.  The provider
+    never controls the route directly, and a retry cannot re-enable a method
+    that the satisfaction check disabled.
+    """
+
+    def _context(state: dict[str, Any]) -> dict[str, Any]:
+        value = state.get("current_layer_context")
+        return value if isinstance(value, dict) else {}
+
+    def _metadata(state: dict[str, Any]) -> dict[str, Any]:
+        value = _context(state).get("metadata")
+        return value if isinstance(value, dict) else {}
+
+    def _strategy_name(edge: Any) -> str:
+        target = str(edge.dst).split("|")[-1]
+        return {
+            "layer_excerpt_method": "layer_excerpt",
+            "layer_boundary_method": "layer_boundary",
+            "page_index_layer": "page_index",
+        }.get(target, "")
+
+    def _selected_strategy(edge: Any, state: dict[str, Any], _result: Any) -> bool:
+        return str(_metadata(state).get("parse_strategy")) == _strategy_name(edge)
+
+    def _failed_with_remaining(_edge: Any, state: dict[str, Any], _result: Any) -> bool:
+        disabled = set(_metadata(state).get("disabled_strategies", []))
+        return bool(disabled) and len(disabled) < 3
+
+    def _exhausted(_edge: Any, state: dict[str, Any], _result: Any) -> bool:
+        return len(set(_metadata(state).get("disabled_strategies", []))) >= 3
+
+    def _strategy_selection_failed(_edge: Any, state: dict[str, Any], _result: Any) -> bool:
+        return bool(state.get("strategy_selection_error"))
+
+    def _satisfied(_edge: Any, state: dict[str, Any], _result: Any) -> bool:
+        review = state.get("current_layer_review")
+        result = state.get("current_layer_result")
+        if not isinstance(review, dict) or not isinstance(result, dict):
+            return False
+        return (
+            review.get("coverage_ok") is True
+            and not review.get("metadata", {}).get("review_failure")
+            and bool(result.get("satisfied", False))
+            and not review.get("overlap_conflicts")
+            and not review.get("coverage_gap_notes")
+            and not review.get("duplicate_child_notes")
+        )
+
+    return {
+        "parse_strategy_layer_excerpt": _selected_strategy,
+        "parse_strategy_layer_boundary": _selected_strategy,
+        "parse_strategy_page_index": _selected_strategy,
+        "strategy_attempted": lambda _edge, _state, _result: True,
+        "layer_satisfied": _satisfied,
+        "strategy_failed_with_remaining": _failed_with_remaining,
+        "all_strategies_exhausted": _exhausted,
+        "strategy_selection_failed": _strategy_selection_failed,
+    }
+
+
 @dataclass(slots=True)
 class _RunCompat:
     run_id: str
@@ -91,7 +154,7 @@ def build_runtime(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
         step_resolver=resolver.resolve,
-        predicate_registry={},
+        predicate_registry=_workflow_predicates(),
         trace=False,
     )
 
@@ -103,10 +166,14 @@ def run_ingest_workflow(
     conversation_engine: GraphKnowledgeEngine,
     knowledge_engine: GraphKnowledgeEngine | None = None,
     workflow_id: str = DEFAULT_WORKFLOW_ID,
+    provider_settings: WorkflowProviderSettings | None = None,
     deps: dict[str, Any] | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
 ) -> tuple[_RunCompat, WorkflowExportBundle | None]:
+    effective_deps = dict(deps or {})
+    if provider_settings is not None:
+        effective_deps.setdefault("provider_settings", provider_settings)
     client = DirectRuntimeIngestClient(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
@@ -115,7 +182,7 @@ def run_ingest_workflow(
     result = client.run_ingest(
         inp=inp,
         workflow_id=workflow_id,
-        deps=deps,
+        deps=effective_deps,
         run_id=run_id,
         resume_from_checkpoint=resume_from_checkpoint,
     )

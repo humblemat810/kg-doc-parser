@@ -58,11 +58,14 @@ from __future__ import annotations
 
 import math
 import os
+import queue
+import threading
 from dataclasses import dataclass
 from typing import (
     Annotated,
     Any,
     ClassVar,
+    Callable,
     Literal,
     Protocol,
     TypeVar,
@@ -247,6 +250,13 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
     max_output_tokens: Annotated[
         int | None, DtoField(), BackendField(), FrontendField(), LLMField()
     ] = Field(default=None, gt=0)
+    timeout_seconds: Annotated[
+        float,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=120.0, gt=0)
     fallback_specs: list[ProviderEndpointConfig] = Field(default_factory=list, exclude=True)
 
 
@@ -366,6 +376,34 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
         FrontendField(),
         LLMField(),
     ] = "children"
+    parse_strategy: Annotated[
+        Literal["auto", "layer_excerpt", "layer_boundary", "page_index"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = "auto"
+    parse_strategy_order: Annotated[
+        tuple[Literal["layer_excerpt", "layer_boundary", "page_index"], ...],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = ("layer_excerpt", "layer_boundary", "page_index")
+    triage_enabled: Annotated[
+        bool,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = True
+    page_index_summary_enabled: Annotated[
+        bool,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = True
     ocr: Annotated[ProviderEndpointConfig, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
         default_factory=ProviderEndpointConfig
     )
@@ -376,6 +414,15 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
         default_factory=EmbeddingProviderConfig
     )
 
+    @model_validator(mode="after")
+    def _check_parse_strategy_order(self) -> "WorkflowProviderSettings":
+        expected = {"layer_excerpt", "layer_boundary", "page_index"}
+        if len(self.parse_strategy_order) != 3 or set(self.parse_strategy_order) != expected:
+            raise ValueError(
+                "parse_strategy_order must contain layer_excerpt, layer_boundary, and page_index exactly once"
+            )
+        return self
+
     @classmethod
     def from_env(cls) -> WorkflowProviderSettings:
         def _env(name: str, default: str | None = None) -> str | None:
@@ -384,6 +431,21 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
 
         return cls(
             proposal_mode=cast(ProposalMode, str(_env("KG_DOC_PARSER_PROPOSAL_MODE", "children"))),
+            parse_strategy=cast(
+                Literal["auto", "layer_excerpt", "layer_boundary", "page_index"],
+                str(_env("KG_DOC_PARSER_PARSE_STRATEGY", "auto")),
+            ),
+            parse_strategy_order=tuple(
+                value.strip()
+                for value in str(
+                    _env("KG_DOC_PARSER_PARSE_STRATEGY_ORDER", "layer_excerpt,layer_boundary,page_index")
+                ).split(",")
+                if value.strip()
+            ),
+            triage_enabled=str(_env("KG_DOC_PARSER_TRIAGE_ENABLED", "1")).lower()
+            not in {"0", "false", "no", "off"},
+            page_index_summary_enabled=str(_env("KG_DOC_PARSER_PAGE_INDEX_SUMMARY_ENABLED", "1")).lower()
+            not in {"0", "false", "no", "off"},
             ocr=ProviderEndpointConfig(
                 provider=cast(ChatProviderName, _normalize_provider_name(_env("KG_DOC_OCR_PROVIDER", "gemini"))),
                 model=str(_env("KG_DOC_OCR_MODEL", "gemini-2.5-flash")),
@@ -394,6 +456,7 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 project=_env("KG_DOC_OCR_PROJECT"),
                 location=_env("KG_DOC_OCR_LOCATION"),
                 max_retries=int(_env("KG_DOC_OCR_MAX_RETRIES", "2") or "2"),
+                timeout_seconds=float(_env("KG_DOC_OCR_TIMEOUT_SECONDS", "120") or "120"),
             ),
             parser=ProviderEndpointConfig(
                 provider=cast(ChatProviderName, _normalize_provider_name(_env("KG_DOC_PARSER_PROVIDER", "gemini"))),
@@ -405,6 +468,7 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 project=_env("KG_DOC_PARSER_PROJECT"),
                 location=_env("KG_DOC_PARSER_LOCATION"),
                 max_retries=int(_env("KG_DOC_PARSER_MAX_RETRIES", "2") or "2"),
+                timeout_seconds=float(_env("KG_DOC_PARSER_TIMEOUT_SECONDS", "120") or "120"),
             ),
             embedding=EmbeddingProviderConfig(
                 provider=cast(EmbeddingProviderName, str(_env("KG_DOC_EMBED_PROVIDER", "fake"))),
@@ -423,6 +487,36 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 tokenizer_fingerprint=_env("KG_DOC_EMBED_TOKENIZER_FINGERPRINT"),
             ),
         )
+
+
+def invoke_with_timeout(callable_obj: Callable[[], object], *, timeout_seconds: float) -> object:
+    """Run one provider call with a hard wall-clock bound.
+
+    Provider SDKs do not expose one consistent timeout argument. A daemon
+    thread keeps a stalled local HTTP client from blocking the parser workflow
+    forever; the workflow records the timeout and can take its deterministic
+    fallback path. The provider call itself must remain side-effect free until
+    its structured result has been accepted by the host.
+    """
+    if timeout_seconds <= 0:
+        raise ValueError("provider timeout_seconds must be positive")
+    result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+    def _run() -> None:
+        try:
+            result_queue.put((True, callable_obj()))
+        except BaseException as exc:  # preserve provider exceptions for the caller
+            result_queue.put((False, exc))
+
+    worker = threading.Thread(target=_run, name="kg-doc-parser-provider", daemon=True)
+    worker.start()
+    worker.join(timeout_seconds)
+    if worker.is_alive():
+        raise TimeoutError(f"provider call exceeded {timeout_seconds:g}s")
+    succeeded, value = result_queue.get_nowait()
+    if succeeded:
+        return value
+    raise cast(BaseException, value)
 
 
 def _embedding_vector(text: str, *, dimension: int) -> list[float]:

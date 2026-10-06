@@ -42,6 +42,12 @@ mode will be an internal proposal strategy:
 The public workflow contract remains stable. The difference is that child nodes
 are derived from accepted boundaries instead of directly authored by the model.
 
+Boundary-first is a one-layer refinement operator. It does not own recursive
+descent below a successfully refined parent; the progressive refinement engine
+selects a strategy again for each later child layer. The complete arbitration
+and PageIndex-fallback rule is defined in
+[ADR: Progressive Per-Layer Refinement And Strategy Arbitration](adr_progressive_refinement_strategy_arbitration.md).
+
 ## Design Principles
 
 - Boundaries must be unique within a parent source span.

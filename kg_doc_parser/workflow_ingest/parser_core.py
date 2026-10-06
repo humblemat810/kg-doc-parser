@@ -176,6 +176,9 @@ def _canonicalize_legacy_pointer_tree(
         return node.model_copy(
             update={
                 "total_content_pointers": [_remap_pointer(pointer) for pointer in node.total_content_pointers],
+                "aggregate_content_pointers": [
+                    _remap_pointer(pointer) for pointer in node.aggregate_content_pointers
+                ],
                 "child_nodes": [_remap_node(child) for child in node.child_nodes],
             }
         )
@@ -453,6 +456,10 @@ def initialize_parse_session(
         fallback_split_strategy=fallback_split_strategy,
         strategy_history=[cast(SplitStrategy, split_strategy)],
         mode="workflow_layered",
+        metadata={
+            "default_split_strategy": split_strategy,
+            "default_fallback_split_strategy": fallback_split_strategy,
+        },
     )
     frontier = [LayerFrontierItem(parent_node_id=_required_node_id(root), depth=0, order=0)]
     return session, frontier, root
@@ -487,7 +494,16 @@ def prepare_layer_frontier(
     session = parse_session.model_copy(update={"current_depth": current_depth})
     def _pointers_for(parent_node_id: str) -> list[HydratedTextPointer]:
         parent = find_semantic_node(semantic_tree, parent_node_id)
-        return list(parent.total_content_pointers) if parent is not None else []
+        if parent is None:
+            return []
+        # Structural page-index containers own no leaf text themselves.  Their
+        # aggregate span is the authoritative interval for the next refinement.
+        return list(parent.total_content_pointers or parent.aggregate_content_pointers)
+
+    default_split_strategy = cast(
+        SplitStrategy,
+        parse_session.metadata.get("default_split_strategy", parse_session.split_strategy),
+    )
 
     context = CurrentLayerContext(
         depth=current_depth,
@@ -496,7 +512,9 @@ def prepare_layer_frontier(
         parent_content_pointers_by_id={
             item.parent_node_id: _pointers_for(item.parent_node_id) for item in selected_items
         },
-        split_strategy=parse_session.split_strategy,
+        # Strategy selection is per layer.  Do not carry a prior layer's
+        # triage decision into the next frontier depth.
+        split_strategy=default_split_strategy,
         retry_count=int(parse_session.layer_attempts.get(str(current_depth), 0)),
         max_retries=max_retries,
     )
@@ -940,7 +958,19 @@ def commit_layer_children(
                 node_type=child.node_type,
                 title=child.title,
                 total_content_pointers=list(child.total_content_pointers),
-                child_nodes=[],
+                child_nodes=[
+                    SemanticNode(
+                        node_id=materialized.node_id,
+                        parent_id=child.node_id,
+                        node_type=materialized.node_type,
+                        title=materialized.title,
+                        total_content_pointers=list(materialized.total_content_pointers),
+                        child_nodes=[],
+                        level_from_root=current_depth + 2,
+                        metadata=dict(materialized.metadata),
+                    )
+                    for materialized in child.child_candidates
+                ],
                 level_from_root=current_depth + 1,
                 metadata=dict(child.metadata),
             )

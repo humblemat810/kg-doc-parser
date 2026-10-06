@@ -54,6 +54,7 @@ Both manual matrix variants end in the same normalized workflow-ingest path.
 
 """
 
+import importlib.util
 import json
 import logging
 import os
@@ -61,13 +62,14 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
+import kg_doc_parser.workflow_ingest.ocr_pipeline as ocr_pipeline_module
 import pytest
-from PIL import Image, ImageDraw
-
-from _kogwistar_test_helpers import build_workflow_engine_triplet, drain_phase1_indexes_until_idle
+from _kogwistar_test_helpers import (
+    build_workflow_engine_triplet,
+    drain_phase1_indexes_until_idle,
+)
 from kg_doc_parser.models import OCRClusterResponse, TextCluster
 from kg_doc_parser.ocr import regen_doc
-import kg_doc_parser.workflow_ingest.ocr_pipeline as ocr_pipeline_module
 from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     OCRImagePayload,
@@ -76,9 +78,12 @@ from kg_doc_parser.workflow_ingest import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
-from kg_doc_parser.workflow_ingest.ocr_pipeline import _compute_input_fingerprint, _resolve_ocr_source_plan
+from kg_doc_parser.workflow_ingest.ocr_pipeline import (
+    _compute_input_fingerprint,
+    _resolve_ocr_source_plan,
+)
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-
+from PIL import Image, ImageDraw
 
 pytestmark = [pytest.mark.workflow]
 
@@ -192,6 +197,8 @@ def _skip_if_live_ocr_unavailable(exc: Exception) -> None:
             "ollama",
             "api key",
             "google_api_key",
+            "no module named",
+            "langchain_ollama",
             "poppler",
             "pdfinfo",
         )
@@ -660,6 +667,8 @@ def test_workflow_first_ocr_manual_matrix(provider: str, model: str, input_kind:
 
     if provider == "gemini" and not os.getenv("GOOGLE_API_KEY"):
         pytest.skip("GOOGLE_API_KEY is required for the manual Gemini OCR case")
+    if provider == "ollama" and importlib.util.find_spec("langchain_ollama") is None:
+        pytest.skip("langchain_ollama is required for manual Ollama OCR cases")
 
     case_dir = _manual_case_dir(input_kind=input_kind, provider=provider, model=model)
     source_dir = case_dir / "source"
@@ -703,7 +712,7 @@ def test_workflow_first_ocr_manual_matrix(provider: str, model: str, input_kind:
             deps={"parse_semantic_fn": _grounded_semantic_tree},
         )
         drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _skip_if_live_ocr_unavailable(exc)
         raise
 
@@ -764,7 +773,7 @@ def test_ocr_workflow_reuses_cached_pages_but_regenerates_grounded_parse_tree() 
         "in_memory",
     )
 
-    first_run, first_bundle, first_artifacts = run_ocr_ingest_workflow(
+    first_run, first_bundle, _first_artifacts = run_ocr_ingest_workflow(
         document_id="ocr-grounded-cache-doc",
         title="OCR Grounded Cache Doc",
         output_dir=scratch / "artifacts",

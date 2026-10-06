@@ -32,6 +32,17 @@ The reusable helpers live under `src/workflow_ingest/` and are designed so the
 same core logic can be called from tests, scripts, and higher-level workflow
 code without duplicating orchestration.
 
+Layerwise parsing selects a strategy independently for each frontier layer.
+The default deterministic order is `layer_excerpt`, `layer_boundary`, then
+`page_index`; callers may provide another complete order, and optional triage
+may choose among the currently enabled strategies. Failed strategies are
+disabled for that layer and the workflow routes through the remaining methods
+before reaching explicit parse failure. PageIndex is a one-layer structural
+fallback that preserves exact source pointers and returns expandable children
+to normal strategy selection. See the
+[`0.2.2` release note](doc/release_0.2.2.md) and the
+[progressive refinement ADR](doc/adr_progressive_refinement_strategy_arbitration.md).
+
 For an adoption path that starts with parser-grounded source units and later
 adds LLM-Wiki cross-document maintenance, see
 [`doc/progressive_adoption_guide.md`](doc/progressive_adoption_guide.md). The

@@ -23,10 +23,12 @@ from .models import (
     CurrentLayerReview,
     LayerFrontierItem,
     ParseSessionState,
+    StrategyExecutionRecord,
     ValidationReport,
     WorkflowExportBundle,
     WorkflowIngestInput,
 )
+from .page_index import parse_page_index_layer
 from .parser_core import (
     ParseSemanticFn,
     ProposeLayerFn,
@@ -47,11 +49,16 @@ from .parser_core import (
     switch_split_strategy,
 )
 from .probe import WorkflowProbe, emit_probe_event
+from .providers import WorkflowProviderSettings
 from .semantics import (
     SemanticNode,
     compute_pointer_coverage,
     correct_and_validate_pointer,
     semantic_tree_to_kge_payload,
+)
+from .strategy import (
+    build_llm_strategy_triage,
+    select_parse_strategy,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,6 +93,8 @@ class WorkflowRuntimeDeps(TypedDict, total=False):
     fallback_split_strategy: SplitStrategy
     max_review_retries: int
     coverage_threshold: float
+    provider_settings: WorkflowProviderSettings
+    triage_strategy_fn: Callable[[dict[str, object]], object]
 
 
 def _build_export_bundle(
@@ -120,10 +129,14 @@ def _build_export_bundle(
     )
 
 
-def _success(next_step: str | None = None) -> RunSuccess:
+def _success(
+    next_step: str | None = None,
+    *,
+    state_update: list[tuple[str, dict[str, object]]] | None = None,
+) -> RunSuccess:
     return RunSuccess(
         conversation_node_id=None,
-        state_update=[],
+        state_update=state_update or [],
         _route_next=[] if next_step is None else [next_step],
     )
 
@@ -302,6 +315,236 @@ def register_layerwise_parser_steps(
     *,
     runtime_deps: WorkflowRuntimeDeps,
 ) -> None:
+    @_register_step(resolver, step_name="triage_parse_strategy", runtime_deps=runtime_deps)
+    def _triage_parse_strategy(ctx: StepContext) -> StepRunResult:
+        current_layer_context = CurrentLayerContext.model_validate(
+            ctx.state_view["current_layer_context"]
+        )
+        parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
+        normalized_input = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
+        layer_metadata = dict(current_layer_context.metadata)
+        disabled_strategies = {
+            str(value)
+            for value in layer_metadata.get("disabled_strategies", [])
+            if str(value) in {"layer_excerpt", "layer_boundary", "page_index"}
+        }
+        settings = runtime_deps.get("provider_settings")
+        triage_fn = runtime_deps.get("triage_strategy_fn")
+        if normalized_input.parse_strategy is not None:
+            requested = normalized_input.parse_strategy
+        elif settings is not None:
+            requested = settings.parse_strategy
+        elif triage_fn is not None:
+            requested = "auto"
+        elif normalized_input.parse_strategy_order is not None:
+            # An explicit cascade is meaningful even for direct callers that
+            # do not construct provider settings. Do not let the legacy
+            # excerpt-first default reorder the caller's permutation.
+            requested = "auto"
+        else:
+            # Preserve the existing runtime-dependency configuration for
+            # callers that have not opted into provider strategy triage.
+            requested = (
+                "layer_boundary"
+                if parse_session.metadata.get("default_split_strategy") == "boundary_first"
+                else "layer_excerpt"
+            )
+        configured_order = tuple(
+            normalized_input.parse_strategy_order
+            or (settings.parse_strategy_order if settings is not None else ("layer_excerpt", "layer_boundary", "page_index"))
+        )
+        triage_enabled = (
+            normalized_input.triage_enabled
+            if normalized_input.triage_enabled is not None
+            else (settings.triage_enabled if settings is not None else triage_fn is not None)
+        )
+        page_index_summary_enabled = (
+            normalized_input.page_index_summary_enabled
+            if normalized_input.page_index_summary_enabled is not None
+            else (settings.page_index_summary_enabled if settings is not None else True)
+        )
+        triage_build_error: str | None = None
+        if triage_fn is None and settings is not None and triage_enabled and requested == "auto":
+            try:
+                triage_fn = build_llm_strategy_triage(settings)
+            except Exception as exc:  # noqa: BLE001 - unavailable providers use deterministic fallback.
+                triage_build_error = f"triage provider unavailable: {type(exc).__name__}: {exc}"
+        parent_context: list[dict[str, object]] = []
+        parser_source_map = ctx.state_view.get("parser_source_map") or {}
+        for parent_id, title in zip(
+            current_layer_context.parent_node_ids,
+            current_layer_context.parent_titles,
+        ):
+            pointers = current_layer_context.parent_content_pointers_by_id.get(parent_id, [])
+            excerpts = []
+            for pointer in pointers[:3]:
+                source = parser_source_map.get(pointer.source_cluster_id, {})
+                source_text = str(source.get("text", ""))
+                end = len(source_text) if pointer.end_char == -1 else pointer.end_char + 1
+                excerpts.append(source_text[max(0, pointer.start_char):end][:500])
+            parent_context.append(
+                {
+                    "node_id": parent_id,
+                    "title": title,
+                    "depth": current_layer_context.depth,
+                    "source_excerpts": excerpts,
+                }
+            )
+        context = {
+            "layer_depth": current_layer_context.depth,
+            "parent_count": len(current_layer_context.parent_node_ids),
+            "parents": parent_context,
+            "current_strategy": current_layer_context.split_strategy,
+            "default_priority": ["layer_excerpt", "layer_boundary", "page_index"],
+        }
+        try:
+            decision = select_parse_strategy(
+                requested=requested,
+                context=context,
+                # A configured provider enables model triage; an injected triage
+                # function is also a deliberate caller opt-in.  Without either,
+                # the deterministic priority policy is used.
+                triage_enabled=triage_enabled,
+                triage_fn=triage_fn,  # type: ignore[arg-type]
+                strategy_order=configured_order,
+                disabled_strategies=disabled_strategies,
+            )
+        except ValueError as exc:
+            with ctx.state_write as st:
+                st["workflow_errors"] = [str(exc)]
+                st["strategy_selection_error"] = str(exc)
+            return _success()
+        if triage_build_error is not None and decision.source == "hardcoded_fallback":
+            decision = decision.model_copy(
+                update={
+                    "source": "llm_triage_fallback",
+                    "rationale": triage_build_error,
+                }
+            )
+        metadata = dict(parse_session.metadata)
+        metadata.update(
+            {
+                "parse_strategy": decision.selected_strategy,
+                "parse_strategy_source": decision.source,
+                "parse_strategy_confidence": decision.confidence,
+                "parse_strategy_rationale": decision.rationale,
+                "parse_strategy_assessments": [
+                    assessment.model_dump(mode="json") for assessment in decision.assessments
+                ],
+                "parse_strategy_fallback_order": list(decision.fallback_order),
+                "disabled_strategies": sorted(disabled_strategies),
+                    "page_index_summary_enabled": page_index_summary_enabled,
+            }
+        )
+        if decision.selected_strategy == "layer_boundary":
+            updated_session = parse_session.model_copy(
+                update={
+                    "split_strategy": "boundary_first",
+                    "fallback_split_strategy": "excerpt_first",
+                    "metadata": metadata,
+                }
+            )
+        else:
+            updated_session = parse_session.model_copy(
+                update={
+                    "split_strategy": "excerpt_first",
+                    "fallback_split_strategy": "boundary_first",
+                    "metadata": metadata,
+                }
+            )
+        updated_context = current_layer_context.model_copy(
+            update={
+                "split_strategy": (
+                    "boundary_first"
+                    if decision.selected_strategy == "layer_boundary"
+                    else "excerpt_first"
+                ),
+                "metadata": {
+                    **current_layer_context.metadata,
+                    "parse_strategy": decision.selected_strategy,
+                    "parse_strategy_source": decision.source,
+                    "parse_strategy_confidence": decision.confidence,
+                    "parse_strategy_rationale": decision.rationale,
+                    "parse_strategy_assessments": [
+                        assessment.model_dump(mode="json") for assessment in decision.assessments
+                    ],
+                    "disabled_strategies": sorted(disabled_strategies),
+                    "page_index_attempted": False,
+                    "page_index_summary_enabled": page_index_summary_enabled,
+                },
+                "retry_count": 0,
+            }
+        )
+        with ctx.state_write as st:
+            st["parse_session"] = updated_session.model_dump(field_mode="backend", dump_format="json")
+            st["current_layer_context"] = updated_context.model_dump(
+                field_mode="backend", dump_format="json"
+            )
+            st["parse_strategy_decision"] = decision.model_dump(mode="json")
+        attempt_counts = dict(ctx.state_view.get("strategy_attempt_counts") or {})
+        attempt = int(attempt_counts.get(decision.selected_strategy, 0)) + 1
+        attempt_counts[decision.selected_strategy] = attempt
+        selected_record = StrategyExecutionRecord(
+            strategy=decision.selected_strategy,
+            depth=current_layer_context.depth,
+            parent_node_ids=list(current_layer_context.parent_node_ids),
+            attempt=attempt,
+            event="selected",
+        )
+        # Routing is intentionally selected by the persisted predicate edges.
+        # No provider response or handler shortcut may bypass disabled methods.
+        return _success(
+            state_update=[
+                ("u", {"strategy_attempt_counts": attempt_counts}),
+                ("a", {"strategy_execution_history": selected_record.model_dump(mode="json")}),
+            ]
+        )
+
+    @_register_step(resolver, step_name="page_index_layer", runtime_deps=runtime_deps)
+    def _page_index_layer(ctx: StepContext) -> StepRunResult:
+        current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
+        parser_source_map = ctx.state_view.get("parser_source_map") or {}
+        candidates = []
+        for parent_id, parent_title in zip(
+            current_layer_context.parent_node_ids,
+            current_layer_context.parent_titles,
+        ):
+            candidates.extend(
+                parse_page_index_layer(
+                    parent_id=parent_id,
+                    parent_title=parent_title,
+                    parent_pointers=current_layer_context.parent_content_pointers_by_id.get(parent_id, []),
+                    parser_source_map=parser_source_map,
+                    source_format="text",
+                    summary_enabled=bool(current_layer_context.metadata.get("page_index_summary_enabled", True)),
+                )
+            )
+        result = CurrentLayerResult(
+            children=candidates,
+            satisfied=bool(candidates),
+            metadata={
+                "parse_strategy": "page_index",
+                "page_index_layer_only": True,
+                "allow_empty_layer": not bool(candidates),
+            },
+        )
+        with ctx.state_write as st:
+            context = current_layer_context.model_copy(
+                update={
+                    "metadata": {
+                        **current_layer_context.metadata,
+                        "page_index_attempted": True,
+                    }
+                }
+            )
+            st["current_layer_context"] = context.model_dump(
+                field_mode="backend", dump_format="json"
+            )
+            st["current_layer_result"] = result.model_dump(
+                field_mode="backend", dump_format="json"
+            )
+        return _success()
+
     @_register_step(resolver, step_name="check_frontier_remaining", runtime_deps=runtime_deps)
     def _check_frontier_remaining(ctx: StepContext) -> StepRunResult:
         queue = ctx.state_view.get("layer_frontier_queue") or []
@@ -328,7 +571,7 @@ def register_layerwise_parser_steps(
             st["layer_frontier_queue"] = [
                 item.model_dump(field_mode="backend", dump_format="json") for item in remaining
             ]
-        return _success("propose_layer_breakdown")
+        return _success("triage_parse_strategy")
 
     @_register_step(resolver, step_name="propose_layer_breakdown", runtime_deps=runtime_deps)
     def _propose_layer_breakdown(ctx: StepContext) -> StepRunResult:
@@ -349,7 +592,7 @@ def register_layerwise_parser_steps(
         )
         with ctx.state_write as st:
             st["current_layer_result"] = result.model_dump(field_mode="backend", dump_format="json")
-        return _success("review_cud_proposal")
+        return _success()
 
     @_register_step(resolver, step_name="review_cud_proposal", runtime_deps=runtime_deps)
     def _review_cud_proposal(ctx: StepContext) -> StepRunResult:
@@ -433,36 +676,75 @@ def register_layerwise_parser_steps(
             or current_layer_review.duplicate_child_notes
         )
         if current_layer_result.satisfied is False or not coverage_ok or has_conflicts:
-            if current_layer_context.retry_count >= current_layer_context.max_retries:
-                reasons = list(current_layer_review.review_notes)
-                if current_layer_result.satisfied is False:
-                    reasons.append("layer marked unsatisfied")
-                if not coverage_ok:
-                    reasons.append("layer coverage check failed")
-                if has_conflicts:
-                    reasons.append(
-                        f"layer has {len(current_layer_review.overlap_conflicts)} overlap conflicts, "
-                        f"{len(current_layer_review.coverage_gap_notes)} coverage gaps, "
-                        f"{len(current_layer_review.duplicate_child_notes)} duplicates"
-                    )
-                parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
-                if (
-                    current_layer_context.split_strategy != parse_session.fallback_split_strategy
-                    and parse_session.strategy_switch_count == 0
-                ):
-                    return _success("switch_split_strategy")
-                error_message = (
-                    f"layer satisfaction retries exhausted at depth {current_layer_context.depth} "
-                    f"using strategy {current_layer_context.split_strategy}"
+            # Disable the failed operator for this parent layer. When triage
+            # is enabled, even PageIndex may be retried through the remaining
+            # policy-approved operators; deterministic routing still exhausts
+            # the configured cascade in order.
+            reasons = list(current_layer_review.review_notes)
+            if current_layer_result.satisfied is False:
+                reasons.append("layer marked unsatisfied")
+            if not coverage_ok:
+                reasons.append("layer coverage check failed")
+            if has_conflicts:
+                reasons.append(
+                    f"layer has {len(current_layer_review.overlap_conflicts)} overlap conflicts, "
+                    f"{len(current_layer_review.coverage_gap_notes)} coverage gaps, "
+                    f"{len(current_layer_review.duplicate_child_notes)} duplicates"
                 )
-                return RunFailure(
-                    conversation_node_id=None,
-                    state_update=[],
-                    update={"workflow_errors": [error_message, *reasons]},
-                    errors=[error_message],
+            strategy = str(current_layer_context.metadata.get("parse_strategy", "layer_excerpt"))
+            disabled = {
+                str(value)
+                for value in current_layer_context.metadata.get("disabled_strategies", [])
+            }
+            disabled.add(strategy)
+            updated_context = current_layer_context.model_copy(
+                update={
+                    "retry_count": current_layer_context.retry_count + 1,
+                    "metadata": {
+                        **current_layer_context.metadata,
+                        "disabled_strategies": sorted(disabled),
+                        "last_strategy_failure": strategy,
+                        "last_strategy_failure_reasons": reasons,
+                    },
+                }
+            )
+            remaining = {"layer_excerpt", "layer_boundary", "page_index"} - disabled
+            with ctx.state_write as st:
+                st["current_layer_context"] = updated_context.model_dump(
+                    field_mode="backend", dump_format="json"
                 )
-            return _success("propose_layer_breakdown")
-        return _success("repair_layer_pointers")
+            event = StrategyExecutionRecord(
+                strategy=strategy,  # type: ignore[arg-type]
+                depth=current_layer_context.depth,
+                parent_node_ids=list(current_layer_context.parent_node_ids),
+                attempt=int((ctx.state_view.get("strategy_attempt_counts") or {}).get(strategy, 1)),
+                event="failed",
+                reasons=reasons[:12],
+            )
+            if remaining:
+                return _success(
+                    state_update=[("a", {"strategy_execution_history": event.model_dump(mode="json")})]
+                )
+            error_message = (
+                f"layer parsing failed at depth {current_layer_context.depth}; "
+                "all configured strategies are exhausted"
+            )
+            with ctx.state_write as st:
+                st["workflow_errors"] = [error_message, *reasons]
+            return _success(
+                state_update=[("a", {"strategy_execution_history": event.model_dump(mode="json")})]
+            )
+        strategy = str(current_layer_context.metadata.get("parse_strategy", "layer_excerpt"))
+        event = StrategyExecutionRecord(
+            strategy=strategy,  # type: ignore[arg-type]
+            depth=current_layer_context.depth,
+            parent_node_ids=list(current_layer_context.parent_node_ids),
+            attempt=int((ctx.state_view.get("strategy_attempt_counts") or {}).get(strategy, 1)),
+            event="succeeded",
+        )
+        return _success(
+            state_update=[("a", {"strategy_execution_history": event.model_dump(mode="json")})]
+        )
 
     @_register_step(resolver, step_name="switch_split_strategy", runtime_deps=runtime_deps)
     def _switch_split_strategy(ctx: StepContext) -> StepRunResult:
@@ -669,6 +951,18 @@ def register_postparse_steps(
     def _end(ctx: StepContext) -> StepRunResult:
         return _success(None)
 
+    @_register_step(resolver, step_name="parse_failure", runtime_deps=runtime_deps)
+    def _parse_failure(ctx: StepContext) -> StepRunResult:
+        errors = [str(value) for value in (ctx.state_view.get("workflow_errors") or [])]
+        if not errors:
+            errors = ["layer parsing failed after all strategies were exhausted"]
+        return RunFailure(
+            conversation_node_id=None,
+            state_update=[],
+            update={"workflow_errors": errors},
+            errors=errors,
+        )
+
 
 def build_ingest_step_resolver(
     *,
@@ -693,6 +987,9 @@ def build_ingest_step_resolver(
             "export_bundle": "u",
             "canonical_write_result": "u",
             "workflow_errors": "a",
+            "strategy_selection_error": "u",
+            "strategy_attempt_counts": "u",
+            "strategy_execution_history": "a",
         }
     )
     register_base_ingest_steps(resolver, runtime_deps=runtime_deps)

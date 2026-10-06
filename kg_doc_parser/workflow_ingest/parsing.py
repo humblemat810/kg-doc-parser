@@ -78,6 +78,7 @@ class PageIndexParseRequest:
     model: str | None = None
     callbacks: list[object] | None = None
     refine_excerpts: bool = False
+    summary_enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -183,6 +184,7 @@ def parse_page_index_document(
     model: str | None = None,
     callbacks: list[object] | None = None,
     refine_excerpts: bool = False,
+    summary_enabled: bool = True,
 ) -> PageIndexParseResult:
     """Parse a text / Markdown page-index document into a semantic tree."""
 
@@ -201,6 +203,7 @@ def parse_page_index_document(
         provider_settings=settings,
         callbacks=callbacks,
         refine_excerpts=refine_excerpts,
+        summary_enabled=summary_enabled,
     )
 
 

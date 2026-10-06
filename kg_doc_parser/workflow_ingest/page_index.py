@@ -43,6 +43,7 @@ from typing import Any, Literal, Protocol
 
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
 from kogwistar.utils.fuzzy_offsets import find_best_fuzzy_span
+from kogwistar.id_provider import stable_id
 
 
 from pydantic import BaseModel, Field
@@ -55,12 +56,13 @@ from .adapters import (
 )
 from .models import (
     GroundedSourceRecord,
+    LayerChildCandidate,
     NormalizedPage,
     NormalizedSourceCollection,
     SourceUnit,
     WorkflowIngestInput,
 )
-from .providers import WorkflowProviderSettings, build_chat_model_for_role
+from .providers import WorkflowProviderSettings, build_chat_model_for_role, invoke_with_timeout
 from .semantics import (
     HydratedTextPointer,
     SemanticNode,
@@ -87,7 +89,10 @@ PageIndexMode = Literal[
 ]
 _PAGE_INDEX_PROVIDER_MODES = {"fake", "ollama", "openai", "azure", "gemini", "vertex", "codex"}
 PageIndexSourceFormat = Literal["text", "markdown"]
-PageIndexNodeType = Literal["SECTION", "SUBSECTION", "PARAGRAPH", "TERM"]
+# SECTION/SUBSECTION remain accepted at the provider boundary for old payloads,
+# but the materialized page-index tree uses HEADING and parent links for shape.
+PageIndexNodeType = Literal["HEADING", "SECTION", "SUBSECTION", "PARAGRAPH", "TERM"]
+PageIndexSourceRole = Literal["heading", "content"]
 
 
 def _callback_call_counts(callbacks: list[Any] | None) -> dict[int, int | None]:
@@ -123,10 +128,18 @@ class PageIndexBlockSpec(BaseModel):
         description="Short label for this block, usually the heading text or a concise paragraph label."
     )
     node_type: PageIndexNodeType = Field(
-        description="One of SECTION, SUBSECTION, PARAGRAPH, or TERM. Preserve hierarchy depth, do not flatten it."
+        description="One of HEADING, PARAGRAPH, or TERM. Preserve hierarchy through parent links; do not encode depth in the kind."
     )
     excerpt: str = Field(
         description="A short verbatim excerpt from the source page that grounds this block. Do not use the whole page text; keep it tight and exact."
+    )
+    summary: str = Field(
+        default="",
+        description="A concise factual summary of this block, grounded only in its excerpt. Leave empty when summaries are disabled.",
+    )
+    source_role: PageIndexSourceRole = Field(
+        default="content",
+        description="Whether this block is a source-bearing heading or ordinary content."
     )
     child_nodes: list[PageIndexBlockSpec] = Field(
         default_factory=list,
@@ -163,6 +176,10 @@ class BlockAssignment(BaseModel):
     )
     node_type: PageIndexNodeType = Field(description="Assigned node type for the block.")
     title: str = Field(description="Assigned display title for the block.")
+    summary: str = Field(
+        default="",
+        description="A concise factual summary of the block, grounded only in the supplied candidate text.",
+    )
 
 
 class BlockAssignmentBatch(BaseModel):
@@ -329,7 +346,8 @@ def _page_index_assignment_prompt(
         "- preserve reading order\n"
         "- do not invent excerpts\n"
         "- do not create whole-page child blocks\n"
-        "- use SECTION, SUBSECTION, PARAGRAPH, and TERM only\n"
+        "- use HEADING, PARAGRAPH, and TERM only\n"
+        "- provide a concise factual summary for every block; do not add facts absent from the block text\n"
         "The recursive tree is assembled deterministically after validation.\n"
         "Optional excerpt refinement is disabled by default.\n"
         f"Source format: {source_format}\n"
@@ -575,7 +593,7 @@ def _classify_block(
     if source_format == "markdown" and md_heading:
         level = len(md_heading.group(1))
         title = md_heading.group(2).strip() or first_line.lstrip("#").strip()
-        node_type: PageIndexNodeType = "SECTION" if level <= 2 else "SUBSECTION"
+        node_type: PageIndexNodeType = "HEADING"
         return _BlockSpan(
             start_char=start_char,
             end_char=end_char,
@@ -590,7 +608,7 @@ def _classify_block(
             heading_level=level,
         )
     if heading_level is not None:
-        node_type = "SECTION" if heading_level <= 1 else "SUBSECTION"
+        node_type = "HEADING"
         return _BlockSpan(
             start_char=start_char,
             end_char=end_char,
@@ -635,7 +653,7 @@ def _classify_block(
         else:
             level = 2
         title = first_line.rstrip(":").strip()
-        node_type = "SECTION" if level <= 2 else "SUBSECTION"
+        node_type: PageIndexNodeType = "HEADING"
         confidence = 0.95 if (plain_heading or numbered_heading) else 0.76
         if surrounded_by_blank_lines:
             confidence = min(0.98, confidence + 0.06)
@@ -734,8 +752,8 @@ def _deterministic_block_assignments(candidates: list[CandidateBlock]) -> list[B
     stack: list[tuple[int, str]] = []
     for candidate in candidates:
         parent_id: str | None = stack[-1][1] if stack else None
-        if candidate.node_type_hint in {"SECTION", "SUBSECTION"}:
-            level = candidate.heading_level or (1 if candidate.node_type_hint == "SECTION" else 2)
+        if _candidate_heading_evidence(candidate):
+            level = candidate.heading_level or 1
             while stack and stack[-1][0] >= level:
                 stack.pop()
             parent_id = stack[-1][1] if stack else None
@@ -743,7 +761,7 @@ def _deterministic_block_assignments(candidates: list[CandidateBlock]) -> list[B
                 BlockAssignment(
                     block_id=candidate.block_id,
                     parent_id=parent_id,
-                    node_type=candidate.node_type_hint,
+                    node_type="HEADING",
                     title=candidate.title_hint,
                 )
             )
@@ -791,7 +809,7 @@ def _validate_block_assignments(
         assignment.block_id: assignment.parent_id
         for assignment in assignments
         if assignment.block_id in candidate_by_id
-        and assignment.node_type in {"SECTION", "SUBSECTION"}
+        and assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"}
         and _candidate_heading_evidence(candidate_by_id[assignment.block_id])
     }
     baseline_assignments = _deterministic_block_assignments(candidates)
@@ -819,7 +837,7 @@ def _validate_block_assignments(
                 break
             seen.add(probe)
             probe = parent_chain_map.get(probe)
-        if assignment.node_type in {"SECTION", "SUBSECTION"} and not _candidate_heading_evidence(candidate):
+        if assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"} and not _candidate_heading_evidence(candidate):
             child_count = sum(1 for other in assignments if other.parent_id == assignment.block_id)
             if child_count == 0:
                 errors.append(f"{assignment.block_id!r} lacks heading evidence for {assignment.node_type}")
@@ -872,8 +890,10 @@ def _assemble_page_index_blocks(
         candidate = candidate_by_id[assignment.block_id]
         spec = PageIndexBlockSpec(
             title=assignment.title or candidate.title_hint,
-            node_type=assignment.node_type,
+            node_type="HEADING" if _candidate_heading_evidence(candidate) else assignment.node_type,
             excerpt=candidate.text,
+            summary=assignment.summary.strip(),
+            source_role="heading" if _candidate_heading_evidence(candidate) else "content",
         )
         spec_by_id[assignment.block_id] = spec
     for assignment in repaired_assignments:
@@ -1064,11 +1084,14 @@ def _refine_page_index_block_excerpts(
     try:
         callback_counts = _callback_call_counts(callbacks)
         try:
-            payload = structured.invoke(
-                [
-                    SystemMessage(content="You are a grounded excerpt refiner."),
-                    HumanMessage(content=prompt),
-                ]
+            payload = invoke_with_timeout(
+                lambda: structured.invoke(
+                    [
+                        SystemMessage(content="You are a grounded excerpt refiner."),
+                        HumanMessage(content=prompt),
+                    ]
+                ),
+                timeout_seconds=provider_settings.parser.timeout_seconds,
             )
         finally:
             _notify_untracked_provider_call(callbacks, callback_counts, f"refine-page-{page_number}")
@@ -1269,11 +1292,14 @@ def _llm_page_outline(
         try:
             callback_counts = _callback_call_counts(callbacks)
             try:
-                payload = structured.invoke(
-                    [
-                        SystemMessage(content="You are a grounded page-index block assigner."),
-                        HumanMessage(content=prompt),
-                    ]
+                payload = invoke_with_timeout(
+                    lambda: structured.invoke(
+                        [
+                            SystemMessage(content="You are a grounded page-index block assigner."),
+                            HumanMessage(content=prompt),
+                        ]
+                    ),
+                    timeout_seconds=provider_settings.parser.timeout_seconds,
                 )
             finally:
                 _notify_untracked_provider_call(
@@ -1612,6 +1638,17 @@ def _resolve_pointer(
     trace_log: PageIndexTraceLogger | None = None,
 ) -> HydratedTextPointer:
     needle = excerpt.strip() or excerpt or page_text.strip()
+    # Candidate cursors often land on the blank line before a block. Prefer the
+    # next exact occurrence so whitespace normalization cannot accept a partial
+    # fuzzy substring such as ``Intr`` for the source text ``Intro.``.
+    exact_start = page_text.find(needle, max(0, start_at)) if needle else -1
+    if exact_start >= 0:
+        return HydratedTextPointer(
+            source_cluster_id=unit_id,
+            start_char=exact_start,
+            end_char=exact_start + len(needle) - 1,
+            verbatim_text=page_text[exact_start : exact_start + len(needle)],
+        )
     candidate = HydratedTextPointer(
         source_cluster_id=unit_id,
         start_char=max(0, start_at),
@@ -1657,14 +1694,18 @@ def _make_semantic_node(
     parent_id: str | None,
     level_from_root: int,
     pointers: list[HydratedTextPointer],
+    summary: str = "",
+    metadata: dict[str, Any] | None = None,
 ) -> SemanticNode:
     return SemanticNode(
         title=title,
+        summary=summary,
         node_type=node_type,
         parent_id=parent_id,
         level_from_root=level_from_root,
         total_content_pointers=pointers,
         child_nodes=[],
+        metadata=dict(metadata or {}),
     )
 
 
@@ -1678,6 +1719,7 @@ def _materialize_block_tree(
     start_at: int = 0,
     repair_stats: dict[str, int] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
+    summary_enabled: bool = True,
 ) -> tuple[list[SemanticNode], int]:
     nodes: list[SemanticNode] = []
     cursor = start_at
@@ -1691,13 +1733,35 @@ def _materialize_block_tree(
             trace_log=trace_log,
         )
         cursor = pointer.end_char + 1
+        is_heading = spec.source_role == "heading"
         node = _make_semantic_node(
             title=spec.title,
             node_type=spec.node_type,
             parent_id=parent_id,
             level_from_root=level_from_root,
-            pointers=[pointer],
+            pointers=[] if is_heading else [pointer],
+            summary=(spec.summary.strip() or spec.title) if summary_enabled else "",
+            metadata={
+                "page_index_role": "heading_container" if is_heading else "content",
+                "semantic_kind": "heading" if is_heading else "content",
+                "legacy_node_type": spec.node_type,
+                "source_role": spec.source_role,
+            },
         )
+        heading_leaf = None
+        if is_heading:
+            heading_leaf = _make_semantic_node(
+                title=spec.title,
+                node_type="HEADING_TEXT",
+                parent_id=node.node_id,
+                level_from_root=level_from_root + 1,
+                pointers=[pointer],
+                summary=(spec.summary.strip() or spec.title) if summary_enabled else "",
+                metadata={
+                    "page_index_role": "heading_text",
+                    "semantic_kind": "heading_text",
+                },
+            )
         child_nodes, cursor = _materialize_block_tree(
             block_specs=spec.child_nodes,
             page_text=page_text,
@@ -1707,10 +1771,156 @@ def _materialize_block_tree(
             start_at=cursor,
             repair_stats=repair_stats,
             trace_log=trace_log,
+            summary_enabled=summary_enabled,
         )
+        if is_heading:
+            aggregate_end = max(pointer.end_char, cursor - 1)
+            node.aggregate_content_pointers = [
+                HydratedTextPointer(
+                    source_cluster_id=pointer.source_cluster_id,
+                    start_char=pointer.start_char,
+                    end_char=aggregate_end,
+                    verbatim_text=page_text[pointer.start_char : aggregate_end + 1],
+                )
+            ]
+        if heading_leaf is not None:
+            node.child_nodes.append(heading_leaf)
         node.child_nodes.extend(child_nodes)
         nodes.append(node)
     return nodes, cursor
+
+
+def parse_page_index_layer(
+    *,
+    parent_id: str,
+    parent_title: str,
+    parent_pointers: list[HydratedTextPointer],
+    parser_source_map: dict[str, dict[str, Any]],
+    source_format: PageIndexSourceFormat = "text",
+    summary_enabled: bool = True,
+) -> list[LayerChildCandidate]:
+    """Refine each parent interval by exactly one deterministic page-index layer.
+
+    This deliberately does not recurse through the materialized subtree.  The
+    workflow owns recursion: returned candidates are committed as the current
+    layer, and expandable children are sent through strategy selection again.
+    """
+
+    def _normalise(text: str) -> str:
+        return " ".join(text.split()).strip().casefold()
+
+    def _shift_pointer(pointer: HydratedTextPointer, offset: int) -> HydratedTextPointer:
+        return pointer.model_copy(
+            update={
+                "start_char": pointer.start_char + offset,
+                "end_char": pointer.end_char + offset if pointer.end_char >= 0 else pointer.end_char,
+            }
+        )
+
+    candidates: list[LayerChildCandidate] = []
+    for parent_pointer in parent_pointers:
+        source = parser_source_map.get(parent_pointer.source_cluster_id, {})
+        source_text = str(source.get("text", ""))
+        if not source_text:
+            continue
+        source_end = len(source_text) if parent_pointer.end_char == -1 else parent_pointer.end_char + 1
+        start = max(0, parent_pointer.start_char)
+        end = min(len(source_text), max(start, source_end))
+        layer_text = source_text[start:end]
+        if not layer_text.strip():
+            continue
+
+        specs, _diagnostics = _heuristic_page_outline(
+            layer_text,
+            page_number=1,
+            source_format=source_format,
+        )
+        if not specs:
+            continue
+
+        # A section aggregate normally starts with its own heading.  That
+        # heading identifies the parent, so only its direct children refine
+        # this layer; do not create a duplicate parent candidate.
+        first = specs[0]
+        if (
+            first.source_role == "heading"
+            and _normalise(first.title) == _normalise(parent_title)
+        ):
+            specs = list(first.child_nodes)
+        if not specs:
+            continue
+
+        nodes, _ = _materialize_block_tree(
+            block_specs=specs,
+            page_text=layer_text,
+            unit_id=parent_pointer.source_cluster_id,
+            parent_id=parent_id,
+            level_from_root=0,
+            summary_enabled=summary_enabled,
+        )
+        for node in nodes:
+            local_pointers = node.total_content_pointers or node.aggregate_content_pointers
+            pointers = [_shift_pointer(pointer, start) for pointer in local_pointers]
+            if not pointers:
+                continue
+            candidate_id = str(
+                stable_id(
+                    "workflow_ingest.page_index_layer_child",
+                    parent_id,
+                    node.node_type,
+                    node.title,
+                    [pointer.model_dump(mode="json") for pointer in pointers],
+                )
+            )
+            materialized_children: list[LayerChildCandidate] = []
+            for child in node.child_nodes:
+                child_local_pointers = child.total_content_pointers or child.aggregate_content_pointers
+                child_pointers = [_shift_pointer(pointer, start) for pointer in child_local_pointers]
+                if not child_pointers:
+                    continue
+                child_id = str(
+                    stable_id(
+                        "workflow_ingest.page_index_layer_materialized_child",
+                        candidate_id,
+                        child.node_type,
+                        child.title,
+                        [pointer.model_dump(mode="json") for pointer in child_pointers],
+                    )
+                )
+                materialized_children.append(
+                    LayerChildCandidate(
+                        node_id=child_id,
+                        parent_node_id=candidate_id,
+                        title=child.title,
+                        node_type=child.node_type,
+                        total_content_pointers=child_pointers,
+                        expandable=bool(child.child_nodes),
+                        metadata={
+                            **dict(child.metadata),
+                            "parse_strategy": "page_index",
+                            "page_index_materialized_child": True,
+                            "summary": child.summary,
+                        },
+                    )
+                )
+            candidates.append(
+                LayerChildCandidate(
+                    node_id=candidate_id,
+                    parent_node_id=parent_id,
+                    title=node.title,
+                    node_type=node.node_type,
+                    total_content_pointers=pointers,
+                    expandable=bool(node.child_nodes),
+                    metadata={
+                        **dict(node.metadata),
+                        "parse_strategy": "page_index",
+                        "page_index_layer_only": True,
+                        "summary": node.summary,
+                    },
+                    child_candidates=materialized_children,
+                )
+            )
+    return candidates
 
 
 def _page_index_block_exceeds_excerpt_budget(spec: PageIndexBlockSpec, page_text: str) -> bool:
@@ -1768,6 +1978,7 @@ def parse_page_index_document(
     callbacks: list[Any] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     refine_excerpts: bool = False,
+    summary_enabled: bool = True,
 ) -> PageIndexParseResult:
     """Parse a plain text or Markdown document into a page-index semantic tree."""
 
@@ -1887,6 +2098,7 @@ def parse_page_index_document(
             level_from_root=2,
             repair_stats=page_repair_stats,
             trace_log=trace_log,
+            summary_enabled=summary_enabled,
         )
         page_node.child_nodes.extend(child_nodes)
         page_nodes.append(page_node)

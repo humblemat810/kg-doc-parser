@@ -54,7 +54,6 @@ class SourceUnit(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
-
     @model_validator(mode="after")
     def _check_content(self) -> "SourceUnit":
         if self.modality in {"text", "ocr_text"} and not (self.text and self.text.strip()):
@@ -134,11 +133,51 @@ class WorkflowIngestInput(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+    # Optional request-level overrides take precedence over provider defaults.
+    # They are workflow controls, not model-visible document content.
+    parse_strategy: Annotated[
+        Optional[Literal["auto", "layer_excerpt", "layer_boundary", "page_index"]],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
+    parse_strategy_order: Annotated[
+        Optional[list[Literal["layer_excerpt", "layer_boundary", "page_index"]]],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
+    triage_enabled: Annotated[
+        Optional[bool],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
+    page_index_summary_enabled: Annotated[
+        Optional[bool],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
 
     @model_validator(mode="after")
     def _check_collections(self) -> "WorkflowIngestInput":
         if not self.collections:
             raise ValueError("at least one collection is required")
+        return self
+
+    @model_validator(mode="after")
+    def _check_strategy_order(self) -> "WorkflowIngestInput":
+        if self.parse_strategy_order is not None:
+            expected = {"layer_excerpt", "layer_boundary", "page_index"}
+            if len(self.parse_strategy_order) != 3 or set(self.parse_strategy_order) != expected:
+                raise ValueError(
+                    "parse_strategy_order must contain layer_excerpt, layer_boundary, and page_index exactly once"
+                )
         return self
 
     @classmethod
@@ -346,6 +385,16 @@ class LayerChildCandidate(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+    # Deterministic operators may materialize a small, already-grounded child
+    # tree (for example a heading plus its title-text leaf). This is backend
+    # state, never an LLM-authored response field.
+    child_candidates: Annotated[
+        list["LayerChildCandidate"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default_factory=list)
 
 
 class BoundaryCutpoint(BaseModel):
@@ -450,6 +499,17 @@ class LayerReasoningEntry(BaseModel):
     summary_count: int | None = None
     depth: int | None = None
     lines: int | None = None
+
+
+class StrategyExecutionRecord(BaseModel):
+    """Auditable, bounded event for one layer-strategy execution."""
+
+    strategy: Literal["layer_excerpt", "layer_boundary", "page_index"]
+    depth: int
+    parent_node_ids: list[str] = Field(default_factory=list)
+    attempt: int = Field(ge=1)
+    event: Literal["selected", "succeeded", "failed"]
+    reasons: list[str] = Field(default_factory=list, max_length=12)
 
 
 class CurrentLayerContext(ModeSlicingMixin, BaseModel):
