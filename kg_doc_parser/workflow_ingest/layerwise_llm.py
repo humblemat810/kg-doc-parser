@@ -33,6 +33,7 @@ from .providers import (
     SupportsStructuredOutput,
     WorkflowProviderSettings,
     build_chat_model_for_role,
+    invoke_with_timeout,
 )
 from .semantics import HydratedTextPointer, SemanticNode
 
@@ -1498,9 +1499,14 @@ def _structured_invoke(
     model: SupportsStructuredOutput,
     schema: type[TStructuredModel],
     messages: Sequence[tuple[str, str]],
+    *,
+    timeout_seconds: float = 120.0,
 ) -> TStructuredModel:
     structured = build_structured_output_runnable(model, schema, include_raw=True)
-    response = structured.invoke(list(messages))
+    response = invoke_with_timeout(
+        lambda: structured.invoke(list(messages)),
+        timeout_seconds=timeout_seconds,
+    )
     if isinstance(response, dict):
         parsed = response.get("parsed")
         if parsed is not None:
@@ -1751,6 +1757,7 @@ def build_layerwise_llm_callbacks(
                     chat_model,
                     LLMBoundaryProposalBatch,
                     messages,
+                    timeout_seconds=provider_settings.parser.timeout_seconds,
                 )
                 normalized_parsed: LLMBoundaryProposalBatch = _normalize_boundary_cutpoints_from_candidates(
                     raw_parsed,
@@ -1988,6 +1995,7 @@ def build_layerwise_llm_callbacks(
                             chat_model,
                             LLMBoundaryProposalBatch,
                             refinement_messages,
+                            timeout_seconds=provider_settings.parser.timeout_seconds,
                         )
                         refinement_parsed: LLMBoundaryProposalBatch = refinement_result
                         refinement_validation_reason = _boundary_validation_reason(
@@ -2382,7 +2390,12 @@ def build_layerwise_llm_callbacks(
             ] = retry_with_context(
                 max_attempts=proposal_retry_rounds + 1,
                 build_request=_build_child_messages,
-                invoke=lambda messages: _structured_invoke(chat_model, LLMCurrentLayerResult, messages),
+                invoke=lambda messages: _structured_invoke(
+                    chat_model,
+                    LLMCurrentLayerResult,
+                    messages,
+                    timeout_seconds=provider_settings.parser.timeout_seconds,
+                ),
                 validate=lambda parsed: _proposal_validation_reason(
                     parsed=parsed,
                     current_layer_context=current_layer_context,
@@ -2522,7 +2535,12 @@ def build_layerwise_llm_callbacks(
             child_count=len(getattr(current_layer_result, "children", []) or []),
         )
         try:
-            review_result: LLMCurrentLayerReview = _structured_invoke(chat_model, LLMCurrentLayerReview, messages)
+            review_result: LLMCurrentLayerReview = _structured_invoke(
+                chat_model,
+                LLMCurrentLayerReview,
+                messages,
+                timeout_seconds=provider_settings.parser.timeout_seconds,
+            )
             reviewed: LLMCurrentLayerReview = review_result
             runtime_review: CurrentLayerReview = CurrentLayerReview.model_validate(reviewed.model_dump())
             _emit(

@@ -265,6 +265,7 @@ def test_cli_ocr_command_uses_parse_ocr_document(monkeypatch: pytest.MonkeyPatch
 
     def _fake_run_ingest_workflow(**kwargs):
         captured["run_ingest_workflow_called"] = True
+        captured["run_ingest_workflow_kwargs"] = kwargs
 
         @dataclass
         class _Run:
@@ -291,6 +292,7 @@ def test_cli_ocr_command_uses_parse_ocr_document(monkeypatch: pytest.MonkeyPatch
     assert captured["parse_called"] is True
     assert captured["build_default_engines_called"] is True
     assert captured["run_ingest_workflow_called"] is True
+    assert captured["run_ingest_workflow_kwargs"]["provider_settings"] is not None
 
 
 def test_cli_page_index_command_uses_parse_page_index_document(

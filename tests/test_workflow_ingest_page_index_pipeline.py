@@ -18,8 +18,15 @@ from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
     parse_page_index_document,
+    parse_page_index_layer,
 )
-from kg_doc_parser.workflow_ingest.semantics import semantic_tree_to_kge_payload
+from kg_doc_parser.workflow_ingest.models import CurrentLayerResult, LayerChildCandidate
+from kg_doc_parser.workflow_ingest.parser_core import commit_layer_children
+from kg_doc_parser.workflow_ingest.semantics import (
+    HydratedTextPointer,
+    SemanticNode,
+    semantic_tree_to_kge_payload,
+)
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
 from kogwistar.utils.cache_backend import Memory
 
@@ -153,6 +160,74 @@ def test_page_index_module_exports_hybrid_primitives() -> None:
 
 
 @pytest.mark.ci
+def test_page_index_layer_refines_only_direct_children_of_one_parent() -> None:
+    source_text = "# Parent\n\nParent introduction.\n\n## Child\n\nChild detail.\n"
+    candidates = parse_page_index_layer(
+        parent_id="parent",
+        parent_title="Parent",
+        parent_pointers=[
+            HydratedTextPointer(
+                source_cluster_id="unit-1",
+                start_char=0,
+                end_char=len(source_text) - 1,
+                verbatim_text=source_text,
+            )
+        ],
+        parser_source_map={"unit-1": {"text": source_text}},
+        source_format="markdown",
+    )
+
+    assert candidates
+    assert {candidate.parent_node_id for candidate in candidates} == {"parent"}
+    assert all(candidate.metadata["page_index_layer_only"] is True for candidate in candidates)
+    child_heading = next(candidate for candidate in candidates if candidate.title == "Child")
+    assert child_heading.expandable is True
+    assert [child.title for child in child_heading.child_candidates] == [
+        "Child",
+        "Child detail.",
+    ]
+    assert child_heading.child_candidates[0].node_type == "HEADING_TEXT"
+    assert child_heading.child_candidates[0].parent_node_id == child_heading.node_id
+    # Only the direct title/content leaves are materialized. Deeper sections
+    # remain available for the child's later frontier refinement.
+    assert all(candidate.title != "Child detail." for candidate in candidates)
+
+
+@pytest.mark.ci
+def test_page_index_materialized_title_leaf_survives_layer_commit() -> None:
+    pointer = HydratedTextPointer(
+        source_cluster_id="unit-1",
+        start_char=0,
+        end_char=4,
+        verbatim_text="Title",
+    )
+    heading = LayerChildCandidate(
+        node_id="heading",
+        parent_node_id="root",
+        title="Title",
+        node_type="HEADING",
+        total_content_pointers=[pointer],
+        child_candidates=[
+            LayerChildCandidate(
+                node_id="heading-text",
+                parent_node_id="heading",
+                title="Title",
+                node_type="HEADING_TEXT",
+                total_content_pointers=[pointer],
+                expandable=False,
+            )
+        ],
+    )
+    committed = commit_layer_children(
+        semantic_tree=SemanticNode(node_id="root", parent_id=None, title="Root", node_type="ROOT"),
+        current_layer_result=CurrentLayerResult(children=[heading], satisfied=True),
+        current_depth=0,
+    )
+    assert committed.child_nodes[0].title == "Title"
+    assert committed.child_nodes[0].child_nodes[0].node_type == "HEADING_TEXT"
+
+
+@pytest.mark.ci
 @pytest.mark.parametrize(
     "fixture_name, source_format",
     [
@@ -180,8 +255,8 @@ def test_page_index_heuristic_parses_text_and_markdown(fixture_name: str, source
 
     node_types = _collect_node_types(result.semantic_tree)
     assert "PAGE" in node_types
-    assert "SECTION" in node_types
-    assert "SUBSECTION" in node_types
+    assert "HEADING" in node_types
+    assert "HEADING_TEXT" in node_types
     assert "PARAGRAPH" in node_types
     assert "TERM" in node_types
     assert _max_depth(result.semantic_tree) >= 6
@@ -191,11 +266,92 @@ def test_page_index_heuristic_parses_text_and_markdown(fixture_name: str, source
     assert len(payload["edges"]) >= 4
 
 
+@pytest.mark.manual
+def test_manual_plain_text_short_title_with_full_page_table_stays_grounded() -> None:
+    raw_text = _fixture_text("manual_short_title_full_table.txt")
+    candidates = page_index_module._extract_candidate_blocks(
+        raw_text,
+        page_number=1,
+        source_format="text",
+    )
+
+    assert len(candidates) == 2
+    assert candidates[0].node_type_hint == "HEADING"
+    assert candidates[0].title_hint == "AI Chip Revenue"
+    assert candidates[1].node_type_hint == "PARAGRAPH"
+    assert candidates[1].kind_hint == "paragraph_table_like"
+    assert candidates[1].text.startswith("Metric 2023 2024 2025 2026")
+    assert candidates[1].text.count("\n") >= 25
+
+    result = parse_page_index_document(
+        document_id="manual-short-title-table",
+        title="AI Chip Revenue",
+        raw_text=raw_text,
+        source_format="text",
+        mode="heuristic",
+        summary_enabled=True,
+    )
+    page = result.semantic_tree.child_nodes[0]
+    assert [node.node_type for node in page.child_nodes] == ["HEADING"]
+    heading = page.child_nodes[0]
+    assert heading.title == "AI Chip Revenue"
+    assert [node.node_type for node in heading.child_nodes] == ["HEADING_TEXT", "PARAGRAPH"]
+    table_node = heading.child_nodes[1]
+    assert table_node.total_content_pointers
+    assert table_node.total_content_pointers[0].verbatim_text.startswith(
+        "Metric 2023 2024 2025 2026"
+    )
+    assert result.coverage["overall"] > 0.95
+
+
+@pytest.mark.manual
+def test_manual_irregular_table_pages_keep_page_boundaries_and_one_layer_contract() -> None:
+    raw_text = _fixture_text("manual_irregular_table_pages.txt")
+    result = parse_page_index_document(
+        document_id="manual-irregular-table-pages",
+        title="Operations Snapshot",
+        raw_text=raw_text,
+        source_format="text",
+        mode="heuristic",
+        summary_enabled=False,
+    )
+
+    assert len(result.semantic_tree.child_nodes) == 2
+    assert [page.title for page in result.semantic_tree.child_nodes] == ["Page 1", "Page 2"]
+    assert result.authoritative_source_map.keys() == result.parser_source_map.keys()
+    assert all(page.child_nodes for page in result.semantic_tree.child_nodes)
+    assert all(
+        pointer.source_cluster_id in result.authoritative_source_map
+        for page in result.semantic_tree.child_nodes
+        for node in page.child_nodes
+        for pointer in node.total_content_pointers
+    )
+
+    first_page = result.semantic_tree.child_nodes[0]
+    table_parent = first_page.child_nodes[0].child_nodes[1]
+    candidates = parse_page_index_layer(
+        parent_id=table_parent.node_id,
+        parent_title=table_parent.title,
+        parent_pointers=table_parent.total_content_pointers,
+        parser_source_map=result.parser_source_map,
+        source_format="text",
+        summary_enabled=False,
+    )
+    assert candidates
+    assert all(candidate.metadata["page_index_layer_only"] is True for candidate in candidates)
+    assert all(candidate.parent_node_id == table_parent.node_id for candidate in candidates)
+    assert all(
+        pointer.source_cluster_id == table_parent.total_content_pointers[0].source_cluster_id
+        for candidate in candidates
+        for pointer in candidate.total_content_pointers
+    )
+
+
 def test_page_index_candidate_extraction_and_validation() -> None:
     raw_text = "# Root\n\nIntro paragraph.\n\n## Child\n\n- Term item\n"
     candidates = page_index_module._extract_candidate_blocks(raw_text, page_number=1, source_format="markdown")
 
-    assert [candidate.node_type_hint for candidate in candidates] == ["SECTION", "PARAGRAPH", "SECTION", "TERM"]
+    assert [candidate.node_type_hint for candidate in candidates] == ["HEADING", "PARAGRAPH", "HEADING", "TERM"]
     assert candidates[0].line_start == 1
     assert candidates[1].line_start == 3
     assert candidates[2].line_start == 5
@@ -306,7 +462,7 @@ def test_page_index_classifies_all_caps_heading_but_demotes_inline_emphasis() ->
         has_blank_after=False,
     )
 
-    assert heading.node_type == "SECTION"
+    assert heading.node_type == "HEADING"
     assert heading.confidence > emphasis.confidence
     assert emphasis.node_type == "PARAGRAPH"
 
@@ -330,7 +486,7 @@ def test_page_index_extracts_dense_clause_candidates() -> None:
 
     candidates = page_index_module._extract_candidate_blocks(raw_text, page_number=1, source_format="text")
 
-    assert [candidate.node_type_hint for candidate in candidates] == ["SUBSECTION", "TERM", "TERM"]
+    assert [candidate.node_type_hint for candidate in candidates] == ["HEADING", "TERM", "TERM"]
     assert candidates[0].heading_level == 4
     assert candidates[1].kind_hint == "term_list_item"
     assert candidates[2].kind_hint == "term_list_item"
@@ -652,8 +808,11 @@ def test_page_index_ollama_flat_assignment_parses_and_assembles(monkeypatch: pyt
     assert result.diagnostics["fallback_reason"] is None
     root = result.semantic_tree.child_nodes[0].child_nodes[0]
     assert root.title == "Root"
-    assert root.child_nodes[1].title == "Child"
-    assert root.child_nodes[1].child_nodes[0].title == "Term item"
+    heading_leaf = root.child_nodes[0]
+    assert heading_leaf.node_type == "HEADING_TEXT"
+    assert heading_leaf.total_content_pointers[0].verbatim_text == "# Root"
+    child = next(node for node in root.child_nodes if node.title == "Child")
+    assert child.child_nodes[-1].title == "Term item"
 
 
 def test_page_index_ollama_malformed_payload_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -901,7 +1060,12 @@ def test_page_index_refinement_rejects_whole_page_and_duplicate_excerpts(monkeyp
 
     root = result.semantic_tree.child_nodes[0].child_nodes[0]
     baseline_root = baseline_result.semantic_tree.child_nodes[0].child_nodes[0]
-    assert root.total_content_pointers[0].verbatim_text == baseline_root.total_content_pointers[0].verbatim_text
+    assert root.total_content_pointers == []
+    assert baseline_root.total_content_pointers == []
+    root_heading = root.child_nodes[0]
+    baseline_heading = baseline_root.child_nodes[0]
+    assert root_heading.node_type == "HEADING_TEXT"
+    assert root_heading.total_content_pointers[0].verbatim_text == baseline_heading.total_content_pointers[0].verbatim_text
     assert root.child_nodes[0].total_content_pointers[0].verbatim_text == baseline_root.child_nodes[0].total_content_pointers[0].verbatim_text
     assert root.child_nodes[1].total_content_pointers[0].verbatim_text == baseline_root.child_nodes[1].total_content_pointers[0].verbatim_text
     assert result.diagnostics["refine_excerpts_enabled"] is True
@@ -1085,6 +1249,57 @@ def test_page_index_heuristic_plain_text_and_markdown_share_structure() -> None:
     )
 
     assert _normalized_node_signature(text_result.semantic_tree) == _normalized_node_signature(markdown_result.semantic_tree)
+
+
+@pytest.mark.ci
+def test_page_index_heading_container_projects_source_text_to_leaf() -> None:
+    result = parse_page_index_document(
+        document_id="page-index-heading-leaf",
+        title="Page Index Document",
+        raw_text="# Results\n\nIntro.\n\n## Measurements\n\nBody.\n",
+        source_format="markdown",
+        mode="heuristic",
+    )
+
+    page = result.semantic_tree.child_nodes[0]
+    results = page.child_nodes[0]
+    assert results.node_type == "HEADING"
+    assert results.total_content_pointers == []
+    assert results.summary == "Results"
+    assert results.aggregate_content_pointers[0].verbatim_text == "# Results\n\nIntro.\n\n## Measurements\n\nBody."
+    assert results.metadata["page_index_role"] == "heading_container"
+    assert results.metadata["semantic_kind"] == "heading"
+
+    heading = results.child_nodes[0]
+    assert heading.node_type == "HEADING_TEXT"
+    assert heading.title == "Results"
+    assert heading.metadata["page_index_role"] == "heading_text"
+    assert heading.total_content_pointers[0].verbatim_text == "# Results"
+    assert heading.summary == "Results"
+
+    measurements = next(node for node in results.child_nodes if node.title == "Measurements")
+    assert measurements.node_type == "HEADING"
+    assert measurements.total_content_pointers == []
+    assert measurements.aggregate_content_pointers[0].verbatim_text == "## Measurements\n\nBody."
+    measurement_heading = measurements.child_nodes[0]
+    assert measurement_heading.node_type == "HEADING_TEXT"
+    assert measurement_heading.total_content_pointers[0].verbatim_text == "## Measurements"
+
+
+@pytest.mark.ci
+def test_page_index_summary_can_be_disabled_without_changing_grounding() -> None:
+    result = parse_page_index_document(
+        document_id="page-index-summary-disabled",
+        title="Page Index Document",
+        raw_text="# Results\n\nIntro.\n",
+        source_format="markdown",
+        mode="heuristic",
+        summary_enabled=False,
+    )
+    results = result.semantic_tree.child_nodes[0].child_nodes[0]
+    assert results.summary == ""
+    assert results.aggregate_content_pointers[0].verbatim_text == "# Results\n\nIntro."
+    assert results.child_nodes[0].total_content_pointers[0].verbatim_text == "# Results"
 
 
 @pytest.mark.manual

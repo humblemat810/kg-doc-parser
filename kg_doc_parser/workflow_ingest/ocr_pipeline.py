@@ -56,7 +56,7 @@ from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
 from .adapters import OCRPageJSON, normalize_ocr_pages
 from .models import WorkflowExportBundle, WorkflowIngestInput
 from .probe import WorkflowProbe, emit_probe_event
-from .providers import WorkflowProviderSettings, build_chat_model_for_role
+from .providers import WorkflowProviderSettings, build_chat_model_for_role, invoke_with_timeout
 from .service import run_ingest_workflow
 
 _LOGGER = logging.getLogger(__name__)
@@ -1276,16 +1276,19 @@ def _run_live_ocr_page(image_path: Path, page_number: int, provider_settings: Wo
         "Preserve reading order, cluster numbering, and non-text regions.\n"
         "Do not invent missing text. If the page is empty, mark it as empty."
     )
-    response = structured.invoke(
-        [
-            SystemMessage(content=prompt),
-            HumanMessage(
-                content=[
-                    {"type": "text", "text": f"OCR page {page_number} and return the structured schema."},
-                    {"type": "image_url", "image_url": {"url": _image_to_data_url(image_path)}},
-                ]
-            ),
-        ]
+    response = invoke_with_timeout(
+        lambda: structured.invoke(
+            [
+                SystemMessage(content=prompt),
+                HumanMessage(
+                    content=[
+                        {"type": "text", "text": f"OCR page {page_number} and return the structured schema."},
+                        {"type": "image_url", "image_url": {"url": _image_to_data_url(image_path)}},
+                    ]
+                ),
+            ]
+        ),
+        timeout_seconds=provider_settings.ocr.timeout_seconds,
     )
     try:
         return _coerce_ocr_response(response)
@@ -1585,6 +1588,7 @@ def run_ocr_ingest_workflow(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
         knowledge_engine=knowledge_engine,
+        provider_settings=provider_settings,
         deps=deps,
     )
     return run, bundle, artifacts

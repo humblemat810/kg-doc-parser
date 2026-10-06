@@ -1,0 +1,6 @@
+# Header Separator
+
+| Name | Value |
+|:-----|------:|
+| Alpha | 10 |
+| Beta | 20 |

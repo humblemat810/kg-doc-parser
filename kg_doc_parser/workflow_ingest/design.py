@@ -58,6 +58,8 @@ def _workflow_edge(
     edge_id: str,
     src: str,
     dst: str,
+    predicate: str | None = None,
+    is_default: bool = True,
 ) -> WorkflowEdge:
     dst_name = dst.split("|")[-1]
     return WorkflowEdge(
@@ -76,7 +78,8 @@ def _workflow_edge(
             "entity_type": "workflow_edge",
             "workflow_id": workflow_id,
             "wf_priority": 100,
-            "wf_is_default": True,
+            "wf_predicate": predicate,
+            "wf_is_default": is_default,
             "wf_multiplicity": "one",
             "wf_version": "v1",
         },
@@ -97,12 +100,14 @@ def build_ingest_workflow_design(
         ("init_parse_session", "init_parse_session", False, False),
         ("check_frontier_remaining", "check_frontier_remaining", False, False),
         ("prepare_layer_frontier", "prepare_layer_frontier", False, False),
-        ("propose_layer_breakdown", "propose_layer_breakdown", False, False),
+        ("triage_parse_strategy", "triage_parse_strategy", False, False),
+        ("layer_excerpt_method", "propose_layer_breakdown", False, False),
+        ("layer_boundary_method", "propose_layer_breakdown", False, False),
+        ("page_index_layer", "page_index_layer", False, False),
         ("review_cud_proposal", "review_cud_proposal", False, False),
         ("apply_cud_update", "apply_cud_update", False, False),
         ("check_layer_coverage", "check_layer_coverage", False, False),
         ("check_layer_satisfaction", "check_layer_satisfaction", False, False),
-        ("switch_split_strategy", "switch_split_strategy", False, False),
         ("repair_layer_pointers", "repair_layer_pointers", False, False),
         ("dedupe_and_filter_layer", "dedupe_and_filter_layer", False, False),
         ("commit_layer_children", "commit_layer_children", False, False),
@@ -112,6 +117,7 @@ def build_ingest_workflow_design(
         ("validate_tree", "validate_tree", False, False),
         ("export_graph", "export_graph", False, False),
         ("persist_canonical_graph", "persist_canonical_graph", False, False),
+        ("parse_failure", "parse_failure", False, True),
         ("end", "end", False, True),
     ]
     nodes = [
@@ -125,22 +131,26 @@ def build_ingest_workflow_design(
         for suffix, op, start, terminal in node_specs
     ]
     node_by_suffix = {node.safe_get_id().split("|")[-1]: node for node in nodes}
-    edge_pairs: Iterable[tuple[str, str]] = [
+    edge_pairs: Iterable[tuple[str, str] | tuple[str, str, str]] = [
         ("start", "normalize_input"),
         ("normalize_input", "build_source_map"),
         ("build_source_map", "init_parse_session"),
         ("init_parse_session", "check_frontier_remaining"),
         ("check_frontier_remaining", "prepare_layer_frontier"),
         ("check_frontier_remaining", "finalize_semantic_tree"),
-        ("prepare_layer_frontier", "propose_layer_breakdown"),
-        ("propose_layer_breakdown", "review_cud_proposal"),
+        ("prepare_layer_frontier", "triage_parse_strategy"),
+        ("triage_parse_strategy", "layer_excerpt_method", "parse_strategy_layer_excerpt"),
+        ("triage_parse_strategy", "layer_boundary_method", "parse_strategy_layer_boundary"),
+        ("triage_parse_strategy", "page_index_layer", "parse_strategy_page_index"),
+        ("triage_parse_strategy", "parse_failure", "strategy_selection_failed"),
+        ("layer_excerpt_method", "review_cud_proposal", "strategy_attempted"),
+        ("layer_boundary_method", "review_cud_proposal", "strategy_attempted"),
         ("review_cud_proposal", "apply_cud_update"),
         ("apply_cud_update", "check_layer_coverage"),
         ("check_layer_coverage", "check_layer_satisfaction"),
-        ("check_layer_satisfaction", "propose_layer_breakdown"),
-        ("check_layer_satisfaction", "switch_split_strategy"),
-        ("switch_split_strategy", "propose_layer_breakdown"),
-        ("check_layer_satisfaction", "repair_layer_pointers"),
+        ("check_layer_satisfaction", "repair_layer_pointers", "layer_satisfied"),
+        ("check_layer_satisfaction", "triage_parse_strategy", "strategy_failed_with_remaining"),
+        ("check_layer_satisfaction", "parse_failure", "all_strategies_exhausted"),
         ("repair_layer_pointers", "dedupe_and_filter_layer"),
         ("dedupe_and_filter_layer", "commit_layer_children"),
         ("commit_layer_children", "check_children_expandable"),
@@ -148,6 +158,7 @@ def build_ingest_workflow_design(
         ("check_children_expandable", "check_frontier_remaining"),
         ("enqueue_next_layer_frontier", "check_frontier_remaining"),
         ("finalize_semantic_tree", "validate_tree"),
+        ("page_index_layer", "review_cud_proposal", "strategy_attempted"),
         ("validate_tree", "export_graph"),
         ("export_graph", "persist_canonical_graph"),
         ("persist_canonical_graph", "end"),
@@ -155,11 +166,15 @@ def build_ingest_workflow_design(
     edges = [
         _workflow_edge(
             workflow_id=workflow_id,
-            edge_id=f"wf|{workflow_id}|e|{src}->{dst}",
+            edge_id=f"wf|{workflow_id}|e|{index}|{src}->{dst}",
             src=node_by_suffix[src].safe_get_id(),
             dst=node_by_suffix[dst].safe_get_id(),
+            predicate=predicate if len(edge_spec) == 3 else None,
+            is_default=len(edge_spec) == 2,
         )
-        for src, dst in edge_pairs
+        for index, edge_spec in enumerate(edge_pairs)
+        for src, dst, *predicate_values in [edge_spec]
+        for predicate in [predicate_values[0] if predicate_values else None]
     ]
     return nodes, edges
 

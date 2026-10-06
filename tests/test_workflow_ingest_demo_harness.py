@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from pydantic import BaseModel
-
 from _kogwistar_test_helpers import load_kogwistar_fake_backend
 from kg_doc_parser.workflow_ingest import (
     DemoHarnessConfig,
@@ -21,6 +18,7 @@ from kg_doc_parser.workflow_ingest import (
     run_demo_harness,
 )
 from kg_doc_parser.workflow_ingest.demo_harness import _start_subprocess_server
+from pydantic import BaseModel
 
 
 def _scratch(name: str) -> Path:
@@ -124,6 +122,10 @@ def test_provider_settings_use_pydantic_extension_slicing_for_llm_view():
     assert "api_key_env" not in llm_view["ocr"]
     assert "base_url" not in llm_view["parser"]
     assert "api_key_env" not in llm_view["parser"]
+    assert "timeout_seconds" not in llm_view["parser"]
+    assert "parse_strategy" not in llm_view
+    assert "page_index_summary_enabled" not in llm_view
+    assert "triage_enabled" not in llm_view
     assert llm_view["embedding"]["model"] == "demo-embed"
 
 

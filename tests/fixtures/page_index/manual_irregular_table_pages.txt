@@ -1,0 +1,16 @@
+Operations Snapshot
+
+Category 2024 2025 2026
+LatencyMs 14 11 9
+Throughput 120 145 171
+MissingValue 0 0 1
+LongCategoryNameWithNoDelimiter 7 8 9
+Notes remain source text and are not a heading
+
+Follow Up
+
+Region 2024 2025 2026
+North 18 22 27
+South 17 21 25
+West 9 13 16
+East 11 14 18

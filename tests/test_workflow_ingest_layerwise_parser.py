@@ -4,15 +4,18 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
 from _kogwistar_test_helpers import build_workflow_engine_triplet
-from kg_doc_parser.workflow_ingest import ProviderEndpointConfig, WorkflowProviderSettings
+from kg_doc_parser.workflow_ingest import (
+    ProviderEndpointConfig,
+    WorkflowProviderSettings,
+)
 from kg_doc_parser.workflow_ingest.layerwise_llm import build_layerwise_llm_callbacks
 from kg_doc_parser.workflow_ingest.models import (
     CurrentLayerContext,
     CurrentLayerResult,
     CurrentLayerReview,
     LayerChildCandidate,
+    LayerFrontierItem,
     ParseSessionState,
     WorkflowIngestInput,
 )
@@ -23,9 +26,8 @@ from kg_doc_parser.workflow_ingest.parser_core import (
     review_layer,
     switch_split_strategy,
 )
-from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer
+from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
-
 
 pytestmark = [pytest.mark.workflow]
 
@@ -92,7 +94,7 @@ def _segment_pointer(unit_id: str, text: str, fragment: str) -> HydratedTextPoin
 
 
 class _SequencedFakeStructuredInvoker:
-    def __init__(self, owner: "_SequencedFakeChatModel"):
+    def __init__(self, owner: _SequencedFakeChatModel):
         self._owner = owner
 
     def invoke(self, messages):
@@ -278,6 +280,55 @@ def test_prepare_layer_frontier_pulls_one_bfs_depth_group():
     assert context.parent_node_ids == [root.node_id]
     assert len(remaining) == 2
     assert updated.current_depth == 0
+
+
+@pytest.mark.ci
+def test_prepare_layer_frontier_resets_strategy_and_uses_heading_aggregate_span():
+    source_text = "# Parent\n\nChild text."
+    inp = WorkflowIngestInput.from_text(
+        document_id="layer-reset-doc",
+        text=source_text,
+        title="Layer Reset Doc",
+    )
+    session, _frontier, root = initialize_parse_session(
+        collection=inp.collections[0],
+        parser_input_dict={"document_filename": "Layer Reset Doc", "pages": []},
+        parser_source_map={
+            "layer-reset-doc|p1_t0": {
+                "id": "layer-reset-doc|p1_t0",
+                "text": source_text,
+                "participates_in_semantic_text": True,
+            }
+        },
+        parse_semantic_fn=None,
+    )
+    heading = SemanticNode(
+        node_id="heading-parent",
+        parent_id=root.node_id,
+        title="Parent",
+        node_type="HEADING",
+        aggregate_content_pointers=[
+            HydratedTextPointer(
+                source_cluster_id="layer-reset-doc|p1_t0",
+                start_char=0,
+                end_char=len(source_text) - 1,
+                verbatim_text=source_text,
+            )
+        ],
+    )
+    root = root.model_copy(update={"child_nodes": [heading]})
+    # Simulates the preceding layer having selected boundary-first. The next
+    # frontier must restart at the configured default, excerpt-first.
+    session = session.model_copy(update={"split_strategy": "boundary_first"})
+
+    context, _remaining, _updated = prepare_layer_frontier(
+        parse_session=session,
+        frontier_queue=[LayerFrontierItem(parent_node_id="heading-parent", depth=1)],
+        semantic_tree=root,
+    )
+
+    assert context.split_strategy == "excerpt_first"
+    assert context.parent_content_pointers_by_id["heading-parent"][0].verbatim_text == source_text
 
 
 @pytest.mark.ci

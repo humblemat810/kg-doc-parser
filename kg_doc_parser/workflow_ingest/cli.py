@@ -46,14 +46,40 @@ def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSe
         "api_key_env": args.parser_api_key_env,
     }
     proposal_mode = getattr(args, "proposal_mode", None)
+    parse_strategy = getattr(args, "parse_strategy", None)
+    parse_strategy_order = getattr(args, "parse_strategy_order", None)
+    triage_enabled = getattr(args, "triage_enabled", None)
+    page_index_summary_enabled = getattr(args, "page_index_summary_enabled", None)
     ocr_override = any(value is not None for value in ocr_values.values())
     parser_override = any(value is not None for value in parser_values.values())
     proposal_override = proposal_mode is not None
-    if not ocr_override and not parser_override and not proposal_override:
+    strategy_override = parse_strategy is not None
+    strategy_order_override = parse_strategy_order is not None
+    triage_override = triage_enabled is not None
+    summary_override = page_index_summary_enabled is not None
+    if (
+        not ocr_override
+        and not parser_override
+        and not proposal_override
+        and not strategy_override
+        and not strategy_order_override
+        and not triage_override
+        and not summary_override
+    ):
         return None
     settings = WorkflowProviderSettings.from_env()
     if proposal_override:
         settings = settings.model_copy(update={"proposal_mode": proposal_mode})
+    if strategy_override:
+        settings = settings.model_copy(update={"parse_strategy": parse_strategy})
+    if strategy_order_override:
+        settings = settings.model_copy(
+            update={"parse_strategy_order": tuple(parse_strategy_order.split(","))}
+        )
+    if triage_override:
+        settings = settings.model_copy(update={"triage_enabled": triage_enabled})
+    if summary_override:
+        settings = settings.model_copy(update={"page_index_summary_enabled": page_index_summary_enabled})
     if ocr_override:
         settings = settings.model_copy(
             update={
@@ -76,6 +102,29 @@ def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSe
 def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("provider overrides")
     group.add_argument("--proposal-mode", choices=["children", "boundaries"], default=None)
+    group.add_argument(
+        "--parse-strategy",
+        choices=["auto", "layer_excerpt", "layer_boundary", "page_index"],
+        default=None,
+        help="Select the parser strategy for every frontier layer in this parse call",
+    )
+    group.add_argument(
+        "--parse-strategy-order",
+        default=None,
+        help="comma-separated parser order, e.g. layer_boundary,layer_excerpt,page_index",
+    )
+    group.add_argument(
+        "--triage-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable provider-backed per-layer strategy triage",
+    )
+    group.add_argument(
+        "--page-index-summary-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable summaries on PageIndex nodes for this parse call",
+    )
     group.add_argument("--ocr-provider", default=None)
     group.add_argument("--ocr-model", default=None)
     group.add_argument("--ocr-base-url", default=None)

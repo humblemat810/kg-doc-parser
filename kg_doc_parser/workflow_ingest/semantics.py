@@ -25,7 +25,11 @@ class SemanticNode(BaseModel):
     parent_id: str | None = None
     node_type: str = "TEXT_FLOW"
     title: str
+    summary: str = ""
+    # Ownership spans belong to this node's own leaf content.  Aggregate spans
+    # describe the structural section represented by a container node.
     total_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
+    aggregate_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
     child_nodes: list["SemanticNode"] = Field(default_factory=list)
     level_from_root: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -181,12 +185,17 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
         ]
 
     def walk(node: SemanticNode) -> None:
+        ownership_spans = spans(node.total_content_pointers)
+        aggregate_spans = spans(node.aggregate_content_pointers)
+        # A structural page-index container is grounded by its aggregate span;
+        # ordinary legacy structural nodes retain the existing synthetic fallback.
+        mentions = [{"spans": spans(node.total_content_pointers or node.aggregate_content_pointers)}]
         nodes.append(
             {
                 "id": node.node_id,
                 "label": node.title,
                 "type": "entity",
-                "summary": node.title,
+                "summary": node.summary or node.title,
                 "metadata": {
                     "semantic_node_type": node.node_type,
                     "doc_id": doc_id,
@@ -194,7 +203,8 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
                     "level_from_root": node.level_from_root,
                     **dict(node.metadata or {}),
                 },
-                "mentions": [{"spans": spans(node.total_content_pointers)}],
+                "mentions": mentions,
+                "aggregate_mentions": [{"spans": aggregate_spans}] if aggregate_spans else [],
             }
         )
         for child in node.child_nodes:
@@ -220,7 +230,10 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
                     "mentions": [
                         {
                             "spans": spans(
-                                child.total_content_pointers or node.total_content_pointers
+                                child.total_content_pointers
+                                or child.aggregate_content_pointers
+                                or node.total_content_pointers
+                                or node.aggregate_content_pointers
                             )
                         }
                     ],

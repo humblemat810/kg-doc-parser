@@ -4,22 +4,28 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
 from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
     drain_phase1_indexes_with_workers_until_idle,
 )
-from kg_doc_parser.workflow_ingest.clients import ServerCanonicalKgClient, UnsupportedClientOperation
 from kg_doc_parser.workflow_ingest.adapters import (
     build_authoritative_source_map,
     normalize_ocr_pages,
 )
+from kg_doc_parser.workflow_ingest.clients import (
+    ServerCanonicalKgClient,
+    UnsupportedClientOperation,
+)
 from kg_doc_parser.workflow_ingest.design import build_ingest_workflow_design
-from kg_doc_parser.workflow_ingest.models import GroundedSourceRecord, SourceUnit, WorkflowExportBundle, WorkflowIngestInput
+from kg_doc_parser.workflow_ingest.models import (
+    GroundedSourceRecord,
+    SourceUnit,
+    WorkflowExportBundle,
+    WorkflowIngestInput,
+)
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
-
 
 pytestmark = [pytest.mark.workflow]
 
@@ -241,6 +247,11 @@ def test_fake_workflow_run_text_success_and_knowledge_persist(
     assert bundle.canonical_write_confirmed is False
     assert bundle.retrieval_metadata["supports_split_embedding_spaces"] is True
     assert knowledge_engine.persist.exists_node(bundle.graph_payload["nodes"][0]["id"])
+    assert run.final_state["strategy_attempt_counts"]
+    assert all(count >= 1 for count in run.final_state["strategy_attempt_counts"].values())
+    history = run.final_state["strategy_execution_history"]
+    assert any(event["event"] == "selected" for event in history)
+    assert any(event["event"] == "succeeded" for event in history)
 
 
 def test_fake_workflow_run_ocr_success(workflow_backend_kind):
@@ -334,6 +345,11 @@ def test_fake_workflow_validation_failure_is_structured(workflow_backend_kind):
     assert bundle is not None
     assert run.status in {"failed", "failure"}
     assert any("text coverage below threshold" in err for err in run.final_state["workflow_errors"])
+    attempt_counts = run.final_state["strategy_attempt_counts"]
+    assert attempt_counts
+    assert all(count >= 1 for count in attempt_counts.values())
+    history = run.final_state["strategy_execution_history"]
+    assert any(event["event"] == "selected" for event in history)
 
 
 @pytest.mark.ci
@@ -385,7 +401,7 @@ def test_source_map_preserves_explicit_unit_ids_and_cluster_identity():
 def test_invalid_source_unit_payload_fails_cleanly():
     try:
         SourceUnit(modality="image_region", page_number=1, cluster_number=0)
-    except Exception as exc:
+    except ValueError as exc:
         assert "require description or source_uri" in str(exc)
     else:
         raise AssertionError("expected validation error for incomplete image_region payload")
@@ -402,12 +418,14 @@ def test_workflow_design_matches_expected_step_sequence():
         "init_parse_session",
         "check_frontier_remaining",
         "prepare_layer_frontier",
+        "triage_parse_strategy",
         "propose_layer_breakdown",
+        "propose_layer_breakdown",
+        "page_index_layer",
         "review_cud_proposal",
         "apply_cud_update",
         "check_layer_coverage",
         "check_layer_satisfaction",
-        "switch_split_strategy",
         "repair_layer_pointers",
         "dedupe_and_filter_layer",
         "commit_layer_children",
@@ -417,10 +435,30 @@ def test_workflow_design_matches_expected_step_sequence():
         "validate_tree",
         "export_graph",
         "persist_canonical_graph",
+        "parse_failure",
         "end",
     ]
     assert edges[0].source_ids[0].endswith("|start")
     assert edges[-1].target_ids[0].endswith("|end")
+    edge_pairs = {
+        (edge.source_ids[0].split("|")[-1], edge.target_ids[0].split("|")[-1])
+        for edge in edges
+    }
+    assert ("prepare_layer_frontier", "triage_parse_strategy") in edge_pairs
+    assert ("triage_parse_strategy", "page_index_layer") in edge_pairs
+    assert ("triage_parse_strategy", "layer_excerpt_method") in edge_pairs
+    assert ("triage_parse_strategy", "layer_boundary_method") in edge_pairs
+    assert ("check_layer_satisfaction", "parse_failure") in edge_pairs
+    assert ("check_layer_satisfaction", "triage_parse_strategy") in edge_pairs
+    assert ("page_index_layer", "review_cud_proposal") in edge_pairs
+    assert ("page_index_layer", "validate_tree") not in edge_pairs
+    guarded = {
+        (src, dst): edge.metadata.get("wf_predicate")
+        for edge in edges
+        for src, dst in [(edge.source_ids[0].split("|")[-1], edge.target_ids[0].split("|")[-1])]
+    }
+    assert guarded[("triage_parse_strategy", "layer_boundary_method")] == "parse_strategy_layer_boundary"
+    assert guarded[("check_layer_satisfaction", "parse_failure")] == "all_strategies_exhausted"
 
 
 @pytest.mark.ci

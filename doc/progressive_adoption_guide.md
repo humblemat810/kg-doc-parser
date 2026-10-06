@@ -33,6 +33,28 @@ immutable original source
   + graph payload with mentions/spans
 ```
 
+### Layerwise strategy selection
+
+The recursive workflow chooses an operator for each frontier layer rather than
+locking an entire document subtree to one parser. Without triage, the default
+cascade is:
+
+```text
+layer_excerpt -> layer_boundary -> page_index -> parse_failure
+```
+
+The caller may provide a complete permutation. With triage enabled, triage can
+choose any currently enabled operator for the current layer; a failed operator
+is disabled and the workflow routes back to the remaining choices. An explicit
+PageIndex selection therefore starts with PageIndex but does not force
+PageIndex on descendants.
+
+PageIndex performs one layer of structural refinement. A heading can be stored
+as a source-grounded container with a title-text leaf and immediate content
+children. Expandable descendants return to the normal frontier and receive a
+fresh strategy decision. Summaries are advisory; the immutable source map and
+exact hydrated spans remain authoritative.
+
 An application can build a small vector index over the source-map units and
 store each result's `unit_id`, document ID, source URI, page/cluster, and
 revision/digest alongside it. That vector index is application-owned; the

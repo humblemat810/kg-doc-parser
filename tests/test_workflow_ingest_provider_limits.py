@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import sys
+import threading
 from types import ModuleType
 from typing import Any
 
 import pytest
-
 from kg_doc_parser.workflow_ingest import ProviderEndpointConfig
 from kg_doc_parser.workflow_ingest.providers import (
     _normalize_provider_name,
     build_chat_model,
+    invoke_with_timeout,
 )
 
 pytestmark = pytest.mark.ci
@@ -112,3 +113,19 @@ def test_provider_retry_count_cannot_be_negative(value: int) -> None:
 def test_claude_provider_name_normalizes_to_optional_anthropic_adapter() -> None:
     assert _normalize_provider_name("Claude") == "anthropic"
     assert ProviderEndpointConfig(provider="anthropic", model="claude-sonnet").provider == "anthropic"
+
+
+def test_provider_timeout_returns_result_without_leaking_into_caller() -> None:
+    assert invoke_with_timeout(lambda: "ok", timeout_seconds=1.0) == "ok"
+
+
+def test_provider_timeout_bounds_a_stalled_local_model() -> None:
+    release = threading.Event()
+
+    def stalled_call() -> str:
+        release.wait()
+        return "late"
+
+    with pytest.raises(TimeoutError, match="exceeded"):
+        invoke_with_timeout(stalled_call, timeout_seconds=0.01)
+    release.set()
