@@ -60,12 +60,12 @@ import math
 import os
 import queue
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import (
     Annotated,
     Any,
     ClassVar,
-    Callable,
     Literal,
     Protocol,
     TypeVar,
@@ -415,7 +415,7 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
     )
 
     @model_validator(mode="after")
-    def _check_parse_strategy_order(self) -> "WorkflowProviderSettings":
+    def _check_parse_strategy_order(self) -> WorkflowProviderSettings:
         expected = {"layer_excerpt", "layer_boundary", "page_index"}
         if len(self.parse_strategy_order) != 3 or set(self.parse_strategy_order) != expected:
             raise ValueError(
@@ -505,7 +505,7 @@ def invoke_with_timeout(callable_obj: Callable[[], object], *, timeout_seconds: 
     def _run() -> None:
         try:
             result_queue.put((True, callable_obj()))
-        except BaseException as exc:  # preserve provider exceptions for the caller
+        except BaseException as exc:  # noqa: BLE001 - preserve provider exceptions for the caller
             result_queue.put((False, exc))
 
     worker = threading.Thread(target=_run, name="kg-doc-parser-provider", daemon=True)
