@@ -40,7 +40,7 @@ disabled for that layer and the workflow routes through the remaining methods
 before reaching explicit parse failure. PageIndex is a one-layer structural
 fallback that preserves exact source pointers and returns expandable children
 to normal strategy selection. See the
-[`0.2.3` release note](doc/release_0.2.3.md) and the
+[`0.2.4` release note](doc/release_0.2.4.md) and the
 [progressive refinement ADR](doc/adr_progressive_refinement_strategy_arbitration.md).
 The deterministic and text-only Bonsai fixture evaluation is recorded in the
 [`PageIndex adversarial fixture report`](doc/page_index_adversarial_fixture_report.md).
