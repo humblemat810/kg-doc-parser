@@ -36,12 +36,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Check out Kogwistar 0.6.3 source profile for PyPy
+      - name: Check out Kogwistar 0.6.4 source profile for PyPy
         if: matrix.is_pypy
         uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: v0.6.3
+          ref: v0.6.4
           path: kogwistar
 
       - name: Set up Python
@@ -79,7 +79,7 @@ jobs:
         if: matrix.is_pypy == false
         run: poetry run ruff check kg_doc_parser/workflow_ingest/providers.py
 
-      - name: Verify Kogwistar 0.6.3 source-profile import on PyPy
+      - name: Verify Kogwistar 0.6.4 source-profile import on PyPy
         if: matrix.is_pypy
         env:
           KOGWISTAR_IMPL_MODE: python
