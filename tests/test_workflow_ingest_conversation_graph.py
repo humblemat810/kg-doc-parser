@@ -17,7 +17,7 @@ from kg_doc_parser.workflow_ingest.design import DEFAULT_WORKFLOW_ID, ensure_ing
 from kg_doc_parser.workflow_ingest.handlers import build_ingest_step_resolver
 from kg_doc_parser.workflow_ingest.models import WorkflowIngestInput
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
+from kg_doc_parser.workflow_ingest.service import run_ingest_workflow, workflow_predicates
 
 
 pytestmark = [pytest.mark.workflow]
@@ -289,7 +289,7 @@ def test_conversation_graph_resume_from_suspended_checkpoint(workflow_backend_ki
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
         step_resolver=resolver.resolve,
-        predicate_registry={},
+        predicate_registry=workflow_predicates(),
         trace=False,
     )
 

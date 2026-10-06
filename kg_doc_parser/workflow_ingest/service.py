@@ -16,7 +16,7 @@ from .models import IngestRunResult, WorkflowExportBundle, WorkflowIngestInput
 from .providers import WorkflowProviderSettings, build_embedding_function
 
 
-def _workflow_predicates() -> dict[str, Any]:
+def workflow_predicates() -> dict[str, Any]:
     """Guards for parser strategy transitions.
 
     These are deliberately derived from persisted state only.  The provider
@@ -77,6 +77,11 @@ def _workflow_predicates() -> dict[str, Any]:
         "all_strategies_exhausted": _exhausted,
         "strategy_selection_failed": _strategy_selection_failed,
     }
+
+
+# Keep the old private name available for callers and tests that imported it
+# before the helper became part of the runtime construction API.
+_workflow_predicates = workflow_predicates
 
 
 @dataclass(slots=True)
@@ -154,7 +159,7 @@ def build_runtime(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
         step_resolver=resolver.resolve,
-        predicate_registry=_workflow_predicates(),
+        predicate_registry=workflow_predicates(),
         trace=False,
     )
 

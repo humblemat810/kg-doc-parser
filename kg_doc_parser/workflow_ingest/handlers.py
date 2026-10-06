@@ -436,11 +436,21 @@ def register_layerwise_parser_steps(
                     "page_index_summary_enabled": page_index_summary_enabled,
             }
         )
+        selected_split_strategy = (
+            "boundary_first" if decision.selected_strategy == "layer_boundary" else "excerpt_first"
+        )
+        strategy_history = list(parse_session.strategy_history)
+        strategy_switch_count = parse_session.strategy_switch_count
+        if strategy_history[-1:] != [selected_split_strategy]:
+            strategy_history.append(selected_split_strategy)
+            strategy_switch_count += 1
         if decision.selected_strategy == "layer_boundary":
             updated_session = parse_session.model_copy(
                 update={
                     "split_strategy": "boundary_first",
                     "fallback_split_strategy": "excerpt_first",
+                    "strategy_history": strategy_history,
+                    "strategy_switch_count": strategy_switch_count,
                     "metadata": metadata,
                 }
             )
@@ -449,6 +459,8 @@ def register_layerwise_parser_steps(
                 update={
                     "split_strategy": "excerpt_first",
                     "fallback_split_strategy": "boundary_first",
+                    "strategy_history": strategy_history,
+                    "strategy_switch_count": strategy_switch_count,
                     "metadata": metadata,
                 }
             )
@@ -726,7 +738,7 @@ def register_layerwise_parser_steps(
                     state_update=[("a", {"strategy_execution_history": event.model_dump(mode="json")})]
                 )
             error_message = (
-                f"layer parsing failed at depth {current_layer_context.depth}; "
+                f"layer satisfaction retries exhausted at depth {current_layer_context.depth}; "
                 "all configured strategies are exhausted"
             )
             with ctx.state_write as st:
