@@ -1,4 +1,4 @@
-# kg-doc-parser 0.2.2
+# kg-doc-parser 0.2.3
 
 ## Layerwise Strategy Arbitration
 
@@ -51,9 +51,9 @@ content.
   compatibility behavior.
 - PageIndex summary text can be disabled without changing source grounding.
 - The release CI matrix covers CPython 3.12-3.14 and a PyPy 3.11
-  compatibility profile; CPython 3.11 is not a supported runtime. The
-  package metadata remains `python = \"^3.12\"`, so PyPy 3.11 is validated as
-  a source/CI profile rather than advertised as a Poetry-installable runtime
+  compatibility profile; CPython 3.11 is not a supported runtime. The package
+  metadata remains `python = "^3.12"`, so PyPy 3.11 is validated as a
+  source/CI profile rather than advertised as a Poetry-installable runtime
   until its packaging constraint is intentionally widened.
 
 ## Release Gate
