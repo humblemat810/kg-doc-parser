@@ -82,7 +82,6 @@ NOTES
 
 from __future__ import annotations
 
-import json
 import os
 import queue
 import sqlite3
@@ -99,6 +98,8 @@ from langchain_core.outputs.chat_generation import ChatGeneration
 from langchain_core.outputs.llm_result import LLMResult
 from langchain_core.messages import BaseMessage
 from uuid import UUID
+
+from kg_doc_parser.workflow_ingest.serialization import safe_json_dumps
 
 # ---------------------------
 # Pricing / cost calculation
@@ -537,7 +538,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                 token_count=0,
                 cost_usd=0.0,
                 n_try=n_try,
-                metadata_json=json.dumps(payload, ensure_ascii=False, default=str),
+                metadata_json=safe_json_dumps(payload, ensure_ascii=False),
             )
         )
     def on_llm_start(
@@ -594,7 +595,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                 token_count=0,
                 cost_usd=0.0,
                 n_try = payload.get('n_try', 0),
-                metadata_json=json.dumps(payload, ensure_ascii=False, default=str),
+                metadata_json=safe_json_dumps(payload, ensure_ascii=False),
             )
         )
 
@@ -710,7 +711,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                 token_count=token_count,
                 cost_usd=float(cost_usd),
                 n_try=float(payload.get('n_try', 0)),
-                metadata_json=json.dumps(payload, ensure_ascii=False, default=str),
+                metadata_json=safe_json_dumps(payload, ensure_ascii=False),
             )
         )
 
@@ -777,6 +778,6 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                 token_count=0,
                 cost_usd=0.0,
                 n_try=float(payload.get('n_try', 0)),
-                metadata_json=json.dumps(payload, ensure_ascii=False, default=str),
+                metadata_json=safe_json_dumps(payload, ensure_ascii=False),
             )
         )

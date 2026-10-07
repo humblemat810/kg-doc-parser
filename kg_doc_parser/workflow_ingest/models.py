@@ -404,7 +404,7 @@ class BoundaryCutpoint(BaseModel):
     parent_node_id: str
     source_cluster_id: str
     cut_offset: int = Field(description="Absolute character offset of the cut inside the parent span.")
-    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] = Field(
+    boundary_kind: Literal["section", "paragraph", "list_item", "table_row", "sentence", "word", "semantic"] = Field(
         description="The structural reason this cut is a legal boundary."
     )
     text_before_cut: str = Field(
@@ -450,7 +450,7 @@ class BoundaryReviewDecision(BaseModel):
     cut_offset: int
     decision: Literal["accept", "shift_left", "shift_right", "reject", "needs_refinement"]
     resolved_cut_offset: int | None = None
-    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] | None = None
+    boundary_kind: Literal["section", "paragraph", "list_item", "table_row", "sentence", "word", "semantic"] | None = None
     anchor_match_mode: Literal["exact", "fuzzy"] | None = None
     anchor_match_score: float | None = None
     text_before_cut: str | None = None
@@ -474,7 +474,7 @@ class BoundaryUnitSummary(BaseModel):
     source_cluster_id: str
     start_char: int
     end_char: int
-    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] = "semantic"
+    boundary_kind: Literal["section", "paragraph", "list_item", "table_row", "sentence", "word", "semantic"] = "semantic"
     summary_text: str = ""
     exact_text: str = ""
     expandable: bool = False

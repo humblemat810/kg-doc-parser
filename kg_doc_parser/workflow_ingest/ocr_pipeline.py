@@ -1289,6 +1289,8 @@ def _run_live_ocr_page(image_path: Path, page_number: int, provider_settings: Wo
             ]
         ),
         timeout_seconds=provider_settings.ocr.timeout_seconds,
+        operation="ocr_page",
+        max_in_flight=provider_settings.ocr.max_in_flight_calls,
     )
     try:
         return _coerce_ocr_response(response)

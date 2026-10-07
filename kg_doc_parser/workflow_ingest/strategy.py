@@ -138,7 +138,12 @@ def build_llm_strategy_triage(provider_settings: WorkflowProviderSettings) -> St
                     HumanMessage(content=_triage_prompt(context)),
                 ]
             ),
-            timeout_seconds=provider_settings.parser.timeout_seconds,
+            timeout_seconds=(
+                provider_settings.triage_timeout_seconds
+                or provider_settings.parser.timeout_seconds
+            ),
+            operation="parse_strategy_triage",
+            max_in_flight=provider_settings.parser.max_in_flight_calls,
         )
         parsed = response.get("parsed") if isinstance(response, dict) else response
         if parsed is None:

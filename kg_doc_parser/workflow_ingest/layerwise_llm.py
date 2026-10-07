@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import re
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypedDict, TypeVar, cast
@@ -36,8 +36,19 @@ from .providers import (
     invoke_with_timeout,
 )
 from .semantics import HydratedTextPointer, SemanticNode
+from .serialization import safe_json_dumps
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
+
+
+def _bounded_retry_delay(*, attempt_number: int, retry_budget: int, provider_settings: WorkflowProviderSettings) -> float:
+    """Return exponential backoff for a retry, never for the terminal attempt."""
+
+    if attempt_number >= retry_budget:
+        return 0.0
+    base = float(getattr(provider_settings.parser, "retry_backoff_seconds", 0.0) or 0.0)
+    maximum = float(getattr(provider_settings.parser, "retry_backoff_max_seconds", 0.0) or 0.0)
+    return min(maximum, base * (2 ** max(0, attempt_number - 1))) if maximum else 0.0
 
 
 class LayerwiseProposeCallback(Protocol):
@@ -99,7 +110,7 @@ LayerwiseCallback = LayerwiseLLMCallbacks
 
 
 MAX_BOUNDARY_REPAIR_SHIFT_CHARS = 8
-BoundaryKind = Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"]
+BoundaryKind = Literal["section", "paragraph", "list_item", "table_row", "sentence", "word", "semantic"]
 AnchorMatchMode = Literal["exact", "fuzzy"]
 
 
@@ -295,6 +306,14 @@ def _is_list_item_line(line: str) -> bool:
     return bool(re.match(r"^([-*+]\s+|\d+[.)]\s+|[a-zA-Z][.)]\s+)", stripped))
 
 
+def _is_table_row_line(line: str) -> bool:
+    stripped = line.strip()
+    if "|" not in stripped:
+        return False
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    return len(cells) >= 2 and any(cell for cell in cells)
+
+
 def _classify_boundary_kind(text: str, offset: int) -> str:
     if offset <= 0 or offset >= len(text):
         return "semantic"
@@ -310,6 +329,16 @@ def _classify_boundary_kind(text: str, offset: int) -> str:
         return "paragraph"
     line_start = text.rfind("\n", 0, offset - 1) + 1
     current_line = text[line_start:offset]
+    if prev_char == "\n":
+        previous_line_end = offset - 1
+        previous_line_start = text.rfind("\n", 0, max(0, previous_line_end - 1)) + 1
+        previous_line = text[previous_line_start:previous_line_end]
+        next_line_end = text.find("\n", offset)
+        if next_line_end == -1:
+            next_line_end = len(text)
+        next_line = text[offset:next_line_end]
+        if _is_table_row_line(previous_line) and _is_table_row_line(next_line):
+            return "table_row"
     if prev_char == "\n" and _is_heading_line(current_line):
         return "section"
     if prev_char == "\n" and _is_list_item_line(current_line):
@@ -326,6 +355,7 @@ def _boundary_kind_priority(kind: str) -> int:
         "section": 5,
         "paragraph": 4,
         "list_item": 3,
+        "table_row": 3,
         "sentence": 2,
         "word": 1,
         "semantic": 0,
@@ -399,7 +429,7 @@ def _legal_cutpoints_for_text(
     if len(ordered) <= max_points:
         return ordered
     selected: list[BoundaryCutpoint] = []
-    for kind in ("section", "paragraph", "list_item", "sentence", "word"):
+    for kind in ("section", "paragraph", "list_item", "table_row", "sentence", "word"):
         kind_boundaries = [boundary for boundary in ordered if boundary.boundary_kind == kind]
         room = max_points - len(selected)
         if room <= 0:
@@ -724,7 +754,7 @@ def _make_boundary_summary(
             parser_source_map=parser_source_map,
         )
     summary = _trim_multiline_text(exact_text, max_lines=2, max_chars=220)
-    normalized_kind = boundary_kind if boundary_kind in {"section", "paragraph", "list_item", "sentence", "word"} else "semantic"
+    normalized_kind = boundary_kind if boundary_kind in {"section", "paragraph", "list_item", "table_row", "sentence", "word"} else "semantic"
     return BoundaryUnitSummary(
         parent_node_id=parent_node_id,
         source_cluster_id=source_cluster_id,
@@ -1008,6 +1038,7 @@ def _boundary_review_decision(
     cutpoint: BoundaryCutpoint,
     current_layer_context: Any,
     parser_source_map: dict[str, dict[str, Any]],
+    max_repair_shift_chars: int = MAX_BOUNDARY_REPAIR_SHIFT_CHARS,
 ) -> BoundaryReviewDecision:
     parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
     pointer = None
@@ -1082,7 +1113,7 @@ def _boundary_review_decision(
         )
 
     shift_distance = abs(resolved_cut_offset - cutpoint.cut_offset)
-    if shift_distance > MAX_BOUNDARY_REPAIR_SHIFT_CHARS:
+    if shift_distance > max_repair_shift_chars:
         return BoundaryReviewDecision(
             candidate_id=cutpoint.candidate_id,
             parent_node_id=cutpoint.parent_node_id,
@@ -1097,7 +1128,7 @@ def _boundary_review_decision(
             text_after_cut=cutpoint.text_after_cut,
             reason=(
                 f"boundary repair shift {shift_distance} chars exceeds "
-                f"maximum {MAX_BOUNDARY_REPAIR_SHIFT_CHARS}"
+                f"maximum {max_repair_shift_chars}"
             ),
         )
 
@@ -1121,7 +1152,7 @@ def _boundary_review_decision(
     boundary_kind = _classify_boundary_kind(text, resolved_local_cut)
     if boundary_kind == "semantic":
         boundary_kind = cutpoint.boundary_kind
-    normalized_kind = boundary_kind if boundary_kind in {"section", "paragraph", "list_item", "sentence", "word"} else "semantic"
+    normalized_kind = boundary_kind if boundary_kind in {"section", "paragraph", "list_item", "table_row", "sentence", "word"} else "semantic"
     if resolved_cut_offset == cutpoint.cut_offset:
         decision = "accept"
         reason = resolution.reason or "aligned with a unique anchored boundary"
@@ -1502,11 +1533,17 @@ def _structured_invoke(
     messages: Sequence[tuple[str, str]],
     *,
     timeout_seconds: float = 120.0,
+    diagnostics: dict[str, object] | None = None,
+    operation: str = "parser_structured_call",
+    max_in_flight: int = 1,
 ) -> TStructuredModel:
     structured = build_structured_output_runnable(model, schema, include_raw=True)
     response = invoke_with_timeout(
         lambda: structured.invoke(list(messages)),
         timeout_seconds=timeout_seconds,
+        diagnostics=diagnostics,
+        operation=operation,
+        max_in_flight=max_in_flight,
     )
     if isinstance(response, dict):
         parsed = response.get("parsed")
@@ -1737,10 +1774,16 @@ def build_layerwise_llm_callbacks(
                         "Each cutpoint must include cut_reason plus exact text_before_cut and text_after_cut anchors. "
                         "Never omit either anchor; copy both from the selected legal candidate when candidate_id is used.",
                     ),
-                    ("human", json.dumps(prompt_payload, sort_keys=True)),
+                    ("human", safe_json_dumps(prompt_payload, sort_keys=True)),
                 ]
 
             def _emit_boundary_retry(record: Any) -> None:
+                retry_budget = proposal_retry_rounds + 1
+                delay_seconds = _bounded_retry_delay(
+                    attempt_number=record.attempt_number,
+                    retry_budget=retry_budget,
+                    provider_settings=provider_settings,
+                )
                 _emit(
                     "workflow_layered_proposal_retry",
                     proposal_source="llm",
@@ -1751,7 +1794,10 @@ def build_layerwise_llm_callbacks(
                     attempt=record.attempt_number,
                     retry_budget=proposal_retry_rounds,
                     retry_reason=record.error_message,
+                    retry_delay_seconds=delay_seconds,
                 )
+                if delay_seconds > 0:
+                    time.sleep(delay_seconds)
 
             def _invoke_boundary(messages: list[tuple[str, str]]) -> LLMBoundaryProposalBatch:
                 nonlocal boundary_dropped_count, boundary_repaired_count
@@ -1759,7 +1805,12 @@ def build_layerwise_llm_callbacks(
                     chat_model,
                     LLMBoundaryProposalBatch,
                     messages,
-                    timeout_seconds=provider_settings.parser.timeout_seconds,
+                    timeout_seconds=(
+                        provider_settings.proposal_timeout_seconds
+                        or provider_settings.parser.timeout_seconds
+                    ),
+                    operation="layer_boundary_proposal",
+                    max_in_flight=provider_settings.parser.max_in_flight_calls,
                 )
                 normalized_parsed: LLMBoundaryProposalBatch = _normalize_boundary_cutpoints_from_candidates(
                     raw_parsed,
@@ -1924,6 +1975,7 @@ def build_layerwise_llm_callbacks(
                     cutpoint=cutpoint,
                     current_layer_context=current_layer_context,
                     parser_source_map=parser_source_map,
+                    max_repair_shift_chars=provider_settings.boundary_max_repair_shift_chars,
                 )
                 for cutpoint in boundary_parsed.cutpoints
             ]
@@ -1990,14 +2042,19 @@ def build_layerwise_llm_callbacks(
                             "You are refining one ambiguous semantic cutpoint in a layered document parser. "
                             "Return only structured data matching LLMBoundaryProposalBatch.",
                         ),
-                        ("human", json.dumps(refinement_prompt_payload, sort_keys=True)),
+                        ("human", safe_json_dumps(refinement_prompt_payload, sort_keys=True)),
                     ]
                     try:
                         refinement_result: LLMBoundaryProposalBatch = _structured_invoke(
                             chat_model,
                             LLMBoundaryProposalBatch,
                             refinement_messages,
-                            timeout_seconds=provider_settings.parser.timeout_seconds,
+                            timeout_seconds=(
+                                provider_settings.proposal_timeout_seconds
+                                or provider_settings.parser.timeout_seconds
+                            ),
+                            operation="layer_boundary_refinement",
+                            max_in_flight=provider_settings.parser.max_in_flight_calls,
                         )
                         refinement_parsed: LLMBoundaryProposalBatch = refinement_result
                         refinement_validation_reason = _boundary_validation_reason(
@@ -2012,6 +2069,7 @@ def build_layerwise_llm_callbacks(
                                 cutpoint=cutpoint,
                                 current_layer_context=current_layer_context,
                                 parser_source_map=parser_source_map,
+                                max_repair_shift_chars=provider_settings.boundary_max_repair_shift_chars,
                             )
                             for cutpoint in refinement_parsed.cutpoints
                         ]
@@ -2362,10 +2420,16 @@ def build_layerwise_llm_callbacks(
                     "Return only structured data matching CurrentLayerResult. "
                     "Produce grounded immediate children for the supplied parents and preserve layerwise semantics.",
                 ),
-                ("human", json.dumps(prompt_payload, sort_keys=True)),
+                ("human", safe_json_dumps(prompt_payload, sort_keys=True)),
             ]
 
         def _emit_child_retry(record: Any) -> None:
+            retry_budget = proposal_retry_rounds + 1
+            delay_seconds = _bounded_retry_delay(
+                attempt_number=record.attempt_number,
+                retry_budget=retry_budget,
+                provider_settings=provider_settings,
+            )
             _emit(
                 "workflow_layered_proposal_retry",
                 proposal_source="llm",
@@ -2376,7 +2440,10 @@ def build_layerwise_llm_callbacks(
                 attempt=record.attempt_number,
                 retry_budget=proposal_retry_rounds,
                 retry_reason=record.error_message,
+                retry_delay_seconds=delay_seconds,
             )
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
 
         try:
             _emit(
@@ -2396,7 +2463,12 @@ def build_layerwise_llm_callbacks(
                     chat_model,
                     LLMCurrentLayerResult,
                     messages,
-                    timeout_seconds=provider_settings.parser.timeout_seconds,
+                    timeout_seconds=(
+                        provider_settings.proposal_timeout_seconds
+                        or provider_settings.parser.timeout_seconds
+                    ),
+                    operation="layer_children_proposal",
+                    max_in_flight=provider_settings.parser.max_in_flight_calls,
                 ),
                 validate=lambda parsed: _proposal_validation_reason(
                     parsed=parsed,
@@ -2530,7 +2602,7 @@ def build_layerwise_llm_callbacks(
             ),
             (
                 "human",
-                json.dumps(review_payload, sort_keys=True),
+                safe_json_dumps(review_payload, sort_keys=True),
             ),
         ]
         _emit(
@@ -2546,7 +2618,12 @@ def build_layerwise_llm_callbacks(
                 chat_model,
                 LLMCurrentLayerReview,
                 messages,
-                timeout_seconds=provider_settings.parser.timeout_seconds,
+                timeout_seconds=(
+                    provider_settings.review_timeout_seconds
+                    or provider_settings.parser.timeout_seconds
+                ),
+                operation="layer_review",
+                max_in_flight=provider_settings.parser.max_in_flight_calls,
             )
             reviewed: LLMCurrentLayerReview = review_result
             runtime_review: CurrentLayerReview = CurrentLayerReview.model_validate(reviewed.model_dump())

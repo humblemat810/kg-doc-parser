@@ -14,6 +14,7 @@ from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
     BlockAssignmentBatch,
     CandidateBlock,
+    PageIndexBlockSpec,
     PageIndexParseResult,
     ProviderEndpointConfig,
     WorkflowProviderSettings,
@@ -317,6 +318,84 @@ def test_page_index_provider_accepts_atomic_long_table_without_fallback(monkeypa
     assert not any("too broad" in error for error in result.diagnostics.get("validation_errors", []))
     assert result.coverage["overall"] == pytest.approx(1.0)
     assert result.semantic_tree.child_nodes
+
+
+@pytest.mark.ci
+def test_page_index_marks_markdown_tables_as_explicit_table_nodes() -> None:
+    raw_text = "# Revenue\n\n| Year | Value |\n| --- | --- |\n| 2024 | 10 |\n| 2025 | 12 |\n"
+    result = parse_page_index_document(
+        document_id="page-index-table-kind",
+        title="Revenue",
+        raw_text=raw_text,
+        source_format="markdown",
+        mode="heuristic",
+        summary_enabled=False,
+    )
+    node_types = _collect_node_types(result.semantic_tree)
+    assert "TABLE" in node_types
+    def _find_tables(node):
+        matches = [node] if node.node_type == "TABLE" else []
+        for child in node.child_nodes:
+            matches.extend(_find_tables(child))
+        return matches
+
+    table_nodes = _find_tables(result.semantic_tree)
+    assert table_nodes
+    assert table_nodes[0].total_content_pointers
+
+
+@pytest.mark.ci
+def test_page_index_display_excerpt_is_optional_and_cannot_replace_grounding() -> None:
+    candidate = CandidateBlock(
+        block_id="p0001-b001",
+        page_number=1,
+        order=1,
+        start_char=0,
+        end_char=10,
+        line_start=1,
+        line_end=1,
+        indent=0,
+        kind_hint="paragraph",
+        confidence=0.8,
+        text="Alpha Beta",
+        node_type_hint="PARAGRAPH",
+        title_hint="Alpha",
+    )
+    assignment = BlockAssignment(
+        block_id=candidate.block_id,
+        parent_id=None,
+        node_type="PARAGRAPH",
+        title="Alpha",
+    )
+    valid = page_index_module._validate_page_index_block_structure(
+        candidates=[candidate],
+        assignments=[assignment],
+        block_specs=[
+            PageIndexBlockSpec(
+                title="Alpha",
+                node_type="PARAGRAPH",
+                excerpt="Alpha Beta",
+                display_excerpt="Beta",
+            )
+        ],
+        page_text="Alpha Beta",
+    )
+    assert valid.valid
+    invalid = page_index_module._validate_page_index_block_structure(
+        candidates=[candidate],
+        assignments=[assignment],
+        block_specs=[
+            PageIndexBlockSpec(
+                title="Alpha",
+                node_type="PARAGRAPH",
+                excerpt="Alpha Beta",
+                display_excerpt="Gamma",
+            )
+        ],
+        page_text="Alpha Beta",
+    )
+    assert not invalid.valid
+    assert any("display excerpt" in error for error in invalid.errors)
 
 
 @pytest.mark.manual
@@ -975,6 +1054,60 @@ def test_page_index_ollama_invalid_assignments_fall_back(monkeypatch: pytest.Mon
     assert result.diagnostics["assignment_mode"] == "deterministic_fallback"
     assert result.diagnostics["validation_errors"]
     assert result.semantic_tree.child_nodes[0].child_nodes[0].title == "Root"
+
+
+def test_page_index_ollama_salvages_valid_branches_after_local_assignment_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "# Root\n\nIntro paragraph.\n\n## Child\n\n- Term item\n"
+    assignments = BlockAssignmentBatch(
+        assignments=[
+            BlockAssignment(block_id="p0001-b001", parent_id=None, node_type="SECTION", title="Provider Root"),
+            BlockAssignment(
+                block_id="p0001-b002",
+                parent_id="p0001-b001",
+                node_type="PARAGRAPH",
+                title="Provider intro",
+            ),
+            BlockAssignment(block_id="p0001-b003", parent_id="p0001-b001", node_type="SUBSECTION", title="Provider child"),
+            BlockAssignment(
+                block_id="p0001-b004",
+                parent_id="missing-parent",
+                node_type="TERM",
+                title="Provider term",
+            ),
+        ]
+    )
+
+    class _FakeStructured:
+        def invoke(self, messages):
+            return {"parsed": assignments}
+
+    class _FakeChat:
+        def with_structured_output(self, schema, include_raw=True):
+            return _FakeStructured()
+
+    monkeypatch.setattr(page_index_module, "build_chat_model_for_role", lambda *args, **kwargs: _FakeChat())
+
+    provider_settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="ollama", model="fake", base_url="http://127.0.0.1:11434")
+    )
+    result = parse_page_index_document(
+        document_id="page-index-ollama-branch-salvage",
+        title="Page Index Document",
+        raw_text=raw_text,
+        source_format="markdown",
+        mode="ollama",
+        provider_settings=provider_settings,
+    )
+
+    assert result.diagnostics["assignment_mode"] == "ollama_branch_local_salvage", result.diagnostics
+    assert result.diagnostics["branch_local_salvage"][0]["invalid_block_ids"] == ["p0001-b004"]
+    root = result.semantic_tree.child_nodes[0].child_nodes[0]
+    assert root.title == "Provider Root"
+    child = next(node for node in root.child_nodes if node.title == "Provider child")
+    term = next(node for node in child.child_nodes if node.title == "Term item")
+    assert term.total_content_pointers[0].verbatim_text == "- Term item"
 
 
 def test_page_index_refinement_disabled_by_default_preserves_behavior(monkeypatch: pytest.MonkeyPatch) -> None:

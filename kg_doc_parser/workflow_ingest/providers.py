@@ -104,6 +104,24 @@ ChatProviderName = Literal["anthropic", "gemini", "ollama", "openai", "azure", "
 EmbeddingProviderName = Literal["fake", "openai", "vertex", "ollama"]
 ProposalMode = Literal["children", "boundaries"]
 
+_PROVIDER_IN_FLIGHT_LOCK = threading.Lock()
+_PROVIDER_IN_FLIGHT = 0
+
+
+def _reserve_provider_slot(max_in_flight: int) -> bool:
+    global _PROVIDER_IN_FLIGHT
+    with _PROVIDER_IN_FLIGHT_LOCK:
+        if _PROVIDER_IN_FLIGHT >= max_in_flight:
+            return False
+        _PROVIDER_IN_FLIGHT += 1
+        return True
+
+
+def _release_provider_slot() -> None:
+    global _PROVIDER_IN_FLIGHT
+    with _PROVIDER_IN_FLIGHT_LOCK:
+        _PROVIDER_IN_FLIGHT = max(0, _PROVIDER_IN_FLIGHT - 1)
+
 
 class StructuredPayloadFactory(Protocol):
     """Build a deterministic structured-output payload for one schema."""
@@ -265,6 +283,27 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default=120.0, gt=0)
+    retry_backoff_seconds: Annotated[
+        float,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=0.25, ge=0.0, le=30.0)
+    retry_backoff_max_seconds: Annotated[
+        float,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=5.0, ge=0.0, le=120.0)
+    max_in_flight_calls: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=1, ge=1, le=32)
     fallback_specs: list[ProviderEndpointConfig] = Field(default_factory=list, exclude=True)
 
 
@@ -426,6 +465,34 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default=128, ge=8, le=512)
+    boundary_max_repair_shift_chars: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=8, ge=0, le=4096)
+    proposal_timeout_seconds: Annotated[
+        float | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=None, gt=0)
+    review_timeout_seconds: Annotated[
+        float | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=None, gt=0)
+    triage_timeout_seconds: Annotated[
+        float | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=None, gt=0)
     ocr: Annotated[ProviderEndpointConfig, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
         default_factory=ProviderEndpointConfig
     )
@@ -470,6 +537,18 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
             not in {"0", "false", "no", "off"},
             layer_frontier_batch_size=int(_env("KG_DOC_PARSER_FRONTIER_BATCH_SIZE", "1") or "1"),
             boundary_max_points=int(_env("KG_DOC_PARSER_BOUNDARY_MAX_POINTS", "128") or "128"),
+            boundary_max_repair_shift_chars=int(
+                _env("KG_DOC_PARSER_BOUNDARY_MAX_REPAIR_SHIFT_CHARS", "8") or "8"
+            ),
+            proposal_timeout_seconds=(
+                float(value) if (value := _env("KG_DOC_PARSER_PROPOSAL_TIMEOUT_SECONDS")) else None
+            ),
+            review_timeout_seconds=(
+                float(value) if (value := _env("KG_DOC_PARSER_REVIEW_TIMEOUT_SECONDS")) else None
+            ),
+            triage_timeout_seconds=(
+                float(value) if (value := _env("KG_DOC_PARSER_TRIAGE_TIMEOUT_SECONDS")) else None
+            ),
             ocr=ProviderEndpointConfig(
                 provider=cast(ChatProviderName, _normalize_provider_name(_env("KG_DOC_OCR_PROVIDER", "gemini"))),
                 model=str(_env("KG_DOC_OCR_MODEL", "gemini-2.5-flash")),
@@ -482,6 +561,9 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 location=_env("KG_DOC_OCR_LOCATION"),
                 max_retries=int(_env("KG_DOC_OCR_MAX_RETRIES", "2") or "2"),
                 timeout_seconds=float(_env("KG_DOC_OCR_TIMEOUT_SECONDS", "120") or "120"),
+                retry_backoff_seconds=float(_env("KG_DOC_OCR_RETRY_BACKOFF_SECONDS", "0.25") or "0.25"),
+                retry_backoff_max_seconds=float(_env("KG_DOC_OCR_RETRY_BACKOFF_MAX_SECONDS", "5") or "5"),
+                max_in_flight_calls=int(_env("KG_DOC_OCR_MAX_IN_FLIGHT", "1") or "1"),
             ),
             parser=ProviderEndpointConfig(
                 provider=cast(ChatProviderName, _normalize_provider_name(_env("KG_DOC_PARSER_PROVIDER", "gemini"))),
@@ -495,6 +577,9 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 location=_env("KG_DOC_PARSER_LOCATION"),
                 max_retries=int(_env("KG_DOC_PARSER_MAX_RETRIES", "2") or "2"),
                 timeout_seconds=float(_env("KG_DOC_PARSER_TIMEOUT_SECONDS", "120") or "120"),
+                retry_backoff_seconds=float(_env("KG_DOC_PARSER_RETRY_BACKOFF_SECONDS", "0.25") or "0.25"),
+                retry_backoff_max_seconds=float(_env("KG_DOC_PARSER_RETRY_BACKOFF_MAX_SECONDS", "5") or "5"),
+                max_in_flight_calls=int(_env("KG_DOC_PARSER_MAX_IN_FLIGHT", "1") or "1"),
             ),
             embedding=EmbeddingProviderConfig(
                 provider=cast(EmbeddingProviderName, str(_env("KG_DOC_EMBED_PROVIDER", "fake"))),
@@ -521,6 +606,7 @@ def invoke_with_timeout(
     timeout_seconds: float,
     diagnostics: dict[str, object] | None = None,
     operation: str = "provider_call",
+    max_in_flight: int = 1,
 ) -> object:
     """Run one provider call with a hard wall-clock bound.
 
@@ -532,6 +618,8 @@ def invoke_with_timeout(
     """
     if timeout_seconds <= 0:
         raise ValueError("provider timeout_seconds must be positive")
+    if max_in_flight < 1:
+        raise ValueError("provider max_in_flight must be positive")
     started = time.monotonic()
     if diagnostics is not None:
         diagnostics.update(
@@ -540,8 +628,19 @@ def invoke_with_timeout(
                 "timeout_seconds": timeout_seconds,
                 "timed_out": False,
                 "underlying_call_alive": False,
+                "max_in_flight": max_in_flight,
             }
         )
+    if not _reserve_provider_slot(max_in_flight):
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "success": False,
+                    "failure_type": "in_flight_limit",
+                    "elapsed_seconds": time.monotonic() - started,
+                }
+            )
+        raise RuntimeError(f"provider in-flight call limit reached ({max_in_flight})")
     result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
 
     def _run() -> None:
@@ -549,6 +648,8 @@ def invoke_with_timeout(
             result_queue.put((True, callable_obj()))
         except Exception as exc:  # noqa: BLE001 - preserve provider exceptions for the caller
             result_queue.put((False, exc))
+        finally:
+            _release_provider_slot()
 
     worker = threading.Thread(target=_run, name="kg-doc-parser-provider", daemon=True)
     worker.start()

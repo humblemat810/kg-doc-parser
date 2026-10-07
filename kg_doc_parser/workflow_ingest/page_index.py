@@ -93,7 +93,16 @@ _PAGE_INDEX_PROVIDER_MODES = {"fake", "ollama", "openai", "azure", "gemini", "ve
 PageIndexSourceFormat = Literal["text", "markdown"]
 # SECTION/SUBSECTION remain accepted at the provider boundary for old payloads,
 # but the materialized page-index tree uses HEADING and parent links for shape.
-PageIndexNodeType = Literal["HEADING", "SECTION", "SUBSECTION", "PARAGRAPH", "TERM"]
+PageIndexNodeType = Literal[
+    "HEADING",
+    "SECTION",
+    "SUBSECTION",
+    "PARAGRAPH",
+    "TERM",
+    "TABLE",
+    "TABLE_ROW_GROUP",
+    "TABLE_ROW",
+]
 PageIndexSourceRole = Literal["heading", "content"]
 
 
@@ -130,10 +139,20 @@ class PageIndexBlockSpec(BaseModel):
         description="Short label for this block, usually the heading text or a concise paragraph label."
     )
     node_type: PageIndexNodeType = Field(
-        description="One of HEADING, PARAGRAPH, or TERM. Preserve hierarchy through parent links; do not encode depth in the kind."
+        description=(
+            "One of HEADING, PARAGRAPH, TERM, TABLE, TABLE_ROW_GROUP, or TABLE_ROW. "
+            "Preserve hierarchy through parent links; do not encode depth in the kind."
+        )
     )
     excerpt: str = Field(
         description="A short verbatim excerpt from the source page that grounds this block. Do not use the whole page text; keep it tight and exact."
+    )
+    display_excerpt: str | None = Field(
+        default=None,
+        description=(
+            "Optional shorter exact display excerpt. The grounded excerpt remains authoritative for source pointers; "
+            "this field is only a bounded presentation hint and must be an exact substring of excerpt."
+        ),
     )
     summary: str = Field(
         default="",
@@ -259,6 +278,7 @@ def _page_index_block_spec_debug_payload(block_specs: list[PageIndexBlockSpec]) 
             "title": spec.title,
             "node_type": spec.node_type,
             "excerpt": spec.excerpt,
+            "display_excerpt": spec.display_excerpt,
             "child_count": len(spec.child_nodes),
             "children": [
                 _walk(child, path=f"{path}.{index + 1}") for index, child in enumerate(spec.child_nodes)
@@ -348,7 +368,7 @@ def _page_index_assignment_prompt(
         "- preserve reading order\n"
         "- do not invent excerpts\n"
         "- do not create whole-page child blocks\n"
-        "- use HEADING, PARAGRAPH, and TERM only\n"
+        "- use HEADING, PARAGRAPH, TERM, TABLE, TABLE_ROW_GROUP, or TABLE_ROW\n"
         "- provide a concise factual summary for every block; do not add facts absent from the block text\n"
         "The recursive tree is assembled deterministically after validation.\n"
         "Optional excerpt refinement is disabled by default.\n"
@@ -398,6 +418,28 @@ def _is_numeric_heavy_or_table_like(text: str) -> bool:
     if digit_count >= 6 and digit_count > alpha_count:
         return True
     return bool(re.search(r"\b\d+\b(?:\s+\b\d+\b){2,}", compact))
+
+
+def _is_markdown_table_row(text: str) -> bool:
+    """Return whether one line has the shape of a Markdown table row."""
+
+    stripped = text.strip()
+    if stripped.startswith("```") or stripped.startswith("~~~"):
+        return False
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    return len(cells) >= 2 and "|" in stripped
+
+
+def _is_markdown_table_block(text: str, *, source_format: PageIndexSourceFormat) -> bool:
+    """Recognize a bounded Markdown table as one explicit atomic block."""
+
+    if source_format != "markdown":
+        return False
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2 or not all(_is_markdown_table_row(line) for line in lines):
+        return False
+    separator = lines[1].strip("|").split("|")
+    return len(separator) >= 2 and all(bool(re.fullmatch(r"\s*:?-{3,}:?\s*", cell)) for cell in separator)
 
 
 def _page_index_normalize_text(text: str) -> str:
@@ -591,6 +633,20 @@ def _classify_block(
     is_sentence_like = first_line.endswith((".", "!", "?"))
     surrounded_by_blank_lines = has_blank_before and has_blank_after
     numeric_heavy = _is_numeric_heavy_or_table_like(first_line)
+    if _is_markdown_table_block(stripped, source_format=source_format):
+        return _BlockSpan(
+            start_char=start_char,
+            end_char=end_char,
+            text=stripped,
+            node_type="TABLE",
+            title="Table",
+            line_start=line_start,
+            line_end=line_end,
+            indent=indent,
+            kind_hint="markdown_table",
+            confidence=0.98,
+            heading_level=None,
+        )
     md_heading = re.match(r"^(#{1,6})\s+(.*)$", first_line)
     if source_format == "markdown" and md_heading:
         level = len(md_heading.group(1))
@@ -879,6 +935,124 @@ def _validate_block_assignments(
     )
 
 
+def _salvage_page_index_assignments(
+    *,
+    candidates: list[CandidateBlock],
+    assignments: list[BlockAssignment],
+    page_text: str,
+) -> tuple[list[BlockAssignment] | None, dict[str, Any]]:
+    """Keep valid provider branches while replacing locally invalid blocks.
+
+    Salvage is deliberately conservative: the assignment set must still cover
+    every candidate in reading order, and the merged result must pass the same
+    whole-page validators used by the normal provider path.  This prevents a
+    partial provider response from silently becoming an authoritative tree.
+    """
+
+    candidate_ids = [candidate.block_id for candidate in candidates]
+    assignment_ids = [assignment.block_id for assignment in assignments]
+    if assignment_ids != candidate_ids or len(assignment_ids) != len(set(assignment_ids)):
+        return None, {"reason": "assignment_set_not_complete_or_ordered"}
+
+    candidate_by_id = {candidate.block_id: candidate for candidate in candidates}
+    baseline = _deterministic_block_assignments(candidates)
+    baseline_by_id = {assignment.block_id: assignment for assignment in baseline}
+    index_by_id = {candidate.block_id: index for index, candidate in enumerate(candidates)}
+    parent_by_id = {assignment.block_id: assignment.parent_id for assignment in assignments}
+    children_by_id: dict[str, int] = {}
+    for assignment in assignments:
+        if assignment.parent_id is not None:
+            children_by_id[assignment.parent_id] = children_by_id.get(assignment.parent_id, 0) + 1
+
+    invalid_ids: set[str] = set()
+    reasons: dict[str, list[str]] = {}
+
+    def mark_invalid(block_id: str, reason: str) -> None:
+        invalid_ids.add(block_id)
+        reasons.setdefault(block_id, []).append(reason)
+
+    for assignment in assignments:
+        candidate = candidate_by_id[assignment.block_id]
+        parent_id = assignment.parent_id
+        if parent_id is not None:
+            parent_index = index_by_id.get(parent_id)
+            if parent_index is None:
+                mark_invalid(assignment.block_id, "unknown_parent")
+            elif parent_index >= index_by_id[assignment.block_id]:
+                mark_invalid(assignment.block_id, "forward_or_self_parent")
+        if assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"} and not _candidate_heading_evidence(candidate):
+            if children_by_id.get(assignment.block_id, 0) == 0:
+                mark_invalid(assignment.block_id, "heading_without_heading_evidence")
+        if assignment.node_type == "TERM" and not _candidate_term_evidence(candidate):
+            mark_invalid(assignment.block_id, "term_without_term_evidence")
+
+        seen: set[str] = set()
+        probe = parent_id
+        while probe is not None:
+            if probe in seen or probe == assignment.block_id:
+                mark_invalid(assignment.block_id, "parent_cycle")
+                for cycle_id in seen:
+                    mark_invalid(cycle_id, "parent_cycle")
+                break
+            seen.add(probe)
+            probe = parent_by_id.get(probe)
+
+    merged: list[BlockAssignment] = []
+    for assignment in assignments:
+        if assignment.block_id in invalid_ids:
+            merged.append(baseline_by_id[assignment.block_id])
+        else:
+            merged.append(assignment)
+
+    # A flattened provider tree is a page-level structural error. Preserve the
+    # provider's labels and summaries, but restore deterministic heading links.
+    baseline_heading_parents = {
+        assignment.block_id: assignment.parent_id
+        for assignment in baseline
+        if assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"}
+    }
+    merged_heading_count = sum(
+        1
+        for assignment in merged
+        if assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"} and assignment.parent_id is not None
+    )
+    if merged_heading_count == 0 and any(parent is not None for parent in baseline_heading_parents.values()):
+        merged = [
+            assignment.model_copy(update={"parent_id": baseline_heading_parents[assignment.block_id]})
+            if assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"}
+            and baseline_heading_parents.get(assignment.block_id) is not None
+            else assignment
+            for assignment in merged
+        ]
+
+    assignment_validation = _validate_block_assignments(candidates, merged, page_text=page_text)
+    if not assignment_validation.valid:
+        return None, {
+            "reason": "merged_assignment_validation_failed",
+            "errors": list(assignment_validation.errors),
+            "invalid_block_ids": sorted(invalid_ids),
+        }
+    block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=merged)
+    structure_validation = _validate_page_index_block_structure(
+        candidates=candidates,
+        assignments=merged,
+        block_specs=block_specs,
+        page_text=page_text,
+    )
+    if not structure_validation.valid:
+        return None, {
+            "reason": "merged_structure_validation_failed",
+            "errors": list(structure_validation.errors),
+            "invalid_block_ids": sorted(invalid_ids),
+        }
+    return merged, {
+        "invalid_block_ids": sorted(invalid_ids),
+        "repaired_block_count": len(invalid_ids),
+        "repair_reasons": reasons,
+        "validation_warnings": list(structure_validation.warnings),
+    }
+
+
 def _assemble_page_index_blocks(
     *,
     candidates: list[CandidateBlock],
@@ -975,11 +1149,19 @@ def _validate_page_index_block_structure(
             normalized_excerpt = _normalize_page_index_excerpt(spec.excerpt)
             if not normalized_excerpt:
                 errors.append(f"block {current_path} has empty excerpt")
-            elif normalized_excerpt == normalized_page_text and len(candidates) > 1:
+            if spec.display_excerpt is not None:
+                display_excerpt = spec.display_excerpt.strip()
+                if not display_excerpt:
+                    errors.append(f"block {current_path} has an empty display excerpt")
+                elif display_excerpt not in spec.excerpt:
+                    errors.append(
+                        f"block {current_path} display excerpt is not an exact substring of its grounded excerpt"
+                    )
+            if normalized_excerpt == normalized_page_text and len(candidates) > 1:
                 errors.append(f"block {current_path} duplicates the whole page")
-            elif _page_index_block_exceeds_excerpt_budget(spec, page_text):
+            if _page_index_block_exceeds_excerpt_budget(spec, page_text):
                 errors.append(f"block {current_path} excerpt is too broad")
-            elif _page_index_block_is_too_generic(spec):
+            if _page_index_block_is_too_generic(spec):
                 errors.append(f"block {current_path} excerpt is too generic")
             normalized_sibling_excerpts.append(normalized_excerpt)
             _validate_siblings(spec.child_nodes, path=current_path)
@@ -1093,7 +1275,12 @@ def _refine_page_index_block_excerpts(
                         HumanMessage(content=prompt),
                     ]
                 ),
-                timeout_seconds=provider_settings.parser.timeout_seconds,
+                timeout_seconds=(
+                    provider_settings.proposal_timeout_seconds
+                    or provider_settings.parser.timeout_seconds
+                ),
+                operation="page_index_excerpt_refinement",
+                max_in_flight=provider_settings.parser.max_in_flight_calls,
             )
         finally:
             _notify_untracked_provider_call(callbacks, callback_counts, f"refine-page-{page_number}")
@@ -1301,7 +1488,12 @@ def _llm_page_outline(
                             HumanMessage(content=prompt),
                         ]
                     ),
-                    timeout_seconds=provider_settings.parser.timeout_seconds,
+                timeout_seconds=(
+                    provider_settings.proposal_timeout_seconds
+                    or provider_settings.parser.timeout_seconds
+                ),
+                operation="page_index_assignment",
+                max_in_flight=provider_settings.parser.max_in_flight_calls,
                 )
             finally:
                 _notify_untracked_provider_call(
@@ -1371,6 +1563,56 @@ def _llm_page_outline(
             "validation_errors": validation_errors,
             "validation_warnings": validation_warnings,
             "fallback_reason": fallback_reason,
+            "retry_prompt_summary": retry_prompt_summary,
+            "structure_retry_prompt_summary": structure_retry_prompt_summary,
+        }
+
+    def _try_branch_local_salvage(
+        *,
+        batch: BlockAssignmentBatch | None,
+        attempt_label: str,
+        assignment_attempt_count: int,
+        validation_warnings: list[str],
+        retry_prompt_summary: str | None = None,
+        structure_retry_prompt_summary: str | None = None,
+    ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]] | None:
+        if batch is None:
+            return None
+        salvaged_assignments, salvage_diagnostics = _salvage_page_index_assignments(
+            candidates=candidates,
+            assignments=batch.assignments,
+            page_text=page_text,
+        )
+        if salvaged_assignments is None:
+            return None
+        block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=salvaged_assignments)
+        if trace_log is not None:
+            trace_log(
+                "page_index_llm_branch_local_salvage "
+                f"page_number={page_number} attempt={attempt_label} "
+                f"repaired={salvage_diagnostics['repaired_block_count']} "
+                f"invalid_block_ids={json.dumps(salvage_diagnostics['invalid_block_ids'], ensure_ascii=False)}"
+            )
+        return block_specs, {
+            "assignment_mode": f"{assignment_mode_prefix}_branch_local_salvage",
+            "final_outcome": "branch_local_salvage",
+            "candidate_count": len(candidates),
+            "assignment_count": len(salvaged_assignments),
+            "assignment_attempt_count": assignment_attempt_count,
+            "assignment_retry_used": assignment_attempt_count > 1,
+            "assignment_retry_succeeded": False,
+            "structure_retry_used": attempt_label == "structure_retry",
+            "structure_retry_succeeded": False,
+            "retry_used": assignment_attempt_count > 1,
+            "retry_succeeded": False,
+            "assignment_validation_errors": [],
+            "structure_validation_errors": [],
+            "first_validation_errors": [],
+            "retry_validation_errors": [],
+            "validation_errors": [],
+            "validation_warnings": validation_warnings + list(salvage_diagnostics["validation_warnings"]),
+            "fallback_reason": None,
+            "branch_local_salvage": salvage_diagnostics,
             "retry_prompt_summary": retry_prompt_summary,
             "structure_retry_prompt_summary": structure_retry_prompt_summary,
         }
@@ -1476,6 +1718,16 @@ def _llm_page_outline(
                     "page_index_llm_validation_failed "
                     f"page_number={page_number} attempt=structure_retry errors={len(structure_assignment_validation.errors)}"
                 )
+            salvaged = _try_branch_local_salvage(
+                batch=structure_batch,
+                attempt_label="structure_retry",
+                assignment_attempt_count=next_attempt_count,
+                validation_warnings=validation_warnings + list(structure_validation.warnings),
+                retry_prompt_summary=retry_prompt_summary,
+                structure_retry_prompt_summary=structure_summary,
+            )
+            if salvaged is not None:
+                return salvaged
             return _fallback(
                 assignment_attempt_count=next_attempt_count,
                 assignment_retry_used=assignment_retry_used,
@@ -1500,6 +1752,16 @@ def _llm_page_outline(
                 f"page_number={page_number} attempt=structure_retry errors={len(repaired_structure_validation.errors)}"
             )
         if not repaired_structure_validation.valid:
+            salvaged = _try_branch_local_salvage(
+                batch=structure_batch,
+                attempt_label="structure_retry",
+                assignment_attempt_count=next_attempt_count,
+                validation_warnings=validation_warnings + list(repaired_structure_validation.warnings),
+                retry_prompt_summary=retry_prompt_summary,
+                structure_retry_prompt_summary=structure_summary,
+            )
+            if salvaged is not None:
+                return salvaged
             return _fallback(
                 assignment_attempt_count=next_attempt_count,
                 assignment_retry_used=assignment_retry_used,
@@ -1608,6 +1870,17 @@ def _llm_page_outline(
             )
     else:
         retry_validation_errors = [str(retry_error or "unknown retry parse error")]
+
+    for attempt_label, batch in (("retry", retry_batch), ("first", first_batch)):
+        salvaged = _try_branch_local_salvage(
+            batch=batch,
+            attempt_label=attempt_label,
+            assignment_attempt_count=2 if attempt_label == "retry" else 1,
+            validation_warnings=retry_validation_warnings,
+            retry_prompt_summary=retry_summary,
+        )
+        if salvaged is not None:
+            return salvaged
 
     return _fallback(
         assignment_attempt_count=2,
@@ -1748,6 +2021,7 @@ def _materialize_block_tree(
                 "semantic_kind": "heading" if is_heading else "content",
                 "legacy_node_type": spec.node_type,
                 "source_role": spec.source_role,
+                "display_excerpt": spec.display_excerpt,
                 "summary_unavailable": bool(summary_enabled and not spec.summary.strip()),
             },
         )
@@ -1763,6 +2037,7 @@ def _materialize_block_tree(
                 metadata={
                     "page_index_role": "heading_text",
                     "semantic_kind": "heading_text",
+                    "display_excerpt": spec.display_excerpt,
                     "summary_unavailable": bool(summary_enabled and not spec.summary.strip()),
                 },
             )
@@ -2129,6 +2404,10 @@ def parse_page_index_document(
     retry_used = any(bool(item.get("retry_used")) for item in page_diagnostics)
     retry_succeeded = any(bool(item.get("retry_succeeded")) for item in page_diagnostics)
     assignment_modes = {str(item.get("assignment_mode") or "") for item in page_diagnostics if item.get("assignment_mode")}
+    branch_local_salvage_used = any(bool(item.get("branch_local_salvage")) for item in page_diagnostics)
+    branch_local_salvage = [
+        item["branch_local_salvage"] for item in page_diagnostics if item.get("branch_local_salvage")
+    ]
     refinement_enabled = any(bool(item.get("refine_excerpts_enabled")) for item in page_diagnostics)
     refinement_attempted = sum(int(item.get("refine_excerpts_attempted", 0) or 0) for item in page_diagnostics)
     refinement_accepted = sum(int(item.get("refine_excerpts_accepted", 0) or 0) for item in page_diagnostics)
@@ -2144,6 +2423,8 @@ def parse_page_index_document(
         overall_assignment_mode = f"{settings.parser.provider}_flat_assignment_structure_retry"
     elif assignment_retry_succeeded:
         overall_assignment_mode = f"{settings.parser.provider}_flat_assignment_retry"
+    elif branch_local_salvage_used:
+        overall_assignment_mode = f"{settings.parser.provider}_branch_local_salvage"
     elif retry_used:
         overall_assignment_mode = "deterministic_fallback"
     else:
@@ -2163,6 +2444,8 @@ def parse_page_index_document(
         final_outcome = "structure_retry_success"
     elif assignment_retry_succeeded:
         final_outcome = "assignment_retry_success"
+    elif branch_local_salvage_used:
+        final_outcome = "branch_local_salvage"
     else:
         final_outcome = "first_pass_success"
     diagnostics = {
@@ -2174,6 +2457,8 @@ def parse_page_index_document(
         "assignment_attempt_count": assignment_attempt_count,
         "assignment_retry_used": assignment_retry_used,
         "assignment_retry_succeeded": assignment_retry_succeeded,
+        "branch_local_salvage_used": branch_local_salvage_used,
+        "branch_local_salvage": branch_local_salvage,
         "structure_retry_used": structure_retry_used,
         "structure_retry_succeeded": structure_retry_succeeded,
         "retry_used": retry_used,
