@@ -741,6 +741,7 @@ def register_layerwise_parser_steps(
                 parent_node_ids=list(current_layer_context.parent_node_ids),
                 attempt=int((ctx.state_view.get("strategy_attempt_counts") or {}).get(strategy, 1)),
                 event="failed",
+                failure_type="retry",
                 reasons=reasons[:12],
             )
             if remaining:

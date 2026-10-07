@@ -280,6 +280,8 @@ def test_repair_layer_candidates_isolates_unrecoverable_pointer(caplog):
     assert repaired_count == 0
     assert repaired.children == []
     assert repaired.metadata["repair_failure_scope"] == "child_replacement"
+    assert repaired.metadata["failure_type"] == "repair_failure"
+    assert repaired.metadata["rollback"] == "verified_parent_retained"
     assert "unrecoverable pointer" in repaired.metadata["repair_failures"][0]
     assert any("repair_layer_candidates failed" in record.message for record in caplog.records)
     assert any("source_cluster_id='doc|p1_t0'" in record.message for record in caplog.records)

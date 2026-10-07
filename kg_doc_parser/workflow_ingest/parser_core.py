@@ -972,6 +972,8 @@ def repair_layer_candidates(
     if repair_failures:
         metadata["repair_failures"] = repair_failures[:32]
         metadata["repair_failure_scope"] = "child_replacement"
+        metadata["failure_type"] = "repair_failure"
+        metadata["rollback"] = "verified_parent_retained"
     return current_layer_result.model_copy(
         update={"children": repaired_children, "metadata": metadata}
     ), repaired_count

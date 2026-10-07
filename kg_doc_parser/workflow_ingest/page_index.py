@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, Protocol
@@ -1223,6 +1223,7 @@ def _refine_page_index_block_excerpts(
     provider_settings: WorkflowProviderSettings,
     callbacks: list[Any] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
     entries = [
         {
@@ -1268,6 +1269,8 @@ def _refine_page_index_block_excerpts(
         f"Page text: {page_text}\n"
         f"Blocks: {_json.dumps(entries, ensure_ascii=False, sort_keys=True)}"
     )
+    call_diagnostics: dict[str, object] = {}
+    provider_returned = False
     try:
         callback_counts = _callback_call_counts(callbacks)
         try:
@@ -1282,12 +1285,14 @@ def _refine_page_index_block_excerpts(
                     provider_settings.proposal_timeout_seconds
                     or provider_settings.parser.timeout_seconds
                 ),
+                diagnostics=call_diagnostics,
                 operation="page_index_excerpt_refinement",
                 max_in_flight=provider_settings.parser.max_in_flight_calls,
                 attempt_index=1,
                 call_role="refinement",
                 strategy="page_index",
             )
+            provider_returned = True
         finally:
             _notify_untracked_provider_call(callbacks, callback_counts, f"refine-page-{page_number}")
         parsed = payload.get("parsed") if isinstance(payload, dict) else payload
@@ -1300,6 +1305,19 @@ def _refine_page_index_block_excerpts(
             else ExcerptRefinementBatch.model_validate(parsed)
         )
     except Exception as exc:  # noqa: BLE001 - provider/parser failures use deterministic excerpt fallback.
+        call_diagnostics.update(
+            {
+                "success": False,
+                "failure_type": (
+                    "structured_output_parse_failure"
+                    if provider_returned
+                    else call_diagnostics.get("failure_type", "transport/provider_exception")
+                ),
+                "error_type": type(exc).__name__,
+            }
+        )
+        if provider_diagnostics_sink is not None:
+            provider_diagnostics_sink(dict(call_diagnostics))
         diagnostics["refine_excerpts_fallback"] = True
         diagnostics["refine_excerpts_rejected"] = diagnostics["refine_excerpts_attempted"]
         diagnostics["refine_excerpts_error"] = f"{type(exc).__name__}: {exc}"
@@ -1308,6 +1326,10 @@ def _refine_page_index_block_excerpts(
                 f"page_index_refine_fallback page_number={page_number} unit_id={unit_id} error={type(exc).__name__}"
             )
         return block_specs, diagnostics
+
+    call_diagnostics["success"] = True
+    if provider_diagnostics_sink is not None:
+        provider_diagnostics_sink(dict(call_diagnostics))
 
     refined = deepcopy(block_specs)
     suggestions = {item.path_id: item.excerpt for item in batch.suggestions}
@@ -1431,6 +1453,7 @@ def _llm_page_outline(
     provider_settings: WorkflowProviderSettings,
     callbacks: list[Any] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     assignment_mode_prefix = "ollama" if provider_settings.parser.provider == "ollama" else "llm"
@@ -1485,6 +1508,8 @@ def _llm_page_outline(
             trace_log(
                 f"page_index_llm_invoke_start page_number={page_number} attempt={attempt_label} source_format={source_format}"
         )
+        call_diagnostics: dict[str, object] = {}
+        provider_returned = False
         try:
             callback_counts = _callback_call_counts(callbacks)
             try:
@@ -1499,12 +1524,14 @@ def _llm_page_outline(
                     provider_settings.proposal_timeout_seconds
                     or provider_settings.parser.timeout_seconds
                 ),
+                diagnostics=call_diagnostics,
                 operation="page_index_assignment",
                 max_in_flight=provider_settings.parser.max_in_flight_calls,
                 attempt_index=attempt_index,
                 call_role="proposal",
                 strategy="page_index",
                 )
+                provider_returned = True
             finally:
                 _notify_untracked_provider_call(
                     callbacks, callback_counts, f"page-{page_number}-{attempt_label}"
@@ -1512,13 +1539,41 @@ def _llm_page_outline(
             if trace_log is not None:
                 trace_log(f"page_index_llm_invoke_end page_number={page_number} attempt={attempt_label}")
         except Exception as exc:  # noqa: BLE001 - provider failures trigger bounded deterministic fallback.
+            call_diagnostics.update(
+                {
+                    "success": False,
+                    "failure_type": (
+                        "structured_output_parse_failure"
+                        if provider_returned
+                        else call_diagnostics.get("failure_type", "transport/provider_exception")
+                    ),
+                    "error_type": type(exc).__name__,
+                }
+            )
+            if provider_diagnostics_sink is not None:
+                provider_diagnostics_sink(dict(call_diagnostics))
             return None, f"{type(exc).__name__}: {exc}"
 
         parsed = payload.get("parsed") if isinstance(payload, dict) else payload
-        if parsed is None:
-            error = payload.get("parsing_error") if isinstance(payload, dict) else None
-            return None, f"parse_error: {error!r}"
-        batch = parsed if isinstance(parsed, BlockAssignmentBatch) else BlockAssignmentBatch.model_validate(parsed)
+        try:
+            if parsed is None:
+                error = payload.get("parsing_error") if isinstance(payload, dict) else None
+                raise ValueError(f"parse_error: {error!r}")
+            batch = parsed if isinstance(parsed, BlockAssignmentBatch) else BlockAssignmentBatch.model_validate(parsed)
+        except Exception as exc:  # noqa: BLE001 - malformed structured output uses deterministic fallback.
+            call_diagnostics.update(
+                {
+                    "success": False,
+                    "failure_type": "structured_output_parse_failure",
+                    "error_type": type(exc).__name__,
+                }
+            )
+            if provider_diagnostics_sink is not None:
+                provider_diagnostics_sink(dict(call_diagnostics))
+            return None, f"{type(exc).__name__}: {exc}"
+        call_diagnostics["success"] = True
+        if provider_diagnostics_sink is not None:
+            provider_diagnostics_sink(dict(call_diagnostics))
         return batch, None
 
     def _trace_assignment_raw(attempt_label: str, batch: BlockAssignmentBatch) -> None:
@@ -2262,6 +2317,7 @@ def parse_page_index_document(
     provider_settings: WorkflowProviderSettings | None = None,
     callbacks: list[Any] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
     refine_excerpts: bool = False,
     summary_enabled: bool = True,
 ) -> PageIndexParseResult:
@@ -2325,6 +2381,7 @@ def parse_page_index_document(
                 provider_settings=settings,
                 callbacks=callbacks,
                 trace_log=trace_log,
+                provider_diagnostics_sink=provider_diagnostics_sink,
             )
         else:  # pragma: no cover - Literal guards this in type-checked code.
             raise ValueError(f"unsupported page index mode: {mode}")
@@ -2344,6 +2401,7 @@ def parse_page_index_document(
                 provider_settings=settings,
                 callbacks=callbacks,
                 trace_log=trace_log,
+                provider_diagnostics_sink=provider_diagnostics_sink,
             )
         page_diagnostics_item = dict(page_diagnostics_item)
         page_diagnostics_item.update(page_refinement_diagnostics)

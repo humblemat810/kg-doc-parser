@@ -949,6 +949,10 @@ def test_layerwise_workflow_fails_when_satisfaction_retries_exhaust(workflow_bac
     assert bundle is None
     assert run.status in {"failed", "failure"}
     assert any("layer satisfaction retries exhausted" in err for err in run.final_state["workflow_errors"])
+    assert any(
+        record.get("failure_type") == "retry"
+        for record in run.final_state["strategy_execution_history"]
+    )
 
 
 def test_layerwise_workflow_preserves_committed_layers_when_later_layer_fails(workflow_backend_kind):

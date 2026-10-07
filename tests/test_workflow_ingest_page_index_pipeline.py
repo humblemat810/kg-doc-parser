@@ -179,6 +179,86 @@ def test_page_index_llm_structured_output_prefers_function_calling(monkeypatch: 
     assert captured[0]["method"] == "json_schema"
 
 
+def test_page_index_provider_diagnostics_include_attempt_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_page_index_chat(
+        monkeypatch,
+        assignment_payload=BlockAssignmentBatch(
+            assignments=[
+                BlockAssignment(
+                    block_id="p0001-b001",
+                    parent_id=None,
+                    node_type="SECTION",
+                    title="Root",
+                )
+            ]
+        ),
+    )
+    diagnostics: list[dict[str, object]] = []
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="ollama", model="fake", base_url="http://127.0.0.1:11434")
+    )
+
+    page_index_module._llm_page_outline(
+        page_text="# Root\n",
+        page_number=1,
+        source_format="markdown",
+        provider_settings=settings,
+        provider_diagnostics_sink=diagnostics.append,
+    )
+
+    assert len(diagnostics) == 1
+    record = diagnostics[0]
+    assert record["operation"] == "page_index_assignment"
+    assert record["call_role"] == "proposal"
+    assert record["strategy"] == "page_index"
+    assert record["attempt_index"] == 1
+    assert record["success"] is True
+    assert isinstance(record["elapsed_ms"], int)
+
+
+@pytest.mark.parametrize(
+    "provider",
+    ["fake", "ollama", "openai", "azure", "gemini", "vertex", "codex"],
+)
+def test_all_declared_page_index_modes_share_semantic_path_with_fake_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+) -> None:
+    _install_fake_page_index_chat(
+        monkeypatch,
+        assignment_payload=BlockAssignmentBatch(
+            assignments=[
+                BlockAssignment(
+                    block_id="p0001-b001",
+                    parent_id=None,
+                    node_type="SECTION",
+                    title="Root",
+                )
+            ]
+        ),
+    )
+    diagnostics: list[dict[str, object]] = []
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider=provider, model="test-model")
+    )
+
+    result = parse_page_index_document(
+        document_id=f"mode-{provider}",
+        title="Mode Matrix",
+        raw_text="# Root\n",
+        source_format="markdown",
+        mode=provider,  # type: ignore[arg-type]
+        provider_settings=settings,
+        provider_diagnostics_sink=diagnostics.append,
+    )
+
+    assert result.semantic_tree.child_nodes
+    assert diagnostics
+    assert {record["operation"] for record in diagnostics} == {"page_index_assignment"}
+    assert all(record["strategy"] == "page_index" for record in diagnostics)
+    assert all(record["success"] is True for record in diagnostics)
+
+
 def test_page_index_module_exports_hybrid_primitives() -> None:
     assert hasattr(page_index_module, "CandidateBlock")
     assert hasattr(page_index_module, "BlockAssignment")

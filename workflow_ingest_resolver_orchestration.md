@@ -1,13 +1,13 @@
 # Workflow Ingest Resolver Orchestration
 
 This document shows the implemented workflow resolver orchestration for
-`src/workflow_ingest`, then compares it with the earlier design proposal in
-[workflow_ingest_layerwise_proposal.md](/c:/Users/chanh/Documents/kg_doc_parser/workflow_ingest_layerwise_proposal.md#L1).
+`kg_doc_parser/workflow_ingest`, then compares it with the earlier design
+proposal in [workflow_ingest_layerwise_proposal.md](workflow_ingest_layerwise_proposal.md#L1).
 
 The implementation source of truth is:
 
-- [design.py](/c:/Users/chanh/Documents/kg_doc_parser/src/workflow_ingest/design.py#L1)
-- [handlers.py](/c:/Users/chanh/Documents/kg_doc_parser/src/workflow_ingest/handlers.py#L1)
+- [design.py](kg_doc_parser/workflow_ingest/design.py#L1)
+- [handlers.py](kg_doc_parser/workflow_ingest/handlers.py#L1)
 
 ## Final Implemented Workflow Graph
 
@@ -174,7 +174,7 @@ normalize, review, edit, and audit subgraph.
   the `_route_next` value.
 - In practice that means workflow edge labels are the target step names, not a
   generic relationship label.
-- That detail is encoded in [design.py](/c:/Users/chanh/Documents/kg_doc_parser/src/workflow_ingest/design.py#L38).
+- That detail is encoded in [design.py](kg_doc_parser/workflow_ingest/design.py#L38).
 
 ## Practical reading of the current system
 

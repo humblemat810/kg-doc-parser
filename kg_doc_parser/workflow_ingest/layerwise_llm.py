@@ -22,6 +22,7 @@ from .models import (
     CurrentLayerContext,
     CurrentLayerResult,
     CurrentLayerReview,
+    FailureCategory,
     LayerChildCandidate,
     LayerReasoningEntry,
     LLMBoundaryProposalBatch,
@@ -1469,6 +1470,7 @@ def _annotate_proposal_result(
     proposal_source: str,
     proposal_mode: str = "children",
     proposal_failure_reason: str | None = None,
+    failure_type: FailureCategory | None = None,
     provider_child_count: int | None = None,
     boundary_count: int | None = None,
     accepted_boundary_count: int | None = None,
@@ -1483,6 +1485,8 @@ def _annotate_proposal_result(
     metadata["proposal_mode"] = proposal_mode
     if proposal_failure_reason:
         metadata["proposal_failure_reason"] = proposal_failure_reason
+    if failure_type is not None:
+        metadata["failure_type"] = failure_type
     if boundary_count is not None:
         metadata["boundary_count"] = boundary_count
     if accepted_boundary_count is not None:
@@ -1521,6 +1525,8 @@ def _annotate_proposal_result(
         marker_payload["summary_count"] = summary_count
     if proposal_failure_reason:
         marker_payload["proposal_failure_reason"] = proposal_failure_reason
+    if failure_type is not None:
+        marker_payload["failure_type"] = failure_type
     reasoning_history.append(LayerReasoningEntry.model_validate(marker_payload))
     payload = result.model_dump()
     payload["metadata"] = metadata
@@ -1681,6 +1687,7 @@ def build_layerwise_llm_callbacks(
         raise ValueError("proposal_mode must be either 'children' or 'boundaries'")
     boundary_refinement_rounds = max(0, int(boundary_refinement_rounds or 0))
     proposal_retry_rounds = max(0, int(getattr(provider_settings.parser, "max_retries", 0) or 0))
+    last_provider_failure_type: str | None = None
 
     def _emit(stage: str, **extra: Any) -> None:
         if callable(event_sink):
@@ -1689,11 +1696,21 @@ def build_layerwise_llm_callbacks(
     def _emit_provider_diagnostics(diagnostics: dict[str, object]) -> None:
         """Publish one structured call record without exposing provider payloads."""
 
+        nonlocal last_provider_failure_type
+        if diagnostics.get("success") is False:
+            last_provider_failure_type = str(
+                diagnostics.get("failure_type") or "transport/provider_exception"
+            )
         _emit(
             "workflow_provider_call",
             **diagnostics,
             provider_metrics=provider_call_metrics_snapshot(),
         )
+
+    def _normalized_provider_failure_type() -> FailureCategory:
+        if last_provider_failure_type in {"timeout", "structured_output_parse_failure"}:
+            return cast(FailureCategory, last_provider_failure_type)
+        return "transport/provider_exception"
 
     def _proposal_attempt_payload(
         payload: dict[str, Any],
@@ -1849,6 +1866,7 @@ def build_layerwise_llm_callbacks(
                     retry_budget=proposal_retry_rounds,
                     retry_reason=record.error_message,
                     retry_delay_seconds=delay_seconds,
+                    failure_type="retry",
                 )
                 if delay_seconds > 0:
                     time.sleep(delay_seconds)
@@ -2006,6 +2024,7 @@ def build_layerwise_llm_callbacks(
                     retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                     split_strategy=split_strategy,
                     failure_reason=failure_reason,
+                    failure_type=_normalized_provider_failure_type(),
                 )
                 fallback = fallback_builder(
                     current_layer_context=current_layer_context,
@@ -2016,6 +2035,7 @@ def build_layerwise_llm_callbacks(
                     proposal_source="fallback",
                     proposal_mode="boundaries",
                     proposal_failure_reason=failure_reason,
+                    failure_type="fallback",
                     provider_child_count=0,
                 )
                 _emit(
@@ -2023,6 +2043,7 @@ def build_layerwise_llm_callbacks(
                     proposal_source="fallback",
                     proposal_mode="boundaries",
                     proposal_failure_reason=failure_reason,
+                    failure_type="fallback",
                     depth=int(getattr(current_layer_context, "depth", 0)),
                     retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                     split_strategy=split_strategy,
@@ -2051,6 +2072,11 @@ def build_layerwise_llm_callbacks(
                     1 for decision in review_decisions if decision.decision in {"shift_left", "shift_right"}
                 ),
                 rejected_boundary_count=sum(1 for decision in review_decisions if decision.decision == "reject"),
+                failure_type=(
+                    "anchor_ambiguity"
+                    if any(decision.decision == "reject" for decision in review_decisions)
+                    else None
+                ),
                 refinement_needed_count=sum(
                     1 for decision in review_decisions if decision.decision == "needs_refinement"
                 ),
@@ -2283,6 +2309,7 @@ def build_layerwise_llm_callbacks(
                     retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                     split_strategy=split_strategy,
                     failure_reason=failure_reason,
+                    failure_type="semantic_rejection",
                     identical_parent_child_ids=identical_parent_child_ids,
                 )
                 fallback = fallback_builder(
@@ -2309,6 +2336,7 @@ def build_layerwise_llm_callbacks(
                     proposal_source="fallback",
                     proposal_mode="boundaries",
                     proposal_failure_reason=failure_reason,
+                    failure_type="fallback",
                     provider_child_count=0,
                 )
                 annotated = annotated.model_copy(
@@ -2324,6 +2352,7 @@ def build_layerwise_llm_callbacks(
                     proposal_source="fallback",
                     proposal_mode="boundaries",
                     proposal_failure_reason=failure_reason,
+                    failure_type="fallback",
                     depth=int(getattr(current_layer_context, "depth", 0)),
                     retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                     split_strategy=split_strategy,
@@ -2346,6 +2375,7 @@ def build_layerwise_llm_callbacks(
                     retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                     split_strategy=split_strategy,
                     failure_reason=failure_reason,
+                    failure_type="semantic_rejection",
                 )
                 fallback = fallback_builder(
                     current_layer_context=current_layer_context,
@@ -2356,6 +2386,7 @@ def build_layerwise_llm_callbacks(
                     proposal_source="fallback",
                     proposal_mode="boundaries",
                     proposal_failure_reason=failure_reason,
+                    failure_type="fallback",
                     provider_child_count=0,
                 )
                 _emit(
@@ -2363,6 +2394,7 @@ def build_layerwise_llm_callbacks(
                     proposal_source="fallback",
                     proposal_mode="boundaries",
                     proposal_failure_reason=failure_reason,
+                    failure_type="fallback",
                     depth=int(getattr(current_layer_context, "depth", 0)),
                     retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                     split_strategy=split_strategy,
@@ -2506,6 +2538,7 @@ def build_layerwise_llm_callbacks(
                 retry_budget=proposal_retry_rounds,
                 retry_reason=record.error_message,
                 retry_delay_seconds=delay_seconds,
+                failure_type="retry",
             )
             if delay_seconds > 0:
                 time.sleep(delay_seconds)
@@ -2573,6 +2606,7 @@ def build_layerwise_llm_callbacks(
                 retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                 split_strategy=split_strategy,
                 failure_reason=failure_reason,
+                failure_type=_normalized_provider_failure_type(),
             )
             fallback = fallback_builder(
                 current_layer_context=current_layer_context,
@@ -2583,6 +2617,7 @@ def build_layerwise_llm_callbacks(
                 proposal_source="fallback",
                 proposal_mode="children",
                 proposal_failure_reason=failure_reason,
+                failure_type="fallback",
                 provider_child_count=0,
             )
             _emit(
@@ -2590,6 +2625,7 @@ def build_layerwise_llm_callbacks(
                 proposal_source="fallback",
                 proposal_mode="children",
                 proposal_failure_reason=failure_reason,
+                failure_type="fallback",
                 depth=int(getattr(current_layer_context, "depth", 0)),
                 retry_count=int(getattr(current_layer_context, "retry_count", 0)),
                 split_strategy=split_strategy,
@@ -2743,6 +2779,11 @@ def build_layerwise_llm_callbacks(
                 metadata={
                     "review_failure": failure_kind,
                     "review_failure_reason": failure_reason,
+                    "failure_type": (
+                        "timeout"
+                        if failure_kind == "timeout"
+                        else _normalized_provider_failure_type()
+                    ),
                 },
             )
             _emit(

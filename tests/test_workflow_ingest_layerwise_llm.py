@@ -493,6 +493,10 @@ def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: py
     assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
     assert any(event["stage"] == "workflow_layered_boundary_proposal_start" for event in layer_events)
     assert any(event["stage"] == "workflow_layered_boundary_review_completed" for event in layer_events)
+    review_events = [
+        event for event in layer_events if event["stage"] == "workflow_layered_boundary_review_completed"
+    ]
+    assert review_events[0]["failure_type"] == "anchor_ambiguity"
     assert any(event["stage"] == "workflow_layered_boundary_assembly_start" for event in layer_events)
     assert any(event["stage"] == "workflow_layered_boundary_assembly_completed" for event in layer_events)
     provider_events = [event for event in layer_events if event["stage"] == "workflow_provider_call"]
@@ -1082,6 +1086,7 @@ def test_boundary_mode_recurses_through_refinement_for_ambiguous_cutpoints(monke
 
     assert result.metadata["proposal_mode"] == "boundaries"
     assert result.metadata["proposal_source"] == "fallback"
+    assert result.metadata["failure_type"] == "fallback"
     assert "no accepted cutpoints" in result.metadata["proposal_failure_reason"]
 
 
@@ -1348,6 +1353,7 @@ def test_propose_layer_fn_falls_back_and_marks_reason(
 
     assert result.metadata["proposal_source"] == "fallback"
     assert result.metadata["fallback"] == "llm_empty_or_unavailable"
+    assert result.metadata["failure_type"] == "fallback"
     assert "proposal_failure_reason" in result.metadata
     if reason_fragment == "validation":
         assert "validation" in result.metadata["proposal_failure_reason"].lower()
@@ -1356,6 +1362,7 @@ def test_propose_layer_fn_falls_back_and_marks_reason(
     assert result.reasoning_history[-1].proposal_source == "fallback"
     assert layer_events[-1]["stage"] == "workflow_layered_proposal_result"
     assert layer_events[-1]["proposal_source"] == "fallback"
+    assert layer_events[-1]["failure_type"] == "fallback"
     assert "proposal_failure_reason" in layer_events[-1]
 
 
@@ -1382,8 +1389,10 @@ def test_propose_layer_fn_falls_back_for_structurally_empty_response(monkeypatch
     )
 
     assert result.metadata["proposal_source"] == "fallback"
+    assert result.metadata["failure_type"] == "fallback"
     assert "no children without satisfied=true" in result.metadata["proposal_failure_reason"]
     assert layer_events[-1]["proposal_source"] == "fallback"
+    assert layer_events[-1]["failure_type"] == "fallback"
 
 
 def test_propose_layer_fn_rejects_single_child_fake_split(monkeypatch: pytest.MonkeyPatch):

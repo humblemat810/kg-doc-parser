@@ -4,9 +4,26 @@ from typing import Annotated, Any, ClassVar, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_extension.model_slicing import BackendField, FrontendField
-from pydantic_extension.model_slicing.mixin import DtoField, ExcludeMode, LLMField, ModeSlicingMixin
+from pydantic_extension.model_slicing.mixin import (
+    DtoField,
+    ExcludeMode,
+    LLMField,
+    ModeSlicingMixin,
+)
 
 from .semantics import HydratedTextPointer
+
+FailureCategory = Literal[
+    "timeout",
+    "transport/provider_exception",
+    "structured_output_parse_failure",
+    "semantic_rejection",
+    "anchor_ambiguity",
+    "repair_failure",
+    "retry",
+    "fallback",
+    "rollback",
+]
 
 
 class BoundingBox(ModeSlicingMixin, BaseModel):
@@ -488,6 +505,7 @@ class LayerReasoningEntry(BaseModel):
     proposal_source: Literal["llm", "fallback"] | None = None
     proposal_mode: Literal["children", "boundaries"] | None = None
     proposal_failure_reason: str | None = None
+    failure_type: FailureCategory | None = None
     provider_child_count: int | None = None
     boundary_count: int | None = None
     accepted_boundary_count: int | None = None
@@ -509,6 +527,7 @@ class StrategyExecutionRecord(BaseModel):
     parent_node_ids: list[str] = Field(default_factory=list)
     attempt: int = Field(ge=1)
     event: Literal["selected", "succeeded", "failed"]
+    failure_type: FailureCategory | None = None
     reasons: list[str] = Field(default_factory=list, max_length=12)
 
 
