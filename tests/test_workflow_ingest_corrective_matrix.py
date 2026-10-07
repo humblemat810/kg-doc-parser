@@ -8,6 +8,7 @@ from _kogwistar_test_helpers import build_workflow_engine_triplet
 from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
     BlockAssignmentBatch,
+    CurrentLayerContext,
     CurrentLayerResult,
     CurrentLayerReview,
     HydratedTextPointer,
@@ -17,6 +18,7 @@ from kg_doc_parser.workflow_ingest import (
     WorkflowProviderSettings,
     parse_page_index_document,
 )
+from kg_doc_parser.workflow_ingest.parser_core import detect_layer_invariants
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
 
 pytestmark = [pytest.mark.workflow, pytest.mark.ci]
@@ -93,6 +95,62 @@ def _full_source_pointer(inp: WorkflowIngestInput) -> HydratedTextPointer:
         end_char=max(0, len(text) - 1),
         verbatim_text=text,
     )
+
+
+@pytest.mark.parametrize("strategy", ["excerpt_first", "boundary_first", "page_index"])
+@pytest.mark.parametrize("coverage_ratio", [0.95, 0.99])
+def test_partial_non_whitespace_grounding_is_rejected_for_each_route(
+    strategy: str,
+    coverage_ratio: float,
+) -> None:
+    text = _long_table()
+    source_cluster_id = "partial-grounding|p1_t0"
+    cutoff = max(1, int(len(text) * coverage_ratio))
+    parent_pointer = HydratedTextPointer(
+        source_cluster_id=source_cluster_id,
+        start_char=0,
+        end_char=len(text) - 1,
+        verbatim_text=text,
+    )
+    partial_pointer = HydratedTextPointer(
+        source_cluster_id=source_cluster_id,
+        start_char=0,
+        end_char=cutoff - 1,
+        verbatim_text=text[:cutoff],
+    )
+    split_strategy = "boundary_first" if strategy == "boundary_first" else "excerpt_first"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["root"],
+        parent_titles=["Sample Document Title"],
+        parent_content_pointers_by_id={"root": [parent_pointer]},
+        split_strategy=split_strategy,
+        metadata={"parse_strategy": strategy},
+    )
+    result = CurrentLayerResult(
+        children=[
+            LayerChildCandidate(
+                node_id="root|partial",
+                parent_node_id="root",
+                title="Partial table",
+                node_type="TABLE",
+                total_content_pointers=[partial_pointer],
+                expandable=False,
+            )
+        ],
+        satisfied=True,
+    )
+
+    coverage_ok, satisfied, _overlaps, gaps, _duplicates, _notes = detect_layer_invariants(
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map={source_cluster_id: {"text": text}},
+    )
+
+    assert coverage_ok is False
+    assert satisfied is False
+    assert gaps
+    assert gaps[0].gap_start == cutoff
 
 
 @pytest.mark.parametrize("strategy", ["excerpt_first", "boundary_first", "page_index"])
