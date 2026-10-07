@@ -364,6 +364,15 @@ def register_layerwise_parser_steps(
             if normalized_input.page_index_summary_enabled is not None
             else (settings.page_index_summary_enabled if settings is not None else True)
         )
+        page_index_hierarchical_summary_enabled = (
+            normalized_input.page_index_hierarchical_summary_enabled
+            if normalized_input.page_index_hierarchical_summary_enabled is not None
+            else (
+                settings.page_index_hierarchical_summary_enabled
+                if settings is not None
+                else False
+            )
+        )
         triage_build_error: str | None = None
         if triage_fn is None and settings is not None and triage_enabled and requested == "auto":
             try:
@@ -435,6 +444,7 @@ def register_layerwise_parser_steps(
                 "parse_strategy_fallback_order": list(decision.fallback_order),
                 "disabled_strategies": sorted(disabled_strategies),
                     "page_index_summary_enabled": page_index_summary_enabled,
+                    "page_index_hierarchical_summary_enabled": page_index_hierarchical_summary_enabled,
             }
         )
         selected_split_strategy = (
@@ -484,6 +494,7 @@ def register_layerwise_parser_steps(
                     "disabled_strategies": sorted(disabled_strategies),
                     "page_index_attempted": False,
                     "page_index_summary_enabled": page_index_summary_enabled,
+                    "page_index_hierarchical_summary_enabled": page_index_hierarchical_summary_enabled,
                 },
                 "retry_count": 0,
             }

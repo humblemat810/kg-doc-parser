@@ -254,16 +254,19 @@ def test_workflow_input_supports_request_level_strategy_overrides() -> None:
             "parse_strategy": "page_index",
             "triage_enabled": False,
             "page_index_summary_enabled": False,
+            "page_index_hierarchical_summary_enabled": True,
             "parse_strategy_order": ["layer_boundary", "layer_excerpt", "page_index"],
         }
     )
     assert request_input.parse_strategy == "page_index"
     assert request_input.triage_enabled is False
     assert request_input.page_index_summary_enabled is False
+    assert request_input.page_index_hierarchical_summary_enabled is True
     assert request_input.parse_strategy_order == ["layer_boundary", "layer_excerpt", "page_index"]
     backend_payload = request_input.model_dump(field_mode="backend", dump_format="json")
     assert backend_payload["parse_strategy"] == "page_index"
     assert backend_payload["page_index_summary_enabled"] is False
+    assert backend_payload["page_index_hierarchical_summary_enabled"] is True
     assert backend_payload["parse_strategy_order"] == ["layer_boundary", "layer_excerpt", "page_index"]
 
 
@@ -304,6 +307,7 @@ def test_cli_provider_overrides_support_strategy_and_triage_per_parse_call() -> 
             "page_index",
             "--no-triage-enabled",
             "--no-page-index-summary-enabled",
+            "--page-index-hierarchical-summary-enabled",
         ]
     )
     settings = _provider_settings_from_args(args)
@@ -311,6 +315,7 @@ def test_cli_provider_overrides_support_strategy_and_triage_per_parse_call() -> 
     assert settings.parse_strategy == "page_index"
     assert settings.triage_enabled is False
     assert settings.page_index_summary_enabled is False
+    assert settings.page_index_hierarchical_summary_enabled is True
 
 
 @pytest.mark.ci
@@ -320,3 +325,9 @@ def test_page_index_summary_defaults_on_and_reads_process_override(monkeypatch: 
 
     monkeypatch.setenv("KG_DOC_PARSER_PAGE_INDEX_SUMMARY_ENABLED", "0")
     assert WorkflowProviderSettings.from_env().page_index_summary_enabled is False
+
+    monkeypatch.delenv("KG_DOC_PARSER_PAGE_INDEX_HIERARCHICAL_SUMMARY_ENABLED", raising=False)
+    assert WorkflowProviderSettings.from_env().page_index_hierarchical_summary_enabled is False
+
+    monkeypatch.setenv("KG_DOC_PARSER_PAGE_INDEX_HIERARCHICAL_SUMMARY_ENABLED", "1")
+    assert WorkflowProviderSettings.from_env().page_index_hierarchical_summary_enabled is True

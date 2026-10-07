@@ -148,6 +148,15 @@ with `WorkflowIngestInput.page_index_summary_enabled`. Disabling summaries
 changes only the advisory summary field; source spans, leaf ownership, and
 structural validation remain unchanged.
 
+An optional parent-summary context pass is disabled by default with
+`KG_DOC_PARSER_PAGE_INDEX_HIERARCHICAL_SUMMARY_ENABLED`. When enabled for a
+provider-backed PageIndex parse, summaries are generated in tree-depth order.
+Each call receives bounded block excerpts and only the already accepted direct
+parent summary. A failed summary call retains the initial assignment summary,
+records provider diagnostics, and never changes source grounding or tree
+structure. The request-level override is
+`WorkflowIngestInput.page_index_hierarchical_summary_enabled`.
+
 The CLI exposes the same per-call controls for `ocr`, `page-index`, and `demo`:
 
 ```text
@@ -156,6 +165,8 @@ The CLI exposes the same per-call controls for `ocr`, `page-index`, and `demo`:
 --no-triage-enabled
 --page-index-summary-enabled
 --no-page-index-summary-enabled
+--page-index-hierarchical-summary-enabled
+--no-page-index-hierarchical-summary-enabled
 ```
 
 The flags override environment/provider defaults only for that invocation.

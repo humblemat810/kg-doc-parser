@@ -80,6 +80,7 @@ class PageIndexParseRequest:
     provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None
     refine_excerpts: bool = False
     summary_enabled: bool = True
+    hierarchical_summary_enabled: bool | None = None
 
 
 @dataclass(slots=True)
@@ -187,6 +188,7 @@ def parse_page_index_document(
     provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
     refine_excerpts: bool = False,
     summary_enabled: bool = True,
+    hierarchical_summary_enabled: bool | None = None,
 ) -> PageIndexParseResult:
     """Parse a text / Markdown page-index document into a semantic tree."""
 
@@ -207,6 +209,7 @@ def parse_page_index_document(
         provider_diagnostics_sink=provider_diagnostics_sink,
         refine_excerpts=refine_excerpts,
         summary_enabled=summary_enabled,
+        hierarchical_summary_enabled=hierarchical_summary_enabled,
     )
 
 

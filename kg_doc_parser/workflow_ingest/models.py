@@ -180,6 +180,13 @@ class WorkflowIngestInput(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
+    page_index_hierarchical_summary_enabled: Annotated[
+        bool | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
 
     @model_validator(mode="after")
     def _check_collections(self) -> "WorkflowIngestInput":

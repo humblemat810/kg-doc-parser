@@ -554,6 +554,13 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = True
+    page_index_hierarchical_summary_enabled: Annotated[
+        bool,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = False
     layer_frontier_batch_size: Annotated[
         int,
         DtoField(),
@@ -637,6 +644,10 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
             triage_enabled=str(_env("KG_DOC_PARSER_TRIAGE_ENABLED", "1")).lower()
             not in {"0", "false", "no", "off"},
             page_index_summary_enabled=str(_env("KG_DOC_PARSER_PAGE_INDEX_SUMMARY_ENABLED", "1")).lower()
+            not in {"0", "false", "no", "off"},
+            page_index_hierarchical_summary_enabled=str(
+                _env("KG_DOC_PARSER_PAGE_INDEX_HIERARCHICAL_SUMMARY_ENABLED", "0")
+            ).lower()
             not in {"0", "false", "no", "off"},
             layer_frontier_batch_size=int(_env("KG_DOC_PARSER_FRONTIER_BATCH_SIZE", "1") or "1"),
             boundary_max_points=int(_env("KG_DOC_PARSER_BOUNDARY_MAX_POINTS", "128") or "128"),

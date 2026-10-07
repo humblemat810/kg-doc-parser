@@ -216,6 +216,15 @@ class ExcerptRefinementBatch(BaseModel):
     suggestions: list[ExcerptRefinementSuggestion] = Field(default_factory=list)
 
 
+class HierarchicalSummaryAssignment(BaseModel):
+    path_id: str = Field(description="Stable tree path identifier for the block to summarize.")
+    summary: str = Field(description="A concise factual summary grounded in the block excerpt.")
+
+
+class HierarchicalSummaryBatch(BaseModel):
+    assignments: list[HierarchicalSummaryAssignment] = Field(default_factory=list)
+
+
 @dataclass(slots=True)
 class PageIndexValidationResult:
     valid: bool
@@ -1395,6 +1404,179 @@ def _refine_page_index_block_excerpts(
     return refined, diagnostics
 
 
+def _refine_page_index_summaries_hierarchically(
+    *,
+    block_specs: list[PageIndexBlockSpec],
+    page_number: int,
+    provider_settings: WorkflowProviderSettings,
+    callbacks: list[Any] | None = None,
+    trace_log: PageIndexTraceLogger | None = None,
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+    """Optionally regenerate summaries one tree depth at a time.
+
+    The initial assignment remains authoritative for structure and grounding.
+    This pass only improves summaries, and each depth receives bounded child
+    excerpts plus the already accepted summary of its direct parent.
+    """
+
+    paths = list(_iter_page_index_block_specs_with_paths(block_specs))
+    diagnostics: dict[str, Any] = {
+        "hierarchical_summary_enabled": True,
+        "hierarchical_summary_attempted": len(paths),
+        "hierarchical_summary_accepted": 0,
+        "hierarchical_summary_rejected": 0,
+        "hierarchical_summary_fallback": False,
+        "hierarchical_summary_call_count": 0,
+    }
+    if not paths:
+        return block_specs, diagnostics
+
+    chat_kwargs = {"callbacks": callbacks} if callbacks is not None else {}
+    try:
+        chat = build_chat_model_for_role("parser", provider_settings, **chat_kwargs)
+        structured = build_structured_output_runnable(chat, HierarchicalSummaryBatch, include_raw=True)
+    except Exception as exc:  # noqa: BLE001 - optional summary pass preserves the assignment output.
+        diagnostics["hierarchical_summary_fallback"] = True
+        diagnostics["hierarchical_summary_rejected"] = len(paths)
+        diagnostics["hierarchical_summary_error"] = f"{type(exc).__name__}: {exc}"
+        if provider_diagnostics_sink is not None:
+            provider_diagnostics_sink(
+                {
+                    "operation": "page_index_hierarchical_summary",
+                    "call_role": "summary",
+                    "strategy": "page_index",
+                    "attempt_index": 0,
+                    "success": False,
+                    "failure_type": "transport/provider_exception",
+                    "error_type": type(exc).__name__,
+                }
+            )
+        return block_specs, diagnostics
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    refined = deepcopy(block_specs)
+    summary_by_path = {
+        path: spec.summary.strip()
+        for path, spec in _iter_page_index_block_specs_with_paths(refined)
+    }
+    max_entries_per_call = 32
+    max_excerpt_chars = 1600
+    max_parent_summary_chars = 800
+    max_title_chars = 240
+    paths_by_depth: dict[int, list[tuple[tuple[int, ...], PageIndexBlockSpec]]] = {}
+    for path, spec in paths:
+        paths_by_depth.setdefault(len(path), []).append((path, spec))
+
+    call_index = 0
+    for depth in sorted(paths_by_depth):
+        depth_entries = paths_by_depth[depth]
+        for offset in range(0, len(depth_entries), max_entries_per_call):
+            chunk = depth_entries[offset : offset + max_entries_per_call]
+            entries = [
+                {
+                    "path_id": _page_index_path_id(path),
+                    "title": spec.title[:max_title_chars],
+                    "node_type": spec.node_type,
+                    "excerpt": spec.excerpt[:max_excerpt_chars],
+                    "parent_path_id": _page_index_path_id(path[:-1]) if path[:-1] else None,
+                    "parent_summary": summary_by_path.get(path[:-1], "")[:max_parent_summary_chars],
+                }
+                for path, spec in chunk
+            ]
+            call_index += 1
+            diagnostics["hierarchical_summary_call_count"] = call_index
+            prompt = (
+                "Generate concise factual summaries for these page-index blocks.\n"
+                "Return only the structured schema.\n"
+                "Rules:\n"
+                "- return only supplied path_id values\n"
+                "- use only facts supported by each block excerpt\n"
+                "- use the direct parent summary to avoid repetition and keep terminology coherent\n"
+                "- do not copy the parent summary verbatim when the child adds no new fact; return an empty summary\n"
+                "- do not alter structure, titles, or source grounding\n"
+                f"Page number: {page_number}\n"
+                f"Tree depth: {depth}\n"
+                f"Blocks: {json.dumps(entries, ensure_ascii=False, sort_keys=True)}"
+            )
+            call_diagnostics: dict[str, object] = {}
+            provider_returned = False
+            try:
+                callback_counts = _callback_call_counts(callbacks)
+                try:
+                    payload = invoke_with_timeout(
+                        lambda prompt_text=prompt: structured.invoke(
+                            [
+                                SystemMessage(content="You are a conservative hierarchical summary editor."),
+                                HumanMessage(content=prompt_text),
+                            ]
+                        ),
+                        timeout_seconds=(
+                            provider_settings.proposal_timeout_seconds
+                            or provider_settings.parser.timeout_seconds
+                        ),
+                        diagnostics=call_diagnostics,
+                        operation="page_index_hierarchical_summary",
+                        max_in_flight=provider_settings.parser.max_in_flight_calls,
+                        attempt_index=call_index,
+                        call_role="summary",
+                        strategy="page_index",
+                    )
+                    provider_returned = True
+                finally:
+                    _notify_untracked_provider_call(callbacks, callback_counts, f"summary-page-{page_number}-{call_index}")
+                parsed = payload.get("parsed") if isinstance(payload, dict) else payload
+                if parsed is None:
+                    error = payload.get("parsing_error") if isinstance(payload, dict) else None
+                    raise ValueError(f"summary parse error: {error!r}")
+                batch = (
+                    parsed
+                    if isinstance(parsed, HierarchicalSummaryBatch)
+                    else HierarchicalSummaryBatch.model_validate(parsed)
+                )
+            except Exception as exc:  # noqa: BLE001 - summaries fall back to assignment output.
+                call_diagnostics.update(
+                    {
+                        "success": False,
+                        "failure_type": (
+                            "structured_output_parse_failure"
+                            if provider_returned
+                            else call_diagnostics.get("failure_type", "transport/provider_exception")
+                        ),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                if provider_diagnostics_sink is not None:
+                    provider_diagnostics_sink(dict(call_diagnostics))
+                diagnostics["hierarchical_summary_fallback"] = True
+                diagnostics["hierarchical_summary_rejected"] += len(chunk)
+                if trace_log is not None:
+                    trace_log(
+                        f"page_index_hierarchical_summary_fallback page_number={page_number} "
+                        f"depth={depth} error={type(exc).__name__}"
+                    )
+                continue
+
+            call_diagnostics["success"] = True
+            if provider_diagnostics_sink is not None:
+                provider_diagnostics_sink(dict(call_diagnostics))
+            expected_paths = {_page_index_path_id(path): path for path, _spec in chunk}
+            for assignment in batch.assignments:
+                path = expected_paths.get(assignment.path_id)
+                if path is None or not assignment.summary.strip():
+                    diagnostics["hierarchical_summary_rejected"] += 1
+                    continue
+                summary = assignment.summary.strip()
+                current_nodes = refined
+                for index in path[:-1]:
+                    current_nodes = current_nodes[index].child_nodes
+                current_nodes[path[-1]].summary = summary
+                summary_by_path[path] = summary
+                diagnostics["hierarchical_summary_accepted"] += 1
+
+    return refined, diagnostics
+
+
 def _build_page_outline_from_candidates(
     *,
     page_text: str,
@@ -2320,10 +2502,16 @@ def parse_page_index_document(
     provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
     refine_excerpts: bool = False,
     summary_enabled: bool = True,
+    hierarchical_summary_enabled: bool | None = None,
 ) -> PageIndexParseResult:
     """Parse a plain text or Markdown document into a page-index semantic tree."""
 
     settings = provider_settings or WorkflowProviderSettings.from_env()
+    effective_hierarchical_summary_enabled = (
+        settings.page_index_hierarchical_summary_enabled
+        if hierarchical_summary_enabled is None
+        else hierarchical_summary_enabled
+    )
     workflow_input = build_page_index_workflow_input(
         document_id=document_id,
         title=title,
@@ -2392,6 +2580,14 @@ def parse_page_index_document(
             "refine_excerpts_rejected": 0,
             "refine_excerpts_fallback": False,
         }
+        hierarchical_summary_diagnostics = {
+            "hierarchical_summary_enabled": False,
+            "hierarchical_summary_attempted": 0,
+            "hierarchical_summary_accepted": 0,
+            "hierarchical_summary_rejected": 0,
+            "hierarchical_summary_fallback": False,
+            "hierarchical_summary_call_count": 0,
+        }
         if mode in _PAGE_INDEX_PROVIDER_MODES and refine_excerpts:
             block_specs, page_refinement_diagnostics = _refine_page_index_block_excerpts(
                 block_specs=block_specs,
@@ -2403,8 +2599,18 @@ def parse_page_index_document(
                 trace_log=trace_log,
                 provider_diagnostics_sink=provider_diagnostics_sink,
             )
+        if mode in _PAGE_INDEX_PROVIDER_MODES and summary_enabled and effective_hierarchical_summary_enabled:
+            block_specs, hierarchical_summary_diagnostics = _refine_page_index_summaries_hierarchically(
+                block_specs=block_specs,
+                page_number=page_number,
+                provider_settings=settings,
+                callbacks=callbacks,
+                trace_log=trace_log,
+                provider_diagnostics_sink=provider_diagnostics_sink,
+            )
         page_diagnostics_item = dict(page_diagnostics_item)
         page_diagnostics_item.update(page_refinement_diagnostics)
+        page_diagnostics_item.update(hierarchical_summary_diagnostics)
         page_repair_stats: dict[str, int] = {
             "pointer_fuzzy_repairs": 0,
             "pointer_fuzzy_failures": 0,

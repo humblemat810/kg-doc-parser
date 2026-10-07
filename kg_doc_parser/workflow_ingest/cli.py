@@ -50,6 +50,9 @@ def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSe
     parse_strategy_order = getattr(args, "parse_strategy_order", None)
     triage_enabled = getattr(args, "triage_enabled", None)
     page_index_summary_enabled = getattr(args, "page_index_summary_enabled", None)
+    page_index_hierarchical_summary_enabled = getattr(
+        args, "page_index_hierarchical_summary_enabled", None
+    )
     ocr_override = any(value is not None for value in ocr_values.values())
     parser_override = any(value is not None for value in parser_values.values())
     proposal_override = proposal_mode is not None
@@ -57,6 +60,7 @@ def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSe
     strategy_order_override = parse_strategy_order is not None
     triage_override = triage_enabled is not None
     summary_override = page_index_summary_enabled is not None
+    hierarchical_summary_override = page_index_hierarchical_summary_enabled is not None
     if (
         not ocr_override
         and not parser_override
@@ -65,6 +69,7 @@ def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSe
         and not strategy_order_override
         and not triage_override
         and not summary_override
+        and not hierarchical_summary_override
     ):
         return None
     settings = WorkflowProviderSettings.from_env()
@@ -80,6 +85,12 @@ def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSe
         settings = settings.model_copy(update={"triage_enabled": triage_enabled})
     if summary_override:
         settings = settings.model_copy(update={"page_index_summary_enabled": page_index_summary_enabled})
+    if hierarchical_summary_override:
+        settings = settings.model_copy(
+            update={
+                "page_index_hierarchical_summary_enabled": page_index_hierarchical_summary_enabled
+            }
+        )
     if ocr_override:
         settings = settings.model_copy(
             update={
@@ -124,6 +135,12 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Enable or disable summaries on PageIndex nodes for this parse call",
+    )
+    group.add_argument(
+        "--page-index-hierarchical-summary-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable the bounded parent-summary context pass",
     )
     group.add_argument("--ocr-provider", default=None)
     group.add_argument("--ocr-model", default=None)
