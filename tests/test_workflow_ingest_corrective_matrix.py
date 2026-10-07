@@ -95,7 +95,7 @@ def _full_source_pointer(inp: WorkflowIngestInput) -> HydratedTextPointer:
     )
 
 
-@pytest.mark.parametrize("strategy", ["excerpt_first", "boundary_first"])
+@pytest.mark.parametrize("strategy", ["excerpt_first", "boundary_first", "page_index"])
 def test_corrective_long_table_workflow_strategy_matrix(strategy: str) -> None:
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
         Path("tests") / ".tmp_corrective_matrix" / strategy,
@@ -105,6 +105,15 @@ def test_corrective_long_table_workflow_strategy_matrix(strategy: str) -> None:
         document_id=f"corrective-workflow-{strategy}",
         text=_long_table(),
         title="Sample Document Title",
+    )
+    inp = inp.model_copy(
+        update={
+            "parse_strategy": "page_index" if strategy == "page_index" else None,
+            "triage_enabled": False if strategy == "page_index" else None,
+            "collections": [
+                inp.collections[0].model_copy(update={"metadata": {"source_format": "markdown"}})
+            ],
+        }
     )
 
     def propose_layer(*, current_layer_context, **_kwargs) -> CurrentLayerResult:
@@ -132,24 +141,31 @@ def test_corrective_long_table_workflow_strategy_matrix(strategy: str) -> None:
             review_notes=["deterministic corrective matrix review"],
         )
 
+    dependencies = {
+        "split_strategy": "boundary_first" if strategy == "boundary_first" else "excerpt_first",
+        "propose_layer_fn": propose_layer,
+        "review_layer_fn": review_layer,
+        "fallback_split_strategy": "boundary_first",
+        "max_review_retries": 0,
+        "max_depth": 1,
+    }
     run, bundle = run_ingest_workflow(
         inp=inp,
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
         knowledge_engine=knowledge_engine,
-        deps={
-            "propose_layer_fn": propose_layer,
-            "review_layer_fn": review_layer,
-            "split_strategy": strategy,
-            "fallback_split_strategy": (
-                "boundary_first" if strategy == "excerpt_first" else "excerpt_first"
-            ),
-            "max_review_retries": 0,
-            "max_depth": 1,
-        },
+        deps=dependencies,
     )
 
     assert run.status == "succeeded", run.final_state.get("workflow_errors")
     assert bundle is not None
-    assert run.final_state["parse_session"]["strategy_history"] == [strategy]
+    expected_strategy = {
+        "excerpt_first": "layer_excerpt",
+        "boundary_first": "layer_boundary",
+        "page_index": "page_index",
+    }[strategy]
+    assert any(
+        event["event"] == "selected" and event["strategy"] == expected_strategy
+        for event in run.final_state["strategy_execution_history"]
+    )
     assert any(node["label"] == "ID Description Value" for node in bundle.graph_payload["nodes"])

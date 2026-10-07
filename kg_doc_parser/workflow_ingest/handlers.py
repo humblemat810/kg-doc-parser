@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from typing import Protocol, TypedDict, cast
+from typing import Literal, Protocol, TypedDict, cast
 
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
@@ -28,7 +28,7 @@ from .models import (
     WorkflowExportBundle,
     WorkflowIngestInput,
 )
-from .page_index import parse_page_index_layer
+from .page_index import PageIndexSourceFormat, parse_page_index_layer
 from .parser_core import (
     ParseSemanticFn,
     ProposeLayerFn,
@@ -62,6 +62,21 @@ from .strategy import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _page_index_source_format(inp: WorkflowIngestInput) -> PageIndexSourceFormat:
+    """Read the document format carried by the normalized collection metadata."""
+
+    collection = select_primary_collection(inp)
+    candidates: list[object] = [collection.metadata.get("source_format")]
+    for page in collection.pages:
+        candidates.append(page.metadata.get("source_format"))
+        for unit in page.units:
+            candidates.append(unit.metadata.get("source_format"))
+    for value in candidates:
+        if value in {"text", "markdown"}:
+            return cast(Literal["text", "markdown"], value)
+    return "text"
 
 
 class StepHandler(Protocol):
@@ -531,7 +546,9 @@ def register_layerwise_parser_steps(
     @_register_step(resolver, step_name="page_index_layer", runtime_deps=runtime_deps)
     def _page_index_layer(ctx: StepContext) -> StepRunResult:
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
+        normalized_input = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
         parser_source_map = ctx.state_view.get("parser_source_map") or {}
+        source_format = _page_index_source_format(normalized_input)
         candidates = []
         for parent_id, parent_title in zip(
             current_layer_context.parent_node_ids,
@@ -543,7 +560,7 @@ def register_layerwise_parser_steps(
                     parent_title=parent_title,
                     parent_pointers=current_layer_context.parent_content_pointers_by_id.get(parent_id, []),
                     parser_source_map=parser_source_map,
-                    source_format="text",
+                    source_format=source_format,
                     summary_enabled=bool(current_layer_context.metadata.get("page_index_summary_enabled", True)),
                 )
             )
