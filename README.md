@@ -222,6 +222,21 @@ and structured extraction.
   - `KG_DOC_PARSER_PROJECT=my-project`
   - `KG_DOC_PARSER_LOCATION=us-central1`
 
+The Gemini adapter is included in the base installation. OpenAI/Azure and
+Vertex adapters are optional so local-only installations do not pull their
+cloud SDK trees:
+
+```powershell
+poetry install -E openai -E vertex
+# or, after building/installing the package:
+python -m pip install "graph-knowledge-doc-parser[openai,vertex]"
+```
+
+Installing an adapter does not create credentials, a cloud project, or a paid
+service. Use the no-charge offline provider contract tests for CI validation;
+only run a live provider smoke test when the account, endpoint, model, and
+zero-cost allowance are explicitly confirmed.
+
 ### Recipe Parsing Example
 
 If you are parsing a cooking recipe, one practical split is:

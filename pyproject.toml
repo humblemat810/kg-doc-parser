@@ -30,10 +30,18 @@ pathspec = "^0.12.1"
 pikepdf = { version = "^10.1.0", markers = "platform_python_implementation != 'PyPy'" }
 langchain-core = "^1.2.5"
 langchain-google-genai = "^4.1.2"
+langchain-openai = { version = "^1.6.7", optional = true }
+langchain-google-vertexai = { version = "^3.2.4", optional = true }
 pydantic-extension = "^0.0.7"
 rapidfuzz = "^3.14.3"
 mcp = "^2.2.0"
 kogwistar = "0.6.4"
+
+[tool.poetry.extras]
+openai = ["langchain-openai"]
+azure = ["langchain-openai"]
+vertex = ["langchain-google-vertexai"]
+cloud = ["langchain-openai", "langchain-google-vertexai"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"

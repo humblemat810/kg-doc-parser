@@ -6,13 +6,12 @@ from pathlib import Path
 
 import pytest
 
-
 pytestmark = [pytest.mark.ci]
 
 
 def test_kg_doc_parser_import_surface_is_available() -> None:
     import kg_doc_parser
-    import kg_doc_parser.workflow_ingest as workflow_ingest
+    from kg_doc_parser import workflow_ingest
 
     assert hasattr(kg_doc_parser, "parse_document")
     assert kg_doc_parser.parse_document is workflow_ingest.parse_document
@@ -49,3 +48,17 @@ def test_ci_uses_the_released_kogwistar_package_and_pinned_pypy_source_revision(
     assert locked_package["version"] == declared_version
     assert "source" not in locked_package
     assert "ref: v0.6.4" in workflow
+
+
+def test_cloud_adapter_extras_are_declared_without_changing_base_install() -> None:
+    root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = metadata["tool"]["poetry"]["dependencies"]
+    extras = metadata["tool"]["poetry"]["extras"]
+
+    assert dependencies["langchain-openai"]["optional"] is True
+    assert dependencies["langchain-google-vertexai"]["optional"] is True
+    assert extras["openai"] == ["langchain-openai"]
+    assert extras["azure"] == ["langchain-openai"]
+    assert extras["vertex"] == ["langchain-google-vertexai"]
+    assert extras["cloud"] == ["langchain-openai", "langchain-google-vertexai"]
