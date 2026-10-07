@@ -10,6 +10,7 @@ from uuid import UUID
 
 import pytest
 from kg_doc_parser.workflow_ingest import ProviderEndpointConfig
+from kg_doc_parser.workflow_ingest.models import FailureCategory
 from kg_doc_parser.workflow_ingest.providers import (
     WorkflowProviderSettings,
     _normalize_provider_name,
@@ -210,6 +211,23 @@ def test_provider_failure_diagnostics_use_stable_transport_category() -> None:
         invoke_with_timeout(failed_call, timeout_seconds=1.0, diagnostics=diagnostics)
     assert diagnostics["failure_type"] == "transport/provider_exception"
     assert diagnostics["error_type"] == "ValueError"
+
+
+def test_failure_category_vocabulary_covers_provider_and_workflow_outcomes() -> None:
+    from typing import get_args
+
+    assert set(get_args(FailureCategory)) == {
+        "timeout",
+        "transport/provider_exception",
+        "structured_output_parse_failure",
+        "semantic_rejection",
+        "anchor_ambiguity",
+        "repair_failure",
+        "retry",
+        "fallback",
+        "rollback",
+        "in_flight_limit",
+    }
 
 
 def test_provider_metrics_expose_completion_and_orphaned_timeout_counts() -> None:

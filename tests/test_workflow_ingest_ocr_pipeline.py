@@ -238,6 +238,42 @@ def test_workflow_ocr_structured_output_prefers_function_calling(
 
 
 @pytest.mark.ci
+def test_live_ocr_provider_diagnostics_include_attempt_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_path = _scratch("ocr_provider_diagnostics") / "page_1.png"
+    _draw_test_image(image_path, lines=["OCR diagnostics"])
+
+    class _FakeStructured:
+        def invoke(self, messages):
+            return {"parsed": _fake_ocr_response(1, "OCR diagnostics")}
+
+    class _FakeChat:
+        def with_structured_output(self, schema, include_raw=True, **kwargs):
+            return _FakeStructured()
+
+    monkeypatch.setattr(ocr_pipeline_module, "build_chat_model_for_role", lambda *args, **kwargs: _FakeChat())
+    diagnostics: list[dict[str, object]] = []
+    response = ocr_pipeline_module._run_live_ocr_page(
+        image_path,
+        1,
+        WorkflowProviderSettings(
+            ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        ),
+        provider_diagnostics_sink=diagnostics.append,
+    )
+
+    assert response.OCR_text_clusters[0].text == "OCR diagnostics"
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["operation"] == "ocr_page"
+    assert diagnostics[0]["call_role"] == "ocr"
+    assert diagnostics[0]["strategy"] == "ocr"
+    assert diagnostics[0]["attempt_index"] == 1
+    assert diagnostics[0]["success"] is True
+    assert isinstance(diagnostics[0]["elapsed_ms"], int)
+
+
+@pytest.mark.ci
 def test_prepare_ocr_workflow_input_resumes_completed_pages() -> None:
     scratch = _scratch("ocr_resume")
     images_dir = scratch / "images"

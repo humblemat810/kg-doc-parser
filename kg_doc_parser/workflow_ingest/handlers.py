@@ -96,6 +96,7 @@ class WorkflowRuntimeDeps(TypedDict, total=False):
     coverage_threshold: float
     provider_settings: WorkflowProviderSettings
     triage_strategy_fn: Callable[[dict[str, object]], object]
+    provider_diagnostics_sink: Callable[[dict[str, object]], None]
 
 
 def _build_export_bundle(
@@ -376,7 +377,10 @@ def register_layerwise_parser_steps(
         triage_build_error: str | None = None
         if triage_fn is None and settings is not None and triage_enabled and requested == "auto":
             try:
-                triage_fn = build_llm_strategy_triage(settings)
+                triage_fn = build_llm_strategy_triage(
+                    settings,
+                    diagnostics_sink=runtime_deps.get("provider_diagnostics_sink"),
+                )
             except Exception as exc:  # noqa: BLE001 - unavailable providers use deterministic fallback.
                 triage_build_error = f"triage provider unavailable: {type(exc).__name__}: {exc}"
         parent_context: list[dict[str, object]] = []

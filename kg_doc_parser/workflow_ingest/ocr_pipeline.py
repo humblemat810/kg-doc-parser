@@ -41,7 +41,7 @@ import logging
 import shutil
 import sqlite3
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -1265,7 +1265,13 @@ def _minimal_ocr_response_from_text(*, text: str, page_number: int, image_path: 
     )
 
 
-def _run_live_ocr_page(image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings) -> OCRClusterResponse:
+def _run_live_ocr_page(
+    image_path: Path,
+    page_number: int,
+    provider_settings: WorkflowProviderSettings,
+    *,
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+) -> OCRClusterResponse:
     """Run one page image through the configured OCR provider.
 
     This is the default implementation behind the OCRRunner hook. Tests can
@@ -1280,27 +1286,41 @@ def _run_live_ocr_page(image_path: Path, page_number: int, provider_settings: Wo
         "Preserve reading order, cluster numbering, and non-text regions.\n"
         "Do not invent missing text. If the page is empty, mark it as empty."
     )
-    response = invoke_with_timeout(
-        lambda: structured.invoke(
-            [
-                SystemMessage(content=prompt),
-                HumanMessage(
-                    content=[
-                        {"type": "text", "text": f"OCR page {page_number} and return the structured schema."},
-                        {"type": "image_url", "image_url": {"url": _image_to_data_url(image_path)}},
-                    ]
-                ),
-            ]
-        ),
-        timeout_seconds=provider_settings.ocr.timeout_seconds,
-        operation="ocr_page",
-        max_in_flight=provider_settings.ocr.max_in_flight_calls,
-        attempt_index=1,
-        call_role="ocr",
-        strategy="ocr",
-    )
+    call_diagnostics: dict[str, object] = {}
     try:
-        return _coerce_ocr_response(response)
+        response = invoke_with_timeout(
+            lambda: structured.invoke(
+                [
+                    SystemMessage(content=prompt),
+                    HumanMessage(
+                        content=[
+                            {"type": "text", "text": f"OCR page {page_number} and return the structured schema."},
+                            {"type": "image_url", "image_url": {"url": _image_to_data_url(image_path)}},
+                        ]
+                    ),
+                ]
+            ),
+            timeout_seconds=provider_settings.ocr.timeout_seconds,
+            diagnostics=call_diagnostics,
+            operation="ocr_page",
+            max_in_flight=provider_settings.ocr.max_in_flight_calls,
+            attempt_index=1,
+            call_role="ocr",
+            strategy="ocr",
+        )
+    except Exception as exc:
+        call_diagnostics.update(
+            {
+                "success": False,
+                "failure_type": call_diagnostics.get("failure_type", "transport/provider_exception"),
+                "error_type": type(exc).__name__,
+            }
+        )
+        if provider_diagnostics_sink is not None:
+            provider_diagnostics_sink(dict(call_diagnostics))
+        raise
+    try:
+        result = _coerce_ocr_response(response)
     except Exception as exc:
         if isinstance(response, dict):
             raw = response.get("raw")
@@ -1314,14 +1334,37 @@ def _run_live_ocr_page(image_path: Path, page_number: int, provider_settings: Wo
                     page_number,
                     parsing_error,
                 )
-                return _minimal_ocr_response_from_text(
+                result = _minimal_ocr_response_from_text(
                     text=raw_text,
                     page_number=page_number,
                     image_path=image_path,
                 )
+                call_diagnostics.update(
+                    {
+                        "success": False,
+                        "failure_type": "structured_output_parse_failure",
+                        "fallback": "raw_text_ocr",
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                if provider_diagnostics_sink is not None:
+                    provider_diagnostics_sink(dict(call_diagnostics))
+                return result
+        call_diagnostics.update(
+            {
+                "success": False,
+                "failure_type": "structured_output_parse_failure",
+                "error_type": type(exc).__name__,
+            }
+        )
+        if provider_diagnostics_sink is not None:
+            provider_diagnostics_sink(dict(call_diagnostics))
         raise RuntimeError(
             f"ocr provider returned an unreadable response for page {page_number}: {exc}"
         ) from exc
+    if provider_diagnostics_sink is not None:
+        provider_diagnostics_sink(dict(call_diagnostics))
+    return result
 
 
 def _legacy_folder_name(*, document_id: str, pdf_path: Path | None) -> str:
@@ -1461,6 +1504,27 @@ def prepare_ocr_workflow_input(
     page_failures: list[int] = []
 
     # Bundle the reusable per-run OCR context so the per-page loop stays small.
+    if ocr_runner is None:
+        def _instrumented_ocr_runner(
+            image_path: Path,
+            page_number: int,
+            settings: WorkflowProviderSettings,
+        ) -> OCRClusterResponse:
+            return _run_live_ocr_page(
+                image_path,
+                page_number,
+                settings,
+                provider_diagnostics_sink=(
+                    lambda diagnostics: _emit_ocr_event(probe, "ocr.provider_call", **diagnostics)
+                    if probe is not None
+                    else None
+                ),
+            )
+
+        effective_ocr_runner: OCRRunner = _instrumented_ocr_runner
+    else:
+        effective_ocr_runner = ocr_runner
+
     page_context = OCRPageProcessingContext(
         document_id=document_id,
         title=title,
@@ -1469,7 +1533,7 @@ def prepare_ocr_workflow_input(
         input_fingerprint=source_plan.input_fingerprint,
         candidate_models=candidate_models,
         provider_settings=provider_settings,
-        ocr_page_runner=ocr_runner or _run_live_ocr_page,
+        ocr_page_runner=effective_ocr_runner,
         state_store=state_store,
         probe=probe,
     )

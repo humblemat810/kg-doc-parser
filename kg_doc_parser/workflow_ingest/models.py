@@ -23,6 +23,7 @@ FailureCategory = Literal[
     "retry",
     "fallback",
     "rollback",
+    "in_flight_limit",
 ]
 
 

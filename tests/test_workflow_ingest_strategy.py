@@ -2,15 +2,20 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import kg_doc_parser.workflow_ingest.strategy as strategy_module
 import pytest
 from kg_doc_parser.workflow_ingest.cli import _provider_settings_from_args, build_parser
 from kg_doc_parser.workflow_ingest.models import WorkflowIngestInput
-from kg_doc_parser.workflow_ingest.providers import WorkflowProviderSettings
+from kg_doc_parser.workflow_ingest.providers import (
+    ProviderEndpointConfig,
+    WorkflowProviderSettings,
+)
 from kg_doc_parser.workflow_ingest.service import _workflow_predicates
 from kg_doc_parser.workflow_ingest.strategy import (
     HARD_CODED_STRATEGY_PRIORITY,
     ParseStrategyAssessment,
     ParseStrategyTriage,
+    build_llm_strategy_triage,
     select_parse_strategy,
 )
 
@@ -95,6 +100,77 @@ def test_triage_provider_failure_falls_back_without_retrying_forever() -> None:
     assert decision.selected_strategy == "layer_excerpt"
     assert decision.source == "llm_triage_fallback"
     assert "TimeoutError" in decision.rationale
+
+
+@pytest.mark.ci
+def test_provider_triage_emits_complete_success_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Structured:
+        def invoke(self, messages):
+            return {
+                "parsed": ParseStrategyTriage(
+                    selected_strategy="layer_excerpt",
+                    confidence=0.9,
+                    rationale="bounded evidence is available",
+                    assessments=_assessments(),
+                )
+            }
+
+    class _Chat:
+        def with_structured_output(self, schema, include_raw=True):
+            assert schema is ParseStrategyTriage
+            return _Structured()
+
+    monkeypatch.setattr(strategy_module, "build_chat_model_for_role", lambda *args, **kwargs: _Chat())
+    diagnostics: list[dict[str, object]] = []
+    triage = build_llm_strategy_triage(
+        WorkflowProviderSettings(
+            parser=ProviderEndpointConfig(provider="fake", model="test-model"),
+        ),
+        diagnostics_sink=diagnostics.append,
+    )
+
+    result = triage({"layer_depth": 2})
+
+    assert result.selected_strategy == "layer_excerpt"
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["operation"] == "parse_strategy_triage"
+    assert diagnostics[0]["call_role"] == "triage"
+    assert diagnostics[0]["strategy"] == "triage"
+    assert diagnostics[0]["attempt_index"] == 1
+    assert diagnostics[0]["success"] is True
+    assert isinstance(diagnostics[0]["elapsed_ms"], int)
+
+
+@pytest.mark.ci
+def test_provider_triage_emits_parse_failure_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Structured:
+        def invoke(self, messages):
+            return {"parsed": None, "parsing_error": "missing structured triage"}
+
+    class _Chat:
+        def with_structured_output(self, schema, include_raw=True):
+            return _Structured()
+
+    monkeypatch.setattr(strategy_module, "build_chat_model_for_role", lambda *args, **kwargs: _Chat())
+    diagnostics: list[dict[str, object]] = []
+    triage = build_llm_strategy_triage(
+        WorkflowProviderSettings(
+            parser=ProviderEndpointConfig(provider="fake", model="test-model"),
+        ),
+        diagnostics_sink=diagnostics.append,
+    )
+
+    with pytest.raises(ValueError, match="strategy triage parsing failed"):
+        triage({"layer_depth": 2})
+
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["success"] is False
+    assert diagnostics[0]["failure_type"] == "structured_output_parse_failure"
+    assert diagnostics[0]["error_type"] == "ValueError"
 
 
 @pytest.mark.ci
