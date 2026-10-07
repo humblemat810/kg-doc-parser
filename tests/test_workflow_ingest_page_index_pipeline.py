@@ -11,6 +11,7 @@ from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
 )
+from _ollama_test_helpers import ollama_available
 from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
     BlockAssignmentBatch,
@@ -1807,11 +1808,15 @@ def test_page_index_ollama_smoke_parses_text_and_markdown(
     parser_model: str,
 ) -> None:
     pytest.importorskip("langchain_ollama")
+    base_url = os.getenv("KG_DOC_PARSER_BASE_URL", "http://127.0.0.1:11434")
+    available, reason = ollama_available(base_url, parser_model)
+    if not available:
+        pytest.skip(f"ollama parser unavailable: {reason}")
     provider_settings = WorkflowProviderSettings(
         parser=ProviderEndpointConfig(
             provider="ollama",
             model=parser_model,
-            base_url=os.getenv("KG_DOC_PARSER_BASE_URL", "http://127.0.0.1:11434"),
+            base_url=base_url,
         )
     )
     raw_text = _fixture_text(fixture_name)
@@ -1827,7 +1832,7 @@ def test_page_index_ollama_smoke_parses_text_and_markdown(
         )
     except Exception as exc:
         message = str(exc).lower()
-        if any(token in message for token in ("connect", "connection", "refused", "model", "ollama")):
+        if any(token in message for token in ("connect", "connection", "refused", "timed out")):
             pytest.skip(f"ollama parser unavailable: {exc}")
         raise
 
@@ -1868,6 +1873,10 @@ def test_page_index_workflow_ingest_with_ollama_manual_case(
     """
 
     pytest.importorskip("langchain_ollama")
+    base_url = os.getenv("KG_DOC_PARSER_BASE_URL", "http://127.0.0.1:11434")
+    available, reason = ollama_available(base_url, parser_model)
+    if not available:
+        pytest.skip(f"ollama workflow ingest unavailable: {reason}")
     scratch = _scratch("workflow_ingest_ollama")
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(scratch / "engines", "in_memory")
     raw_text = _fixture_text(fixture_name)
@@ -1875,7 +1884,7 @@ def test_page_index_workflow_ingest_with_ollama_manual_case(
         parser=ProviderEndpointConfig(
             provider="ollama",
             model=parser_model,
-            base_url=os.getenv("KG_DOC_PARSER_BASE_URL", "http://127.0.0.1:11434"),
+            base_url=base_url,
         )
     )
 
@@ -1915,7 +1924,7 @@ def test_page_index_workflow_ingest_with_ollama_manual_case(
         drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
     except Exception as exc:
         message = str(exc).lower()
-        if any(token in message for token in ("connect", "connection", "refused", "model", "ollama")):
+        if any(token in message for token in ("connect", "connection", "refused", "timed out")):
             pytest.skip(f"ollama workflow ingest unavailable: {exc}")
         raise
 
