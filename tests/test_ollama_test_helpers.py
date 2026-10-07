@@ -41,6 +41,22 @@ def test_ollama_available_accepts_requested_model(monkeypatch) -> None:
     assert ollama_available("http://ollama", "required:latest") == (True, None)
 
 
+def test_ollama_available_accepts_implicit_latest_tag(monkeypatch) -> None:
+    def fake_get(url: str, *, timeout: float):
+        del timeout
+        if url.endswith("/api/version"):
+            return SimpleNamespace(status_code=200)
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {"models": [{"name": "required:latest"}]},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    assert ollama_available("http://ollama", "required") == (True, None)
+
+
 def test_ollama_available_reports_transport_failure(monkeypatch) -> None:
     def fake_get(url: str, *, timeout: float):
         del url, timeout

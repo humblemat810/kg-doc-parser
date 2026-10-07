@@ -29,6 +29,7 @@ def ollama_available(base_url: str, model_name: str | None = None) -> tuple[bool
         for item in tags
         if isinstance(item, dict) and item.get("name")
     }
-    if model_name not in names:
+    requested_names = {model_name, f"{model_name}:latest"}
+    if not names.intersection(requested_names):
         return False, f"model {model_name!r} is not present in /api/tags"
     return True, None

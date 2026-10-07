@@ -55,6 +55,25 @@ def _manual_ollama_case_cache_dir(*, fixture_name: str, parser_model: str) -> Pa
     return path
 
 
+def _ollama_parser_model_params() -> list[object]:
+    configured = os.getenv("KG_DOC_PARSER_OLLAMA_MODELS")
+    models = [
+        item.strip()
+        for item in (configured.split(",") if configured else ("gemma4:e2b", "gemma4:latest"))
+        if item.strip()
+    ]
+    return [pytest.param(model, id=model.replace(":", "-")) for model in models]
+
+
+def _ollama_provider_limits() -> dict[str, int | float | None]:
+    output_tokens = os.getenv("KG_DOC_PARSER_OLLAMA_MAX_OUTPUT_TOKENS")
+    return {
+        "max_retries": int(os.getenv("KG_DOC_PARSER_OLLAMA_MAX_RETRIES", "2")),
+        "max_output_tokens": int(output_tokens) if output_tokens else None,
+        "timeout_seconds": float(os.getenv("KG_DOC_PARSER_OLLAMA_TIMEOUT_SECONDS", "120")),
+    }
+
+
 def _node_signature(node) -> tuple[str, str, tuple]:
     return (
         node.node_type,
@@ -1797,10 +1816,7 @@ def test_page_index_summary_can_be_disabled_without_changing_grounding() -> None
 )
 @pytest.mark.parametrize(
     "parser_model",
-    [
-        pytest.param("gemma4:e2b", id="gemma4-e2b"),
-        pytest.param("gemma4:latest", id="gemma4-latest"),
-    ],
+    _ollama_parser_model_params(),
 )
 def test_page_index_ollama_smoke_parses_text_and_markdown(
     fixture_name: str,
@@ -1812,11 +1828,13 @@ def test_page_index_ollama_smoke_parses_text_and_markdown(
     available, reason = ollama_available(base_url, parser_model)
     if not available:
         pytest.skip(f"ollama parser unavailable: {reason}")
+    limits = _ollama_provider_limits()
     provider_settings = WorkflowProviderSettings(
         parser=ProviderEndpointConfig(
             provider="ollama",
             model=parser_model,
             base_url=base_url,
+            **limits,
         )
     )
     raw_text = _fixture_text(fixture_name)
@@ -1855,10 +1873,7 @@ def test_page_index_ollama_smoke_parses_text_and_markdown(
 )
 @pytest.mark.parametrize(
     "parser_model",
-    [
-        pytest.param("gemma4:e2b", id="gemma4-e2b"),
-        pytest.param("gemma4:latest", id="gemma4-latest"),
-    ],
+    _ollama_parser_model_params(),
 )
 def test_page_index_workflow_ingest_with_ollama_manual_case(
     fixture_name: str,
@@ -1877,6 +1892,7 @@ def test_page_index_workflow_ingest_with_ollama_manual_case(
     available, reason = ollama_available(base_url, parser_model)
     if not available:
         pytest.skip(f"ollama workflow ingest unavailable: {reason}")
+    limits = _ollama_provider_limits()
     scratch = _scratch("workflow_ingest_ollama")
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(scratch / "engines", "in_memory")
     raw_text = _fixture_text(fixture_name)
@@ -1885,6 +1901,7 @@ def test_page_index_workflow_ingest_with_ollama_manual_case(
             provider="ollama",
             model=parser_model,
             base_url=base_url,
+            **limits,
         )
     )
 
