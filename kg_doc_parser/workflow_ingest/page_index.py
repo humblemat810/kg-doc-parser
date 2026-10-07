@@ -2507,6 +2507,7 @@ def parse_page_index_document(
     """Parse a plain text or Markdown document into a page-index semantic tree."""
 
     settings = provider_settings or WorkflowProviderSettings.from_env()
+    assignment_mode_prefix = "ollama" if settings.parser.provider == "ollama" else "llm"
     effective_hierarchical_summary_enabled = (
         settings.page_index_hierarchical_summary_enabled
         if hierarchical_summary_enabled is None
@@ -2699,21 +2700,21 @@ def parse_page_index_document(
     elif fallback_reasons:
         overall_assignment_mode = "deterministic_fallback"
     elif structure_retry_succeeded:
-        overall_assignment_mode = f"{settings.parser.provider}_flat_assignment_structure_retry"
+        overall_assignment_mode = f"{assignment_mode_prefix}_flat_assignment_structure_retry"
     elif assignment_retry_succeeded:
-        overall_assignment_mode = f"{settings.parser.provider}_flat_assignment_retry"
+        overall_assignment_mode = f"{assignment_mode_prefix}_flat_assignment_retry"
     elif branch_local_salvage_used:
-        overall_assignment_mode = f"{settings.parser.provider}_branch_local_salvage"
+        overall_assignment_mode = f"{assignment_mode_prefix}_branch_local_salvage"
     elif retry_used:
         overall_assignment_mode = "deterministic_fallback"
     else:
         expected_assignment_modes = {
-            f"{settings.parser.provider}_flat_assignment",
-            f"{settings.parser.provider}_flat_assignment_retry",
-            f"{settings.parser.provider}_flat_assignment_structure_retry",
+            f"{assignment_mode_prefix}_flat_assignment",
+            f"{assignment_mode_prefix}_flat_assignment_retry",
+            f"{assignment_mode_prefix}_flat_assignment_structure_retry",
         }
         overall_assignment_mode = (
-            f"{settings.parser.provider}_flat_assignment"
+            f"{assignment_mode_prefix}_flat_assignment"
             if assignment_modes.issubset(expected_assignment_modes) and assignment_modes
             else "deterministic_fallback"
         )
