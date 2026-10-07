@@ -995,6 +995,11 @@ def build_chat_model(
             kwargs["google_api_key"] = os.getenv(spec.api_key_env)
         return cast(SupportsStructuredOutput, ChatGoogleGenerativeAI(**kwargs))
     if spec.provider == "openai":
+        max_output_tokens = (
+            spec.max_output_tokens
+            if spec.max_output_tokens is not None
+            else _configured_max_output_tokens()
+        )
         from langchain_openai import ChatOpenAI
 
         kwargs = {
@@ -1003,11 +1008,6 @@ def build_chat_model(
             "callbacks": callbacks,
             "max_retries": spec.max_retries,
         }
-        max_output_tokens = (
-            spec.max_output_tokens
-            if spec.max_output_tokens is not None
-            else _configured_max_output_tokens()
-        )
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
         if spec.reasoning_effort:
@@ -1018,6 +1018,11 @@ def build_chat_model(
             kwargs["api_key"] = os.getenv(spec.api_key_env)
         return cast(SupportsStructuredOutput, ChatOpenAI(**kwargs))
     if spec.provider == "azure":
+        max_output_tokens = (
+            spec.max_output_tokens
+            if spec.max_output_tokens is not None
+            else _configured_max_output_tokens()
+        )
         from langchain_openai import AzureChatOpenAI
 
         kwargs = {
@@ -1026,11 +1031,6 @@ def build_chat_model(
             "callbacks": callbacks,
             "max_retries": spec.max_retries,
         }
-        max_output_tokens = (
-            spec.max_output_tokens
-            if spec.max_output_tokens is not None
-            else _configured_max_output_tokens()
-        )
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
         if spec.reasoning_effort:
