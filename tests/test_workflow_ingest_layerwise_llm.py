@@ -10,6 +10,8 @@ from kg_doc_parser.workflow_ingest import (
 from kg_doc_parser.workflow_ingest.layerwise_llm import build_layerwise_llm_callbacks
 from kg_doc_parser.workflow_ingest.models import (
     BoundaryCutpoint,
+    BoundaryReviewBatch,
+    BoundaryReviewDecision,
     CurrentLayerContext,
     CurrentLayerResult,
     LayerChildCandidate,
@@ -152,6 +154,81 @@ def _boundary_cutpoint_payload(
     if confidence is not None:
         payload["confidence"] = confidence
     return payload
+
+
+@pytest.mark.ci
+def test_boundary_assembly_keeps_cross_cluster_parent_pointers_separate() -> None:
+    from kg_doc_parser.workflow_ingest.layerwise_llm import (
+        _assemble_layer_result_from_boundaries,
+    )
+
+    cluster_one = "A1 first.\nA1 second."
+    cluster_two = "A2 first.\nA2 second."
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Demo Doc"],
+        parent_content_pointers_by_id={
+            "doc|root": [
+                HydratedTextPointer(
+                    source_cluster_id="cluster-1",
+                    start_char=0,
+                    end_char=len(cluster_one) - 1,
+                    verbatim_text=cluster_one,
+                ),
+                HydratedTextPointer(
+                    source_cluster_id="cluster-2",
+                    start_char=0,
+                    end_char=len(cluster_two) - 1,
+                    verbatim_text=cluster_two,
+                ),
+            ]
+        },
+        split_strategy="boundary_first",
+        retry_count=0,
+        max_retries=2,
+    )
+    review = BoundaryReviewBatch(
+        decisions=[
+            BoundaryReviewDecision(
+                parent_node_id="doc|root",
+                source_cluster_id="cluster-1",
+                input_cut_offset=10,
+                cut_offset=10,
+                resolved_cut_offset=10,
+                decision="accept",
+                boundary_kind="paragraph",
+            ),
+            BoundaryReviewDecision(
+                parent_node_id="doc|root",
+                source_cluster_id="cluster-2",
+                input_cut_offset=10,
+                cut_offset=10,
+                resolved_cut_offset=10,
+                decision="accept",
+                boundary_kind="paragraph",
+            ),
+        ]
+    )
+
+    result, _summaries, _accepted = _assemble_layer_result_from_boundaries(
+        current_layer_context=context,
+        parser_source_map={
+            "cluster-1": {"text": cluster_one},
+            "cluster-2": {"text": cluster_two},
+        },
+        review_batch=review,
+    )
+
+    assert result.children
+    assert {pointer.source_cluster_id for child in result.children for pointer in child.total_content_pointers} == {
+        "cluster-1",
+        "cluster-2",
+    }
+    assert all(
+        len({pointer.source_cluster_id for pointer in child.total_content_pointers}) == 1
+        for child in result.children
+    )
 
 
 def test_boundary_helpers_classify_and_snap_cutpoints():
