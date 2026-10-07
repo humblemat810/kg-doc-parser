@@ -61,7 +61,7 @@ import os
 import queue
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import (
     Annotated,
@@ -158,6 +158,53 @@ def provider_call_metrics_snapshot() -> dict[str, object]:
         snapshot["failure_counts"] = dict(failure_counts) if isinstance(failure_counts, dict) else {}
         snapshot["active_calls"] = _PROVIDER_IN_FLIGHT
         return snapshot
+
+
+_PROVIDER_USAGE_FIELDS: dict[str, tuple[str, ...]] = {
+    "input_tokens": ("input_tokens", "prompt_tokens", "input_token_count", "prompt_token_count"),
+    "output_tokens": ("output_tokens", "completion_tokens", "output_token_count", "completion_token_count"),
+    "ttft_ms": ("ttft_ms", "time_to_first_token_ms", "first_token_latency_ms"),
+}
+
+
+def _provider_usage_metrics(value: object) -> dict[str, int | float]:
+    """Extract optional provider usage metadata without serializing the response."""
+
+    pending: list[tuple[object, int]] = [(value, 0)]
+    seen: set[int] = set()
+    found: dict[str, int | float] = {}
+    while pending:
+        candidate, depth = pending.pop()
+        if candidate is None or id(candidate) in seen or depth > 4:
+            continue
+        seen.add(id(candidate))
+        if isinstance(candidate, Mapping):
+            items = candidate.items()
+        else:
+            model_dump = getattr(candidate, "model_dump", None)
+            if callable(model_dump):
+                try:
+                    dumped = model_dump()
+                except Exception:  # noqa: BLE001 - usage metadata is best effort.
+                    dumped = None
+                items = dumped.items() if isinstance(dumped, Mapping) else ()
+            else:
+                items = (
+                    (name, getattr(candidate, name))
+                    for names in _PROVIDER_USAGE_FIELDS.values()
+                    for name in (*names, "usage", "usage_metadata", "response_metadata", "metadata", "raw")
+                    if hasattr(candidate, name)
+                )
+        nested: list[object] = []
+        for key, item in items:
+            key_text = str(key)
+            for metric_name, aliases in _PROVIDER_USAGE_FIELDS.items():
+                if key_text in aliases and metric_name not in found and isinstance(item, (int, float)) and not isinstance(item, bool):
+                    found[metric_name] = item
+            if key_text in {"usage", "usage_metadata", "response_metadata", "metadata", "raw", "additional_kwargs"}:
+                nested.append(item)
+        pending.extend((item, depth + 1) for item in nested)
+    return found
 
 
 def _reserve_provider_slot(max_in_flight: int) -> bool:
@@ -663,6 +710,9 @@ def invoke_with_timeout(
     diagnostics: dict[str, object] | None = None,
     operation: str = "provider_call",
     max_in_flight: int = 1,
+    attempt_index: int = 1,
+    call_role: str | None = None,
+    strategy: str | None = None,
 ) -> object:
     """Run one provider call with a hard wall-clock bound.
 
@@ -676,15 +726,25 @@ def invoke_with_timeout(
         raise ValueError("provider timeout_seconds must be positive")
     if max_in_flight < 1:
         raise ValueError("provider max_in_flight must be positive")
+    if attempt_index < 1:
+        raise ValueError("provider attempt_index must be positive")
     started = time.monotonic()
     if diagnostics is not None:
         diagnostics.update(
             {
                 "operation": operation,
+                "call_role": call_role or operation,
+                "strategy": strategy,
+                "attempt_index": attempt_index,
                 "timeout_seconds": timeout_seconds,
                 "timed_out": False,
                 "underlying_call_alive": False,
                 "max_in_flight": max_in_flight,
+                "elapsed_ms": None,
+                "ttft_ms": None,
+                "input_tokens": None,
+                "output_tokens": None,
+                "throughput_tokens_per_second": None,
             }
         )
     if not _reserve_provider_slot(max_in_flight):
@@ -694,6 +754,7 @@ def invoke_with_timeout(
                     "success": False,
                     "failure_type": "in_flight_limit",
                     "elapsed_seconds": time.monotonic() - started,
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
                 }
             )
         raise RuntimeError(f"provider in-flight call limit reached ({max_in_flight})")
@@ -714,6 +775,7 @@ def invoke_with_timeout(
     worker.start()
     worker.join(timeout_seconds)
     if worker.is_alive():
+        elapsed_seconds = time.monotonic() - started
         with _PROVIDER_IN_FLIGHT_LOCK:
             _PROVIDER_METRICS["timeouts_observed"] = int(_PROVIDER_METRICS["timeouts_observed"]) + 1
             _PROVIDER_METRICS["orphaned_calls"] = int(_PROVIDER_METRICS["orphaned_calls"]) + 1
@@ -722,16 +784,24 @@ def invoke_with_timeout(
                 {
                     "timed_out": True,
                     "underlying_call_alive": True,
-                    "elapsed_seconds": time.monotonic() - started,
+                    "elapsed_seconds": elapsed_seconds,
+                    "elapsed_ms": int(elapsed_seconds * 1000),
                     "failure_type": "timeout",
                 }
             )
         raise TimeoutError(f"provider call exceeded {timeout_seconds:g}s")
     succeeded, value = result_queue.get_nowait()
+    elapsed_seconds = time.monotonic() - started
     if diagnostics is not None:
-        diagnostics["elapsed_seconds"] = time.monotonic() - started
+        diagnostics["elapsed_seconds"] = elapsed_seconds
+        diagnostics["elapsed_ms"] = int(elapsed_seconds * 1000)
     if succeeded:
         if diagnostics is not None:
+            usage = _provider_usage_metrics(value)
+            diagnostics.update(usage)
+            output_tokens = usage.get("output_tokens")
+            if isinstance(output_tokens, (int, float)) and elapsed_seconds > 0:
+                diagnostics["throughput_tokens_per_second"] = output_tokens / elapsed_seconds
             diagnostics["success"] = True
         return value
     if diagnostics is not None:

@@ -144,6 +144,9 @@ def build_llm_strategy_triage(provider_settings: WorkflowProviderSettings) -> St
             ),
             operation="parse_strategy_triage",
             max_in_flight=provider_settings.parser.max_in_flight_calls,
+            attempt_index=1,
+            call_role="triage",
+            strategy="triage",
         )
         parsed = response.get("parsed") if isinstance(response, dict) else response
         if parsed is None:

@@ -56,7 +56,11 @@ from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
 from .adapters import OCRPageJSON, normalize_ocr_pages
 from .models import WorkflowExportBundle, WorkflowIngestInput
 from .probe import WorkflowProbe, emit_probe_event
-from .providers import WorkflowProviderSettings, build_chat_model_for_role, invoke_with_timeout
+from .providers import (
+    WorkflowProviderSettings,
+    build_chat_model_for_role,
+    invoke_with_timeout,
+)
 from .service import run_ingest_workflow
 
 _LOGGER = logging.getLogger(__name__)
@@ -1291,6 +1295,9 @@ def _run_live_ocr_page(image_path: Path, page_number: int, provider_settings: Wo
         timeout_seconds=provider_settings.ocr.timeout_seconds,
         operation="ocr_page",
         max_in_flight=provider_settings.ocr.max_in_flight_calls,
+        attempt_index=1,
+        call_role="ocr",
+        strategy="ocr",
     )
     try:
         return _coerce_ocr_response(response)

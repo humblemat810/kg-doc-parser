@@ -424,7 +424,7 @@ def _is_markdown_table_row(text: str) -> bool:
     """Return whether one line has the shape of a Markdown table row."""
 
     stripped = text.strip()
-    if stripped.startswith("```") or stripped.startswith("~~~"):
+    if stripped.startswith(("```", "~~~")):
         return False
     cells = [cell.strip() for cell in stripped.strip("|").split("|")]
     return len(cells) >= 2 and "|" in stripped
@@ -980,9 +980,12 @@ def _salvage_page_index_assignments(
                 mark_invalid(assignment.block_id, "unknown_parent")
             elif parent_index >= index_by_id[assignment.block_id]:
                 mark_invalid(assignment.block_id, "forward_or_self_parent")
-        if assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"} and not _candidate_heading_evidence(candidate):
-            if children_by_id.get(assignment.block_id, 0) == 0:
-                mark_invalid(assignment.block_id, "heading_without_heading_evidence")
+        if (
+            assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"}
+            and not _candidate_heading_evidence(candidate)
+            and children_by_id.get(assignment.block_id, 0) == 0
+        ):
+            mark_invalid(assignment.block_id, "heading_without_heading_evidence")
         if assignment.node_type == "TERM" and not _candidate_term_evidence(candidate):
             mark_invalid(assignment.block_id, "term_without_term_evidence")
 
@@ -1281,6 +1284,9 @@ def _refine_page_index_block_excerpts(
                 ),
                 operation="page_index_excerpt_refinement",
                 max_in_flight=provider_settings.parser.max_in_flight_calls,
+                attempt_index=1,
+                call_role="refinement",
+                strategy="page_index",
             )
         finally:
             _notify_untracked_provider_call(callbacks, callback_counts, f"refine-page-{page_number}")
@@ -1465,6 +1471,7 @@ def _llm_page_outline(
         retry_summary: str | None = None,
         retry_kind: str = "assignment",
         attempt_label: str,
+        attempt_index: int,
     ) -> tuple[BlockAssignmentBatch | None, str | None]:
         prompt = _page_index_assignment_prompt(
             page_number=page_number,
@@ -1494,6 +1501,9 @@ def _llm_page_outline(
                 ),
                 operation="page_index_assignment",
                 max_in_flight=provider_settings.parser.max_in_flight_calls,
+                attempt_index=attempt_index,
+                call_role="proposal",
+                strategy="page_index",
                 )
             finally:
                 _notify_untracked_provider_call(
@@ -1688,12 +1698,13 @@ def _llm_page_outline(
                 f"page_number={page_number} failure_summary={structure_summary.splitlines()[0]}"
             )
             trace_log(f"page_index_llm_structure_retry_prompt_ready page_number={page_number}")
+        next_attempt_count = assignment_attempt_count + 1
         structure_batch, structure_error = _invoke_attempt(
             retry_summary=structure_summary,
             retry_kind="structure",
             attempt_label="structure_retry",
+            attempt_index=next_attempt_count,
         )
-        next_attempt_count = assignment_attempt_count + 1
         if structure_batch is None:
             return _fallback(
                 assignment_attempt_count=next_attempt_count,
@@ -1802,7 +1813,7 @@ def _llm_page_outline(
             "structure_retry_prompt_summary": structure_summary,
         }
 
-    first_batch, first_error = _invoke_attempt(attempt_label="first")
+    first_batch, first_error = _invoke_attempt(attempt_label="first", attempt_index=1)
     first_validation_errors: list[str] = []
     first_validation_warnings: list[str] = []
     if first_batch is not None:
@@ -1844,7 +1855,11 @@ def _llm_page_outline(
         )
         trace_log(f"page_index_llm_retry_prompt_ready page_number={page_number}")
 
-    retry_batch, retry_error = _invoke_attempt(retry_summary=retry_summary, attempt_label="retry")
+    retry_batch, retry_error = _invoke_attempt(
+        retry_summary=retry_summary,
+        attempt_label="retry",
+        attempt_index=2,
+    )
     retry_validation_errors: list[str] = []
     retry_validation_warnings: list[str] = []
     if retry_batch is not None:

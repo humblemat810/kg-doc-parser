@@ -1538,6 +1538,9 @@ def _structured_invoke(  # noqa: UP047 - PEP 695 syntax would drop PyPy 3.11 sup
     diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
     operation: str = "parser_structured_call",
     max_in_flight: int = 1,
+    attempt_index: int = 1,
+    call_role: str | None = None,
+    strategy: str | None = None,
 ) -> TStructuredModel:
     structured = build_structured_output_runnable(model, schema, include_raw=True)
     call_diagnostics = diagnostics if diagnostics is not None else {}
@@ -1551,6 +1554,9 @@ def _structured_invoke(  # noqa: UP047 - PEP 695 syntax would drop PyPy 3.11 sup
                 diagnostics=call_diagnostics,
                 operation=operation,
                 max_in_flight=max_in_flight,
+                attempt_index=attempt_index,
+                call_role=call_role,
+                strategy=strategy,
             )
         except Exception as exc:
             call_diagnostics.setdefault(
@@ -1847,8 +1853,11 @@ def build_layerwise_llm_callbacks(
                 if delay_seconds > 0:
                     time.sleep(delay_seconds)
 
+            provider_attempt_index = 0
+
             def _invoke_boundary(messages: list[tuple[str, str]]) -> LLMBoundaryProposalBatch:
-                nonlocal boundary_dropped_count, boundary_repaired_count
+                nonlocal boundary_dropped_count, boundary_repaired_count, provider_attempt_index
+                provider_attempt_index += 1
                 raw_parsed: LLMBoundaryProposalBatch = _structured_invoke(
                     chat_model,
                     LLMBoundaryProposalBatch,
@@ -1860,6 +1869,9 @@ def build_layerwise_llm_callbacks(
                     diagnostics_sink=_emit_provider_diagnostics,
                     operation="layer_boundary_proposal",
                     max_in_flight=provider_settings.parser.max_in_flight_calls,
+                    attempt_index=provider_attempt_index,
+                    call_role="proposal",
+                    strategy=split_strategy,
                 )
                 normalized_parsed: LLMBoundaryProposalBatch = _normalize_boundary_cutpoints_from_candidates(
                     raw_parsed,
@@ -2498,6 +2510,27 @@ def build_layerwise_llm_callbacks(
             if delay_seconds > 0:
                 time.sleep(delay_seconds)
 
+        provider_attempt_index = 0
+
+        def _invoke_child_provider(messages: list[tuple[str, str]]) -> LLMCurrentLayerResult:
+            nonlocal provider_attempt_index
+            provider_attempt_index += 1
+            return _structured_invoke(
+                chat_model,
+                LLMCurrentLayerResult,
+                messages,
+                timeout_seconds=(
+                    provider_settings.proposal_timeout_seconds
+                    or provider_settings.parser.timeout_seconds
+                ),
+                diagnostics_sink=_emit_provider_diagnostics,
+                operation="layer_children_proposal",
+                max_in_flight=provider_settings.parser.max_in_flight_calls,
+                attempt_index=provider_attempt_index,
+                call_role="proposal",
+                strategy=split_strategy,
+            )
+
         try:
             _emit(
                 "workflow_layered_child_proposal_start",
@@ -2512,18 +2545,7 @@ def build_layerwise_llm_callbacks(
             ] = retry_with_context(
                 max_attempts=proposal_retry_rounds + 1,
                 build_request=_build_child_messages,
-                invoke=lambda messages: _structured_invoke(
-                    chat_model,
-                    LLMCurrentLayerResult,
-                    messages,
-                    timeout_seconds=(
-                        provider_settings.proposal_timeout_seconds
-                        or provider_settings.parser.timeout_seconds
-                    ),
-                    diagnostics_sink=_emit_provider_diagnostics,
-                    operation="layer_children_proposal",
-                    max_in_flight=provider_settings.parser.max_in_flight_calls,
-                ),
+                invoke=_invoke_child_provider,
                 validate=lambda parsed: _proposal_validation_reason(
                     parsed=parsed,
                     current_layer_context=current_layer_context,
@@ -2681,6 +2703,9 @@ def build_layerwise_llm_callbacks(
                 diagnostics_sink=_emit_provider_diagnostics,
                 operation="layer_review",
                 max_in_flight=provider_settings.parser.max_in_flight_calls,
+                attempt_index=1,
+                call_role="review",
+                strategy=split_strategy,
             )
             reviewed: LLMCurrentLayerReview = review_result
             runtime_review: CurrentLayerReview = CurrentLayerReview.model_validate(reviewed.model_dump())

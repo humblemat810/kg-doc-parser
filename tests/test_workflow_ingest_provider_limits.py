@@ -124,12 +124,23 @@ def test_claude_provider_name_normalizes_to_optional_anthropic_adapter() -> None
 def test_provider_timeout_returns_result_without_leaking_into_caller() -> None:
     diagnostics: dict[str, object] = {}
     assert invoke_with_timeout(
-        lambda: "ok",
+        lambda: {"usage_metadata": {"input_tokens": 10, "output_tokens": 6, "ttft_ms": 12}},
         timeout_seconds=1.0,
         diagnostics=diagnostics,
         operation="test_call",
-    ) == "ok"
+        attempt_index=2,
+        call_role="proposal",
+        strategy="layer_boundary",
+    )["usage_metadata"]["output_tokens"] == 6
     assert diagnostics["operation"] == "test_call"
+    assert diagnostics["call_role"] == "proposal"
+    assert diagnostics["strategy"] == "layer_boundary"
+    assert diagnostics["attempt_index"] == 2
+    assert diagnostics["input_tokens"] == 10
+    assert diagnostics["output_tokens"] == 6
+    assert diagnostics["ttft_ms"] == 12
+    assert diagnostics["elapsed_ms"] >= 0
+    assert float(diagnostics["throughput_tokens_per_second"]) > 0
     assert diagnostics["success"] is True
     assert diagnostics["timed_out"] is False
 
@@ -147,6 +158,10 @@ def test_provider_timeout_bounds_a_stalled_local_model() -> None:
     assert diagnostics["timed_out"] is True
     assert diagnostics["underlying_call_alive"] is True
     assert diagnostics["failure_type"] == "timeout"
+    assert diagnostics["attempt_index"] == 1
+    assert diagnostics["elapsed_ms"] >= 0
+    assert diagnostics["input_tokens"] is None
+    assert diagnostics["output_tokens"] is None
     release.set()
 
 
