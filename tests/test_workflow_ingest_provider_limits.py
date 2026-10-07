@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from kg_doc_parser.workflow_ingest import ProviderEndpointConfig
 from kg_doc_parser.workflow_ingest.providers import (
+    WorkflowProviderSettings,
     _normalize_provider_name,
     build_chat_model,
     invoke_with_timeout,
@@ -116,7 +117,16 @@ def test_claude_provider_name_normalizes_to_optional_anthropic_adapter() -> None
 
 
 def test_provider_timeout_returns_result_without_leaking_into_caller() -> None:
-    assert invoke_with_timeout(lambda: "ok", timeout_seconds=1.0) == "ok"
+    diagnostics: dict[str, object] = {}
+    assert invoke_with_timeout(
+        lambda: "ok",
+        timeout_seconds=1.0,
+        diagnostics=diagnostics,
+        operation="test_call",
+    ) == "ok"
+    assert diagnostics["operation"] == "test_call"
+    assert diagnostics["success"] is True
+    assert diagnostics["timed_out"] is False
 
 
 def test_provider_timeout_bounds_a_stalled_local_model() -> None:
@@ -126,6 +136,35 @@ def test_provider_timeout_bounds_a_stalled_local_model() -> None:
         release.wait()
         return "late"
 
+    diagnostics: dict[str, object] = {}
     with pytest.raises(TimeoutError, match="exceeded"):
-        invoke_with_timeout(stalled_call, timeout_seconds=0.01)
+        invoke_with_timeout(stalled_call, timeout_seconds=0.01, diagnostics=diagnostics)
+    assert diagnostics["timed_out"] is True
+    assert diagnostics["underlying_call_alive"] is True
+    assert diagnostics["failure_type"] == "timeout"
     release.set()
+
+
+def test_workflow_settings_expose_bounded_frontier_and_boundary_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KG_DOC_PARSER_FRONTIER_BATCH_SIZE", "2")
+    monkeypatch.setenv("KG_DOC_PARSER_BOUNDARY_MAX_POINTS", "96")
+    settings = WorkflowProviderSettings.from_env()
+    assert settings.layer_frontier_batch_size == 2
+    assert settings.boundary_max_points == 96
+
+
+def test_openai_reasoning_effort_is_transmitted_as_request_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    _fake_provider_module(monkeypatch, "langchain_openai", "ChatOpenAI", captured)
+    build_chat_model(
+        ProviderEndpointConfig(
+            provider="openai",
+            model="local-reasoning-model",
+            reasoning_effort="none",
+        )
+    )
+    assert captured[0]["model_kwargs"] == {"reasoning_effort": "none"}

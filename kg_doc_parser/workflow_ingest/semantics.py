@@ -3,10 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field
-from pydantic import model_validator
-
 from kogwistar.id_provider import stable_id
+from pydantic import BaseModel, Field, model_validator
 
 
 def _normalize_text(text: str) -> str:
@@ -30,12 +28,12 @@ class SemanticNode(BaseModel):
     # describe the structural section represented by a container node.
     total_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
     aggregate_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
-    child_nodes: list["SemanticNode"] = Field(default_factory=list)
+    child_nodes: list[SemanticNode] = Field(default_factory=list)
     level_from_root: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _ensure_stable_node_id(self) -> "SemanticNode":
+    def _ensure_stable_node_id(self) -> SemanticNode:
         if self.node_id:
             return self
         pointer_fp = "|".join(
@@ -105,6 +103,12 @@ def compute_pointer_coverage(
     root_node: SemanticNode,
     source_map: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    def _meaningful_length(value: str) -> int:
+        return sum(1 for char in value if not char.isspace())
+
+    def _meaningful_slice_length(value: str, start: int, end: int) -> int:
+        return _meaningful_length(value[max(0, start) : min(len(value), end + 1)])
+
     ranges: dict[str, list[tuple[int, int]]] = {}
 
     def walk(node: SemanticNode) -> None:
@@ -121,9 +125,19 @@ def compute_pointer_coverage(
     per_cluster: dict[str, float] = {}
     total_len = 0
     total_covered = 0
-    for cluster_id, cluster_ranges in ranges.items():
-        text = source_map.get(cluster_id, {}).get("text", "")
-        if not text:
+    # Include every semantic source cluster in the denominator, including a
+    # cluster with no pointers.  Otherwise an omitted document unit can make
+    # an incomplete tree look fully covered.
+    for cluster_id, record in source_map.items():
+        text = str(record.get("text", "") or "")
+        meaningful_total = _meaningful_length(text)
+        if meaningful_total == 0:
+            per_cluster[cluster_id] = 1.0
+            continue
+        cluster_ranges = ranges.get(cluster_id, [])
+        if not cluster_ranges:
+            per_cluster[cluster_id] = 0.0
+            total_len += meaningful_total
             continue
         cluster_ranges.sort()
         merged: list[tuple[int, int]] = []
@@ -135,9 +149,9 @@ def compute_pointer_coverage(
                 merged.append((cur_s, cur_e))
                 cur_s, cur_e = s, e
         merged.append((cur_s, cur_e))
-        covered = sum((e - s + 1) for s, e in merged)
-        per_cluster[cluster_id] = covered / len(text)
-        total_len += len(text)
+        covered = sum(_meaningful_slice_length(text, s, e) for s, e in merged)
+        per_cluster[cluster_id] = covered / meaningful_total
+        total_len += meaningful_total
         total_covered += covered
     overall = total_covered / total_len if total_len else 1.0
     return {"per_cluster": per_cluster, "overall": overall}
@@ -185,7 +199,6 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
         ]
 
     def walk(node: SemanticNode) -> None:
-        ownership_spans = spans(node.total_content_pointers)
         aggregate_spans = spans(node.aggregate_content_pointers)
         # A structural page-index container is grounded by its aggregate span;
         # ordinary legacy structural nodes retain the existing synthetic fallback.

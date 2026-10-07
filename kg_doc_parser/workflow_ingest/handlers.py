@@ -92,6 +92,7 @@ class WorkflowRuntimeDeps(TypedDict, total=False):
     split_strategy: SplitStrategy
     fallback_split_strategy: SplitStrategy
     max_review_retries: int
+    layer_frontier_batch_size: int
     coverage_threshold: float
     provider_settings: WorkflowProviderSettings
     triage_strategy_fn: Callable[[dict[str, object]], object]
@@ -568,6 +569,14 @@ def register_layerwise_parser_steps(
     def _prepare_layer_frontier(ctx: StepContext) -> StepRunResult:
         parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
         semantic_tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
+        configured_batch_size = runtime_deps.get("layer_frontier_batch_size")
+        if configured_batch_size is None:
+            settings = runtime_deps.get("provider_settings")
+            configured_batch_size = (
+                getattr(settings, "layer_frontier_batch_size", None)
+                if settings is not None
+                else 1
+            )
         context, remaining, updated_session = prepare_layer_frontier(
             parse_session=parse_session,
             frontier_queue=[
@@ -576,6 +585,7 @@ def register_layerwise_parser_steps(
             ],
             semantic_tree=semantic_tree,
             max_retries=int(runtime_deps.get("max_review_retries", 3)),
+            max_items=(int(configured_batch_size) if configured_batch_size is not None else None),
         )
         with ctx.state_write as st:
             st["parse_session"] = updated_session.model_dump(field_mode="backend", dump_format="json")
@@ -844,7 +854,10 @@ def register_layerwise_parser_steps(
 
     @_register_step(resolver, step_name="finalize_semantic_tree", runtime_deps=runtime_deps)
     def _finalize_semantic_tree(ctx: StepContext) -> StepRunResult:
-        tree = finalize_semantic_tree(SemanticNode.model_validate(ctx.state_view["semantic_tree"]))
+        tree = finalize_semantic_tree(
+            SemanticNode.model_validate(ctx.state_view["semantic_tree"]),
+            parser_source_map=ctx.state_view.get("parser_source_map") or {},
+        )
         with ctx.state_write as st:
             st["semantic_tree"] = tree.model_dump()
         return _success("validate_tree")
@@ -872,7 +885,7 @@ def register_postparse_steps(
             validation_notes=[],
         )
         bundle = _build_export_bundle(ctx=ctx, runtime_deps=runtime_deps)
-        threshold = float(runtime_deps.get("coverage_threshold", 0.99))
+        threshold = float(runtime_deps.get("coverage_threshold", 1.0))
         if report.overall_text_coverage < threshold:
             error_message = (
                 f"text coverage below threshold: {report.overall_text_coverage:.3f} < {threshold:.3f}"

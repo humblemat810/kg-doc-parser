@@ -60,6 +60,7 @@ import math
 import os
 import queue
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import (
@@ -209,6 +210,13 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
     ] = "gemini"
     model: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()] = "gemini-2.5-flash"
     temperature: Annotated[float, DtoField(), BackendField(), FrontendField(), LLMField()] = 0.1
+    reasoning_effort: Annotated[
+        str | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
     base_url: Annotated[
         str | None,
         DtoField(),
@@ -404,6 +412,20 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = True
+    layer_frontier_batch_size: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=1, ge=1)
+    boundary_max_points: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=128, ge=8, le=512)
     ocr: Annotated[ProviderEndpointConfig, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
         default_factory=ProviderEndpointConfig
     )
@@ -446,10 +468,13 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
             not in {"0", "false", "no", "off"},
             page_index_summary_enabled=str(_env("KG_DOC_PARSER_PAGE_INDEX_SUMMARY_ENABLED", "1")).lower()
             not in {"0", "false", "no", "off"},
+            layer_frontier_batch_size=int(_env("KG_DOC_PARSER_FRONTIER_BATCH_SIZE", "1") or "1"),
+            boundary_max_points=int(_env("KG_DOC_PARSER_BOUNDARY_MAX_POINTS", "128") or "128"),
             ocr=ProviderEndpointConfig(
                 provider=cast(ChatProviderName, _normalize_provider_name(_env("KG_DOC_OCR_PROVIDER", "gemini"))),
                 model=str(_env("KG_DOC_OCR_MODEL", "gemini-2.5-flash")),
                 temperature=float(_env("KG_DOC_OCR_TEMPERATURE", "0.1") or "0.1"),
+                reasoning_effort=_env("KG_DOC_OCR_REASONING_EFFORT"),
                 base_url=_env("KG_DOC_OCR_BASE_URL"),
                 api_key_env=_env("KG_DOC_OCR_API_KEY_ENV"),
                 api_version=_env("KG_DOC_OCR_API_VERSION"),
@@ -462,6 +487,7 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 provider=cast(ChatProviderName, _normalize_provider_name(_env("KG_DOC_PARSER_PROVIDER", "gemini"))),
                 model=str(_env("KG_DOC_PARSER_MODEL", "gemini-2.5-flash")),
                 temperature=float(_env("KG_DOC_PARSER_TEMPERATURE", "0.1") or "0.1"),
+                reasoning_effort=_env("KG_DOC_PARSER_REASONING_EFFORT"),
                 base_url=_env("KG_DOC_PARSER_BASE_URL"),
                 api_key_env=_env("KG_DOC_PARSER_API_KEY_ENV"),
                 api_version=_env("KG_DOC_PARSER_API_VERSION"),
@@ -489,7 +515,13 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
         )
 
 
-def invoke_with_timeout(callable_obj: Callable[[], object], *, timeout_seconds: float) -> object:
+def invoke_with_timeout(
+    callable_obj: Callable[[], object],
+    *,
+    timeout_seconds: float,
+    diagnostics: dict[str, object] | None = None,
+    operation: str = "provider_call",
+) -> object:
     """Run one provider call with a hard wall-clock bound.
 
     Provider SDKs do not expose one consistent timeout argument. A daemon
@@ -500,23 +532,48 @@ def invoke_with_timeout(callable_obj: Callable[[], object], *, timeout_seconds: 
     """
     if timeout_seconds <= 0:
         raise ValueError("provider timeout_seconds must be positive")
+    started = time.monotonic()
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "operation": operation,
+                "timeout_seconds": timeout_seconds,
+                "timed_out": False,
+                "underlying_call_alive": False,
+            }
+        )
     result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
 
     def _run() -> None:
         try:
             result_queue.put((True, callable_obj()))
-        except BaseException as exc:  # noqa: BLE001 - preserve provider exceptions for the caller
+        except Exception as exc:  # noqa: BLE001 - preserve provider exceptions for the caller
             result_queue.put((False, exc))
 
     worker = threading.Thread(target=_run, name="kg-doc-parser-provider", daemon=True)
     worker.start()
     worker.join(timeout_seconds)
     if worker.is_alive():
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "timed_out": True,
+                    "underlying_call_alive": True,
+                    "elapsed_seconds": time.monotonic() - started,
+                    "failure_type": "timeout",
+                }
+            )
         raise TimeoutError(f"provider call exceeded {timeout_seconds:g}s")
     succeeded, value = result_queue.get_nowait()
+    if diagnostics is not None:
+        diagnostics["elapsed_seconds"] = time.monotonic() - started
     if succeeded:
+        if diagnostics is not None:
+            diagnostics["success"] = True
         return value
-    raise cast(BaseException, value)
+    if diagnostics is not None:
+        diagnostics.update({"success": False, "failure_type": type(value).__name__})
+    raise cast(Exception, value)
 
 
 def _embedding_vector(text: str, *, dimension: int) -> list[float]:
@@ -703,6 +760,8 @@ def build_chat_model(
         )
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
+        if spec.reasoning_effort:
+            kwargs["model_kwargs"] = {"reasoning_effort": spec.reasoning_effort}
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
         if spec.api_key_env and os.getenv(spec.api_key_env):
@@ -724,6 +783,8 @@ def build_chat_model(
         )
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
+        if spec.reasoning_effort:
+            kwargs["model_kwargs"] = {"reasoning_effort": spec.reasoning_effort}
         if spec.base_url:
             kwargs["azure_endpoint"] = spec.base_url
         if spec.api_version:

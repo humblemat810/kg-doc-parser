@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 
 import pytest
-
 from kg_doc_parser.workflow_ingest.models import (
     CurrentLayerContext,
     CurrentLayerResult,
@@ -12,15 +11,22 @@ from kg_doc_parser.workflow_ingest.models import (
     LayerCoverageGap,
     LayerDuplicateChildNote,
     LayerSpanConflict,
+    ParseSessionState,
 )
 from kg_doc_parser.workflow_ingest.parser_core import (
     check_layer_coverage,
+    commit_layer_children,
     dedupe_and_filter_layer,
     detect_layer_invariants,
+    enqueue_next_layer_frontier,
+    finalize_semantic_tree,
     repair_layer_candidates,
 )
-from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer
-
+from kg_doc_parser.workflow_ingest.semantics import (
+    HydratedTextPointer,
+    SemanticNode,
+    compute_pointer_coverage,
+)
 
 pytestmark = [pytest.mark.workflow, pytest.mark.ci]
 
@@ -166,6 +172,40 @@ def test_dedupe_and_filter_layer_keeps_unique_children_and_drops_parent_title():
     assert filtered.children[0].title == "Section B"
 
 
+def test_dedupe_and_filter_layer_keeps_same_label_at_distinct_source_spans():
+    context = CurrentLayerContext(
+        depth=1,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Doc"],
+    )
+    result = CurrentLayerResult(
+        children=[
+            _child(
+                node_id="child-a",
+                parent_node_id="doc|root",
+                title="Revenue",
+                node_type="TEXT_FLOW",
+                pointer=_pointer("doc|p1_t0", "Revenue", 0, 6),
+            ),
+            _child(
+                node_id="child-b",
+                parent_node_id="doc|root",
+                title="Revenue",
+                node_type="TEXT_FLOW",
+                pointer=_pointer("doc|p1_t0", "Revenue", 20, 26),
+            ),
+        ],
+        satisfied=True,
+    )
+
+    filtered = dedupe_and_filter_layer(
+        current_layer_context=context,
+        current_layer_result=result,
+    )
+
+    assert [child.node_id for child in filtered.children] == ["child-a", "child-b"]
+
+
 def test_repair_layer_candidates_applies_fake_pointer_repair_and_counts_changes():
     text = "AlphaBetaGamma"
     unit_id = "doc|p1_t0"
@@ -212,7 +252,7 @@ def test_repair_layer_candidates_applies_fake_pointer_repair_and_counts_changes(
     assert repaired.children[1].total_content_pointers[0].verbatim_text == "Beta"
 
 
-def test_repair_layer_candidates_raises_on_unrecoverable_pointer(caplog):
+def test_repair_layer_candidates_isolates_unrecoverable_pointer(caplog):
     result = CurrentLayerResult(
         children=[
             _child(
@@ -231,16 +271,122 @@ def test_repair_layer_candidates_raises_on_unrecoverable_pointer(caplog):
         return None
 
     caplog.set_level(logging.WARNING)
-    with pytest.raises(ValueError, match="unrecoverable pointer"):
-        repair_layer_candidates(
-            current_layer_result=result,
-            parser_source_map={"doc|p1_t0": {"text": "Alpha"}},
-            correct_pointer_fn=_correct,
-        )
+    repaired, repaired_count = repair_layer_candidates(
+        current_layer_result=result,
+        parser_source_map={"doc|p1_t0": {"text": "Alpha"}},
+        correct_pointer_fn=_correct,
+    )
 
+    assert repaired_count == 0
+    assert repaired.children == []
+    assert repaired.metadata["repair_failure_scope"] == "child_replacement"
+    assert "unrecoverable pointer" in repaired.metadata["repair_failures"][0]
     assert any("repair_layer_candidates failed" in record.message for record in caplog.records)
     assert any("source_cluster_id='doc|p1_t0'" in record.message for record in caplog.records)
     assert any("parent='doc|root'" in record.message for record in caplog.records)
+
+
+def test_commit_and_frontier_enqueue_are_idempotent_on_replay():
+    pointer = _pointer("doc|p1_t0", "Alpha", 0, 4)
+    child = _child(
+        node_id="child-a",
+        parent_node_id="doc|root",
+        title="Alpha",
+        node_type="TEXT_FLOW",
+        pointer=pointer,
+        expandable=True,
+    )
+    result = CurrentLayerResult(children=[child], satisfied=True)
+    tree = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+    )
+
+    once = commit_layer_children(
+        semantic_tree=tree,
+        current_layer_result=result,
+        current_depth=0,
+    )
+    twice = commit_layer_children(
+        semantic_tree=once,
+        current_layer_result=result,
+        current_depth=0,
+    )
+    assert [node.node_id for node in twice.child_nodes] == ["child-a"]
+
+    session = ParseSessionState(collection_id="doc", root_node_id="doc|root")
+    first_queue = enqueue_next_layer_frontier(
+        frontier_queue=[],
+        current_layer_context=CurrentLayerContext(
+            depth=0,
+            parent_node_ids=["doc|root"],
+            parent_titles=["Doc"],
+        ),
+        current_layer_result=result,
+        parse_session=session,
+    )
+    second_queue = enqueue_next_layer_frontier(
+        frontier_queue=first_queue,
+        current_layer_context=CurrentLayerContext(
+            depth=0,
+            parent_node_ids=["doc|root"],
+            parent_titles=["Doc"],
+        ),
+        current_layer_result=result,
+        parse_session=session,
+    )
+    assert [(item.parent_node_id, item.depth) for item in second_queue] == [
+        ("child-a", 1)
+    ]
+
+
+def test_pointer_coverage_counts_unreferenced_source_clusters():
+    root = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[
+            SemanticNode(
+                node_id="child-a",
+                parent_id="doc|root",
+                title="Alpha",
+                total_content_pointers=[_pointer("doc|p1_t0", "Alpha", 0, 4)],
+            )
+        ],
+    )
+
+    coverage = compute_pointer_coverage(
+        root,
+        {
+            "doc|p1_t0": {"text": "Alpha"},
+            "doc|p1_t1": {"text": "Missing meaningful content"},
+            "doc|p1_t2": {"text": " \n\t"},
+        },
+    )
+
+    assert coverage["per_cluster"]["doc|p1_t1"] == 0.0
+    assert coverage["per_cluster"]["doc|p1_t2"] == 1.0
+    assert coverage["overall"] < 1.0
+
+
+def test_finalize_semantic_tree_rejects_dangling_source_pointer():
+    root = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[
+            SemanticNode(
+                node_id="child-a",
+                parent_id="doc|root",
+                title="Alpha",
+                total_content_pointers=[_pointer("doc|missing", "Alpha", 0, 4)],
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="unknown source cluster"):
+        finalize_semantic_tree(root, parser_source_map={"doc|p1_t0": {"text": "Alpha"}})
 
 
 def test_check_layer_coverage_emits_conflict_notes_from_review():

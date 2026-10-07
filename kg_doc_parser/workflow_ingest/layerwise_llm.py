@@ -437,6 +437,7 @@ def _boundary_prompt_candidate_context(
     *,
     current_layer_context: Any,
     parser_source_map: dict[str, dict[str, Any]],
+    max_points: int = 128,
 ) -> list[dict[str, Any]]:
     parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
     pointers_by_id = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
@@ -444,7 +445,7 @@ def _boundary_prompt_candidate_context(
     for parent_id in parent_ids:
         for pointer in list(pointers_by_id.get(parent_id) or []):
             text = _pointer_text(pointer, parser_source_map=parser_source_map)
-            legal = _legal_cutpoints_for_text(text)
+            legal = _legal_cutpoints_for_text(text, max_points=max_points)
             start_char = int(_pointer_field(pointer, "start_char") or 0)
             candidates.append(
                 {
@@ -954,7 +955,7 @@ def _boundary_refinement_prompt_context(
     legal_cutpoints: list[dict[str, Any]] = []
     if target_pointer is not None:
         start_char = int(_pointer_field(target_pointer, "start_char") or 0)
-        for boundary in _legal_cutpoints_for_text(target_excerpt):
+        for boundary in _legal_cutpoints_for_text(target_excerpt, max_points=128):
             legal_cutpoints.append(
                 {
                     "cut_offset": start_char + boundary.cut_offset,
@@ -1632,6 +1633,7 @@ def build_layerwise_llm_callbacks(
             boundary_candidates = _boundary_prompt_candidate_context(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
+                max_points=int(getattr(provider_settings, "boundary_max_points", 128)),
             )
             boundary_candidate_lookup = _boundary_candidate_lookup(boundary_candidates)
             boundary_dropped_count = 0
@@ -2495,7 +2497,12 @@ def build_layerwise_llm_callbacks(
                 parse_session=parse_session,
                 current_layer_context=current_layer_context,
             ),
-            "current_layer_context": _dump_model(current_layer_context),
+            "current_layer_context": _summarize_for_prompt(
+                current_layer_context,
+                max_depth=4,
+                max_items=6,
+                max_string=280,
+            ),
             "current_layer_result": _summarize_for_prompt(
                 current_layer_result,
                 max_depth=4,
@@ -2564,16 +2571,20 @@ def build_layerwise_llm_callbacks(
             return runtime_review
         except Exception as exc:
             failure_reason = _trim_text(repr(exc), max_chars=500)
+            failure_kind = "timeout" if isinstance(exc, TimeoutError) else "provider_failure"
             fallback_review = CurrentLayerReview(
                 updated_result=current_layer_result,
                 coverage_ok=None,
                 satisfied=None,
                 strategy_used=split_strategy,
                 review_notes=[
-                    "quality_unknown: semantic layer review provider failed",
+                    f"quality_unknown: semantic layer review {failure_kind}",
                     "deterministic checks did not authorize successful review",
                 ],
-                metadata={"review_failure": "provider_failure"},
+                metadata={
+                    "review_failure": failure_kind,
+                    "review_failure_reason": failure_reason,
+                },
             )
             _emit(
                 "workflow_layered_review_result",
@@ -2595,6 +2606,8 @@ def build_layerwise_llm_callbacks(
                 satisfied=fallback_review.satisfied,
                 coverage_ok=fallback_review.coverage_ok,
             )
+            if failure_kind == "timeout":
+                raise exc
             return fallback_review
 
     return {

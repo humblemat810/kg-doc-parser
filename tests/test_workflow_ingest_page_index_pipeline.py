@@ -76,6 +76,36 @@ def _collect_node_types(node) -> set[str]:
     return kinds
 
 
+def _install_long_table_assignment_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeStructured:
+        def invoke(self, messages):
+            return {
+                "parsed": BlockAssignmentBatch(
+                    assignments=[
+                        BlockAssignment(
+                            block_id="p0001-b001",
+                            parent_id=None,
+                            node_type="SECTION",
+                            title="Sample Document Title",
+                        ),
+                        BlockAssignment(
+                            block_id="p0001-b002",
+                            parent_id="p0001-b001",
+                            node_type="PARAGRAPH",
+                            title="ID Description Value",
+                        ),
+                    ]
+                )
+            }
+
+    class _FakeChat:
+        def with_structured_output(self, schema, include_raw=True, **kwargs):
+            assert schema is BlockAssignmentBatch
+            return _FakeStructured()
+
+    monkeypatch.setattr(page_index_module, "build_chat_model_for_role", lambda *args, **kwargs: _FakeChat())
+
+
 def _max_depth(node) -> int:
     if not node.child_nodes:
         return 1
@@ -264,6 +294,29 @@ def test_page_index_heuristic_parses_text_and_markdown(fixture_name: str, source
     payload = semantic_tree_to_kge_payload(result.semantic_tree, doc_id=result.workflow_input.request_id)
     assert len(payload["nodes"]) >= 8
     assert len(payload["edges"]) >= 4
+
+
+@pytest.mark.ci
+def test_page_index_provider_accepts_atomic_long_table_without_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw_text = _fixture_text("title_long_table.md")
+    _install_long_table_assignment_provider(monkeypatch)
+    provider_settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="ollama", model="fake", base_url="http://127.0.0.1:11434")
+    )
+
+    result = parse_page_index_document(
+        document_id="page-index-title-long-table",
+        title="Sample Document Title",
+        raw_text=raw_text,
+        source_format="markdown",
+        mode="ollama",
+        provider_settings=provider_settings,
+        summary_enabled=False,
+    )
+    assert result.diagnostics["assignment_mode"] != "deterministic_fallback"
+    assert not any("too broad" in error for error in result.diagnostics.get("validation_errors", []))
+    assert result.coverage["overall"] == pytest.approx(1.0)
+    assert result.semantic_tree.child_nodes
 
 
 @pytest.mark.manual
@@ -670,6 +723,43 @@ def test_page_index_validator_rejects_repeated_sibling_and_whole_page_duplicatio
     assert validation.valid is False
     assert any("repeats the same sibling excerpt" in error for error in validation.errors)
     assert any("duplicates the whole page" in error for error in validation.errors)
+
+
+def test_page_index_nested_validation_reports_only_the_failing_descendant() -> None:
+    page_text = "# Root\n\nChild content.\n"
+    candidates = page_index_module._extract_candidate_blocks(
+        page_text,
+        page_number=1,
+        source_format="markdown",
+    )
+    assignments = page_index_module._deterministic_block_assignments(candidates)
+    specs = [
+        page_index_module.PageIndexBlockSpec(
+            title="Root",
+            node_type="SECTION",
+            excerpt="# Root",
+            source_role="heading",
+            child_nodes=[
+                page_index_module.PageIndexBlockSpec(
+                    title="Child content.",
+                    node_type="PARAGRAPH",
+                    excerpt="",
+                    source_role="content",
+                )
+            ],
+        )
+    ]
+
+    validation = page_index_module._validate_page_index_block_structure(
+        candidates=candidates,
+        assignments=assignments,
+        block_specs=specs,
+        page_text=page_text,
+    )
+
+    assert validation.valid is False
+    assert "block 1.1 has empty excerpt" in validation.errors
+    assert "block 1 has empty excerpt" not in validation.errors
 
 
 def test_page_index_resolve_pointer_keeps_exact_match_unchanged() -> None:
@@ -1265,7 +1355,8 @@ def test_page_index_heading_container_projects_source_text_to_leaf() -> None:
     results = page.child_nodes[0]
     assert results.node_type == "HEADING"
     assert results.total_content_pointers == []
-    assert results.summary == "Results"
+    assert results.summary == ""
+    assert results.metadata["summary_unavailable"] is True
     assert results.aggregate_content_pointers[0].verbatim_text == "# Results\n\nIntro.\n\n## Measurements\n\nBody."
     assert results.metadata["page_index_role"] == "heading_container"
     assert results.metadata["semantic_kind"] == "heading"
@@ -1275,7 +1366,8 @@ def test_page_index_heading_container_projects_source_text_to_leaf() -> None:
     assert heading.title == "Results"
     assert heading.metadata["page_index_role"] == "heading_text"
     assert heading.total_content_pointers[0].verbatim_text == "# Results"
-    assert heading.summary == "Results"
+    assert heading.summary == ""
+    assert heading.metadata["summary_unavailable"] is True
 
     measurements = next(node for node in results.child_nodes if node.title == "Measurements")
     assert measurements.node_type == "HEADING"

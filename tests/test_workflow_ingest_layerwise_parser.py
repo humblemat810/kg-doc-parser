@@ -65,6 +65,61 @@ def test_provider_review_failure_is_persisted_and_fails_closed() -> None:
     assert notes == ["layer review unavailable; quality is unknown"]
 
 
+@pytest.mark.ci
+def test_provider_review_timeout_uses_deterministic_layer_authorization() -> None:
+    text = "AlphaBeta"
+    unit_id = "doc|p1_t0"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={
+            "doc|root": [_segment_pointer(unit_id, text, text)],
+        },
+    )
+    result = CurrentLayerResult(
+        children=[
+            LayerChildCandidate(
+                node_id="child-a",
+                parent_node_id="doc|root",
+                title="Alpha",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[_segment_pointer(unit_id, text, "Alpha")],
+            ),
+            LayerChildCandidate(
+                node_id="child-b",
+                parent_node_id="doc|root",
+                title="Beta",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[_segment_pointer(unit_id, text, "Beta")],
+            ),
+        ],
+        satisfied=True,
+    )
+
+    def timed_out(**_kwargs):
+        raise TimeoutError("review deadline exceeded")
+
+    review, _ = review_layer(
+        parse_session=ParseSessionState(collection_id="doc", root_node_id="doc|root"),
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map={unit_id: {"text": text}},
+        review_layer_fn=timed_out,
+    )
+
+    assert review.metadata["review_timeout"] is True
+    assert "review_failure" not in review.metadata
+    assert review.coverage_ok is True
+    assert review.satisfied is True
+    coverage_ok, _ = check_layer_coverage(
+        current_layer_context=context,
+        current_layer_result=result,
+        current_layer_review=review,
+    )
+    assert coverage_ok is True
+
+
 @pytest.fixture(
     params=[
         pytest.param("in_memory", id="in_memory", marks=pytest.mark.ci),

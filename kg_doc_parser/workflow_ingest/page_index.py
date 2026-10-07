@@ -41,11 +41,9 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, Protocol
 
+from kogwistar.id_provider import stable_id
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
 from kogwistar.utils.fuzzy_offsets import find_best_fuzzy_span
-from kogwistar.id_provider import stable_id
-
-
 from pydantic import BaseModel, Field
 
 from ..llm_structured_output import build_structured_output_runnable
@@ -62,7 +60,11 @@ from .models import (
     SourceUnit,
     WorkflowIngestInput,
 )
-from .providers import WorkflowProviderSettings, build_chat_model_for_role, invoke_with_timeout
+from .providers import (
+    WorkflowProviderSettings,
+    build_chat_model_for_role,
+    invoke_with_timeout,
+)
 from .semantics import (
     HydratedTextPointer,
     SemanticNode,
@@ -977,7 +979,7 @@ def _validate_page_index_block_structure(
                 errors.append(f"block {current_path} duplicates the whole page")
             elif _page_index_block_exceeds_excerpt_budget(spec, page_text):
                 errors.append(f"block {current_path} excerpt is too broad")
-            elif _page_index_block_is_too_generic(spec, page_text):
+            elif _page_index_block_is_too_generic(spec):
                 errors.append(f"block {current_path} excerpt is too generic")
             normalized_sibling_excerpts.append(normalized_excerpt)
             _validate_siblings(spec.child_nodes, path=current_path)
@@ -1162,7 +1164,7 @@ def _refine_page_index_block_excerpts(
         if _page_index_block_exceeds_excerpt_budget(candidate_spec, page_text):
             diagnostics["refine_excerpts_rejected"] += 1
             continue
-        if _page_index_block_is_too_generic(candidate_spec, page_text, ancestor_excerpts=ancestor_excerpts):
+        if _page_index_block_is_too_generic(candidate_spec, ancestor_excerpts=ancestor_excerpts):
             diagnostics["refine_excerpts_rejected"] += 1
             continue
 
@@ -1740,12 +1742,13 @@ def _materialize_block_tree(
             parent_id=parent_id,
             level_from_root=level_from_root,
             pointers=[] if is_heading else [pointer],
-            summary=(spec.summary.strip() or spec.title) if summary_enabled else "",
+            summary=spec.summary.strip() if summary_enabled else "",
             metadata={
                 "page_index_role": "heading_container" if is_heading else "content",
                 "semantic_kind": "heading" if is_heading else "content",
                 "legacy_node_type": spec.node_type,
                 "source_role": spec.source_role,
+                "summary_unavailable": bool(summary_enabled and not spec.summary.strip()),
             },
         )
         heading_leaf = None
@@ -1756,10 +1759,11 @@ def _materialize_block_tree(
                 parent_id=node.node_id,
                 level_from_root=level_from_root + 1,
                 pointers=[pointer],
-                summary=(spec.summary.strip() or spec.title) if summary_enabled else "",
+                summary=spec.summary.strip() if summary_enabled else "",
                 metadata={
                     "page_index_role": "heading_text",
                     "semantic_kind": "heading_text",
+                    "summary_unavailable": bool(summary_enabled and not spec.summary.strip()),
                 },
             )
         child_nodes, cursor = _materialize_block_tree(
@@ -1924,31 +1928,28 @@ def parse_page_index_layer(
 
 
 def _page_index_block_exceeds_excerpt_budget(spec: PageIndexBlockSpec, page_text: str) -> bool:
-    page_text_norm = page_text.strip()
-    excerpt_norm = spec.excerpt.strip()
-    if not excerpt_norm:
-        return True
-    if excerpt_norm == page_text_norm:
-        return True
-    if len(excerpt_norm) > max(240, int(len(page_text_norm) * 0.75)):
-        return True
-    return any(_page_index_block_exceeds_excerpt_budget(child, page_text) for child in spec.child_nodes)
+    """Return whether a block violates a display budget.
+
+    Grounded source extents are correctness data, not display snippets.  A
+    complete table or other atomic source object may legitimately occupy most
+    or all of a page, so there is no page-relative size budget to enforce.
+    The ``page_text`` argument remains for compatibility with callers and
+    third-party integrations from v0.2.x.
+    """
+    del spec, page_text
+    return False
 
 
 def _page_index_block_is_too_generic(
     spec: PageIndexBlockSpec,
-    page_text: str,
     *,
     ancestor_excerpts: tuple[str, ...] = (),
 ) -> bool:
     def _normalize(text: str) -> str:
         return " ".join(text.split()).strip().lower()
 
-    page_text_norm = _normalize(page_text)
     excerpt_norm = _normalize(spec.excerpt)
     if not excerpt_norm:
-        return True
-    if excerpt_norm == page_text_norm:
         return True
     if excerpt_norm in ancestor_excerpts:
         return True
@@ -1958,13 +1959,7 @@ def _page_index_block_is_too_generic(
             return True
         if len(set(child_norms)) == 1:
             return True
-    if len(excerpt_norm) > max(240, int(len(page_text_norm) * 0.75)):
-        return True
-    next_ancestors = ancestor_excerpts + (excerpt_norm,)
-    return any(
-        _page_index_block_is_too_generic(child, page_text, ancestor_excerpts=next_ancestors)
-        for child in spec.child_nodes
-    )
+    return False
 
 
 def parse_page_index_document(
