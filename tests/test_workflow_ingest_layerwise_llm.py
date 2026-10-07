@@ -1146,10 +1146,12 @@ def test_boundary_mode_recurses_through_refinement_for_ambiguous_cutpoints(monke
         lambda role, settings: fake_model,
     )
 
+    events: list[dict[str, Any]] = []
     callbacks = build_layerwise_llm_callbacks(
         _provider_settings(),
         proposal_mode="boundaries",
         boundary_refinement_rounds=1,
+        event_sink=lambda stage, **extra: events.append({"stage": stage, **extra}),
     )
 
     result = callbacks["propose_layer_fn"](
@@ -1165,6 +1167,7 @@ def test_boundary_mode_recurses_through_refinement_for_ambiguous_cutpoints(monke
     assert result.metadata["proposal_source"] == "fallback"
     assert result.metadata["failure_type"] == "fallback"
     assert "no accepted cutpoints" in result.metadata["proposal_failure_reason"]
+    assert any(event.get("failure_type") == "semantic_rejection" for event in events)
 
 
 def test_boundary_and_child_modes_produce_equivalent_labels_for_same_fixture(monkeypatch: pytest.MonkeyPatch):
