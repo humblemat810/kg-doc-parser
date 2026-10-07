@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
@@ -14,6 +15,7 @@ from kg_doc_parser.workflow_ingest.providers import (
     _normalize_provider_name,
     build_chat_model,
     invoke_with_timeout,
+    provider_call_metrics_snapshot,
 )
 from kg_doc_parser.workflow_ingest.serialization import json_safe, safe_json_dumps
 
@@ -181,6 +183,45 @@ def test_provider_timeout_inflight_limit_prevents_retry_multiplication() -> None
     worker.join(timeout=1.0)
     assert not worker.is_alive()
     assert first_error == []
+
+
+def test_provider_failure_diagnostics_use_stable_transport_category() -> None:
+    diagnostics: dict[str, object] = {}
+
+    def failed_call() -> str:
+        raise ValueError("provider rejected request")
+
+    with pytest.raises(ValueError, match="provider rejected"):
+        invoke_with_timeout(failed_call, timeout_seconds=1.0, diagnostics=diagnostics)
+    assert diagnostics["failure_type"] == "transport/provider_exception"
+    assert diagnostics["error_type"] == "ValueError"
+
+
+def test_provider_metrics_expose_completion_and_orphaned_timeout_counts() -> None:
+    before = provider_call_metrics_snapshot()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def stalled_call() -> str:
+        release.wait()
+        finished.set()
+        return "late"
+
+    with pytest.raises(TimeoutError, match="exceeded"):
+        invoke_with_timeout(stalled_call, timeout_seconds=0.01)
+    release.set()
+    assert finished.wait(1.0)
+    deadline = time.monotonic() + 1.0
+    after = provider_call_metrics_snapshot()
+    while int(after["active_calls"]) and time.monotonic() < deadline:
+        time.sleep(0.01)
+        after = provider_call_metrics_snapshot()
+
+    assert int(after["calls_started"]) >= int(before["calls_started"]) + 1
+    assert int(after["timeouts_observed"]) >= int(before["timeouts_observed"]) + 1
+    assert int(after["orphaned_calls"]) >= int(before["orphaned_calls"]) + 1
+    assert int(after["calls_completed"]) >= int(before["calls_completed"]) + 1
+    assert int(after["active_calls"]) == 0
 
 
 def test_provider_safe_json_serializes_nested_structured_values() -> None:

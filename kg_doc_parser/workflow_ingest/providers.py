@@ -106,14 +106,69 @@ ProposalMode = Literal["children", "boundaries"]
 
 _PROVIDER_IN_FLIGHT_LOCK = threading.Lock()
 _PROVIDER_IN_FLIGHT = 0
+_PROVIDER_METRICS: dict[str, object] = {
+    "calls_started": 0,
+    "calls_completed": 0,
+    "calls_succeeded": 0,
+    "calls_failed": 0,
+    "timeouts_observed": 0,
+    "orphaned_calls": 0,
+    "in_flight_rejections": 0,
+    "active_calls": 0,
+    "failure_counts": {},
+}
+
+
+def _provider_failure_category(exc: BaseException) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, RuntimeError) and "in-flight call limit" in str(exc):
+        return "in_flight_limit"
+    return "transport/provider_exception"
+
+
+def _record_provider_completion(*, success: bool, failure_type: str | None = None) -> None:
+    with _PROVIDER_IN_FLIGHT_LOCK:
+        _PROVIDER_METRICS["calls_completed"] = int(_PROVIDER_METRICS["calls_completed"]) + 1
+        if success:
+            _PROVIDER_METRICS["calls_succeeded"] = int(_PROVIDER_METRICS["calls_succeeded"]) + 1
+            return
+        _PROVIDER_METRICS["calls_failed"] = int(_PROVIDER_METRICS["calls_failed"]) + 1
+        failure_counts = _PROVIDER_METRICS["failure_counts"]
+        if not isinstance(failure_counts, dict):
+            failure_counts = {}
+            _PROVIDER_METRICS["failure_counts"] = failure_counts
+        failure_counts[failure_type or "transport/provider_exception"] = (
+            int(failure_counts.get(failure_type or "transport/provider_exception", 0)) + 1
+        )
+
+
+def provider_call_metrics_snapshot() -> dict[str, object]:
+    """Return a stable, process-local snapshot of provider call health.
+
+    The counters describe the shared invocation boundary, not a vendor SDK.
+    ``orphaned_calls`` counts calls whose caller timed out while the daemon
+    worker was still alive; ``active_calls`` shows whether those workers have
+    subsequently drained.
+    """
+
+    with _PROVIDER_IN_FLIGHT_LOCK:
+        snapshot = dict(_PROVIDER_METRICS)
+        failure_counts = _PROVIDER_METRICS.get("failure_counts", {})
+        snapshot["failure_counts"] = dict(failure_counts) if isinstance(failure_counts, dict) else {}
+        snapshot["active_calls"] = _PROVIDER_IN_FLIGHT
+        return snapshot
 
 
 def _reserve_provider_slot(max_in_flight: int) -> bool:
     global _PROVIDER_IN_FLIGHT
     with _PROVIDER_IN_FLIGHT_LOCK:
         if _PROVIDER_IN_FLIGHT >= max_in_flight:
+            _PROVIDER_METRICS["in_flight_rejections"] = int(_PROVIDER_METRICS["in_flight_rejections"]) + 1
             return False
         _PROVIDER_IN_FLIGHT += 1
+        _PROVIDER_METRICS["calls_started"] = int(_PROVIDER_METRICS["calls_started"]) + 1
+        _PROVIDER_METRICS["active_calls"] = _PROVIDER_IN_FLIGHT
         return True
 
 
@@ -121,6 +176,7 @@ def _release_provider_slot() -> None:
     global _PROVIDER_IN_FLIGHT
     with _PROVIDER_IN_FLIGHT_LOCK:
         _PROVIDER_IN_FLIGHT = max(0, _PROVIDER_IN_FLIGHT - 1)
+        _PROVIDER_METRICS["active_calls"] = _PROVIDER_IN_FLIGHT
 
 
 class StructuredPayloadFactory(Protocol):
@@ -645,8 +701,11 @@ def invoke_with_timeout(
 
     def _run() -> None:
         try:
-            result_queue.put((True, callable_obj()))
+            result = callable_obj()
+            _record_provider_completion(success=True)
+            result_queue.put((True, result))
         except Exception as exc:  # noqa: BLE001 - preserve provider exceptions for the caller
+            _record_provider_completion(success=False, failure_type=_provider_failure_category(exc))
             result_queue.put((False, exc))
         finally:
             _release_provider_slot()
@@ -655,6 +714,9 @@ def invoke_with_timeout(
     worker.start()
     worker.join(timeout_seconds)
     if worker.is_alive():
+        with _PROVIDER_IN_FLIGHT_LOCK:
+            _PROVIDER_METRICS["timeouts_observed"] = int(_PROVIDER_METRICS["timeouts_observed"]) + 1
+            _PROVIDER_METRICS["orphaned_calls"] = int(_PROVIDER_METRICS["orphaned_calls"]) + 1
         if diagnostics is not None:
             diagnostics.update(
                 {
@@ -673,7 +735,13 @@ def invoke_with_timeout(
             diagnostics["success"] = True
         return value
     if diagnostics is not None:
-        diagnostics.update({"success": False, "failure_type": type(value).__name__})
+        diagnostics.update(
+            {
+                "success": False,
+                "failure_type": _provider_failure_category(cast(BaseException, value)),
+                "error_type": type(value).__name__,
+            }
+        )
     raise cast(Exception, value)
 
 

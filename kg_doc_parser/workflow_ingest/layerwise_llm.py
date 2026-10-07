@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any, Literal, Protocol, TypedDict, TypeVar, cast
 
 from kogwistar.fuzzy_offsets import find_fuzzy_spans, offset_repair_threshold
@@ -34,6 +35,7 @@ from .providers import (
     WorkflowProviderSettings,
     build_chat_model_for_role,
     invoke_with_timeout,
+    provider_call_metrics_snapshot,
 )
 from .semantics import HydratedTextPointer, SemanticNode
 from .serialization import safe_json_dumps
@@ -289,8 +291,7 @@ def _pointer_span_text(
     end = end_char_exclusive if end_offset is None else min(end_char_exclusive, end_offset)
     if end <= start:
         return ""
-    if end >= len(raw_text):
-        end = len(raw_text)
+    end = min(len(raw_text), end)
     if start >= len(raw_text):
         return ""
     return raw_text[start:end]
@@ -489,7 +490,7 @@ def _boundary_prompt_candidate_context(
                     "legal_cutpoints": [
                         {
                             "candidate_id": (
-                                f"{parent_id}|{str(_pointer_field(pointer, 'source_cluster_id') or '')}|"
+                                f"{parent_id}|{_pointer_field(pointer, 'source_cluster_id') or ''!s}|"
                                 f"{start_char}|"
                                 f"{boundary.candidate_id or boundary.cut_offset}"
                             ),
@@ -1061,7 +1062,7 @@ def _boundary_review_decision(
 
     text = _pointer_text(pointer, parser_source_map=parser_source_map)
     start_char = int(_pointer_field(pointer, "start_char") or 0)
-    _start_char, end_char_exclusive = _pointer_span_bounds(pointer, parser_source_map=parser_source_map)
+    _start_char, _end_char_exclusive = _pointer_span_bounds(pointer, parser_source_map=parser_source_map)
     local_cut = cutpoint.cut_offset - start_char
     if cutpoint.candidate_id:
         resolution = _BoundaryAnchorResolution(
@@ -1292,7 +1293,7 @@ def _assemble_layer_result_from_boundaries(
             absolute_offsets.append(end_char_exclusive)
             absolute_offsets = sorted(set(absolute_offsets))
             for segment_index, (segment_start, segment_end) in enumerate(
-                zip(absolute_offsets, absolute_offsets[1:], strict=False),
+                pairwise(absolute_offsets),
                 start=0,
             ):
                 if segment_end <= segment_start:
@@ -1527,41 +1528,77 @@ def _annotate_proposal_result(
     return result.__class__.model_validate(payload)
 
 
-def _structured_invoke(
+def _structured_invoke(  # noqa: UP047 - PEP 695 syntax would drop PyPy 3.11 support
     model: SupportsStructuredOutput,
     schema: type[TStructuredModel],
     messages: Sequence[tuple[str, str]],
     *,
     timeout_seconds: float = 120.0,
     diagnostics: dict[str, object] | None = None,
+    diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
     operation: str = "parser_structured_call",
     max_in_flight: int = 1,
 ) -> TStructuredModel:
     structured = build_structured_output_runnable(model, schema, include_raw=True)
-    response = invoke_with_timeout(
-        lambda: structured.invoke(list(messages)),
-        timeout_seconds=timeout_seconds,
-        diagnostics=diagnostics,
-        operation=operation,
-        max_in_flight=max_in_flight,
-    )
-    if isinstance(response, dict):
-        parsed = response.get("parsed")
-        if parsed is not None:
-            if isinstance(parsed, schema):
-                return parsed
-            if hasattr(parsed, "model_dump"):
-                return schema.model_validate(parsed.model_dump())
-            return schema.model_validate(parsed)
-        parsing_error = response.get("parsing_error")
-        if parsing_error is not None:
-            raise ValueError(str(parsing_error))
-        return schema.model_validate(response)
-    if isinstance(response, schema):
-        return response
-    if hasattr(response, "model_dump"):
-        return schema.model_validate(response.model_dump())
-    return schema.model_validate(response)
+    call_diagnostics = diagnostics if diagnostics is not None else {}
+    call_diagnostics.setdefault("operation", operation)
+    call_diagnostics.setdefault("timeout_seconds", timeout_seconds)
+    try:
+        try:
+            response = invoke_with_timeout(
+                lambda: structured.invoke(list(messages)),
+                timeout_seconds=timeout_seconds,
+                diagnostics=call_diagnostics,
+                operation=operation,
+                max_in_flight=max_in_flight,
+            )
+        except Exception as exc:
+            call_diagnostics.setdefault(
+                "failure_type",
+                "timeout"
+                if isinstance(exc, TimeoutError)
+                else "in_flight_limit"
+                if isinstance(exc, RuntimeError) and "in-flight call limit" in str(exc)
+                else "transport/provider_exception",
+            )
+            call_diagnostics["error_type"] = type(exc).__name__
+            call_diagnostics["success"] = False
+            raise
+        try:
+            if isinstance(response, dict):
+                parsed = response.get("parsed")
+                if parsed is not None:
+                    if isinstance(parsed, schema):
+                        result = parsed
+                    elif hasattr(parsed, "model_dump"):
+                        result = schema.model_validate(parsed.model_dump())
+                    else:
+                        result = schema.model_validate(parsed)
+                else:
+                    parsing_error = response.get("parsing_error")
+                    if parsing_error is not None:
+                        raise ValueError(str(parsing_error))
+                    result = schema.model_validate(response)
+            elif isinstance(response, schema):
+                result = response
+            elif hasattr(response, "model_dump"):
+                result = schema.model_validate(response.model_dump())
+            else:
+                result = schema.model_validate(response)
+        except Exception as exc:
+            call_diagnostics.update(
+                {
+                    "success": False,
+                    "failure_type": "structured_output_parse_failure",
+                    "error_type": type(exc).__name__,
+                }
+            )
+            raise
+        call_diagnostics["success"] = True
+        return result
+    finally:
+        if diagnostics_sink is not None:
+            diagnostics_sink(dict(call_diagnostics))
 
 
 def _fallback_layer_result(
@@ -1642,6 +1679,15 @@ def build_layerwise_llm_callbacks(
     def _emit(stage: str, **extra: Any) -> None:
         if callable(event_sink):
             event_sink(stage, **extra)
+
+    def _emit_provider_diagnostics(diagnostics: dict[str, object]) -> None:
+        """Publish one structured call record without exposing provider payloads."""
+
+        _emit(
+            "workflow_provider_call",
+            **diagnostics,
+            provider_metrics=provider_call_metrics_snapshot(),
+        )
 
     def _proposal_attempt_payload(
         payload: dict[str, Any],
@@ -1768,11 +1814,13 @@ def build_layerwise_llm_callbacks(
                 return [
                     (
                         "system",
-                        "You are revising ONE semantic layer in an iterative document parsing workflow. "
-                        "Return only structured data matching LLMBoundaryProposalBatch. "
-                        "Propose grounded cutpoints only; the host will review and assemble the children. "
-                        "Each cutpoint must include cut_reason plus exact text_before_cut and text_after_cut anchors. "
-                        "Never omit either anchor; copy both from the selected legal candidate when candidate_id is used.",
+                        (
+                            "You are revising ONE semantic layer in an iterative document parsing workflow. "
+                            "Return only structured data matching LLMBoundaryProposalBatch. "
+                            "Propose grounded cutpoints only; the host will review and assemble the children. "
+                            "Each cutpoint must include cut_reason plus exact text_before_cut and text_after_cut anchors. "
+                            "Never omit either anchor; copy both from the selected legal candidate when candidate_id is used."
+                        ),
                     ),
                     ("human", safe_json_dumps(prompt_payload, sort_keys=True)),
                 ]
@@ -1809,6 +1857,7 @@ def build_layerwise_llm_callbacks(
                         provider_settings.proposal_timeout_seconds
                         or provider_settings.parser.timeout_seconds
                     ),
+                    diagnostics_sink=_emit_provider_diagnostics,
                     operation="layer_boundary_proposal",
                     max_in_flight=provider_settings.parser.max_in_flight_calls,
                 )
@@ -2039,8 +2088,10 @@ def build_layerwise_llm_callbacks(
                     refinement_messages = [
                         (
                             "system",
-                            "You are refining one ambiguous semantic cutpoint in a layered document parser. "
-                            "Return only structured data matching LLMBoundaryProposalBatch.",
+                            (
+                                "You are refining one ambiguous semantic cutpoint in a layered document parser. "
+                                "Return only structured data matching LLMBoundaryProposalBatch."
+                            ),
                         ),
                         ("human", safe_json_dumps(refinement_prompt_payload, sort_keys=True)),
                     ]
@@ -2053,6 +2104,7 @@ def build_layerwise_llm_callbacks(
                                 provider_settings.proposal_timeout_seconds
                                 or provider_settings.parser.timeout_seconds
                             ),
+                            diagnostics_sink=_emit_provider_diagnostics,
                             operation="layer_boundary_refinement",
                             max_in_flight=provider_settings.parser.max_in_flight_calls,
                         )
@@ -2100,7 +2152,7 @@ def build_layerwise_llm_callbacks(
                                 target_cut_offset=target.cut_offset,
                                 refined_cutpoint_count=len(refinement_decisions),
                             )
-                    except Exception as refinement_exc:
+                    except Exception as refinement_exc:  # noqa: BLE001 - refinement is best effort
                         refinement_notes.append(
                             f"boundary refinement skipped for {target.parent_node_id}:{target.source_cluster_id}:{target.cut_offset} "
                             f"due to {refinement_exc!r}"
@@ -2192,7 +2244,6 @@ def build_layerwise_llm_callbacks(
             )
                 return annotated
             runtime_result: CurrentLayerResult
-            accepted_cutpoints: list[dict[str, Any]]
             _emit(
                 "workflow_layered_boundary_assembly_start",
                 proposal_mode="boundaries",
@@ -2202,7 +2253,7 @@ def build_layerwise_llm_callbacks(
                 review_decision_count=len(review_decisions),
                 cutpoint_count=len(boundary_parsed.cutpoints),
             )
-            runtime_result, summaries, accepted_cutpoints = _assemble_layer_result_from_boundaries(
+            runtime_result, summaries, _accepted_cutpoints = _assemble_layer_result_from_boundaries(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
                 review_batch=review_batch,
@@ -2416,9 +2467,11 @@ def build_layerwise_llm_callbacks(
             return [
                 (
                     "system",
-                    "You are revising ONE semantic layer in an iterative document parsing workflow. "
-                    "Return only structured data matching CurrentLayerResult. "
-                    "Produce grounded immediate children for the supplied parents and preserve layerwise semantics.",
+                    (
+                        "You are revising ONE semantic layer in an iterative document parsing workflow. "
+                        "Return only structured data matching CurrentLayerResult. "
+                        "Produce grounded immediate children for the supplied parents and preserve layerwise semantics."
+                    ),
                 ),
                 ("human", safe_json_dumps(prompt_payload, sort_keys=True)),
             ]
@@ -2467,6 +2520,7 @@ def build_layerwise_llm_callbacks(
                         provider_settings.proposal_timeout_seconds
                         or provider_settings.parser.timeout_seconds
                     ),
+                    diagnostics_sink=_emit_provider_diagnostics,
                     operation="layer_children_proposal",
                     max_in_flight=provider_settings.parser.max_in_flight_calls,
                 ),
@@ -2597,8 +2651,10 @@ def build_layerwise_llm_callbacks(
         messages = [
             (
                 "system",
-                "You review ONE semantic layer in an iterative document parsing workflow. "
-                "Return only structured data matching CurrentLayerReview.",
+                (
+                    "You review ONE semantic layer in an iterative document parsing workflow. "
+                    "Return only structured data matching CurrentLayerReview."
+                ),
             ),
             (
                 "human",
@@ -2622,6 +2678,7 @@ def build_layerwise_llm_callbacks(
                     provider_settings.review_timeout_seconds
                     or provider_settings.parser.timeout_seconds
                 ),
+                diagnostics_sink=_emit_provider_diagnostics,
                 operation="layer_review",
                 max_in_flight=provider_settings.parser.max_in_flight_calls,
             )
@@ -2684,7 +2741,7 @@ def build_layerwise_llm_callbacks(
                 coverage_ok=fallback_review.coverage_ok,
             )
             if failure_kind == "timeout":
-                raise exc
+                raise
             return fallback_review
 
     return {

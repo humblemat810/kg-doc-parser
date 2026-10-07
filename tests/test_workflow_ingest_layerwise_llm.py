@@ -3,20 +3,26 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
-from kg_doc_parser.workflow_ingest import ProviderEndpointConfig, WorkflowProviderSettings
+from kg_doc_parser.workflow_ingest import (
+    ProviderEndpointConfig,
+    WorkflowProviderSettings,
+)
 from kg_doc_parser.workflow_ingest.layerwise_llm import build_layerwise_llm_callbacks
 from kg_doc_parser.workflow_ingest.models import (
     BoundaryCutpoint,
-    LLMBoundaryProposal,
-    LLMBoundaryProposalBatch,
     CurrentLayerContext,
     CurrentLayerResult,
     LayerChildCandidate,
+    LLMBoundaryProposal,
+    LLMBoundaryProposalBatch,
     ParseSessionState,
 )
-from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode, semantic_tree_to_kge_payload
 from kg_doc_parser.workflow_ingest.parser_core import commit_layer_children
+from kg_doc_parser.workflow_ingest.semantics import (
+    HydratedTextPointer,
+    SemanticNode,
+    semantic_tree_to_kge_payload,
+)
 
 
 def _provider_settings() -> WorkflowProviderSettings:
@@ -276,7 +282,9 @@ def test_boundary_candidate_generation_prefers_structural_boundaries_over_words(
 
 
 def test_boundary_candidate_ids_include_pointer_span_to_avoid_multispan_collisions():
-    from kg_doc_parser.workflow_ingest.layerwise_llm import _boundary_prompt_candidate_context
+    from kg_doc_parser.workflow_ingest.layerwise_llm import (
+        _boundary_prompt_candidate_context,
+    )
 
     text = "Alpha clause. Beta clause.\nGamma clause. Delta clause."
     context = CurrentLayerContext(
@@ -320,7 +328,9 @@ def test_boundary_candidate_ids_include_pointer_span_to_avoid_multispan_collisio
 
 
 def test_boundary_parent_coverage_report_marks_gaps_and_spans():
-    from kg_doc_parser.workflow_ingest.layerwise_llm import _boundary_parent_coverage_report
+    from kg_doc_parser.workflow_ingest.layerwise_llm import (
+        _boundary_parent_coverage_report,
+    )
 
     report = _boundary_parent_coverage_report(
         parent_node_id="doc|root",
@@ -399,9 +409,8 @@ def test_workflow_provider_settings_from_env_enables_boundary_mode(monkeypatch: 
 
 
 def test_structured_invoke_returns_typed_pydantic_model():
-    from pydantic import BaseModel
-
     from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
+    from pydantic import BaseModel
 
     class _Schema(BaseModel):
         value: int
@@ -414,6 +423,26 @@ def test_structured_invoke_returns_typed_pydantic_model():
     assert result.value == 7
     assert result.label == "demo"
     assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
+
+
+def test_structured_invoke_classifies_parse_failures_for_observability():
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
+    from pydantic import BaseModel
+
+    class _Schema(BaseModel):
+        value: int
+
+    events: list[dict[str, object]] = []
+    with pytest.raises(ValueError):
+        _structured_invoke(
+            _FakeChatModel({"parsed": {"value": "not-an-int"}}),
+            _Schema,
+            [("human", "hello")],
+            diagnostics_sink=events.append,
+        )
+
+    assert events[0]["failure_type"] == "structured_output_parse_failure"
+    assert events[0]["error_type"]
 
 
 def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: pytest.MonkeyPatch):
@@ -466,6 +495,11 @@ def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: py
     assert any(event["stage"] == "workflow_layered_boundary_review_completed" for event in layer_events)
     assert any(event["stage"] == "workflow_layered_boundary_assembly_start" for event in layer_events)
     assert any(event["stage"] == "workflow_layered_boundary_assembly_completed" for event in layer_events)
+    provider_events = [event for event in layer_events if event["stage"] == "workflow_provider_call"]
+    assert provider_events
+    assert provider_events[0]["operation"] == "layer_boundary_proposal"
+    assert provider_events[0]["success"] is True
+    assert "provider_metrics" in provider_events[0]
     assert layer_events[-1]["stage"] == "workflow_layered_proposal_result"
     assert layer_events[-1]["proposal_mode"] == "boundaries"
     assert result.children
@@ -766,7 +800,7 @@ def test_boundary_mode_detects_child_with_identical_parent_span() -> None:
 
 
 class _FakeStructuredInvoker:
-    def __init__(self, owner: "_FakeChatModel"):
+    def __init__(self, owner: _FakeChatModel):
         self._owner = owner
 
     def invoke(self, messages):
@@ -789,7 +823,7 @@ class _FakeChatModel:
 
 
 class _SequencedStructuredInvoker:
-    def __init__(self, owner: "_SequencedFakeChatModel"):
+    def __init__(self, owner: _SequencedFakeChatModel):
         self._owner = owner
 
     def invoke(self, messages):
