@@ -222,14 +222,13 @@ and structured extraction.
   - `KG_DOC_PARSER_PROJECT=my-project`
   - `KG_DOC_PARSER_LOCATION=us-central1`
 
-The Gemini adapter is included in the base installation. OpenAI/Azure and
-Vertex adapters are optional so local-only installations do not pull their
-cloud SDK trees:
+Gemini, OpenAI/Azure, and Vertex adapters are optional so local-only
+installations do not pull their cloud SDK trees:
 
 ```powershell
-poetry install -E openai -E vertex
+poetry install -E openai -E gemini -E vertex
 # or, after building/installing the package:
-python -m pip install "graph-knowledge-doc-parser[openai,vertex]"
+python -m pip install "graph-knowledge-doc-parser[openai,gemini,vertex]"
 ```
 
 Installing an adapter does not create credentials, a cloud project, or a paid

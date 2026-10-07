@@ -56,9 +56,15 @@ def test_cloud_adapter_extras_are_declared_without_changing_base_install() -> No
     dependencies = metadata["tool"]["poetry"]["dependencies"]
     extras = metadata["tool"]["poetry"]["extras"]
 
+    assert dependencies["langchain-google-genai"]["optional"] is True
     assert dependencies["langchain-openai"]["optional"] is True
     assert dependencies["langchain-google-vertexai"]["optional"] is True
     assert extras["openai"] == ["langchain-openai"]
     assert extras["azure"] == ["langchain-openai"]
+    assert extras["gemini"] == ["langchain-google-genai"]
     assert extras["vertex"] == ["langchain-google-vertexai"]
-    assert extras["cloud"] == ["langchain-openai", "langchain-google-vertexai"]
+    assert extras["cloud"] == [
+        "langchain-google-genai",
+        "langchain-openai",
+        "langchain-google-vertexai",
+    ]
