@@ -206,13 +206,17 @@ def test_workflow_settings_expose_bounded_frontier_and_boundary_limits(
     monkeypatch.setenv("KG_DOC_PARSER_FRONTIER_BATCH_SIZE", "2")
     monkeypatch.setenv("KG_DOC_PARSER_BOUNDARY_MAX_POINTS", "96")
     monkeypatch.setenv("KG_DOC_PARSER_BOUNDARY_MAX_REPAIR_SHIFT_CHARS", "24")
+    monkeypatch.setenv("KG_DOC_PARSER_PROPOSAL_TIMEOUT_SECONDS", "19")
     monkeypatch.setenv("KG_DOC_PARSER_REVIEW_TIMEOUT_SECONDS", "17")
+    monkeypatch.setenv("KG_DOC_PARSER_TRIAGE_TIMEOUT_SECONDS", "13")
     monkeypatch.setenv("KG_DOC_PARSER_RETRY_BACKOFF_SECONDS", "0.5")
     settings = WorkflowProviderSettings.from_env()
     assert settings.layer_frontier_batch_size == 2
     assert settings.boundary_max_points == 96
     assert settings.boundary_max_repair_shift_chars == 24
+    assert settings.proposal_timeout_seconds == 19
     assert settings.review_timeout_seconds == 17
+    assert settings.triage_timeout_seconds == 13
     assert settings.parser.retry_backoff_seconds == 0.5
 
 
