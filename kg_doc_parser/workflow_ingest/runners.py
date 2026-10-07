@@ -386,6 +386,11 @@ def run_page_index_source_workflow(
         source_format=inferred_format,
         mode=mode,  # type: ignore[arg-type]
         provider_settings=provider_settings,
+        provider_diagnostics_sink=(
+            (lambda diagnostics: _emit(probe, "workflow.provider_call", **diagnostics))
+            if probe is not None
+            else None
+        ),
     )
     summary = {
         "kind": "page_index",

@@ -40,7 +40,7 @@ disabled for that layer and the workflow routes through the remaining methods
 before reaching explicit parse failure. PageIndex is a one-layer structural
 fallback that preserves exact source pointers and returns expandable children
 to normal strategy selection. See the
-[`0.2.4` release note](doc/release_0.2.4.md) and the
+[`0.2.5` release note](doc/release_0.2.5.md) and the
 [progressive refinement ADR](doc/adr_progressive_refinement_strategy_arbitration.md).
 The deterministic and text-only Bonsai fixture evaluation is recorded in the
 [`PageIndex adversarial fixture report`](doc/page_index_adversarial_fixture_report.md).
@@ -178,7 +178,7 @@ The project currently expects or optionally uses:
 - `split_raw_file_list`: optional allow-list file for PDF splitting runs
 - `answer_export_list`: optional export list path used by local workflows
 
-An example template is provided in [`.env.example`](/c:/Users/chanh/Documents/kg_doc_parser/.env.example).
+An example template is provided in [`.env.example`](.env.example).
 
 ## Provider Guide
 
@@ -221,6 +221,20 @@ and structured extraction.
   - `KG_DOC_PARSER_MODEL=gemini-2.5-pro`
   - `KG_DOC_PARSER_PROJECT=my-project`
   - `KG_DOC_PARSER_LOCATION=us-central1`
+
+Gemini, OpenAI/Azure, and Vertex adapters are optional so local-only
+installations do not pull their cloud SDK trees:
+
+```powershell
+poetry install -E openai -E gemini -E vertex
+# or, after building/installing the package:
+python -m pip install "graph-knowledge-doc-parser[openai,gemini,vertex]"
+```
+
+Installing an adapter does not create credentials, a cloud project, or a paid
+service. Use the no-charge offline provider contract tests for CI validation;
+only run a live provider smoke test when the account, endpoint, model, and
+zero-cost allowance are explicitly confirmed.
 
 ### Recipe Parsing Example
 
@@ -310,7 +324,7 @@ There is now a manual workflow-ingest demo harness that can run the end-to-end f
 - an already running external Kogwistar server
 
 The legacy semantic-smoke test in
-[`tests/test_semantic_layerwise_doc_parsing.py`](/c:/Users/chanh/Documents/kg_doc_parser/tests/test_semantic_layerwise_doc_parsing.py)
+[`tests/test_semantic_layerwise_doc_parsing.py`](tests/test_semantic_layerwise_doc_parsing.py)
 also expects a live Kogwistar server at `http://127.0.0.1:28110`. It does not
 start that server for you, so use the VS Code server launch config or start it
 manually before running the Ollama case.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
-from typing import Protocol, TypedDict, cast
+from typing import Literal, Protocol, TypedDict, cast
 
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
@@ -28,7 +28,7 @@ from .models import (
     WorkflowExportBundle,
     WorkflowIngestInput,
 )
-from .page_index import parse_page_index_layer
+from .page_index import PageIndexSourceFormat, parse_page_index_layer
 from .parser_core import (
     ParseSemanticFn,
     ProposeLayerFn,
@@ -64,6 +64,21 @@ from .strategy import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _page_index_source_format(inp: WorkflowIngestInput) -> PageIndexSourceFormat:
+    """Read the document format carried by the normalized collection metadata."""
+
+    collection = select_primary_collection(inp)
+    candidates: list[object] = [collection.metadata.get("source_format")]
+    for page in collection.pages:
+        candidates.append(page.metadata.get("source_format"))
+        for unit in page.units:
+            candidates.append(unit.metadata.get("source_format"))
+    for value in candidates:
+        if value in {"text", "markdown"}:
+            return cast(Literal["text", "markdown"], value)
+    return "text"
+
+
 class StepHandler(Protocol):
     """Execute one parser workflow step against the runtime context."""
 
@@ -92,9 +107,11 @@ class WorkflowRuntimeDeps(TypedDict, total=False):
     split_strategy: SplitStrategy
     fallback_split_strategy: SplitStrategy
     max_review_retries: int
+    layer_frontier_batch_size: int
     coverage_threshold: float
     provider_settings: WorkflowProviderSettings
     triage_strategy_fn: Callable[[dict[str, object]], object]
+    provider_diagnostics_sink: Callable[[dict[str, object]], None]
 
 
 def _build_export_bundle(
@@ -363,10 +380,22 @@ def register_layerwise_parser_steps(
             if normalized_input.page_index_summary_enabled is not None
             else (settings.page_index_summary_enabled if settings is not None else True)
         )
+        page_index_hierarchical_summary_enabled = (
+            normalized_input.page_index_hierarchical_summary_enabled
+            if normalized_input.page_index_hierarchical_summary_enabled is not None
+            else (
+                settings.page_index_hierarchical_summary_enabled
+                if settings is not None
+                else False
+            )
+        )
         triage_build_error: str | None = None
         if triage_fn is None and settings is not None and triage_enabled and requested == "auto":
             try:
-                triage_fn = build_llm_strategy_triage(settings)
+                triage_fn = build_llm_strategy_triage(
+                    settings,
+                    diagnostics_sink=runtime_deps.get("provider_diagnostics_sink"),
+                )
             except Exception as exc:  # noqa: BLE001 - unavailable providers use deterministic fallback.
                 triage_build_error = f"triage provider unavailable: {type(exc).__name__}: {exc}"
         parent_context: list[dict[str, object]] = []
@@ -434,6 +463,7 @@ def register_layerwise_parser_steps(
                 "parse_strategy_fallback_order": list(decision.fallback_order),
                 "disabled_strategies": sorted(disabled_strategies),
                     "page_index_summary_enabled": page_index_summary_enabled,
+                    "page_index_hierarchical_summary_enabled": page_index_hierarchical_summary_enabled,
             }
         )
         selected_split_strategy = (
@@ -483,6 +513,7 @@ def register_layerwise_parser_steps(
                     "disabled_strategies": sorted(disabled_strategies),
                     "page_index_attempted": False,
                     "page_index_summary_enabled": page_index_summary_enabled,
+                    "page_index_hierarchical_summary_enabled": page_index_hierarchical_summary_enabled,
                 },
                 "retry_count": 0,
             }
@@ -515,7 +546,9 @@ def register_layerwise_parser_steps(
     @_register_step(resolver, step_name="page_index_layer", runtime_deps=runtime_deps)
     def _page_index_layer(ctx: StepContext) -> StepRunResult:
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
+        normalized_input = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
         parser_source_map = ctx.state_view.get("parser_source_map") or {}
+        source_format = _page_index_source_format(normalized_input)
         candidates = []
         for parent_id, parent_title in zip(
             current_layer_context.parent_node_ids,
@@ -527,7 +560,7 @@ def register_layerwise_parser_steps(
                     parent_title=parent_title,
                     parent_pointers=current_layer_context.parent_content_pointers_by_id.get(parent_id, []),
                     parser_source_map=parser_source_map,
-                    source_format="text",
+                    source_format=source_format,
                     summary_enabled=bool(current_layer_context.metadata.get("page_index_summary_enabled", True)),
                 )
             )
@@ -568,6 +601,14 @@ def register_layerwise_parser_steps(
     def _prepare_layer_frontier(ctx: StepContext) -> StepRunResult:
         parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
         semantic_tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
+        configured_batch_size = runtime_deps.get("layer_frontier_batch_size")
+        if configured_batch_size is None:
+            settings = runtime_deps.get("provider_settings")
+            configured_batch_size = (
+                getattr(settings, "layer_frontier_batch_size", None)
+                if settings is not None
+                else 1
+            )
         context, remaining, updated_session = prepare_layer_frontier(
             parse_session=parse_session,
             frontier_queue=[
@@ -576,6 +617,7 @@ def register_layerwise_parser_steps(
             ],
             semantic_tree=semantic_tree,
             max_retries=int(runtime_deps.get("max_review_retries", 3)),
+            max_items=(int(configured_batch_size) if configured_batch_size is not None else None),
         )
         with ctx.state_write as st:
             st["parse_session"] = updated_session.model_dump(field_mode="backend", dump_format="json")
@@ -731,6 +773,7 @@ def register_layerwise_parser_steps(
                 parent_node_ids=list(current_layer_context.parent_node_ids),
                 attempt=int((ctx.state_view.get("strategy_attempt_counts") or {}).get(strategy, 1)),
                 event="failed",
+                failure_type="retry",
                 reasons=reasons[:12],
             )
             if remaining:
@@ -844,7 +887,10 @@ def register_layerwise_parser_steps(
 
     @_register_step(resolver, step_name="finalize_semantic_tree", runtime_deps=runtime_deps)
     def _finalize_semantic_tree(ctx: StepContext) -> StepRunResult:
-        tree = finalize_semantic_tree(SemanticNode.model_validate(ctx.state_view["semantic_tree"]))
+        tree = finalize_semantic_tree(
+            SemanticNode.model_validate(ctx.state_view["semantic_tree"]),
+            parser_source_map=ctx.state_view.get("parser_source_map") or {},
+        )
         with ctx.state_write as st:
             st["semantic_tree"] = tree.model_dump()
         return _success("validate_tree")
@@ -872,7 +918,7 @@ def register_postparse_steps(
             validation_notes=[],
         )
         bundle = _build_export_bundle(ctx=ctx, runtime_deps=runtime_deps)
-        threshold = float(runtime_deps.get("coverage_threshold", 0.99))
+        threshold = float(runtime_deps.get("coverage_threshold", 1.0))
         if report.overall_text_coverage < threshold:
             error_message = (
                 f"text coverage below threshold: {report.overall_text_coverage:.3f} < {threshold:.3f}"

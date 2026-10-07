@@ -75,6 +75,12 @@ jobs:
         if: matrix.is_pypy == false
         run: poetry run python -c "from kogwistar.llm_tasks.providers import ProviderChainChatModel; print(ProviderChainChatModel.__name__)"
 
+      - name: Verify optional cloud adapter installation
+        if: matrix.label == 'cpython312'
+        run: |
+          poetry install --no-interaction --no-root --extras cloud
+          poetry run python -c "import langchain_google_genai, langchain_google_vertexai, langchain_openai; print('cloud adapters import successfully')"
+
       - name: Check changed provider style
         if: matrix.is_pypy == false
         run: poetry run ruff check kg_doc_parser/workflow_ingest/providers.py

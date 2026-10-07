@@ -36,16 +36,14 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Any, Literal, Protocol
 
+from kogwistar.id_provider import stable_id
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
 from kogwistar.utils.fuzzy_offsets import find_best_fuzzy_span
-from kogwistar.id_provider import stable_id
-
-
 from pydantic import BaseModel, Field
 
 from ..llm_structured_output import build_structured_output_runnable
@@ -62,7 +60,11 @@ from .models import (
     SourceUnit,
     WorkflowIngestInput,
 )
-from .providers import WorkflowProviderSettings, build_chat_model_for_role, invoke_with_timeout
+from .providers import (
+    WorkflowProviderSettings,
+    build_chat_model_for_role,
+    invoke_with_timeout,
+)
 from .semantics import (
     HydratedTextPointer,
     SemanticNode,
@@ -91,7 +93,16 @@ _PAGE_INDEX_PROVIDER_MODES = {"fake", "ollama", "openai", "azure", "gemini", "ve
 PageIndexSourceFormat = Literal["text", "markdown"]
 # SECTION/SUBSECTION remain accepted at the provider boundary for old payloads,
 # but the materialized page-index tree uses HEADING and parent links for shape.
-PageIndexNodeType = Literal["HEADING", "SECTION", "SUBSECTION", "PARAGRAPH", "TERM"]
+PageIndexNodeType = Literal[
+    "HEADING",
+    "SECTION",
+    "SUBSECTION",
+    "PARAGRAPH",
+    "TERM",
+    "TABLE",
+    "TABLE_ROW_GROUP",
+    "TABLE_ROW",
+]
 PageIndexSourceRole = Literal["heading", "content"]
 
 
@@ -128,10 +139,20 @@ class PageIndexBlockSpec(BaseModel):
         description="Short label for this block, usually the heading text or a concise paragraph label."
     )
     node_type: PageIndexNodeType = Field(
-        description="One of HEADING, PARAGRAPH, or TERM. Preserve hierarchy through parent links; do not encode depth in the kind."
+        description=(
+            "One of HEADING, PARAGRAPH, TERM, TABLE, TABLE_ROW_GROUP, or TABLE_ROW. "
+            "Preserve hierarchy through parent links; do not encode depth in the kind."
+        )
     )
     excerpt: str = Field(
         description="A short verbatim excerpt from the source page that grounds this block. Do not use the whole page text; keep it tight and exact."
+    )
+    display_excerpt: str | None = Field(
+        default=None,
+        description=(
+            "Optional shorter exact display excerpt. The grounded excerpt remains authoritative for source pointers; "
+            "this field is only a bounded presentation hint and must be an exact substring of excerpt."
+        ),
     )
     summary: str = Field(
         default="",
@@ -193,6 +214,15 @@ class ExcerptRefinementSuggestion(BaseModel):
 
 class ExcerptRefinementBatch(BaseModel):
     suggestions: list[ExcerptRefinementSuggestion] = Field(default_factory=list)
+
+
+class HierarchicalSummaryAssignment(BaseModel):
+    path_id: str = Field(description="Stable tree path identifier for the block to summarize.")
+    summary: str = Field(description="A concise factual summary grounded in the block excerpt.")
+
+
+class HierarchicalSummaryBatch(BaseModel):
+    assignments: list[HierarchicalSummaryAssignment] = Field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -257,6 +287,7 @@ def _page_index_block_spec_debug_payload(block_specs: list[PageIndexBlockSpec]) 
             "title": spec.title,
             "node_type": spec.node_type,
             "excerpt": spec.excerpt,
+            "display_excerpt": spec.display_excerpt,
             "child_count": len(spec.child_nodes),
             "children": [
                 _walk(child, path=f"{path}.{index + 1}") for index, child in enumerate(spec.child_nodes)
@@ -346,7 +377,7 @@ def _page_index_assignment_prompt(
         "- preserve reading order\n"
         "- do not invent excerpts\n"
         "- do not create whole-page child blocks\n"
-        "- use HEADING, PARAGRAPH, and TERM only\n"
+        "- use HEADING, PARAGRAPH, TERM, TABLE, TABLE_ROW_GROUP, or TABLE_ROW\n"
         "- provide a concise factual summary for every block; do not add facts absent from the block text\n"
         "The recursive tree is assembled deterministically after validation.\n"
         "Optional excerpt refinement is disabled by default.\n"
@@ -396,6 +427,28 @@ def _is_numeric_heavy_or_table_like(text: str) -> bool:
     if digit_count >= 6 and digit_count > alpha_count:
         return True
     return bool(re.search(r"\b\d+\b(?:\s+\b\d+\b){2,}", compact))
+
+
+def _is_markdown_table_row(text: str) -> bool:
+    """Return whether one line has the shape of a Markdown table row."""
+
+    stripped = text.strip()
+    if stripped.startswith(("```", "~~~")):
+        return False
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    return len(cells) >= 2 and "|" in stripped
+
+
+def _is_markdown_table_block(text: str, *, source_format: PageIndexSourceFormat) -> bool:
+    """Recognize a bounded Markdown table as one explicit atomic block."""
+
+    if source_format != "markdown":
+        return False
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2 or not all(_is_markdown_table_row(line) for line in lines):
+        return False
+    separator = lines[1].strip("|").split("|")
+    return len(separator) >= 2 and all(bool(re.fullmatch(r"\s*:?-{3,}:?\s*", cell)) for cell in separator)
 
 
 def _page_index_normalize_text(text: str) -> str:
@@ -589,6 +642,20 @@ def _classify_block(
     is_sentence_like = first_line.endswith((".", "!", "?"))
     surrounded_by_blank_lines = has_blank_before and has_blank_after
     numeric_heavy = _is_numeric_heavy_or_table_like(first_line)
+    if _is_markdown_table_block(stripped, source_format=source_format):
+        return _BlockSpan(
+            start_char=start_char,
+            end_char=end_char,
+            text=stripped,
+            node_type="TABLE",
+            title="Table",
+            line_start=line_start,
+            line_end=line_end,
+            indent=indent,
+            kind_hint="markdown_table",
+            confidence=0.98,
+            heading_level=None,
+        )
     md_heading = re.match(r"^(#{1,6})\s+(.*)$", first_line)
     if source_format == "markdown" and md_heading:
         level = len(md_heading.group(1))
@@ -877,6 +944,127 @@ def _validate_block_assignments(
     )
 
 
+def _salvage_page_index_assignments(
+    *,
+    candidates: list[CandidateBlock],
+    assignments: list[BlockAssignment],
+    page_text: str,
+) -> tuple[list[BlockAssignment] | None, dict[str, Any]]:
+    """Keep valid provider branches while replacing locally invalid blocks.
+
+    Salvage is deliberately conservative: the assignment set must still cover
+    every candidate in reading order, and the merged result must pass the same
+    whole-page validators used by the normal provider path.  This prevents a
+    partial provider response from silently becoming an authoritative tree.
+    """
+
+    candidate_ids = [candidate.block_id for candidate in candidates]
+    assignment_ids = [assignment.block_id for assignment in assignments]
+    if assignment_ids != candidate_ids or len(assignment_ids) != len(set(assignment_ids)):
+        return None, {"reason": "assignment_set_not_complete_or_ordered"}
+
+    candidate_by_id = {candidate.block_id: candidate for candidate in candidates}
+    baseline = _deterministic_block_assignments(candidates)
+    baseline_by_id = {assignment.block_id: assignment for assignment in baseline}
+    index_by_id = {candidate.block_id: index for index, candidate in enumerate(candidates)}
+    parent_by_id = {assignment.block_id: assignment.parent_id for assignment in assignments}
+    children_by_id: dict[str, int] = {}
+    for assignment in assignments:
+        if assignment.parent_id is not None:
+            children_by_id[assignment.parent_id] = children_by_id.get(assignment.parent_id, 0) + 1
+
+    invalid_ids: set[str] = set()
+    reasons: dict[str, list[str]] = {}
+
+    def mark_invalid(block_id: str, reason: str) -> None:
+        invalid_ids.add(block_id)
+        reasons.setdefault(block_id, []).append(reason)
+
+    for assignment in assignments:
+        candidate = candidate_by_id[assignment.block_id]
+        parent_id = assignment.parent_id
+        if parent_id is not None:
+            parent_index = index_by_id.get(parent_id)
+            if parent_index is None:
+                mark_invalid(assignment.block_id, "unknown_parent")
+            elif parent_index >= index_by_id[assignment.block_id]:
+                mark_invalid(assignment.block_id, "forward_or_self_parent")
+        if (
+            assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"}
+            and not _candidate_heading_evidence(candidate)
+            and children_by_id.get(assignment.block_id, 0) == 0
+        ):
+            mark_invalid(assignment.block_id, "heading_without_heading_evidence")
+        if assignment.node_type == "TERM" and not _candidate_term_evidence(candidate):
+            mark_invalid(assignment.block_id, "term_without_term_evidence")
+
+        seen: set[str] = set()
+        probe = parent_id
+        while probe is not None:
+            if probe in seen or probe == assignment.block_id:
+                mark_invalid(assignment.block_id, "parent_cycle")
+                for cycle_id in seen:
+                    mark_invalid(cycle_id, "parent_cycle")
+                break
+            seen.add(probe)
+            probe = parent_by_id.get(probe)
+
+    merged: list[BlockAssignment] = []
+    for assignment in assignments:
+        if assignment.block_id in invalid_ids:
+            merged.append(baseline_by_id[assignment.block_id])
+        else:
+            merged.append(assignment)
+
+    # A flattened provider tree is a page-level structural error. Preserve the
+    # provider's labels and summaries, but restore deterministic heading links.
+    baseline_heading_parents = {
+        assignment.block_id: assignment.parent_id
+        for assignment in baseline
+        if assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"}
+    }
+    merged_heading_count = sum(
+        1
+        for assignment in merged
+        if assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"} and assignment.parent_id is not None
+    )
+    if merged_heading_count == 0 and any(parent is not None for parent in baseline_heading_parents.values()):
+        merged = [
+            assignment.model_copy(update={"parent_id": baseline_heading_parents[assignment.block_id]})
+            if assignment.node_type in {"HEADING", "SECTION", "SUBSECTION"}
+            and baseline_heading_parents.get(assignment.block_id) is not None
+            else assignment
+            for assignment in merged
+        ]
+
+    assignment_validation = _validate_block_assignments(candidates, merged, page_text=page_text)
+    if not assignment_validation.valid:
+        return None, {
+            "reason": "merged_assignment_validation_failed",
+            "errors": list(assignment_validation.errors),
+            "invalid_block_ids": sorted(invalid_ids),
+        }
+    block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=merged)
+    structure_validation = _validate_page_index_block_structure(
+        candidates=candidates,
+        assignments=merged,
+        block_specs=block_specs,
+        page_text=page_text,
+    )
+    if not structure_validation.valid:
+        return None, {
+            "reason": "merged_structure_validation_failed",
+            "errors": list(structure_validation.errors),
+            "invalid_block_ids": sorted(invalid_ids),
+        }
+    return merged, {
+        "invalid_block_ids": sorted(invalid_ids),
+        "repaired_block_count": len(invalid_ids),
+        "repair_reasons": reasons,
+        "validation_warnings": list(structure_validation.warnings),
+    }
+
+
 def _assemble_page_index_blocks(
     *,
     candidates: list[CandidateBlock],
@@ -973,11 +1161,19 @@ def _validate_page_index_block_structure(
             normalized_excerpt = _normalize_page_index_excerpt(spec.excerpt)
             if not normalized_excerpt:
                 errors.append(f"block {current_path} has empty excerpt")
-            elif normalized_excerpt == normalized_page_text and len(candidates) > 1:
+            if spec.display_excerpt is not None:
+                display_excerpt = spec.display_excerpt.strip()
+                if not display_excerpt:
+                    errors.append(f"block {current_path} has an empty display excerpt")
+                elif display_excerpt not in spec.excerpt:
+                    errors.append(
+                        f"block {current_path} display excerpt is not an exact substring of its grounded excerpt"
+                    )
+            if normalized_excerpt == normalized_page_text and len(candidates) > 1:
                 errors.append(f"block {current_path} duplicates the whole page")
-            elif _page_index_block_exceeds_excerpt_budget(spec, page_text):
+            if _page_index_block_exceeds_excerpt_budget(spec, page_text):
                 errors.append(f"block {current_path} excerpt is too broad")
-            elif _page_index_block_is_too_generic(spec, page_text):
+            if _page_index_block_is_too_generic(spec):
                 errors.append(f"block {current_path} excerpt is too generic")
             normalized_sibling_excerpts.append(normalized_excerpt)
             _validate_siblings(spec.child_nodes, path=current_path)
@@ -1036,6 +1232,7 @@ def _refine_page_index_block_excerpts(
     provider_settings: WorkflowProviderSettings,
     callbacks: list[Any] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
     entries = [
         {
@@ -1081,6 +1278,8 @@ def _refine_page_index_block_excerpts(
         f"Page text: {page_text}\n"
         f"Blocks: {_json.dumps(entries, ensure_ascii=False, sort_keys=True)}"
     )
+    call_diagnostics: dict[str, object] = {}
+    provider_returned = False
     try:
         callback_counts = _callback_call_counts(callbacks)
         try:
@@ -1091,8 +1290,18 @@ def _refine_page_index_block_excerpts(
                         HumanMessage(content=prompt),
                     ]
                 ),
-                timeout_seconds=provider_settings.parser.timeout_seconds,
+                timeout_seconds=(
+                    provider_settings.proposal_timeout_seconds
+                    or provider_settings.parser.timeout_seconds
+                ),
+                diagnostics=call_diagnostics,
+                operation="page_index_excerpt_refinement",
+                max_in_flight=provider_settings.parser.max_in_flight_calls,
+                attempt_index=1,
+                call_role="refinement",
+                strategy="page_index",
             )
+            provider_returned = True
         finally:
             _notify_untracked_provider_call(callbacks, callback_counts, f"refine-page-{page_number}")
         parsed = payload.get("parsed") if isinstance(payload, dict) else payload
@@ -1105,6 +1314,19 @@ def _refine_page_index_block_excerpts(
             else ExcerptRefinementBatch.model_validate(parsed)
         )
     except Exception as exc:  # noqa: BLE001 - provider/parser failures use deterministic excerpt fallback.
+        call_diagnostics.update(
+            {
+                "success": False,
+                "failure_type": (
+                    "structured_output_parse_failure"
+                    if provider_returned
+                    else call_diagnostics.get("failure_type", "transport/provider_exception")
+                ),
+                "error_type": type(exc).__name__,
+            }
+        )
+        if provider_diagnostics_sink is not None:
+            provider_diagnostics_sink(dict(call_diagnostics))
         diagnostics["refine_excerpts_fallback"] = True
         diagnostics["refine_excerpts_rejected"] = diagnostics["refine_excerpts_attempted"]
         diagnostics["refine_excerpts_error"] = f"{type(exc).__name__}: {exc}"
@@ -1113,6 +1335,10 @@ def _refine_page_index_block_excerpts(
                 f"page_index_refine_fallback page_number={page_number} unit_id={unit_id} error={type(exc).__name__}"
             )
         return block_specs, diagnostics
+
+    call_diagnostics["success"] = True
+    if provider_diagnostics_sink is not None:
+        provider_diagnostics_sink(dict(call_diagnostics))
 
     refined = deepcopy(block_specs)
     suggestions = {item.path_id: item.excerpt for item in batch.suggestions}
@@ -1162,7 +1388,7 @@ def _refine_page_index_block_excerpts(
         if _page_index_block_exceeds_excerpt_budget(candidate_spec, page_text):
             diagnostics["refine_excerpts_rejected"] += 1
             continue
-        if _page_index_block_is_too_generic(candidate_spec, page_text, ancestor_excerpts=ancestor_excerpts):
+        if _page_index_block_is_too_generic(candidate_spec, ancestor_excerpts=ancestor_excerpts):
             diagnostics["refine_excerpts_rejected"] += 1
             continue
 
@@ -1175,6 +1401,179 @@ def _refine_page_index_block_excerpts(
             f"page_number={page_number} accepted={diagnostics['refine_excerpts_accepted']} "
             f"rejected={diagnostics['refine_excerpts_rejected']}"
         )
+    return refined, diagnostics
+
+
+def _refine_page_index_summaries_hierarchically(
+    *,
+    block_specs: list[PageIndexBlockSpec],
+    page_number: int,
+    provider_settings: WorkflowProviderSettings,
+    callbacks: list[Any] | None = None,
+    trace_log: PageIndexTraceLogger | None = None,
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+    """Optionally regenerate summaries one tree depth at a time.
+
+    The initial assignment remains authoritative for structure and grounding.
+    This pass only improves summaries, and each depth receives bounded child
+    excerpts plus the already accepted summary of its direct parent.
+    """
+
+    paths = list(_iter_page_index_block_specs_with_paths(block_specs))
+    diagnostics: dict[str, Any] = {
+        "hierarchical_summary_enabled": True,
+        "hierarchical_summary_attempted": len(paths),
+        "hierarchical_summary_accepted": 0,
+        "hierarchical_summary_rejected": 0,
+        "hierarchical_summary_fallback": False,
+        "hierarchical_summary_call_count": 0,
+    }
+    if not paths:
+        return block_specs, diagnostics
+
+    chat_kwargs = {"callbacks": callbacks} if callbacks is not None else {}
+    try:
+        chat = build_chat_model_for_role("parser", provider_settings, **chat_kwargs)
+        structured = build_structured_output_runnable(chat, HierarchicalSummaryBatch, include_raw=True)
+    except Exception as exc:  # noqa: BLE001 - optional summary pass preserves the assignment output.
+        diagnostics["hierarchical_summary_fallback"] = True
+        diagnostics["hierarchical_summary_rejected"] = len(paths)
+        diagnostics["hierarchical_summary_error"] = f"{type(exc).__name__}: {exc}"
+        if provider_diagnostics_sink is not None:
+            provider_diagnostics_sink(
+                {
+                    "operation": "page_index_hierarchical_summary",
+                    "call_role": "summary",
+                    "strategy": "page_index",
+                    "attempt_index": 0,
+                    "success": False,
+                    "failure_type": "transport/provider_exception",
+                    "error_type": type(exc).__name__,
+                }
+            )
+        return block_specs, diagnostics
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    refined = deepcopy(block_specs)
+    summary_by_path = {
+        path: spec.summary.strip()
+        for path, spec in _iter_page_index_block_specs_with_paths(refined)
+    }
+    max_entries_per_call = 32
+    max_excerpt_chars = 1600
+    max_parent_summary_chars = 800
+    max_title_chars = 240
+    paths_by_depth: dict[int, list[tuple[tuple[int, ...], PageIndexBlockSpec]]] = {}
+    for path, spec in paths:
+        paths_by_depth.setdefault(len(path), []).append((path, spec))
+
+    call_index = 0
+    for depth in sorted(paths_by_depth):
+        depth_entries = paths_by_depth[depth]
+        for offset in range(0, len(depth_entries), max_entries_per_call):
+            chunk = depth_entries[offset : offset + max_entries_per_call]
+            entries = [
+                {
+                    "path_id": _page_index_path_id(path),
+                    "title": spec.title[:max_title_chars],
+                    "node_type": spec.node_type,
+                    "excerpt": spec.excerpt[:max_excerpt_chars],
+                    "parent_path_id": _page_index_path_id(path[:-1]) if path[:-1] else None,
+                    "parent_summary": summary_by_path.get(path[:-1], "")[:max_parent_summary_chars],
+                }
+                for path, spec in chunk
+            ]
+            call_index += 1
+            diagnostics["hierarchical_summary_call_count"] = call_index
+            prompt = (
+                "Generate concise factual summaries for these page-index blocks.\n"
+                "Return only the structured schema.\n"
+                "Rules:\n"
+                "- return only supplied path_id values\n"
+                "- use only facts supported by each block excerpt\n"
+                "- use the direct parent summary to avoid repetition and keep terminology coherent\n"
+                "- do not copy the parent summary verbatim when the child adds no new fact; return an empty summary\n"
+                "- do not alter structure, titles, or source grounding\n"
+                f"Page number: {page_number}\n"
+                f"Tree depth: {depth}\n"
+                f"Blocks: {json.dumps(entries, ensure_ascii=False, sort_keys=True)}"
+            )
+            call_diagnostics: dict[str, object] = {}
+            provider_returned = False
+            try:
+                callback_counts = _callback_call_counts(callbacks)
+                try:
+                    payload = invoke_with_timeout(
+                        lambda prompt_text=prompt: structured.invoke(
+                            [
+                                SystemMessage(content="You are a conservative hierarchical summary editor."),
+                                HumanMessage(content=prompt_text),
+                            ]
+                        ),
+                        timeout_seconds=(
+                            provider_settings.proposal_timeout_seconds
+                            or provider_settings.parser.timeout_seconds
+                        ),
+                        diagnostics=call_diagnostics,
+                        operation="page_index_hierarchical_summary",
+                        max_in_flight=provider_settings.parser.max_in_flight_calls,
+                        attempt_index=call_index,
+                        call_role="summary",
+                        strategy="page_index",
+                    )
+                    provider_returned = True
+                finally:
+                    _notify_untracked_provider_call(callbacks, callback_counts, f"summary-page-{page_number}-{call_index}")
+                parsed = payload.get("parsed") if isinstance(payload, dict) else payload
+                if parsed is None:
+                    error = payload.get("parsing_error") if isinstance(payload, dict) else None
+                    raise ValueError(f"summary parse error: {error!r}")
+                batch = (
+                    parsed
+                    if isinstance(parsed, HierarchicalSummaryBatch)
+                    else HierarchicalSummaryBatch.model_validate(parsed)
+                )
+            except Exception as exc:  # noqa: BLE001 - summaries fall back to assignment output.
+                call_diagnostics.update(
+                    {
+                        "success": False,
+                        "failure_type": (
+                            "structured_output_parse_failure"
+                            if provider_returned
+                            else call_diagnostics.get("failure_type", "transport/provider_exception")
+                        ),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                if provider_diagnostics_sink is not None:
+                    provider_diagnostics_sink(dict(call_diagnostics))
+                diagnostics["hierarchical_summary_fallback"] = True
+                diagnostics["hierarchical_summary_rejected"] += len(chunk)
+                if trace_log is not None:
+                    trace_log(
+                        f"page_index_hierarchical_summary_fallback page_number={page_number} "
+                        f"depth={depth} error={type(exc).__name__}"
+                    )
+                continue
+
+            call_diagnostics["success"] = True
+            if provider_diagnostics_sink is not None:
+                provider_diagnostics_sink(dict(call_diagnostics))
+            expected_paths = {_page_index_path_id(path): path for path, _spec in chunk}
+            for assignment in batch.assignments:
+                path = expected_paths.get(assignment.path_id)
+                if path is None or not assignment.summary.strip():
+                    diagnostics["hierarchical_summary_rejected"] += 1
+                    continue
+                summary = assignment.summary.strip()
+                current_nodes = refined
+                for index in path[:-1]:
+                    current_nodes = current_nodes[index].child_nodes
+                current_nodes[path[-1]].summary = summary
+                summary_by_path[path] = summary
+                diagnostics["hierarchical_summary_accepted"] += 1
+
     return refined, diagnostics
 
 
@@ -1236,6 +1635,7 @@ def _llm_page_outline(
     provider_settings: WorkflowProviderSettings,
     callbacks: list[Any] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     assignment_mode_prefix = "ollama" if provider_settings.parser.provider == "ollama" else "llm"
@@ -1276,6 +1676,7 @@ def _llm_page_outline(
         retry_summary: str | None = None,
         retry_kind: str = "assignment",
         attempt_label: str,
+        attempt_index: int,
     ) -> tuple[BlockAssignmentBatch | None, str | None]:
         prompt = _page_index_assignment_prompt(
             page_number=page_number,
@@ -1289,6 +1690,8 @@ def _llm_page_outline(
             trace_log(
                 f"page_index_llm_invoke_start page_number={page_number} attempt={attempt_label} source_format={source_format}"
         )
+        call_diagnostics: dict[str, object] = {}
+        provider_returned = False
         try:
             callback_counts = _callback_call_counts(callbacks)
             try:
@@ -1299,8 +1702,18 @@ def _llm_page_outline(
                             HumanMessage(content=prompt),
                         ]
                     ),
-                    timeout_seconds=provider_settings.parser.timeout_seconds,
+                timeout_seconds=(
+                    provider_settings.proposal_timeout_seconds
+                    or provider_settings.parser.timeout_seconds
+                ),
+                diagnostics=call_diagnostics,
+                operation="page_index_assignment",
+                max_in_flight=provider_settings.parser.max_in_flight_calls,
+                attempt_index=attempt_index,
+                call_role="proposal",
+                strategy="page_index",
                 )
+                provider_returned = True
             finally:
                 _notify_untracked_provider_call(
                     callbacks, callback_counts, f"page-{page_number}-{attempt_label}"
@@ -1308,13 +1721,41 @@ def _llm_page_outline(
             if trace_log is not None:
                 trace_log(f"page_index_llm_invoke_end page_number={page_number} attempt={attempt_label}")
         except Exception as exc:  # noqa: BLE001 - provider failures trigger bounded deterministic fallback.
+            call_diagnostics.update(
+                {
+                    "success": False,
+                    "failure_type": (
+                        "structured_output_parse_failure"
+                        if provider_returned
+                        else call_diagnostics.get("failure_type", "transport/provider_exception")
+                    ),
+                    "error_type": type(exc).__name__,
+                }
+            )
+            if provider_diagnostics_sink is not None:
+                provider_diagnostics_sink(dict(call_diagnostics))
             return None, f"{type(exc).__name__}: {exc}"
 
         parsed = payload.get("parsed") if isinstance(payload, dict) else payload
-        if parsed is None:
-            error = payload.get("parsing_error") if isinstance(payload, dict) else None
-            return None, f"parse_error: {error!r}"
-        batch = parsed if isinstance(parsed, BlockAssignmentBatch) else BlockAssignmentBatch.model_validate(parsed)
+        try:
+            if parsed is None:
+                error = payload.get("parsing_error") if isinstance(payload, dict) else None
+                raise ValueError(f"parse_error: {error!r}")
+            batch = parsed if isinstance(parsed, BlockAssignmentBatch) else BlockAssignmentBatch.model_validate(parsed)
+        except Exception as exc:  # noqa: BLE001 - malformed structured output uses deterministic fallback.
+            call_diagnostics.update(
+                {
+                    "success": False,
+                    "failure_type": "structured_output_parse_failure",
+                    "error_type": type(exc).__name__,
+                }
+            )
+            if provider_diagnostics_sink is not None:
+                provider_diagnostics_sink(dict(call_diagnostics))
+            return None, f"{type(exc).__name__}: {exc}"
+        call_diagnostics["success"] = True
+        if provider_diagnostics_sink is not None:
+            provider_diagnostics_sink(dict(call_diagnostics))
         return batch, None
 
     def _trace_assignment_raw(attempt_label: str, batch: BlockAssignmentBatch) -> None:
@@ -1369,6 +1810,56 @@ def _llm_page_outline(
             "validation_errors": validation_errors,
             "validation_warnings": validation_warnings,
             "fallback_reason": fallback_reason,
+            "retry_prompt_summary": retry_prompt_summary,
+            "structure_retry_prompt_summary": structure_retry_prompt_summary,
+        }
+
+    def _try_branch_local_salvage(
+        *,
+        batch: BlockAssignmentBatch | None,
+        attempt_label: str,
+        assignment_attempt_count: int,
+        validation_warnings: list[str],
+        retry_prompt_summary: str | None = None,
+        structure_retry_prompt_summary: str | None = None,
+    ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]] | None:
+        if batch is None:
+            return None
+        salvaged_assignments, salvage_diagnostics = _salvage_page_index_assignments(
+            candidates=candidates,
+            assignments=batch.assignments,
+            page_text=page_text,
+        )
+        if salvaged_assignments is None:
+            return None
+        block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=salvaged_assignments)
+        if trace_log is not None:
+            trace_log(
+                "page_index_llm_branch_local_salvage "
+                f"page_number={page_number} attempt={attempt_label} "
+                f"repaired={salvage_diagnostics['repaired_block_count']} "
+                f"invalid_block_ids={json.dumps(salvage_diagnostics['invalid_block_ids'], ensure_ascii=False)}"
+            )
+        return block_specs, {
+            "assignment_mode": f"{assignment_mode_prefix}_branch_local_salvage",
+            "final_outcome": "branch_local_salvage",
+            "candidate_count": len(candidates),
+            "assignment_count": len(salvaged_assignments),
+            "assignment_attempt_count": assignment_attempt_count,
+            "assignment_retry_used": assignment_attempt_count > 1,
+            "assignment_retry_succeeded": False,
+            "structure_retry_used": attempt_label == "structure_retry",
+            "structure_retry_succeeded": False,
+            "retry_used": assignment_attempt_count > 1,
+            "retry_succeeded": False,
+            "assignment_validation_errors": [],
+            "structure_validation_errors": [],
+            "first_validation_errors": [],
+            "retry_validation_errors": [],
+            "validation_errors": [],
+            "validation_warnings": validation_warnings + list(salvage_diagnostics["validation_warnings"]),
+            "fallback_reason": None,
+            "branch_local_salvage": salvage_diagnostics,
             "retry_prompt_summary": retry_prompt_summary,
             "structure_retry_prompt_summary": structure_retry_prompt_summary,
         }
@@ -1444,12 +1935,13 @@ def _llm_page_outline(
                 f"page_number={page_number} failure_summary={structure_summary.splitlines()[0]}"
             )
             trace_log(f"page_index_llm_structure_retry_prompt_ready page_number={page_number}")
+        next_attempt_count = assignment_attempt_count + 1
         structure_batch, structure_error = _invoke_attempt(
             retry_summary=structure_summary,
             retry_kind="structure",
             attempt_label="structure_retry",
+            attempt_index=next_attempt_count,
         )
-        next_attempt_count = assignment_attempt_count + 1
         if structure_batch is None:
             return _fallback(
                 assignment_attempt_count=next_attempt_count,
@@ -1474,6 +1966,16 @@ def _llm_page_outline(
                     "page_index_llm_validation_failed "
                     f"page_number={page_number} attempt=structure_retry errors={len(structure_assignment_validation.errors)}"
                 )
+            salvaged = _try_branch_local_salvage(
+                batch=structure_batch,
+                attempt_label="structure_retry",
+                assignment_attempt_count=next_attempt_count,
+                validation_warnings=validation_warnings + list(structure_validation.warnings),
+                retry_prompt_summary=retry_prompt_summary,
+                structure_retry_prompt_summary=structure_summary,
+            )
+            if salvaged is not None:
+                return salvaged
             return _fallback(
                 assignment_attempt_count=next_attempt_count,
                 assignment_retry_used=assignment_retry_used,
@@ -1498,6 +2000,16 @@ def _llm_page_outline(
                 f"page_number={page_number} attempt=structure_retry errors={len(repaired_structure_validation.errors)}"
             )
         if not repaired_structure_validation.valid:
+            salvaged = _try_branch_local_salvage(
+                batch=structure_batch,
+                attempt_label="structure_retry",
+                assignment_attempt_count=next_attempt_count,
+                validation_warnings=validation_warnings + list(repaired_structure_validation.warnings),
+                retry_prompt_summary=retry_prompt_summary,
+                structure_retry_prompt_summary=structure_summary,
+            )
+            if salvaged is not None:
+                return salvaged
             return _fallback(
                 assignment_attempt_count=next_attempt_count,
                 assignment_retry_used=assignment_retry_used,
@@ -1538,7 +2050,7 @@ def _llm_page_outline(
             "structure_retry_prompt_summary": structure_summary,
         }
 
-    first_batch, first_error = _invoke_attempt(attempt_label="first")
+    first_batch, first_error = _invoke_attempt(attempt_label="first", attempt_index=1)
     first_validation_errors: list[str] = []
     first_validation_warnings: list[str] = []
     if first_batch is not None:
@@ -1580,7 +2092,11 @@ def _llm_page_outline(
         )
         trace_log(f"page_index_llm_retry_prompt_ready page_number={page_number}")
 
-    retry_batch, retry_error = _invoke_attempt(retry_summary=retry_summary, attempt_label="retry")
+    retry_batch, retry_error = _invoke_attempt(
+        retry_summary=retry_summary,
+        attempt_label="retry",
+        attempt_index=2,
+    )
     retry_validation_errors: list[str] = []
     retry_validation_warnings: list[str] = []
     if retry_batch is not None:
@@ -1606,6 +2122,17 @@ def _llm_page_outline(
             )
     else:
         retry_validation_errors = [str(retry_error or "unknown retry parse error")]
+
+    for attempt_label, batch in (("retry", retry_batch), ("first", first_batch)):
+        salvaged = _try_branch_local_salvage(
+            batch=batch,
+            attempt_label=attempt_label,
+            assignment_attempt_count=2 if attempt_label == "retry" else 1,
+            validation_warnings=retry_validation_warnings,
+            retry_prompt_summary=retry_summary,
+        )
+        if salvaged is not None:
+            return salvaged
 
     return _fallback(
         assignment_attempt_count=2,
@@ -1740,12 +2267,14 @@ def _materialize_block_tree(
             parent_id=parent_id,
             level_from_root=level_from_root,
             pointers=[] if is_heading else [pointer],
-            summary=(spec.summary.strip() or spec.title) if summary_enabled else "",
+            summary=spec.summary.strip() if summary_enabled else "",
             metadata={
                 "page_index_role": "heading_container" if is_heading else "content",
                 "semantic_kind": "heading" if is_heading else "content",
                 "legacy_node_type": spec.node_type,
                 "source_role": spec.source_role,
+                "display_excerpt": spec.display_excerpt,
+                "summary_unavailable": bool(summary_enabled and not spec.summary.strip()),
             },
         )
         heading_leaf = None
@@ -1756,10 +2285,12 @@ def _materialize_block_tree(
                 parent_id=node.node_id,
                 level_from_root=level_from_root + 1,
                 pointers=[pointer],
-                summary=(spec.summary.strip() or spec.title) if summary_enabled else "",
+                summary=spec.summary.strip() if summary_enabled else "",
                 metadata={
                     "page_index_role": "heading_text",
                     "semantic_kind": "heading_text",
+                    "display_excerpt": spec.display_excerpt,
+                    "summary_unavailable": bool(summary_enabled and not spec.summary.strip()),
                 },
             )
         child_nodes, cursor = _materialize_block_tree(
@@ -1924,31 +2455,28 @@ def parse_page_index_layer(
 
 
 def _page_index_block_exceeds_excerpt_budget(spec: PageIndexBlockSpec, page_text: str) -> bool:
-    page_text_norm = page_text.strip()
-    excerpt_norm = spec.excerpt.strip()
-    if not excerpt_norm:
-        return True
-    if excerpt_norm == page_text_norm:
-        return True
-    if len(excerpt_norm) > max(240, int(len(page_text_norm) * 0.75)):
-        return True
-    return any(_page_index_block_exceeds_excerpt_budget(child, page_text) for child in spec.child_nodes)
+    """Return whether a block violates a display budget.
+
+    Grounded source extents are correctness data, not display snippets.  A
+    complete table or other atomic source object may legitimately occupy most
+    or all of a page, so there is no page-relative size budget to enforce.
+    The ``page_text`` argument remains for compatibility with callers and
+    third-party integrations from v0.2.x.
+    """
+    del spec, page_text
+    return False
 
 
 def _page_index_block_is_too_generic(
     spec: PageIndexBlockSpec,
-    page_text: str,
     *,
     ancestor_excerpts: tuple[str, ...] = (),
 ) -> bool:
     def _normalize(text: str) -> str:
         return " ".join(text.split()).strip().lower()
 
-    page_text_norm = _normalize(page_text)
     excerpt_norm = _normalize(spec.excerpt)
     if not excerpt_norm:
-        return True
-    if excerpt_norm == page_text_norm:
         return True
     if excerpt_norm in ancestor_excerpts:
         return True
@@ -1958,13 +2486,7 @@ def _page_index_block_is_too_generic(
             return True
         if len(set(child_norms)) == 1:
             return True
-    if len(excerpt_norm) > max(240, int(len(page_text_norm) * 0.75)):
-        return True
-    next_ancestors = ancestor_excerpts + (excerpt_norm,)
-    return any(
-        _page_index_block_is_too_generic(child, page_text, ancestor_excerpts=next_ancestors)
-        for child in spec.child_nodes
-    )
+    return False
 
 
 def parse_page_index_document(
@@ -1977,12 +2499,20 @@ def parse_page_index_document(
     provider_settings: WorkflowProviderSettings | None = None,
     callbacks: list[Any] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
     refine_excerpts: bool = False,
     summary_enabled: bool = True,
+    hierarchical_summary_enabled: bool | None = None,
 ) -> PageIndexParseResult:
     """Parse a plain text or Markdown document into a page-index semantic tree."""
 
     settings = provider_settings or WorkflowProviderSettings.from_env()
+    assignment_mode_prefix = "ollama" if settings.parser.provider == "ollama" else "llm"
+    effective_hierarchical_summary_enabled = (
+        settings.page_index_hierarchical_summary_enabled
+        if hierarchical_summary_enabled is None
+        else hierarchical_summary_enabled
+    )
     workflow_input = build_page_index_workflow_input(
         document_id=document_id,
         title=title,
@@ -2040,6 +2570,7 @@ def parse_page_index_document(
                 provider_settings=settings,
                 callbacks=callbacks,
                 trace_log=trace_log,
+                provider_diagnostics_sink=provider_diagnostics_sink,
             )
         else:  # pragma: no cover - Literal guards this in type-checked code.
             raise ValueError(f"unsupported page index mode: {mode}")
@@ -2050,6 +2581,14 @@ def parse_page_index_document(
             "refine_excerpts_rejected": 0,
             "refine_excerpts_fallback": False,
         }
+        hierarchical_summary_diagnostics = {
+            "hierarchical_summary_enabled": False,
+            "hierarchical_summary_attempted": 0,
+            "hierarchical_summary_accepted": 0,
+            "hierarchical_summary_rejected": 0,
+            "hierarchical_summary_fallback": False,
+            "hierarchical_summary_call_count": 0,
+        }
         if mode in _PAGE_INDEX_PROVIDER_MODES and refine_excerpts:
             block_specs, page_refinement_diagnostics = _refine_page_index_block_excerpts(
                 block_specs=block_specs,
@@ -2059,9 +2598,20 @@ def parse_page_index_document(
                 provider_settings=settings,
                 callbacks=callbacks,
                 trace_log=trace_log,
+                provider_diagnostics_sink=provider_diagnostics_sink,
+            )
+        if mode in _PAGE_INDEX_PROVIDER_MODES and summary_enabled and effective_hierarchical_summary_enabled:
+            block_specs, hierarchical_summary_diagnostics = _refine_page_index_summaries_hierarchically(
+                block_specs=block_specs,
+                page_number=page_number,
+                provider_settings=settings,
+                callbacks=callbacks,
+                trace_log=trace_log,
+                provider_diagnostics_sink=provider_diagnostics_sink,
             )
         page_diagnostics_item = dict(page_diagnostics_item)
         page_diagnostics_item.update(page_refinement_diagnostics)
+        page_diagnostics_item.update(hierarchical_summary_diagnostics)
         page_repair_stats: dict[str, int] = {
             "pointer_fuzzy_repairs": 0,
             "pointer_fuzzy_failures": 0,
@@ -2134,6 +2684,10 @@ def parse_page_index_document(
     retry_used = any(bool(item.get("retry_used")) for item in page_diagnostics)
     retry_succeeded = any(bool(item.get("retry_succeeded")) for item in page_diagnostics)
     assignment_modes = {str(item.get("assignment_mode") or "") for item in page_diagnostics if item.get("assignment_mode")}
+    branch_local_salvage_used = any(bool(item.get("branch_local_salvage")) for item in page_diagnostics)
+    branch_local_salvage = [
+        item["branch_local_salvage"] for item in page_diagnostics if item.get("branch_local_salvage")
+    ]
     refinement_enabled = any(bool(item.get("refine_excerpts_enabled")) for item in page_diagnostics)
     refinement_attempted = sum(int(item.get("refine_excerpts_attempted", 0) or 0) for item in page_diagnostics)
     refinement_accepted = sum(int(item.get("refine_excerpts_accepted", 0) or 0) for item in page_diagnostics)
@@ -2146,19 +2700,21 @@ def parse_page_index_document(
     elif fallback_reasons:
         overall_assignment_mode = "deterministic_fallback"
     elif structure_retry_succeeded:
-        overall_assignment_mode = f"{settings.parser.provider}_flat_assignment_structure_retry"
+        overall_assignment_mode = f"{assignment_mode_prefix}_flat_assignment_structure_retry"
     elif assignment_retry_succeeded:
-        overall_assignment_mode = f"{settings.parser.provider}_flat_assignment_retry"
+        overall_assignment_mode = f"{assignment_mode_prefix}_flat_assignment_retry"
+    elif branch_local_salvage_used:
+        overall_assignment_mode = f"{assignment_mode_prefix}_branch_local_salvage"
     elif retry_used:
         overall_assignment_mode = "deterministic_fallback"
     else:
         expected_assignment_modes = {
-            f"{settings.parser.provider}_flat_assignment",
-            f"{settings.parser.provider}_flat_assignment_retry",
-            f"{settings.parser.provider}_flat_assignment_structure_retry",
+            f"{assignment_mode_prefix}_flat_assignment",
+            f"{assignment_mode_prefix}_flat_assignment_retry",
+            f"{assignment_mode_prefix}_flat_assignment_structure_retry",
         }
         overall_assignment_mode = (
-            f"{settings.parser.provider}_flat_assignment"
+            f"{assignment_mode_prefix}_flat_assignment"
             if assignment_modes.issubset(expected_assignment_modes) and assignment_modes
             else "deterministic_fallback"
         )
@@ -2168,6 +2724,8 @@ def parse_page_index_document(
         final_outcome = "structure_retry_success"
     elif assignment_retry_succeeded:
         final_outcome = "assignment_retry_success"
+    elif branch_local_salvage_used:
+        final_outcome = "branch_local_salvage"
     else:
         final_outcome = "first_pass_success"
     diagnostics = {
@@ -2179,6 +2737,8 @@ def parse_page_index_document(
         "assignment_attempt_count": assignment_attempt_count,
         "assignment_retry_used": assignment_retry_used,
         "assignment_retry_succeeded": assignment_retry_succeeded,
+        "branch_local_salvage_used": branch_local_salvage_used,
+        "branch_local_salvage": branch_local_salvage,
         "structure_retry_used": structure_retry_used,
         "structure_retry_succeeded": structure_retry_succeeded,
         "retry_used": retry_used,

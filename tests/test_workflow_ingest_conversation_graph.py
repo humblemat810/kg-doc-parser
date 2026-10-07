@@ -5,20 +5,23 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
-from kogwistar.runtime.models import RunSuccess, RunSuspended
-from kogwistar.runtime.runtime import WorkflowRuntime
-
 from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
 )
-from kg_doc_parser.workflow_ingest.design import DEFAULT_WORKFLOW_ID, ensure_ingest_workflow_design
+from kg_doc_parser.workflow_ingest.design import (
+    DEFAULT_WORKFLOW_ID,
+    ensure_ingest_workflow_design,
+)
 from kg_doc_parser.workflow_ingest.handlers import build_ingest_step_resolver
 from kg_doc_parser.workflow_ingest.models import WorkflowIngestInput
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-from kg_doc_parser.workflow_ingest.service import run_ingest_workflow, workflow_predicates
-
+from kg_doc_parser.workflow_ingest.service import (
+    run_ingest_workflow,
+    workflow_predicates,
+)
+from kogwistar.runtime.models import RunSuccess, RunSuspended
+from kogwistar.runtime.runtime import WorkflowRuntime
 
 pytestmark = [pytest.mark.workflow]
 
@@ -328,6 +331,7 @@ def test_conversation_graph_resume_from_suspended_checkpoint(workflow_backend_ki
         parser_input_dict=run.final_state["parser_input_dict"],
         parser_source_map=run.final_state["parser_source_map"],
     )
+    persisted_tree = SemanticNode.model_validate(run.final_state["semantic_tree"])
 
     resumed = runtime.resume_run(
         run_id=run.run_id,
@@ -343,14 +347,20 @@ def test_conversation_graph_resume_from_suspended_checkpoint(workflow_backend_ki
                             "children": [
                                 {
                                     "node_id": child.node_id,
-                                    "parent_node_id": child.parent_id or resumed_tree.node_id,
+                                    # A resumed result must reference the
+                                    # persisted tree root, not a newly
+                                    # generated fixture root ID.
+                                    "parent_node_id": persisted_tree.node_id,
                                     "title": child.title,
                                     "node_type": child.node_type,
                                     "total_content_pointers": [
                                         pointer.model_dump(mode="json")
                                         for pointer in child.total_content_pointers
                                     ],
-                                    "expandable": True,
+                                    # This fixture verifies resumption of one
+                                    # suspended layer; do not enqueue another
+                                    # synthetic provider call.
+                                    "expandable": False,
                                     "metadata": {},
                                 }
                                 for child in resumed_tree.child_nodes

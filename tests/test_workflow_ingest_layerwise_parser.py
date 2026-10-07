@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
+import kg_doc_parser.workflow_ingest.layerwise_llm as layerwise_module
 import pytest
 from _kogwistar_test_helpers import build_workflow_engine_triplet
 from kg_doc_parser.workflow_ingest import (
@@ -63,6 +64,140 @@ def test_provider_review_failure_is_persisted_and_fails_closed() -> None:
     )
     assert coverage_ok is False
     assert notes == ["layer review unavailable; quality is unknown"]
+
+
+@pytest.mark.ci
+def test_boundary_classifier_preserves_table_row_semantics() -> None:
+    text = "| Name | Value |\n| --- | --- |\n| alpha | 1 |\n| beta | 2 |"
+    first_row_break = text.index("\n") + 1
+    assert layerwise_module._classify_boundary_kind(text, first_row_break) == "table_row"
+
+
+@pytest.mark.ci
+def test_boundary_repair_shift_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "alpha\nbeta"
+    unit_id = "doc|p1_t0"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_content_pointers_by_id={
+            "doc|root": [_segment_pointer(unit_id, text, text)],
+        },
+    )
+    cutpoint = layerwise_module.BoundaryCutpoint(
+        parent_node_id="doc|root",
+        source_cluster_id=unit_id,
+        cut_offset=1,
+        boundary_kind="semantic",
+        text_before_cut="a",
+        text_after_cut="lpha\nbeta",
+    )
+    monkeypatch.setattr(
+        layerwise_module,
+        "_resolve_boundary_anchor",
+        lambda **_kwargs: layerwise_module._BoundaryAnchorResolution(
+            resolved_cut_offset=6,
+            match_mode="fuzzy",
+            match_score=0.95,
+            reason="test repair",
+        ),
+    )
+    rejected = layerwise_module._boundary_review_decision(
+        cutpoint=cutpoint,
+        current_layer_context=context,
+        parser_source_map={unit_id: {"text": text}},
+        max_repair_shift_chars=2,
+    )
+    assert rejected.decision == "reject"
+    accepted = layerwise_module._boundary_review_decision(
+        cutpoint=cutpoint,
+        current_layer_context=context,
+        parser_source_map={unit_id: {"text": text}},
+        max_repair_shift_chars=8,
+    )
+    assert accepted.decision == "shift_right"
+
+
+@pytest.mark.ci
+def test_provider_retry_backoff_is_bounded_and_skips_terminal_attempt() -> None:
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(
+            provider="fake",
+            retry_backoff_seconds=0.5,
+            retry_backoff_max_seconds=1.0,
+        )
+    )
+
+    assert layerwise_module._bounded_retry_delay(
+        attempt_number=1,
+        retry_budget=3,
+        provider_settings=settings,
+    ) == 0.5
+    assert layerwise_module._bounded_retry_delay(
+        attempt_number=2,
+        retry_budget=3,
+        provider_settings=settings,
+    ) == 1.0
+    assert layerwise_module._bounded_retry_delay(
+        attempt_number=3,
+        retry_budget=3,
+        provider_settings=settings,
+    ) == 0.0
+
+
+@pytest.mark.ci
+def test_provider_review_timeout_uses_deterministic_layer_authorization() -> None:
+    text = "AlphaBeta"
+    unit_id = "doc|p1_t0"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={
+            "doc|root": [_segment_pointer(unit_id, text, text)],
+        },
+    )
+    result = CurrentLayerResult(
+        children=[
+            LayerChildCandidate(
+                node_id="child-a",
+                parent_node_id="doc|root",
+                title="Alpha",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[_segment_pointer(unit_id, text, "Alpha")],
+            ),
+            LayerChildCandidate(
+                node_id="child-b",
+                parent_node_id="doc|root",
+                title="Beta",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[_segment_pointer(unit_id, text, "Beta")],
+            ),
+        ],
+        satisfied=True,
+    )
+
+    def timed_out(**_kwargs):
+        raise TimeoutError("review deadline exceeded")
+
+    review, _ = review_layer(
+        parse_session=ParseSessionState(collection_id="doc", root_node_id="doc|root"),
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map={unit_id: {"text": text}},
+        review_layer_fn=timed_out,
+    )
+
+    assert review.metadata["review_timeout"] is True
+    assert "review_failure" not in review.metadata
+    assert review.coverage_ok is True
+    assert review.satisfied is True
+    coverage_ok, _ = check_layer_coverage(
+        current_layer_context=context,
+        current_layer_result=result,
+        current_layer_review=review,
+    )
+    assert coverage_ok is True
 
 
 @pytest.fixture(
@@ -814,6 +949,10 @@ def test_layerwise_workflow_fails_when_satisfaction_retries_exhaust(workflow_bac
     assert bundle is None
     assert run.status in {"failed", "failure"}
     assert any("layer satisfaction retries exhausted" in err for err in run.final_state["workflow_errors"])
+    assert any(
+        record.get("failure_type") == "retry"
+        for record in run.final_state["strategy_execution_history"]
+    )
 
 
 def test_layerwise_workflow_preserves_committed_layers_when_later_layer_fails(workflow_backend_kind):

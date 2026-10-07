@@ -60,7 +60,8 @@ import math
 import os
 import queue
 import threading
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import (
     Annotated,
@@ -102,6 +103,127 @@ TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 ChatProviderName = Literal["anthropic", "gemini", "ollama", "openai", "azure", "vertex", "fake", "codex"]
 EmbeddingProviderName = Literal["fake", "openai", "vertex", "ollama"]
 ProposalMode = Literal["children", "boundaries"]
+
+_PROVIDER_IN_FLIGHT_LOCK = threading.Lock()
+_PROVIDER_IN_FLIGHT = 0
+_PROVIDER_METRICS: dict[str, object] = {
+    "calls_started": 0,
+    "calls_completed": 0,
+    "calls_succeeded": 0,
+    "calls_failed": 0,
+    "timeouts_observed": 0,
+    "orphaned_calls": 0,
+    "in_flight_rejections": 0,
+    "active_calls": 0,
+    "failure_counts": {},
+}
+
+
+def _provider_failure_category(exc: BaseException) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, RuntimeError) and "in-flight call limit" in str(exc):
+        return "in_flight_limit"
+    return "transport/provider_exception"
+
+
+def _record_provider_completion(*, success: bool, failure_type: str | None = None) -> None:
+    with _PROVIDER_IN_FLIGHT_LOCK:
+        _PROVIDER_METRICS["calls_completed"] = int(_PROVIDER_METRICS["calls_completed"]) + 1
+        if success:
+            _PROVIDER_METRICS["calls_succeeded"] = int(_PROVIDER_METRICS["calls_succeeded"]) + 1
+            return
+        _PROVIDER_METRICS["calls_failed"] = int(_PROVIDER_METRICS["calls_failed"]) + 1
+        failure_counts = _PROVIDER_METRICS["failure_counts"]
+        if not isinstance(failure_counts, dict):
+            failure_counts = {}
+            _PROVIDER_METRICS["failure_counts"] = failure_counts
+        failure_counts[failure_type or "transport/provider_exception"] = (
+            int(failure_counts.get(failure_type or "transport/provider_exception", 0)) + 1
+        )
+
+
+def provider_call_metrics_snapshot() -> dict[str, object]:
+    """Return a stable, process-local snapshot of provider call health.
+
+    The counters describe the shared invocation boundary, not a vendor SDK.
+    ``orphaned_calls`` counts calls whose caller timed out while the daemon
+    worker was still alive; ``active_calls`` shows whether those workers have
+    subsequently drained.
+    """
+
+    with _PROVIDER_IN_FLIGHT_LOCK:
+        snapshot = dict(_PROVIDER_METRICS)
+        failure_counts = _PROVIDER_METRICS.get("failure_counts", {})
+        snapshot["failure_counts"] = dict(failure_counts) if isinstance(failure_counts, dict) else {}
+        snapshot["active_calls"] = _PROVIDER_IN_FLIGHT
+        return snapshot
+
+
+_PROVIDER_USAGE_FIELDS: dict[str, tuple[str, ...]] = {
+    "input_tokens": ("input_tokens", "prompt_tokens", "input_token_count", "prompt_token_count"),
+    "output_tokens": ("output_tokens", "completion_tokens", "output_token_count", "completion_token_count"),
+    "ttft_ms": ("ttft_ms", "time_to_first_token_ms", "first_token_latency_ms"),
+}
+
+
+def _provider_usage_metrics(value: object) -> dict[str, int | float]:
+    """Extract optional provider usage metadata without serializing the response."""
+
+    pending: list[tuple[object, int]] = [(value, 0)]
+    seen: set[int] = set()
+    found: dict[str, int | float] = {}
+    while pending:
+        candidate, depth = pending.pop()
+        if candidate is None or id(candidate) in seen or depth > 4:
+            continue
+        seen.add(id(candidate))
+        if isinstance(candidate, Mapping):
+            items = candidate.items()
+        else:
+            model_dump = getattr(candidate, "model_dump", None)
+            if callable(model_dump):
+                try:
+                    dumped = model_dump()
+                except Exception:  # noqa: BLE001 - usage metadata is best effort.
+                    dumped = None
+                items = dumped.items() if isinstance(dumped, Mapping) else ()
+            else:
+                items = (
+                    (name, getattr(candidate, name))
+                    for names in _PROVIDER_USAGE_FIELDS.values()
+                    for name in (*names, "usage", "usage_metadata", "response_metadata", "metadata", "raw")
+                    if hasattr(candidate, name)
+                )
+        nested: list[object] = []
+        for key, item in items:
+            key_text = str(key)
+            for metric_name, aliases in _PROVIDER_USAGE_FIELDS.items():
+                if key_text in aliases and metric_name not in found and isinstance(item, (int, float)) and not isinstance(item, bool):
+                    found[metric_name] = item
+            if key_text in {"usage", "usage_metadata", "response_metadata", "metadata", "raw", "additional_kwargs"}:
+                nested.append(item)
+        pending.extend((item, depth + 1) for item in nested)
+    return found
+
+
+def _reserve_provider_slot(max_in_flight: int) -> bool:
+    global _PROVIDER_IN_FLIGHT
+    with _PROVIDER_IN_FLIGHT_LOCK:
+        if _PROVIDER_IN_FLIGHT >= max_in_flight:
+            _PROVIDER_METRICS["in_flight_rejections"] = int(_PROVIDER_METRICS["in_flight_rejections"]) + 1
+            return False
+        _PROVIDER_IN_FLIGHT += 1
+        _PROVIDER_METRICS["calls_started"] = int(_PROVIDER_METRICS["calls_started"]) + 1
+        _PROVIDER_METRICS["active_calls"] = _PROVIDER_IN_FLIGHT
+        return True
+
+
+def _release_provider_slot() -> None:
+    global _PROVIDER_IN_FLIGHT
+    with _PROVIDER_IN_FLIGHT_LOCK:
+        _PROVIDER_IN_FLIGHT = max(0, _PROVIDER_IN_FLIGHT - 1)
+        _PROVIDER_METRICS["active_calls"] = _PROVIDER_IN_FLIGHT
 
 
 class StructuredPayloadFactory(Protocol):
@@ -209,6 +331,13 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
     ] = "gemini"
     model: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()] = "gemini-2.5-flash"
     temperature: Annotated[float, DtoField(), BackendField(), FrontendField(), LLMField()] = 0.1
+    reasoning_effort: Annotated[
+        str | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
     base_url: Annotated[
         str | None,
         DtoField(),
@@ -257,6 +386,27 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default=120.0, gt=0)
+    retry_backoff_seconds: Annotated[
+        float,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=0.25, ge=0.0, le=30.0)
+    retry_backoff_max_seconds: Annotated[
+        float,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=5.0, ge=0.0, le=120.0)
+    max_in_flight_calls: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=1, ge=1, le=32)
     fallback_specs: list[ProviderEndpointConfig] = Field(default_factory=list, exclude=True)
 
 
@@ -404,6 +554,55 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = True
+    page_index_hierarchical_summary_enabled: Annotated[
+        bool,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = False
+    layer_frontier_batch_size: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=1, ge=1)
+    boundary_max_points: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=128, ge=8, le=512)
+    boundary_max_repair_shift_chars: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=8, ge=0, le=4096)
+    proposal_timeout_seconds: Annotated[
+        float | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=None, gt=0)
+    review_timeout_seconds: Annotated[
+        float | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=None, gt=0)
+    triage_timeout_seconds: Annotated[
+        float | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = Field(default=None, gt=0)
     ocr: Annotated[ProviderEndpointConfig, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
         default_factory=ProviderEndpointConfig
     )
@@ -446,10 +645,29 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
             not in {"0", "false", "no", "off"},
             page_index_summary_enabled=str(_env("KG_DOC_PARSER_PAGE_INDEX_SUMMARY_ENABLED", "1")).lower()
             not in {"0", "false", "no", "off"},
+            page_index_hierarchical_summary_enabled=str(
+                _env("KG_DOC_PARSER_PAGE_INDEX_HIERARCHICAL_SUMMARY_ENABLED", "0")
+            ).lower()
+            not in {"0", "false", "no", "off"},
+            layer_frontier_batch_size=int(_env("KG_DOC_PARSER_FRONTIER_BATCH_SIZE", "1") or "1"),
+            boundary_max_points=int(_env("KG_DOC_PARSER_BOUNDARY_MAX_POINTS", "128") or "128"),
+            boundary_max_repair_shift_chars=int(
+                _env("KG_DOC_PARSER_BOUNDARY_MAX_REPAIR_SHIFT_CHARS", "8") or "8"
+            ),
+            proposal_timeout_seconds=(
+                float(value) if (value := _env("KG_DOC_PARSER_PROPOSAL_TIMEOUT_SECONDS")) else None
+            ),
+            review_timeout_seconds=(
+                float(value) if (value := _env("KG_DOC_PARSER_REVIEW_TIMEOUT_SECONDS")) else None
+            ),
+            triage_timeout_seconds=(
+                float(value) if (value := _env("KG_DOC_PARSER_TRIAGE_TIMEOUT_SECONDS")) else None
+            ),
             ocr=ProviderEndpointConfig(
                 provider=cast(ChatProviderName, _normalize_provider_name(_env("KG_DOC_OCR_PROVIDER", "gemini"))),
                 model=str(_env("KG_DOC_OCR_MODEL", "gemini-2.5-flash")),
                 temperature=float(_env("KG_DOC_OCR_TEMPERATURE", "0.1") or "0.1"),
+                reasoning_effort=_env("KG_DOC_OCR_REASONING_EFFORT"),
                 base_url=_env("KG_DOC_OCR_BASE_URL"),
                 api_key_env=_env("KG_DOC_OCR_API_KEY_ENV"),
                 api_version=_env("KG_DOC_OCR_API_VERSION"),
@@ -457,11 +675,15 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 location=_env("KG_DOC_OCR_LOCATION"),
                 max_retries=int(_env("KG_DOC_OCR_MAX_RETRIES", "2") or "2"),
                 timeout_seconds=float(_env("KG_DOC_OCR_TIMEOUT_SECONDS", "120") or "120"),
+                retry_backoff_seconds=float(_env("KG_DOC_OCR_RETRY_BACKOFF_SECONDS", "0.25") or "0.25"),
+                retry_backoff_max_seconds=float(_env("KG_DOC_OCR_RETRY_BACKOFF_MAX_SECONDS", "5") or "5"),
+                max_in_flight_calls=int(_env("KG_DOC_OCR_MAX_IN_FLIGHT", "1") or "1"),
             ),
             parser=ProviderEndpointConfig(
                 provider=cast(ChatProviderName, _normalize_provider_name(_env("KG_DOC_PARSER_PROVIDER", "gemini"))),
                 model=str(_env("KG_DOC_PARSER_MODEL", "gemini-2.5-flash")),
                 temperature=float(_env("KG_DOC_PARSER_TEMPERATURE", "0.1") or "0.1"),
+                reasoning_effort=_env("KG_DOC_PARSER_REASONING_EFFORT"),
                 base_url=_env("KG_DOC_PARSER_BASE_URL"),
                 api_key_env=_env("KG_DOC_PARSER_API_KEY_ENV"),
                 api_version=_env("KG_DOC_PARSER_API_VERSION"),
@@ -469,6 +691,9 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 location=_env("KG_DOC_PARSER_LOCATION"),
                 max_retries=int(_env("KG_DOC_PARSER_MAX_RETRIES", "2") or "2"),
                 timeout_seconds=float(_env("KG_DOC_PARSER_TIMEOUT_SECONDS", "120") or "120"),
+                retry_backoff_seconds=float(_env("KG_DOC_PARSER_RETRY_BACKOFF_SECONDS", "0.25") or "0.25"),
+                retry_backoff_max_seconds=float(_env("KG_DOC_PARSER_RETRY_BACKOFF_MAX_SECONDS", "5") or "5"),
+                max_in_flight_calls=int(_env("KG_DOC_PARSER_MAX_IN_FLIGHT", "1") or "1"),
             ),
             embedding=EmbeddingProviderConfig(
                 provider=cast(EmbeddingProviderName, str(_env("KG_DOC_EMBED_PROVIDER", "fake"))),
@@ -489,7 +714,17 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
         )
 
 
-def invoke_with_timeout(callable_obj: Callable[[], object], *, timeout_seconds: float) -> object:
+def invoke_with_timeout(
+    callable_obj: Callable[[], object],
+    *,
+    timeout_seconds: float,
+    diagnostics: dict[str, object] | None = None,
+    operation: str = "provider_call",
+    max_in_flight: int = 1,
+    attempt_index: int = 1,
+    call_role: str | None = None,
+    strategy: str | None = None,
+) -> object:
     """Run one provider call with a hard wall-clock bound.
 
     Provider SDKs do not expose one consistent timeout argument. A daemon
@@ -500,23 +735,95 @@ def invoke_with_timeout(callable_obj: Callable[[], object], *, timeout_seconds: 
     """
     if timeout_seconds <= 0:
         raise ValueError("provider timeout_seconds must be positive")
+    if max_in_flight < 1:
+        raise ValueError("provider max_in_flight must be positive")
+    if attempt_index < 1:
+        raise ValueError("provider attempt_index must be positive")
+    started = time.monotonic()
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "operation": operation,
+                "call_role": call_role or operation,
+                "strategy": strategy,
+                "attempt_index": attempt_index,
+                "timeout_seconds": timeout_seconds,
+                "timed_out": False,
+                "underlying_call_alive": False,
+                "max_in_flight": max_in_flight,
+                "elapsed_ms": None,
+                "ttft_ms": None,
+                "input_tokens": None,
+                "output_tokens": None,
+                "throughput_tokens_per_second": None,
+            }
+        )
+    if not _reserve_provider_slot(max_in_flight):
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "success": False,
+                    "failure_type": "in_flight_limit",
+                    "elapsed_seconds": time.monotonic() - started,
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                }
+            )
+        raise RuntimeError(f"provider in-flight call limit reached ({max_in_flight})")
     result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
 
     def _run() -> None:
         try:
-            result_queue.put((True, callable_obj()))
-        except BaseException as exc:  # noqa: BLE001 - preserve provider exceptions for the caller
+            result = callable_obj()
+            _record_provider_completion(success=True)
+            result_queue.put((True, result))
+        except Exception as exc:  # noqa: BLE001 - preserve provider exceptions for the caller
+            _record_provider_completion(success=False, failure_type=_provider_failure_category(exc))
             result_queue.put((False, exc))
+        finally:
+            _release_provider_slot()
 
     worker = threading.Thread(target=_run, name="kg-doc-parser-provider", daemon=True)
     worker.start()
     worker.join(timeout_seconds)
     if worker.is_alive():
+        elapsed_seconds = time.monotonic() - started
+        with _PROVIDER_IN_FLIGHT_LOCK:
+            _PROVIDER_METRICS["timeouts_observed"] = int(_PROVIDER_METRICS["timeouts_observed"]) + 1
+            _PROVIDER_METRICS["orphaned_calls"] = int(_PROVIDER_METRICS["orphaned_calls"]) + 1
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "timed_out": True,
+                    "underlying_call_alive": True,
+                    "elapsed_seconds": elapsed_seconds,
+                    "elapsed_ms": int(elapsed_seconds * 1000),
+                    "failure_type": "timeout",
+                }
+            )
         raise TimeoutError(f"provider call exceeded {timeout_seconds:g}s")
     succeeded, value = result_queue.get_nowait()
+    elapsed_seconds = time.monotonic() - started
+    if diagnostics is not None:
+        diagnostics["elapsed_seconds"] = elapsed_seconds
+        diagnostics["elapsed_ms"] = int(elapsed_seconds * 1000)
     if succeeded:
+        if diagnostics is not None:
+            usage = _provider_usage_metrics(value)
+            diagnostics.update(usage)
+            output_tokens = usage.get("output_tokens")
+            if isinstance(output_tokens, (int, float)) and elapsed_seconds > 0:
+                diagnostics["throughput_tokens_per_second"] = output_tokens / elapsed_seconds
+            diagnostics["success"] = True
         return value
-    raise cast(BaseException, value)
+    if diagnostics is not None:
+        diagnostics.update(
+            {
+                "success": False,
+                "failure_type": _provider_failure_category(cast(BaseException, value)),
+                "error_type": type(value).__name__,
+            }
+        )
+    raise cast(Exception, value)
 
 
 def _embedding_vector(text: str, *, dimension: int) -> list[float]:
@@ -688,6 +995,11 @@ def build_chat_model(
             kwargs["google_api_key"] = os.getenv(spec.api_key_env)
         return cast(SupportsStructuredOutput, ChatGoogleGenerativeAI(**kwargs))
     if spec.provider == "openai":
+        max_output_tokens = (
+            spec.max_output_tokens
+            if spec.max_output_tokens is not None
+            else _configured_max_output_tokens()
+        )
         from langchain_openai import ChatOpenAI
 
         kwargs = {
@@ -696,19 +1008,21 @@ def build_chat_model(
             "callbacks": callbacks,
             "max_retries": spec.max_retries,
         }
-        max_output_tokens = (
-            spec.max_output_tokens
-            if spec.max_output_tokens is not None
-            else _configured_max_output_tokens()
-        )
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
+        if spec.reasoning_effort:
+            kwargs["model_kwargs"] = {"reasoning_effort": spec.reasoning_effort}
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["api_key"] = os.getenv(spec.api_key_env)
         return cast(SupportsStructuredOutput, ChatOpenAI(**kwargs))
     if spec.provider == "azure":
+        max_output_tokens = (
+            spec.max_output_tokens
+            if spec.max_output_tokens is not None
+            else _configured_max_output_tokens()
+        )
         from langchain_openai import AzureChatOpenAI
 
         kwargs = {
@@ -717,13 +1031,10 @@ def build_chat_model(
             "callbacks": callbacks,
             "max_retries": spec.max_retries,
         }
-        max_output_tokens = (
-            spec.max_output_tokens
-            if spec.max_output_tokens is not None
-            else _configured_max_output_tokens()
-        )
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
+        if spec.reasoning_effort:
+            kwargs["model_kwargs"] = {"reasoning_effort": spec.reasoning_effort}
         if spec.base_url:
             kwargs["azure_endpoint"] = spec.base_url
         if spec.api_version:

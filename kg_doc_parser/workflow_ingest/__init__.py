@@ -53,6 +53,8 @@ from .page_index import (
     BlockAssignment,
     BlockAssignmentBatch,
     CandidateBlock,
+    HierarchicalSummaryAssignment,
+    HierarchicalSummaryBatch,
     PageIndexBlockSpec,
     PageIndexParseResult,
     PageIndexValidationResult,
@@ -88,6 +90,7 @@ from .providers import (
     build_chat_model,
     build_chat_model_for_role,
     build_embedding_function,
+    provider_call_metrics_snapshot,
 )
 from .runners import (
     LayerwiseWorkflowCommandResult,
@@ -137,6 +140,8 @@ __all__ = [
     "EmbeddingProviderConfig",
     "FakeChatModel",
     "GroundedSourceRecord",
+    "HierarchicalSummaryAssignment",
+    "HierarchicalSummaryBatch",
     "HydratedTextPointer",
     "IngestExecutionClient",
     "IngestRunHandle",
@@ -210,6 +215,7 @@ __all__ = [
     "prepare_layer_frontier",
     "prepare_ocr_workflow_input",
     "propose_layer_breakdown",
+    "provider_call_metrics_snapshot",
     "review_layer",
     "run_demo_harness",
     "run_demo_harness_workflow",

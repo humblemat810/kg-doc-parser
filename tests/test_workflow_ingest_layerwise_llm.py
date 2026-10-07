@@ -3,20 +3,28 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
-from kg_doc_parser.workflow_ingest import ProviderEndpointConfig, WorkflowProviderSettings
+from kg_doc_parser.workflow_ingest import (
+    ProviderEndpointConfig,
+    WorkflowProviderSettings,
+)
 from kg_doc_parser.workflow_ingest.layerwise_llm import build_layerwise_llm_callbacks
 from kg_doc_parser.workflow_ingest.models import (
     BoundaryCutpoint,
-    LLMBoundaryProposal,
-    LLMBoundaryProposalBatch,
+    BoundaryReviewBatch,
+    BoundaryReviewDecision,
     CurrentLayerContext,
     CurrentLayerResult,
     LayerChildCandidate,
+    LLMBoundaryProposal,
+    LLMBoundaryProposalBatch,
     ParseSessionState,
 )
-from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode, semantic_tree_to_kge_payload
 from kg_doc_parser.workflow_ingest.parser_core import commit_layer_children
+from kg_doc_parser.workflow_ingest.semantics import (
+    HydratedTextPointer,
+    SemanticNode,
+    semantic_tree_to_kge_payload,
+)
 
 
 def _provider_settings() -> WorkflowProviderSettings:
@@ -148,6 +156,81 @@ def _boundary_cutpoint_payload(
     return payload
 
 
+@pytest.mark.ci
+def test_boundary_assembly_keeps_cross_cluster_parent_pointers_separate() -> None:
+    from kg_doc_parser.workflow_ingest.layerwise_llm import (
+        _assemble_layer_result_from_boundaries,
+    )
+
+    cluster_one = "A1 first.\nA1 second."
+    cluster_two = "A2 first.\nA2 second."
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Demo Doc"],
+        parent_content_pointers_by_id={
+            "doc|root": [
+                HydratedTextPointer(
+                    source_cluster_id="cluster-1",
+                    start_char=0,
+                    end_char=len(cluster_one) - 1,
+                    verbatim_text=cluster_one,
+                ),
+                HydratedTextPointer(
+                    source_cluster_id="cluster-2",
+                    start_char=0,
+                    end_char=len(cluster_two) - 1,
+                    verbatim_text=cluster_two,
+                ),
+            ]
+        },
+        split_strategy="boundary_first",
+        retry_count=0,
+        max_retries=2,
+    )
+    review = BoundaryReviewBatch(
+        decisions=[
+            BoundaryReviewDecision(
+                parent_node_id="doc|root",
+                source_cluster_id="cluster-1",
+                input_cut_offset=10,
+                cut_offset=10,
+                resolved_cut_offset=10,
+                decision="accept",
+                boundary_kind="paragraph",
+            ),
+            BoundaryReviewDecision(
+                parent_node_id="doc|root",
+                source_cluster_id="cluster-2",
+                input_cut_offset=10,
+                cut_offset=10,
+                resolved_cut_offset=10,
+                decision="accept",
+                boundary_kind="paragraph",
+            ),
+        ]
+    )
+
+    result, _summaries, _accepted = _assemble_layer_result_from_boundaries(
+        current_layer_context=context,
+        parser_source_map={
+            "cluster-1": {"text": cluster_one},
+            "cluster-2": {"text": cluster_two},
+        },
+        review_batch=review,
+    )
+
+    assert result.children
+    assert {pointer.source_cluster_id for child in result.children for pointer in child.total_content_pointers} == {
+        "cluster-1",
+        "cluster-2",
+    }
+    assert all(
+        len({pointer.source_cluster_id for pointer in child.total_content_pointers}) == 1
+        for child in result.children
+    )
+
+
 def test_boundary_helpers_classify_and_snap_cutpoints():
     from kg_doc_parser.workflow_ingest.layerwise_llm import (
         _boundary_review_decision,
@@ -276,7 +359,9 @@ def test_boundary_candidate_generation_prefers_structural_boundaries_over_words(
 
 
 def test_boundary_candidate_ids_include_pointer_span_to_avoid_multispan_collisions():
-    from kg_doc_parser.workflow_ingest.layerwise_llm import _boundary_prompt_candidate_context
+    from kg_doc_parser.workflow_ingest.layerwise_llm import (
+        _boundary_prompt_candidate_context,
+    )
 
     text = "Alpha clause. Beta clause.\nGamma clause. Delta clause."
     context = CurrentLayerContext(
@@ -320,7 +405,9 @@ def test_boundary_candidate_ids_include_pointer_span_to_avoid_multispan_collisio
 
 
 def test_boundary_parent_coverage_report_marks_gaps_and_spans():
-    from kg_doc_parser.workflow_ingest.layerwise_llm import _boundary_parent_coverage_report
+    from kg_doc_parser.workflow_ingest.layerwise_llm import (
+        _boundary_parent_coverage_report,
+    )
 
     report = _boundary_parent_coverage_report(
         parent_node_id="doc|root",
@@ -399,9 +486,8 @@ def test_workflow_provider_settings_from_env_enables_boundary_mode(monkeypatch: 
 
 
 def test_structured_invoke_returns_typed_pydantic_model():
-    from pydantic import BaseModel
-
     from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
+    from pydantic import BaseModel
 
     class _Schema(BaseModel):
         value: int
@@ -414,6 +500,26 @@ def test_structured_invoke_returns_typed_pydantic_model():
     assert result.value == 7
     assert result.label == "demo"
     assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
+
+
+def test_structured_invoke_classifies_parse_failures_for_observability():
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
+    from pydantic import BaseModel
+
+    class _Schema(BaseModel):
+        value: int
+
+    events: list[dict[str, object]] = []
+    with pytest.raises(ValueError):
+        _structured_invoke(
+            _FakeChatModel({"parsed": {"value": "not-an-int"}}),
+            _Schema,
+            [("human", "hello")],
+            diagnostics_sink=events.append,
+        )
+
+    assert events[0]["failure_type"] == "structured_output_parse_failure"
+    assert events[0]["error_type"]
 
 
 def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: pytest.MonkeyPatch):
@@ -464,8 +570,17 @@ def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: py
     assert fake_model.structured_output_kwargs and fake_model.structured_output_kwargs.get("method") == "json_schema"
     assert any(event["stage"] == "workflow_layered_boundary_proposal_start" for event in layer_events)
     assert any(event["stage"] == "workflow_layered_boundary_review_completed" for event in layer_events)
+    review_events = [
+        event for event in layer_events if event["stage"] == "workflow_layered_boundary_review_completed"
+    ]
+    assert review_events[0]["failure_type"] == "anchor_ambiguity"
     assert any(event["stage"] == "workflow_layered_boundary_assembly_start" for event in layer_events)
     assert any(event["stage"] == "workflow_layered_boundary_assembly_completed" for event in layer_events)
+    provider_events = [event for event in layer_events if event["stage"] == "workflow_provider_call"]
+    assert provider_events
+    assert provider_events[0]["operation"] == "layer_boundary_proposal"
+    assert provider_events[0]["success"] is True
+    assert "provider_metrics" in provider_events[0]
     assert layer_events[-1]["stage"] == "workflow_layered_proposal_result"
     assert layer_events[-1]["proposal_mode"] == "boundaries"
     assert result.children
@@ -766,7 +881,7 @@ def test_boundary_mode_detects_child_with_identical_parent_span() -> None:
 
 
 class _FakeStructuredInvoker:
-    def __init__(self, owner: "_FakeChatModel"):
+    def __init__(self, owner: _FakeChatModel):
         self._owner = owner
 
     def invoke(self, messages):
@@ -789,7 +904,7 @@ class _FakeChatModel:
 
 
 class _SequencedStructuredInvoker:
-    def __init__(self, owner: "_SequencedFakeChatModel"):
+    def __init__(self, owner: _SequencedFakeChatModel):
         self._owner = owner
 
     def invoke(self, messages):
@@ -1031,10 +1146,12 @@ def test_boundary_mode_recurses_through_refinement_for_ambiguous_cutpoints(monke
         lambda role, settings: fake_model,
     )
 
+    events: list[dict[str, Any]] = []
     callbacks = build_layerwise_llm_callbacks(
         _provider_settings(),
         proposal_mode="boundaries",
         boundary_refinement_rounds=1,
+        event_sink=lambda stage, **extra: events.append({"stage": stage, **extra}),
     )
 
     result = callbacks["propose_layer_fn"](
@@ -1048,7 +1165,9 @@ def test_boundary_mode_recurses_through_refinement_for_ambiguous_cutpoints(monke
 
     assert result.metadata["proposal_mode"] == "boundaries"
     assert result.metadata["proposal_source"] == "fallback"
+    assert result.metadata["failure_type"] == "fallback"
     assert "no accepted cutpoints" in result.metadata["proposal_failure_reason"]
+    assert any(event.get("failure_type") == "semantic_rejection" for event in events)
 
 
 def test_boundary_and_child_modes_produce_equivalent_labels_for_same_fixture(monkeypatch: pytest.MonkeyPatch):
@@ -1314,6 +1433,7 @@ def test_propose_layer_fn_falls_back_and_marks_reason(
 
     assert result.metadata["proposal_source"] == "fallback"
     assert result.metadata["fallback"] == "llm_empty_or_unavailable"
+    assert result.metadata["failure_type"] == "fallback"
     assert "proposal_failure_reason" in result.metadata
     if reason_fragment == "validation":
         assert "validation" in result.metadata["proposal_failure_reason"].lower()
@@ -1322,6 +1442,7 @@ def test_propose_layer_fn_falls_back_and_marks_reason(
     assert result.reasoning_history[-1].proposal_source == "fallback"
     assert layer_events[-1]["stage"] == "workflow_layered_proposal_result"
     assert layer_events[-1]["proposal_source"] == "fallback"
+    assert layer_events[-1]["failure_type"] == "fallback"
     assert "proposal_failure_reason" in layer_events[-1]
 
 
@@ -1348,8 +1469,10 @@ def test_propose_layer_fn_falls_back_for_structurally_empty_response(monkeypatch
     )
 
     assert result.metadata["proposal_source"] == "fallback"
+    assert result.metadata["failure_type"] == "fallback"
     assert "no children without satisfied=true" in result.metadata["proposal_failure_reason"]
     assert layer_events[-1]["proposal_source"] == "fallback"
+    assert layer_events[-1]["failure_type"] == "fallback"
 
 
 def test_propose_layer_fn_rejects_single_child_fake_split(monkeypatch: pytest.MonkeyPatch):

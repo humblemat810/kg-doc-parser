@@ -4,9 +4,27 @@ from typing import Annotated, Any, ClassVar, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_extension.model_slicing import BackendField, FrontendField
-from pydantic_extension.model_slicing.mixin import DtoField, ExcludeMode, LLMField, ModeSlicingMixin
+from pydantic_extension.model_slicing.mixin import (
+    DtoField,
+    ExcludeMode,
+    LLMField,
+    ModeSlicingMixin,
+)
 
 from .semantics import HydratedTextPointer
+
+FailureCategory = Literal[
+    "timeout",
+    "transport/provider_exception",
+    "structured_output_parse_failure",
+    "semantic_rejection",
+    "anchor_ambiguity",
+    "repair_failure",
+    "retry",
+    "fallback",
+    "rollback",
+    "in_flight_limit",
+]
 
 
 class BoundingBox(ModeSlicingMixin, BaseModel):
@@ -158,6 +176,13 @@ class WorkflowIngestInput(ModeSlicingMixin, BaseModel):
     ] = None
     page_index_summary_enabled: Annotated[
         Optional[bool],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
+    page_index_hierarchical_summary_enabled: Annotated[
+        bool | None,
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -404,7 +429,7 @@ class BoundaryCutpoint(BaseModel):
     parent_node_id: str
     source_cluster_id: str
     cut_offset: int = Field(description="Absolute character offset of the cut inside the parent span.")
-    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] = Field(
+    boundary_kind: Literal["section", "paragraph", "list_item", "table_row", "sentence", "word", "semantic"] = Field(
         description="The structural reason this cut is a legal boundary."
     )
     text_before_cut: str = Field(
@@ -450,7 +475,7 @@ class BoundaryReviewDecision(BaseModel):
     cut_offset: int
     decision: Literal["accept", "shift_left", "shift_right", "reject", "needs_refinement"]
     resolved_cut_offset: int | None = None
-    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] | None = None
+    boundary_kind: Literal["section", "paragraph", "list_item", "table_row", "sentence", "word", "semantic"] | None = None
     anchor_match_mode: Literal["exact", "fuzzy"] | None = None
     anchor_match_score: float | None = None
     text_before_cut: str | None = None
@@ -474,7 +499,7 @@ class BoundaryUnitSummary(BaseModel):
     source_cluster_id: str
     start_char: int
     end_char: int
-    boundary_kind: Literal["section", "paragraph", "list_item", "sentence", "word", "semantic"] = "semantic"
+    boundary_kind: Literal["section", "paragraph", "list_item", "table_row", "sentence", "word", "semantic"] = "semantic"
     summary_text: str = ""
     exact_text: str = ""
     expandable: bool = False
@@ -488,6 +513,7 @@ class LayerReasoningEntry(BaseModel):
     proposal_source: Literal["llm", "fallback"] | None = None
     proposal_mode: Literal["children", "boundaries"] | None = None
     proposal_failure_reason: str | None = None
+    failure_type: FailureCategory | None = None
     provider_child_count: int | None = None
     boundary_count: int | None = None
     accepted_boundary_count: int | None = None
@@ -509,6 +535,7 @@ class StrategyExecutionRecord(BaseModel):
     parent_node_ids: list[str] = Field(default_factory=list)
     attempt: int = Field(ge=1)
     event: Literal["selected", "succeeded", "failed"]
+    failure_type: FailureCategory | None = None
     reasons: list[str] = Field(default_factory=list, max_length=12)
 
 

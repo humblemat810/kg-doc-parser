@@ -492,6 +492,9 @@ def prepare_layer_frontier(
         node = find_semantic_node(semantic_tree, parent_id)
         parent_titles.append(node.title if node is not None else parent_id)
     session = parse_session.model_copy(update={"current_depth": current_depth})
+    frontier_identity = (
+        f"depth={current_depth};parents={','.join(item.parent_node_id for item in selected_items)}"
+    )
     def _pointers_for(parent_node_id: str) -> list[HydratedTextPointer]:
         parent = find_semantic_node(semantic_tree, parent_node_id)
         if parent is None:
@@ -515,8 +518,14 @@ def prepare_layer_frontier(
         # Strategy selection is per layer.  Do not carry a prior layer's
         # triage decision into the next frontier depth.
         split_strategy=default_split_strategy,
-        retry_count=int(parse_session.layer_attempts.get(str(current_depth), 0)),
+        retry_count=int(
+            parse_session.layer_attempts.get(
+                frontier_identity,
+                parse_session.layer_attempts.get(str(current_depth), 0),
+            )
+        ),
         max_retries=max_retries,
+        metadata={"frontier_identity": frontier_identity},
     )
     return context, remaining, session
 
@@ -644,6 +653,34 @@ def review_layer(
                 )
             else:
                 reviewed = call()
+        except TimeoutError as exc:
+            # A review timeout is different from a malformed or failed
+            # provider response.  If the host-side invariants are complete,
+            # deterministic validation can authorize this layer without
+            # pretending that the semantic critic ran.
+            coverage_ok, invariant_satisfied, overlap_conflicts, coverage_gaps, duplicate_notes, invariant_notes = detect_layer_invariants(
+                current_layer_context=current_layer_context,
+                current_layer_result=current_layer_result,
+                parser_source_map=parser_source_map,
+            )
+            reviewed = CurrentLayerReview(
+                updated_result=current_layer_result,
+                coverage_ok=coverage_ok,
+                satisfied=invariant_satisfied,
+                strategy_used=current_layer_context.split_strategy,
+                overlap_conflicts=overlap_conflicts,
+                coverage_gap_notes=coverage_gaps,
+                duplicate_child_notes=duplicate_notes,
+                review_notes=[
+                    "quality_unknown: semantic layer review timed out",
+                    "deterministic invariants authorized the layer" if invariant_satisfied else "deterministic invariants rejected the layer",
+                    *invariant_notes[:10],
+                ],
+                metadata={
+                    "review_timeout": True,
+                    "review_timeout_reason": repr(exc)[:500],
+                },
+            )
         except Exception as exc:  # noqa: BLE001 - provider failures become review-unknown state
             reviewed = CurrentLayerReview(
                 updated_result=current_layer_result,
@@ -728,7 +765,13 @@ def review_layer(
         }
     )
     attempts = dict(parse_session.layer_attempts)
-    attempts[str(current_layer_context.depth)] = current_layer_context.retry_count + 1
+    frontier_identity = str(
+        current_layer_context.metadata.get(
+            "frontier_identity",
+            f"depth={current_layer_context.depth};parents={','.join(current_layer_context.parent_node_ids)}",
+        )
+    )
+    attempts[frontier_identity] = current_layer_context.retry_count + 1
     review_packet = {
         "strategy": result.strategy_used,
         "coverage_ok": result.coverage_ok,
@@ -897,9 +940,11 @@ def repair_layer_candidates(
         )
 
     repaired_children: list[LayerChildCandidate] = []
+    repair_failures: list[str] = []
     repaired_count = 0
     for child in current_layer_result.children:
         repaired_ptrs = []
+        child_failed = False
         for pointer in child.total_content_pointers:
             fixed = correct_pointer_fn(pointer, parser_source_map)
             if fixed is None:
@@ -909,14 +954,29 @@ def repair_layer_candidates(
                     f"{_pointer_context(pointer)}"
                 )
                 _LOGGER.warning("repair_layer_candidates failed: %s", message)
-                raise ValueError(message)
+                repair_failures.append(message)
+                child_failed = True
+                break
             if fixed.model_dump() != pointer.model_dump():
                 repaired_count += 1
             repaired_ptrs.append(fixed)
+        if child_failed:
+            # A bad proposal must not erase verified siblings or abort an
+            # unrelated parent.  Omit only this replacement; the invariant
+            # checker will report the affected parent's coverage gap.
+            continue
         repaired_children.append(
             child.model_copy(update={"total_content_pointers": repaired_ptrs})
         )
-    return current_layer_result.model_copy(update={"children": repaired_children}), repaired_count
+    metadata = dict(current_layer_result.metadata)
+    if repair_failures:
+        metadata["repair_failures"] = repair_failures[:32]
+        metadata["repair_failure_scope"] = "child_replacement"
+        metadata["failure_type"] = "repair_failure"
+        metadata["rollback"] = "verified_parent_retained"
+    return current_layer_result.model_copy(
+        update={"children": repaired_children, "metadata": metadata}
+    ), repaired_count
 
 
 def dedupe_and_filter_layer(
@@ -927,14 +987,19 @@ def dedupe_and_filter_layer(
     parent_title_lookup = {
         node_id: title for node_id, title in zip(current_layer_context.parent_node_ids, current_layer_context.parent_titles)
     }
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, tuple[tuple[str, int, int, str], ...]]] = set()
     filtered: list[LayerChildCandidate] = []
     for child in current_layer_result.children:
         if child.parent_node_id not in parent_title_lookup:
             continue
         if child.title.strip() == parent_title_lookup[child.parent_node_id].strip():
             continue
-        key = (child.parent_node_id, child.node_type, child.title.strip().lower())
+        key = (
+            child.parent_node_id,
+            child.node_type,
+            child.title.strip().lower(),
+            _child_pointer_fingerprint(child),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -949,37 +1014,42 @@ def commit_layer_children(
     current_depth: int,
 ) -> SemanticNode:
     tree = SemanticNode.model_validate(semantic_tree.model_dump())
-    children_by_parent: dict[str, list[SemanticNode]] = {}
+    children_by_parent: dict[str, dict[str, SemanticNode]] = {}
     for child in current_layer_result.children:
-        children_by_parent.setdefault(child.parent_node_id, []).append(
-            SemanticNode(
-                node_id=child.node_id,
-                parent_id=child.parent_node_id,
-                node_type=child.node_type,
-                title=child.title,
-                total_content_pointers=list(child.total_content_pointers),
-                child_nodes=[
-                    SemanticNode(
-                        node_id=materialized.node_id,
-                        parent_id=child.node_id,
-                        node_type=materialized.node_type,
-                        title=materialized.title,
-                        total_content_pointers=list(materialized.total_content_pointers),
-                        child_nodes=[],
-                        level_from_root=current_depth + 2,
-                        metadata=dict(materialized.metadata),
-                    )
-                    for materialized in child.child_candidates
-                ],
-                level_from_root=current_depth + 1,
-                metadata=dict(child.metadata),
-            )
+        children_by_parent.setdefault(child.parent_node_id, {})[child.node_id] = SemanticNode(
+            node_id=child.node_id,
+            parent_id=child.parent_node_id,
+            node_type=child.node_type,
+            title=child.title,
+            total_content_pointers=list(child.total_content_pointers),
+            child_nodes=[
+                SemanticNode(
+                    node_id=materialized.node_id,
+                    parent_id=child.node_id,
+                    node_type=materialized.node_type,
+                    title=materialized.title,
+                    total_content_pointers=list(materialized.total_content_pointers),
+                    child_nodes=[],
+                    level_from_root=current_depth + 2,
+                    metadata=dict(materialized.metadata),
+                )
+                for materialized in child.child_candidates
+            ],
+            level_from_root=current_depth + 1,
+            metadata=dict(child.metadata),
         )
 
     def walk(node: SemanticNode) -> SemanticNode:
         updated_children = [walk(existing) for existing in node.child_nodes]
-        if str(node.node_id) in children_by_parent:
-            updated_children.extend(children_by_parent[str(node.node_id)])
+        proposed_by_id = children_by_parent.get(str(node.node_id), {})
+        if proposed_by_id:
+            existing_by_id = {str(child.node_id): child for child in updated_children}
+            for child_id, proposed in proposed_by_id.items():
+                existing = existing_by_id.get(child_id)
+                if existing is not None and existing.child_nodes and not proposed.child_nodes:
+                    proposed = proposed.model_copy(update={"child_nodes": existing.child_nodes})
+                existing_by_id[child_id] = proposed
+            updated_children = list(existing_by_id.values())
         payload = node.model_dump()
         payload["child_nodes"] = [child.model_dump() for child in updated_children]
         return SemanticNode.model_validate(payload)
@@ -999,8 +1069,13 @@ def enqueue_next_layer_frontier(
     if next_depth >= parse_session.max_depth:
         return queued
     next_order = max([item.order for item in queued], default=-1) + 1
+    existing_frontier = {
+        (item.parent_node_id, item.depth)
+        for item in queued
+    }
     for child in current_layer_result.children:
-        if child.expandable:
+        frontier_key = (child.node_id, next_depth)
+        if child.expandable and frontier_key not in existing_frontier:
             queued.append(
                 LayerFrontierItem(
                     parent_node_id=child.node_id,
@@ -1008,6 +1083,7 @@ def enqueue_next_layer_frontier(
                     order=next_order,
                 )
             )
+            existing_frontier.add(frontier_key)
             next_order += 1
     return queued
 
@@ -1022,7 +1098,48 @@ def find_semantic_node(root: SemanticNode, node_id: str) -> SemanticNode | None:
     return None
 
 
-def finalize_semantic_tree(semantic_tree: SemanticNode) -> SemanticNode:
+def finalize_semantic_tree(
+    semantic_tree: SemanticNode,
+    *,
+    parser_source_map: ParserSourceMap | None = None,
+) -> SemanticNode:
+    """Validate the replayed tree before it reaches export or persistence."""
+    seen_ids: set[str] = set()
+    visiting: set[str] = set()
+
+    def walk(node: SemanticNode, expected_parent_id: str | None) -> None:
+        node_id = _required_node_id(node)
+        if node_id in visiting:
+            raise ValueError(f"semantic tree contains a cycle at {node_id!r}")
+        if node_id in seen_ids:
+            raise ValueError(f"semantic tree contains duplicate node id {node_id!r}")
+        if node.parent_id != expected_parent_id:
+            raise ValueError(
+                f"semantic tree parent mismatch for {node_id!r}: "
+                f"expected {expected_parent_id!r}, got {node.parent_id!r}"
+            )
+        seen_ids.add(node_id)
+        visiting.add(node_id)
+        for pointer in [*node.total_content_pointers, *node.aggregate_content_pointers]:
+            if pointer.start_char < 0 or pointer.end_char < -1:
+                raise ValueError(f"invalid pointer bounds for node {node_id!r}")
+            if pointer.end_char != -1 and pointer.end_char < pointer.start_char:
+                raise ValueError(f"reversed pointer bounds for node {node_id!r}")
+            if parser_source_map is not None:
+                source = parser_source_map.get(pointer.source_cluster_id)
+                if source is None:
+                    raise ValueError(
+                        f"node {node_id!r} references unknown source cluster "
+                        f"{pointer.source_cluster_id!r}"
+                    )
+                source_text = str(source.get("text", "") or "")
+                if pointer.end_char >= len(source_text) and pointer.end_char != -1:
+                    raise ValueError(f"pointer exceeds source bounds for node {node_id!r}")
+        for child in node.child_nodes:
+            walk(child, node_id)
+        visiting.remove(node_id)
+
+    walk(semantic_tree, None)
     return semantic_tree
 
 

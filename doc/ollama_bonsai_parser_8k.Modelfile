@@ -1,0 +1,3 @@
+FROM MichelRosselli/bonsai-27b:Q1_0
+PARAMETER num_ctx 8192
+PARAMETER num_predict 1024

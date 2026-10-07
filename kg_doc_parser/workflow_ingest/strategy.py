@@ -6,6 +6,7 @@ but it cannot bypass the host's allowed strategies or the provider timeout.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field, model_validator
@@ -122,7 +123,11 @@ def _triage_prompt(context: dict[str, Any]) -> str:
     )
 
 
-def build_llm_strategy_triage(provider_settings: WorkflowProviderSettings) -> StrategyTriageFn:
+def build_llm_strategy_triage(
+    provider_settings: WorkflowProviderSettings,
+    *,
+    diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+) -> StrategyTriageFn:
     """Build a provider-backed triage callable with the parser timeout."""
 
     chat = build_chat_model_for_role("parser", provider_settings)
@@ -131,20 +136,45 @@ def build_llm_strategy_triage(provider_settings: WorkflowProviderSettings) -> St
     structured = chat.with_structured_output(ParseStrategyTriage, include_raw=True)
 
     def _triage(context: dict[str, Any]) -> ParseStrategyTriage:
-        response = invoke_with_timeout(
-            lambda: structured.invoke(
-                [
-                    SystemMessage(content="You are a conservative parser-strategy triage classifier."),
-                    HumanMessage(content=_triage_prompt(context)),
-                ]
-            ),
-            timeout_seconds=provider_settings.parser.timeout_seconds,
-        )
-        parsed = response.get("parsed") if isinstance(response, dict) else response
-        if parsed is None:
-            error = response.get("parsing_error") if isinstance(response, dict) else None
-            raise ValueError(f"strategy triage parsing failed: {error!r}")
-        return parsed if isinstance(parsed, ParseStrategyTriage) else ParseStrategyTriage.model_validate(parsed)
+        diagnostics: dict[str, object] = {}
+        try:
+            response = invoke_with_timeout(
+                lambda: structured.invoke(
+                    [
+                        SystemMessage(content="You are a conservative parser-strategy triage classifier."),
+                        HumanMessage(content=_triage_prompt(context)),
+                    ]
+                ),
+                timeout_seconds=(
+                    provider_settings.triage_timeout_seconds
+                    or provider_settings.parser.timeout_seconds
+                ),
+                diagnostics=diagnostics,
+                operation="parse_strategy_triage",
+                max_in_flight=provider_settings.parser.max_in_flight_calls,
+                attempt_index=1,
+                call_role="triage",
+                strategy="triage",
+            )
+            parsed = response.get("parsed") if isinstance(response, dict) else response
+            if parsed is None:
+                error = response.get("parsing_error") if isinstance(response, dict) else None
+                raise ValueError(f"strategy triage parsing failed: {error!r}")
+            result = parsed if isinstance(parsed, ParseStrategyTriage) else ParseStrategyTriage.model_validate(parsed)
+        except Exception as exc:
+            diagnostics.update(
+                {
+                    "success": False,
+                    "failure_type": diagnostics.get("failure_type", "structured_output_parse_failure"),
+                    "error_type": type(exc).__name__,
+                }
+            )
+            if diagnostics_sink is not None:
+                diagnostics_sink(dict(diagnostics))
+            raise
+        if diagnostics_sink is not None:
+            diagnostics_sink(dict(diagnostics))
+        return result
 
     return _triage
 

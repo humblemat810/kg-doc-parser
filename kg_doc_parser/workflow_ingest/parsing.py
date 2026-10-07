@@ -14,7 +14,7 @@ The facade keeps provider/model selection explicit while still falling back to
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,8 +35,8 @@ from .page_index import (
 from .page_index import (
     parse_page_index_document as _parse_page_index_document,
 )
-from .providers import WorkflowProviderSettings
 from .probe import WorkflowProbe
+from .providers import WorkflowProviderSettings
 
 if TYPE_CHECKING:
     from ..semantic_document_splitting_layerwise_edits import (
@@ -77,8 +77,10 @@ class PageIndexParseRequest:
     provider: str | None = None
     model: str | None = None
     callbacks: list[object] | None = None
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None
     refine_excerpts: bool = False
     summary_enabled: bool = True
+    hierarchical_summary_enabled: bool | None = None
 
 
 @dataclass(slots=True)
@@ -183,8 +185,10 @@ def parse_page_index_document(
     provider: str | None = None,
     model: str | None = None,
     callbacks: list[object] | None = None,
+    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
     refine_excerpts: bool = False,
     summary_enabled: bool = True,
+    hierarchical_summary_enabled: bool | None = None,
 ) -> PageIndexParseResult:
     """Parse a text / Markdown page-index document into a semantic tree."""
 
@@ -202,8 +206,10 @@ def parse_page_index_document(
         mode=mode,
         provider_settings=settings,
         callbacks=callbacks,
+        provider_diagnostics_sink=provider_diagnostics_sink,
         refine_excerpts=refine_excerpts,
         summary_enabled=summary_enabled,
+        hierarchical_summary_enabled=hierarchical_summary_enabled,
     )
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from uuid import uuid4
@@ -10,10 +11,12 @@ from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
 )
+from _ollama_test_helpers import ollama_available
 from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
     BlockAssignmentBatch,
     CandidateBlock,
+    PageIndexBlockSpec,
     PageIndexParseResult,
     ProviderEndpointConfig,
     WorkflowProviderSettings,
@@ -52,6 +55,25 @@ def _manual_ollama_case_cache_dir(*, fixture_name: str, parser_model: str) -> Pa
     return path
 
 
+def _ollama_parser_model_params() -> list[object]:
+    configured = os.getenv("KG_DOC_PARSER_OLLAMA_MODELS")
+    models = [
+        item.strip()
+        for item in (configured.split(",") if configured else ("gemma4:e2b", "gemma4:latest"))
+        if item.strip()
+    ]
+    return [pytest.param(model, id=model.replace(":", "-")) for model in models]
+
+
+def _ollama_provider_limits() -> dict[str, int | float | None]:
+    output_tokens = os.getenv("KG_DOC_PARSER_OLLAMA_MAX_OUTPUT_TOKENS")
+    return {
+        "max_retries": int(os.getenv("KG_DOC_PARSER_OLLAMA_MAX_RETRIES", "2")),
+        "max_output_tokens": int(output_tokens) if output_tokens else None,
+        "timeout_seconds": float(os.getenv("KG_DOC_PARSER_OLLAMA_TIMEOUT_SECONDS", "120")),
+    }
+
+
 def _node_signature(node) -> tuple[str, str, tuple]:
     return (
         node.node_type,
@@ -76,6 +98,36 @@ def _collect_node_types(node) -> set[str]:
     return kinds
 
 
+def _install_long_table_assignment_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeStructured:
+        def invoke(self, messages):
+            return {
+                "parsed": BlockAssignmentBatch(
+                    assignments=[
+                        BlockAssignment(
+                            block_id="p0001-b001",
+                            parent_id=None,
+                            node_type="SECTION",
+                            title="Sample Document Title",
+                        ),
+                        BlockAssignment(
+                            block_id="p0001-b002",
+                            parent_id="p0001-b001",
+                            node_type="PARAGRAPH",
+                            title="ID Description Value",
+                        ),
+                    ]
+                )
+            }
+
+    class _FakeChat:
+        def with_structured_output(self, schema, include_raw=True, **kwargs):
+            assert schema is BlockAssignmentBatch
+            return _FakeStructured()
+
+    monkeypatch.setattr(page_index_module, "build_chat_model_for_role", lambda *args, **kwargs: _FakeChat())
+
+
 def _max_depth(node) -> int:
     if not node.child_nodes:
         return 1
@@ -88,12 +140,15 @@ def _install_fake_page_index_chat(
     assignment_payload,
     refinement_payload=None,
     refinement_parsing_error: str | None = None,
+    capture_messages: list[object] | None = None,
 ) -> None:
     class _FakeStructured:
         def __init__(self, schema):
             self.schema = schema
 
         def invoke(self, messages):
+            if capture_messages is not None:
+                capture_messages.extend(messages)
             if self.schema is page_index_module.BlockAssignmentBatch:
                 return {"parsed": assignment_payload}
             if self.schema is page_index_module.ExcerptRefinementBatch:
@@ -146,6 +201,259 @@ def test_page_index_llm_structured_output_prefers_function_calling(monkeypatch: 
 
     assert captured
     assert captured[0]["method"] == "json_schema"
+
+
+def test_page_index_provider_diagnostics_include_attempt_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_page_index_chat(
+        monkeypatch,
+        assignment_payload=BlockAssignmentBatch(
+            assignments=[
+                BlockAssignment(
+                    block_id="p0001-b001",
+                    parent_id=None,
+                    node_type="SECTION",
+                    title="Root",
+                )
+            ]
+        ),
+    )
+    diagnostics: list[dict[str, object]] = []
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="ollama", model="fake", base_url="http://127.0.0.1:11434")
+    )
+
+    page_index_module._llm_page_outline(
+        page_text="# Root\n",
+        page_number=1,
+        source_format="markdown",
+        provider_settings=settings,
+        provider_diagnostics_sink=diagnostics.append,
+    )
+
+    assert len(diagnostics) == 1
+    record = diagnostics[0]
+    assert record["operation"] == "page_index_assignment"
+    assert record["call_role"] == "proposal"
+    assert record["strategy"] == "page_index"
+    assert record["attempt_index"] == 1
+    assert record["success"] is True
+    assert isinstance(record["elapsed_ms"], int)
+
+
+@pytest.mark.parametrize(
+    "provider",
+    ["fake", "ollama", "openai", "azure", "gemini", "vertex", "codex"],
+)
+def test_all_declared_page_index_modes_share_semantic_path_with_fake_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+) -> None:
+    _install_fake_page_index_chat(
+        monkeypatch,
+        assignment_payload=BlockAssignmentBatch(
+            assignments=[
+                BlockAssignment(
+                    block_id="p0001-b001",
+                    parent_id=None,
+                    node_type="SECTION",
+                    title="Root",
+                )
+            ]
+        ),
+    )
+    diagnostics: list[dict[str, object]] = []
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider=provider, model="test-model")
+    )
+
+    result = parse_page_index_document(
+        document_id=f"mode-{provider}",
+        title="Mode Matrix",
+        raw_text="# Root\n",
+        source_format="markdown",
+        mode=provider,  # type: ignore[arg-type]
+        provider_settings=settings,
+        provider_diagnostics_sink=diagnostics.append,
+    )
+
+    assert result.semantic_tree.child_nodes
+    assert diagnostics
+    assert {record["operation"] for record in diagnostics} == {"page_index_assignment"}
+    assert all(record["strategy"] == "page_index" for record in diagnostics)
+    assert all(record["success"] is True for record in diagnostics)
+
+
+def test_page_index_hierarchical_summary_passes_parent_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "# Root\n\nRoot detail.\n\n## Child\n\nChild detail.\n"
+    candidates = page_index_module._extract_candidate_blocks(
+        raw_text,
+        page_number=1,
+        source_format="markdown",
+    )
+    assignments = page_index_module._deterministic_block_assignments(candidates)
+    assignment_payload = BlockAssignmentBatch(
+        assignments=[assignment.model_copy(update={"summary": f"initial-{index}"}) for index, assignment in enumerate(assignments)]
+    )
+    captured: list[object] = []
+
+    class _SummaryStructured:
+        def __init__(self, schema):
+            self.schema = schema
+
+        def invoke(self, messages):
+            captured.extend(messages)
+            if self.schema is page_index_module.BlockAssignmentBatch:
+                return {"parsed": assignment_payload}
+            if self.schema is page_index_module.HierarchicalSummaryBatch:
+                prompt = str(messages[-1].content)
+                entries = json.loads(prompt.split("Blocks: ", 1)[1])
+                return {
+                    "parsed": page_index_module.HierarchicalSummaryBatch(
+                        assignments=[
+                            page_index_module.HierarchicalSummaryAssignment(
+                                path_id=str(entry["path_id"]),
+                                summary=f"summary-{entry['path_id']}",
+                            )
+                            for entry in entries
+                        ]
+                    )
+                }
+            raise AssertionError(f"unexpected structured schema: {self.schema!r}")
+
+    class _SummaryChat:
+        def with_structured_output(self, schema, include_raw=True, **kwargs):
+            return _SummaryStructured(schema)
+
+    monkeypatch.setattr(page_index_module, "build_chat_model_for_role", lambda *args, **kwargs: _SummaryChat())
+    diagnostics: list[dict[str, object]] = []
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="ollama", model="test-model")
+    )
+
+    result = parse_page_index_document(
+        document_id="hierarchical-summary",
+        title="Hierarchy",
+        raw_text=raw_text,
+        source_format="markdown",
+        mode="ollama",
+        provider_settings=settings,
+        provider_diagnostics_sink=diagnostics.append,
+        hierarchical_summary_enabled=True,
+    )
+
+    assert result.semantic_tree.child_nodes
+    page_diagnostics = result.diagnostics["page_diagnostics"][0]
+    assert page_diagnostics["hierarchical_summary_enabled"] is True
+    assert page_diagnostics["hierarchical_summary_accepted"] > 0
+    assert any(record["operation"] == "page_index_hierarchical_summary" for record in diagnostics)
+    assert any(
+        '"parent_summary": "summary-' in str(message.content)
+        for message in captured
+        if hasattr(message, "content")
+    )
+
+
+def test_page_index_hierarchical_summary_provider_failure_keeps_initial_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "# Root\n\nRoot detail.\n\n## Child\n\nChild detail.\n"
+    candidates = page_index_module._extract_candidate_blocks(
+        raw_text,
+        page_number=1,
+        source_format="markdown",
+    )
+    assignments = page_index_module._deterministic_block_assignments(candidates)
+    initial_summaries = [assignment.summary for assignment in assignments]
+
+    _install_fake_page_index_chat(
+        monkeypatch,
+        assignment_payload=BlockAssignmentBatch(assignments=assignments),
+    )
+    outline_builder = page_index_module.build_chat_model_for_role
+    call_count = 0
+
+    def _raise_on_summary_model(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return outline_builder(*args, **kwargs)
+        raise RuntimeError("summary model unavailable")
+
+    monkeypatch.setattr(page_index_module, "build_chat_model_for_role", _raise_on_summary_model)
+    diagnostics: list[dict[str, object]] = []
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="ollama", model="test-model")
+    )
+
+    result = parse_page_index_document(
+        document_id="hierarchical-summary-fallback",
+        title="Hierarchy",
+        raw_text=raw_text,
+        source_format="markdown",
+        mode="ollama",
+        provider_settings=settings,
+        provider_diagnostics_sink=diagnostics.append,
+        hierarchical_summary_enabled=True,
+    )
+
+    actual_summaries: list[str] = []
+
+    def _collect_summaries(node) -> None:
+        if node.node_type != "DOCUMENT_ROOT":
+            actual_summaries.append(node.summary)
+        for child in node.child_nodes:
+            _collect_summaries(child)
+
+    _collect_summaries(result.semantic_tree)
+    assert actual_summaries
+    assert all(not summary.startswith("summary-") for summary in actual_summaries)
+    assert all(not summary.startswith("summary-") for summary in initial_summaries)
+    page_diagnostics = result.diagnostics["page_diagnostics"][0]
+    assert page_diagnostics["hierarchical_summary_fallback"] is True
+    assert page_diagnostics["hierarchical_summary_accepted"] == 0
+    summary_failures = [
+        record for record in diagnostics if record["operation"] == "page_index_hierarchical_summary"
+    ]
+    assert summary_failures
+    assert summary_failures[0]["failure_type"] == "transport/provider_exception"
+
+
+def test_page_index_hierarchical_summary_requires_ordinary_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_page_index_chat(
+        monkeypatch,
+        assignment_payload=BlockAssignmentBatch(
+            assignments=[
+                BlockAssignment(
+                    block_id="p0001-b001",
+                    parent_id=None,
+                    node_type="SECTION",
+                    title="Root",
+                )
+            ]
+        ),
+    )
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="ollama", model="test-model")
+    )
+
+    result = parse_page_index_document(
+        document_id="hierarchical-summary-disabled",
+        title="Hierarchy",
+        raw_text="# Root\n\nRoot detail.\n",
+        source_format="markdown",
+        mode="ollama",
+        provider_settings=settings,
+        summary_enabled=False,
+        hierarchical_summary_enabled=True,
+    )
+
+    page_diagnostics = result.diagnostics["page_diagnostics"][0]
+    assert page_diagnostics["hierarchical_summary_enabled"] is False
+    assert page_diagnostics["hierarchical_summary_call_count"] == 0
 
 
 def test_page_index_module_exports_hybrid_primitives() -> None:
@@ -264,6 +572,107 @@ def test_page_index_heuristic_parses_text_and_markdown(fixture_name: str, source
     payload = semantic_tree_to_kge_payload(result.semantic_tree, doc_id=result.workflow_input.request_id)
     assert len(payload["nodes"]) >= 8
     assert len(payload["edges"]) >= 4
+
+
+@pytest.mark.ci
+def test_page_index_provider_accepts_atomic_long_table_without_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    raw_text = _fixture_text("title_long_table.md")
+    _install_long_table_assignment_provider(monkeypatch)
+    provider_settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="ollama", model="fake", base_url="http://127.0.0.1:11434")
+    )
+
+    result = parse_page_index_document(
+        document_id="page-index-title-long-table",
+        title="Sample Document Title",
+        raw_text=raw_text,
+        source_format="markdown",
+        mode="ollama",
+        provider_settings=provider_settings,
+        summary_enabled=False,
+    )
+    assert result.diagnostics["assignment_mode"] != "deterministic_fallback"
+    assert not any("too broad" in error for error in result.diagnostics.get("validation_errors", []))
+    assert result.coverage["overall"] == pytest.approx(1.0)
+    assert result.semantic_tree.child_nodes
+
+
+@pytest.mark.ci
+def test_page_index_marks_markdown_tables_as_explicit_table_nodes() -> None:
+    raw_text = "# Revenue\n\n| Year | Value |\n| --- | --- |\n| 2024 | 10 |\n| 2025 | 12 |\n"
+    result = parse_page_index_document(
+        document_id="page-index-table-kind",
+        title="Revenue",
+        raw_text=raw_text,
+        source_format="markdown",
+        mode="heuristic",
+        summary_enabled=False,
+    )
+    node_types = _collect_node_types(result.semantic_tree)
+    assert "TABLE" in node_types
+    def _find_tables(node):
+        matches = [node] if node.node_type == "TABLE" else []
+        for child in node.child_nodes:
+            matches.extend(_find_tables(child))
+        return matches
+
+    table_nodes = _find_tables(result.semantic_tree)
+    assert table_nodes
+    assert table_nodes[0].total_content_pointers
+
+
+@pytest.mark.ci
+def test_page_index_display_excerpt_is_optional_and_cannot_replace_grounding() -> None:
+    candidate = CandidateBlock(
+        block_id="p0001-b001",
+        page_number=1,
+        order=1,
+        start_char=0,
+        end_char=10,
+        line_start=1,
+        line_end=1,
+        indent=0,
+        kind_hint="paragraph",
+        confidence=0.8,
+        text="Alpha Beta",
+        node_type_hint="PARAGRAPH",
+        title_hint="Alpha",
+    )
+    assignment = BlockAssignment(
+        block_id=candidate.block_id,
+        parent_id=None,
+        node_type="PARAGRAPH",
+        title="Alpha",
+    )
+    valid = page_index_module._validate_page_index_block_structure(
+        candidates=[candidate],
+        assignments=[assignment],
+        block_specs=[
+            PageIndexBlockSpec(
+                title="Alpha",
+                node_type="PARAGRAPH",
+                excerpt="Alpha Beta",
+                display_excerpt="Beta",
+            )
+        ],
+        page_text="Alpha Beta",
+    )
+    assert valid.valid
+    invalid = page_index_module._validate_page_index_block_structure(
+        candidates=[candidate],
+        assignments=[assignment],
+        block_specs=[
+            PageIndexBlockSpec(
+                title="Alpha",
+                node_type="PARAGRAPH",
+                excerpt="Alpha Beta",
+                display_excerpt="Gamma",
+            )
+        ],
+        page_text="Alpha Beta",
+    )
+    assert not invalid.valid
+    assert any("display excerpt" in error for error in invalid.errors)
 
 
 @pytest.mark.manual
@@ -672,6 +1081,43 @@ def test_page_index_validator_rejects_repeated_sibling_and_whole_page_duplicatio
     assert any("duplicates the whole page" in error for error in validation.errors)
 
 
+def test_page_index_nested_validation_reports_only_the_failing_descendant() -> None:
+    page_text = "# Root\n\nChild content.\n"
+    candidates = page_index_module._extract_candidate_blocks(
+        page_text,
+        page_number=1,
+        source_format="markdown",
+    )
+    assignments = page_index_module._deterministic_block_assignments(candidates)
+    specs = [
+        page_index_module.PageIndexBlockSpec(
+            title="Root",
+            node_type="SECTION",
+            excerpt="# Root",
+            source_role="heading",
+            child_nodes=[
+                page_index_module.PageIndexBlockSpec(
+                    title="Child content.",
+                    node_type="PARAGRAPH",
+                    excerpt="",
+                    source_role="content",
+                )
+            ],
+        )
+    ]
+
+    validation = page_index_module._validate_page_index_block_structure(
+        candidates=candidates,
+        assignments=assignments,
+        block_specs=specs,
+        page_text=page_text,
+    )
+
+    assert validation.valid is False
+    assert "block 1.1 has empty excerpt" in validation.errors
+    assert "block 1 has empty excerpt" not in validation.errors
+
+
 def test_page_index_resolve_pointer_keeps_exact_match_unchanged() -> None:
     page_text = "Alpha beta gamma."
 
@@ -885,6 +1331,60 @@ def test_page_index_ollama_invalid_assignments_fall_back(monkeypatch: pytest.Mon
     assert result.diagnostics["assignment_mode"] == "deterministic_fallback"
     assert result.diagnostics["validation_errors"]
     assert result.semantic_tree.child_nodes[0].child_nodes[0].title == "Root"
+
+
+def test_page_index_ollama_salvages_valid_branches_after_local_assignment_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_text = "# Root\n\nIntro paragraph.\n\n## Child\n\n- Term item\n"
+    assignments = BlockAssignmentBatch(
+        assignments=[
+            BlockAssignment(block_id="p0001-b001", parent_id=None, node_type="SECTION", title="Provider Root"),
+            BlockAssignment(
+                block_id="p0001-b002",
+                parent_id="p0001-b001",
+                node_type="PARAGRAPH",
+                title="Provider intro",
+            ),
+            BlockAssignment(block_id="p0001-b003", parent_id="p0001-b001", node_type="SUBSECTION", title="Provider child"),
+            BlockAssignment(
+                block_id="p0001-b004",
+                parent_id="missing-parent",
+                node_type="TERM",
+                title="Provider term",
+            ),
+        ]
+    )
+
+    class _FakeStructured:
+        def invoke(self, messages):
+            return {"parsed": assignments}
+
+    class _FakeChat:
+        def with_structured_output(self, schema, include_raw=True):
+            return _FakeStructured()
+
+    monkeypatch.setattr(page_index_module, "build_chat_model_for_role", lambda *args, **kwargs: _FakeChat())
+
+    provider_settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="ollama", model="fake", base_url="http://127.0.0.1:11434")
+    )
+    result = parse_page_index_document(
+        document_id="page-index-ollama-branch-salvage",
+        title="Page Index Document",
+        raw_text=raw_text,
+        source_format="markdown",
+        mode="ollama",
+        provider_settings=provider_settings,
+    )
+
+    assert result.diagnostics["assignment_mode"] == "ollama_branch_local_salvage", result.diagnostics
+    assert result.diagnostics["branch_local_salvage"][0]["invalid_block_ids"] == ["p0001-b004"]
+    root = result.semantic_tree.child_nodes[0].child_nodes[0]
+    assert root.title == "Provider Root"
+    child = next(node for node in root.child_nodes if node.title == "Provider child")
+    term = next(node for node in child.child_nodes if node.title == "Term item")
+    assert term.total_content_pointers[0].verbatim_text == "- Term item"
 
 
 def test_page_index_refinement_disabled_by_default_preserves_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1265,7 +1765,8 @@ def test_page_index_heading_container_projects_source_text_to_leaf() -> None:
     results = page.child_nodes[0]
     assert results.node_type == "HEADING"
     assert results.total_content_pointers == []
-    assert results.summary == "Results"
+    assert results.summary == ""
+    assert results.metadata["summary_unavailable"] is True
     assert results.aggregate_content_pointers[0].verbatim_text == "# Results\n\nIntro.\n\n## Measurements\n\nBody."
     assert results.metadata["page_index_role"] == "heading_container"
     assert results.metadata["semantic_kind"] == "heading"
@@ -1275,7 +1776,8 @@ def test_page_index_heading_container_projects_source_text_to_leaf() -> None:
     assert heading.title == "Results"
     assert heading.metadata["page_index_role"] == "heading_text"
     assert heading.total_content_pointers[0].verbatim_text == "# Results"
-    assert heading.summary == "Results"
+    assert heading.summary == ""
+    assert heading.metadata["summary_unavailable"] is True
 
     measurements = next(node for node in results.child_nodes if node.title == "Measurements")
     assert measurements.node_type == "HEADING"
@@ -1314,10 +1816,7 @@ def test_page_index_summary_can_be_disabled_without_changing_grounding() -> None
 )
 @pytest.mark.parametrize(
     "parser_model",
-    [
-        pytest.param("gemma4:e2b", id="gemma4-e2b"),
-        pytest.param("gemma4:latest", id="gemma4-latest"),
-    ],
+    _ollama_parser_model_params(),
 )
 def test_page_index_ollama_smoke_parses_text_and_markdown(
     fixture_name: str,
@@ -1325,11 +1824,17 @@ def test_page_index_ollama_smoke_parses_text_and_markdown(
     parser_model: str,
 ) -> None:
     pytest.importorskip("langchain_ollama")
+    base_url = os.getenv("KG_DOC_PARSER_BASE_URL", "http://127.0.0.1:11434")
+    available, reason = ollama_available(base_url, parser_model)
+    if not available:
+        pytest.skip(f"ollama parser unavailable: {reason}")
+    limits = _ollama_provider_limits()
     provider_settings = WorkflowProviderSettings(
         parser=ProviderEndpointConfig(
             provider="ollama",
             model=parser_model,
-            base_url=os.getenv("KG_DOC_PARSER_BASE_URL", "http://127.0.0.1:11434"),
+            base_url=base_url,
+            **limits,
         )
     )
     raw_text = _fixture_text(fixture_name)
@@ -1345,7 +1850,7 @@ def test_page_index_ollama_smoke_parses_text_and_markdown(
         )
     except Exception as exc:
         message = str(exc).lower()
-        if any(token in message for token in ("connect", "connection", "refused", "model", "ollama")):
+        if any(token in message for token in ("connect", "connection", "refused", "timed out")):
             pytest.skip(f"ollama parser unavailable: {exc}")
         raise
 
@@ -1368,10 +1873,7 @@ def test_page_index_ollama_smoke_parses_text_and_markdown(
 )
 @pytest.mark.parametrize(
     "parser_model",
-    [
-        pytest.param("gemma4:e2b", id="gemma4-e2b"),
-        pytest.param("gemma4:latest", id="gemma4-latest"),
-    ],
+    _ollama_parser_model_params(),
 )
 def test_page_index_workflow_ingest_with_ollama_manual_case(
     fixture_name: str,
@@ -1386,6 +1888,11 @@ def test_page_index_workflow_ingest_with_ollama_manual_case(
     """
 
     pytest.importorskip("langchain_ollama")
+    base_url = os.getenv("KG_DOC_PARSER_BASE_URL", "http://127.0.0.1:11434")
+    available, reason = ollama_available(base_url, parser_model)
+    if not available:
+        pytest.skip(f"ollama workflow ingest unavailable: {reason}")
+    limits = _ollama_provider_limits()
     scratch = _scratch("workflow_ingest_ollama")
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(scratch / "engines", "in_memory")
     raw_text = _fixture_text(fixture_name)
@@ -1393,7 +1900,8 @@ def test_page_index_workflow_ingest_with_ollama_manual_case(
         parser=ProviderEndpointConfig(
             provider="ollama",
             model=parser_model,
-            base_url=os.getenv("KG_DOC_PARSER_BASE_URL", "http://127.0.0.1:11434"),
+            base_url=base_url,
+            **limits,
         )
     )
 
@@ -1433,7 +1941,7 @@ def test_page_index_workflow_ingest_with_ollama_manual_case(
         drain_phase1_indexes_until_idle(workflow_engine, conversation_engine, knowledge_engine)
     except Exception as exc:
         message = str(exc).lower()
-        if any(token in message for token in ("connect", "connection", "refused", "model", "ollama")):
+        if any(token in message for token in ("connect", "connection", "refused", "timed out")):
             pytest.skip(f"ollama workflow ingest unavailable: {exc}")
         raise
 
