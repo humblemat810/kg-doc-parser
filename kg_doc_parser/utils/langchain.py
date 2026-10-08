@@ -1,17 +1,37 @@
+import time
+from contextlib import contextmanager
 from logging import Logger
 from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.outputs.chat_generation import ChatGeneration
 from langchain_core.outputs.llm_result import LLMResult
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, TypedDict
 
 GEMINI_PRO_INPUT_COST_PER_1K_TOKENS = 0.0001
 GEMINI_PRO_OUTPUT_COST_PER_1K_TOKENS = 0.0004
 
 #per_k
 # storage per hour
-cost_table = {
+class ModelCost(TypedDict):
+    input: float
+    output: float
+    cache: float
+    storage_per_hour: float
+
+
+class UsageHistoryEntry(TypedDict):
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    cached_tokens: int
+    reasoning_tokens: int
+    cost: float
+    start_time: float | None
+    end_time: float | None
+
+
+cost_table: dict[str, ModelCost] = {
     "gemini-2.0-flash": {"input": 0.0001, "output": 0.0004, "cache" : 0.0, "storage_per_hour": 0.0},
     "gemini-1.5-pro": {"input": 0.001250, "output": 0.005, "cache" : 0.0, "storage_per_hour": 0.0},
     "gemini-2.5-flash-preview-04-17": {"input": 0.000150, "output": 0.0035, "cache" : 0.0000375, "storage_per_hour": 0.0010},
@@ -41,15 +61,27 @@ for k in keys:
     else:
         cost_table['models/' + k] = cost_table[k]
 
-def calculate_gemini_cost(input_tokens, output_tokens, cached_tokens, model_name):
+def calculate_gemini_cost(
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    model_name: str,
+) -> float:
     """Calculates the cost based on Gemini Pro pricing."""
-    cost = cost_table.get(model_name, {"input": 1.250/1000000, "output": 5.0/1000000, "cache" : 0.0, "storage_per_hour": 0.0}) # prodential to assume high priced model
+    cost = cost_table.get(
+        model_name,
+        {
+            "input": 1.250 / 1000000,
+            "output": 5.0 / 1000000,
+            "cache": 0.0,
+            "storage_per_hour": 0.0,
+        },
+    )
     input_cost = ((input_tokens-cached_tokens) / 1000) * cost['input']
     cache_cost = cached_tokens / 1000 * cost['cache']
     output_cost = (output_tokens / 1000) * cost['output']
     total_cost = input_cost + output_cost + cache_cost
     return total_cost
-import time
 class GeminiCostCallbackHandler(BaseCallbackHandler):
     """A custom callback handler to track Gemini API costs."""
     
@@ -60,9 +92,9 @@ class GeminiCostCallbackHandler(BaseCallbackHandler):
         self.cache_tokens = 0
         self.reasoning_tokens = 0
         self.total_cost = 0.0
-        self.usage_history = []
-        self.run_start_time = None
-        self.run_end_time = None
+        self.usage_history: list[UsageHistoryEntry] = []
+        self.run_start_time: float | None = None
+        self.run_end_time: float | None = None
     def on_llm_start(self, serialized, prompts, *, run_id, parent_run_id = None, tags = None, metadata = None, **kwargs):
         self.run_start_time = time.time()
         return super().on_llm_start(serialized, prompts, run_id=run_id, parent_run_id=parent_run_id, tags=tags, metadata=metadata, **kwargs)
@@ -135,8 +167,6 @@ class GeminiCostCallbackHandler(BaseCallbackHandler):
             "total_cost": self.total_cost,
             'usage_history' : self.usage_history}
         )
-from contextlib import contextmanager
-
 @contextmanager
 def get_gemini_callback_cost():
     """A context manager to track Gemini API costs for a block of code."""
