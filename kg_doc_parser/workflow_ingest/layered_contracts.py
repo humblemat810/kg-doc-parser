@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from kogwistar.json_types import JsonValue
 from pydantic import BaseModel, ConfigDict, Field
 
 from .models import (
@@ -36,7 +37,7 @@ class _LayeredCollection:
     title: str
 
 
-LayeredPayload = dict[str, object]
+LayeredPayload = dict[str, JsonValue]
 LayeredSourceMap = dict[str, LayeredPayload]
 
 
