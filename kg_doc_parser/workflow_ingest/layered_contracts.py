@@ -247,7 +247,7 @@ def _estimate_context_tokens(context: object) -> int:
     return max(1, (len(text) + 3) // 4)
 
 
-def _model_or_mapping(value: Mapping[str, object], name: str) -> _LayeredCollection:
+def _model_or_mapping(value: Mapping[str, JsonValue], name: str) -> _LayeredCollection:
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be an object")
     collection_id = value.get("collection_id")
