@@ -20,6 +20,7 @@ from typing import Literal, Protocol, cast
 from uuid import uuid4
 
 from kogwistar.engine_core.models import Edge, Node
+from kogwistar.json_types import JsonValue
 
 from .design import DEFAULT_WORKFLOW_ID, ensure_ingest_workflow_design
 from .models import (
@@ -37,6 +38,7 @@ class UnsupportedClientOperation(RuntimeError):
 
 
 IngestStatus = Literal["succeeded", "failed", "failure", "suspended"]
+JsonObject = dict[str, JsonValue]
 
 
 class HttpResponseLike(Protocol):
@@ -86,15 +88,15 @@ def _jsonable_payload(value: object) -> object:
     return value
 
 
-def _record_list(value: object, *, field_name: str) -> list[dict[str, object]]:
+def _record_list(value: object, *, field_name: str) -> list[JsonObject]:
     if not isinstance(value, (list, tuple)):
         raise TypeError(f"graph payload field {field_name!r} must be a list")
-    records: list[dict[str, object]] = []
+    records: list[JsonObject] = []
     for item in value:
         converted = _jsonable_payload(item)
         if not isinstance(converted, dict):
             raise TypeError(f"graph payload {field_name!r} items must be objects")
-        records.append({str(key): payload for key, payload in converted.items()})
+        records.append(cast(JsonObject, {str(key): payload for key, payload in converted.items()}))
     return records
 
 
@@ -106,7 +108,7 @@ def _string_list(value: object, *, field_name: str) -> list[str]:
     return [str(item) for item in value]
 
 
-def _to_temp_id_graph_payload(graph_payload: Mapping[str, object]) -> dict[str, object]:
+def _to_temp_id_graph_payload(graph_payload: Mapping[str, object]) -> JsonObject:
     """Adapt a canonical export bundle into the server's batch-temp-id contract."""
 
     nodes = _record_list(graph_payload.get("nodes", []), field_name="nodes")
@@ -187,7 +189,7 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
         response_payload = response.json()
         if not isinstance(response_payload, Mapping):
             raise TypeError("canonical server persistence returned a non-object JSON body")
-        response_json: Mapping[str, object] = response_payload
+        response_json = cast(Mapping[str, JsonValue], response_payload)
         raw_engine_result = response_json.get("engine_result")
         engine_result = raw_engine_result if isinstance(raw_engine_result, Mapping) else {}
         return CanonicalGraphWriteResult(
