@@ -62,8 +62,11 @@ from .providers import (
     invoke_with_timeout,
 )
 from .service import run_ingest_workflow
+from kogwistar.json_types import JsonValue
 
 _LOGGER = logging.getLogger(__name__)
+
+JsonObject = dict[str, JsonValue]
 
 
 class OCRImagePayload(BaseModel):
@@ -665,7 +668,7 @@ class OCRWorkflowStateStore:
             input_fingerprint=input_fingerprint,
         )
         rebuilt_any = False
-        progress_payload: dict[str, Any] = {}
+        progress_payload: JsonObject = {}
         if progress_path.exists():
             progress_payload = json.loads(progress_path.read_text(encoding="utf-8"))
         progress_pages = progress_payload.get("pages", {})
@@ -965,7 +968,7 @@ class OCRWorkflowStateStore:
         self.mark_document_completed(document_id=document_id, is_completed=is_completed)
         return is_completed
 
-    def list_model_attempts(self, *, document_id: str, page_number: int, stage: str = "ocr") -> list[dict[str, Any]]:
+    def list_model_attempts(self, *, document_id: str, page_number: int, stage: str = "ocr") -> list[JsonObject]:
         with self._session() as conn:
             rows = conn.execute(
                 """
@@ -1114,7 +1117,7 @@ def _materialize_image_payloads(image_payloads: Sequence[OCRImagePayload], rende
 
 
 def _compute_input_fingerprint(*, page_sources: Sequence[tuple[int, Path]] | None = None, pdf_path: Path | None = None) -> str:
-    payload: dict[str, Any] = {}
+    payload: JsonObject = {}
     if pdf_path is not None:
         payload["pdf_sha256"] = _sha256_file(pdf_path)
     if page_sources is not None:
@@ -1175,7 +1178,7 @@ def _render_pdf_to_images(pdf_path: Path, rendered_dir: Path) -> list[Path]:
     return output_paths
 
 
-def _coerce_ocr_response(payload: Any) -> OCRClusterResponse:
+def _coerce_ocr_response(payload: object) -> OCRClusterResponse:
     """Coerce a structured-output payload into the OCR model."""
     if isinstance(payload, OCRClusterResponse):
         return payload
@@ -1195,7 +1198,7 @@ def _coerce_ocr_response(payload: Any) -> OCRClusterResponse:
     return OCRClusterResponse.model_validate(payload)
 
 
-def _extract_message_text(raw: Any) -> str:
+def _extract_message_text(raw: object) -> str:
     """Extract plain text from LangChain raw message content."""
     content = getattr(raw, "content", raw)
     if isinstance(content, str):
@@ -1380,7 +1383,7 @@ def _write_summary(
     provider_settings: WorkflowProviderSettings,
     state_store: OCRWorkflowStateStore,
 ) -> None:
-    payload: dict[str, Any] = {
+    payload: JsonObject = {
         "document_id": document_id,
         "ocr_provider": provider_settings.ocr.provider,
         "ocr_model": provider_settings.ocr.model,
@@ -1400,7 +1403,7 @@ def _write_summary(
     artifacts.summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _emit_ocr_event(probe: WorkflowProbe | None, kind: str, /, **payload: Any) -> None:
+def _emit_ocr_event(probe: WorkflowProbe | None, kind: str, /, **payload: object) -> None:
     emit_probe_event(probe, kind, **payload)
 
 
@@ -1632,7 +1635,7 @@ def run_ocr_ingest_workflow(
     ocr_runner: OCRRunner | None = None,
     pdf_rasterizer: PDFRasterizer | None = None,
     ocr_candidate_models: Sequence[str] | None = None,
-    deps: dict[str, Any] | None = None,
+    deps: dict[str, object] | None = None,
     probe: WorkflowProbe | None = None,
 ) -> tuple[Any, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
     """Run OCR preparation and then feed the normalized result into workflow ingest.
