@@ -53,6 +53,31 @@ def workflow_predicates() -> dict[str, Any]:
     def _strategy_selection_failed(_edge: Any, state: dict[str, Any], _result: Any) -> bool:
         return bool(state.get("strategy_selection_error"))
 
+    def _commit_candidates_valid(_edge: Any, state: dict[str, Any], _result: Any) -> bool:
+        review = state.get("current_layer_review")
+        return isinstance(review, dict) and bool(review.get("metadata", {}).get("commit_validation")) and review.get("satisfied") is True
+
+    def _commit_candidates_invalid(_edge: Any, state: dict[str, Any], _result: Any) -> bool:
+        review = state.get("current_layer_review")
+        return isinstance(review, dict) and bool(review.get("metadata", {}).get("commit_validation")) and review.get("satisfied") is False
+
+    def _batch_has_repair_candidates(_edge: Any, state: dict[str, Any], _result: Any) -> bool:
+        context = _context(state)
+        review = state.get("current_layer_review")
+        result = state.get("current_layer_result")
+        if not isinstance(review, dict) or not isinstance(result, dict):
+            return False
+        if review.get("metadata", {}).get("review_failure"):
+            return False
+        parent_ids = context.get("parent_node_ids")
+        children = result.get("children")
+        if not isinstance(parent_ids, list) or len(parent_ids) < 2 or not isinstance(children, list):
+            return False
+        return any(
+            isinstance(child, dict) and child.get("parent_node_id") in parent_ids
+            for child in children
+        )
+
     def _satisfied(_edge: Any, state: dict[str, Any], _result: Any) -> bool:
         review = state.get("current_layer_review")
         result = state.get("current_layer_result")
@@ -76,6 +101,9 @@ def workflow_predicates() -> dict[str, Any]:
         "strategy_failed_with_remaining": _failed_with_remaining,
         "all_strategies_exhausted": _exhausted,
         "strategy_selection_failed": _strategy_selection_failed,
+        "commit_candidates_valid": _commit_candidates_valid,
+        "commit_candidates_invalid": _commit_candidates_invalid,
+        "batch_has_repair_candidates": _batch_has_repair_candidates,
     }
 
 

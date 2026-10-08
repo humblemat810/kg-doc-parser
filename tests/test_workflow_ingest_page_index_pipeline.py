@@ -558,6 +558,10 @@ def test_page_index_heuristic_parses_text_and_markdown(fixture_name: str, source
     assert len(result.workflow_input.collections[0].pages) == 2
     assert len(result.semantic_tree.child_nodes) == 2
     assert [page.title for page in result.semantic_tree.child_nodes] == ["Page 1", "Page 2"]
+    assert all(page.parent_id == result.semantic_tree.node_id for page in result.semantic_tree.child_nodes)
+    assert len({page.node_id for page in result.semantic_tree.child_nodes}) == 2
+    restored_tree = SemanticNode.model_validate(result.semantic_tree.model_dump())
+    assert all(page.parent_id == restored_tree.node_id for page in restored_tree.child_nodes)
     assert result.authoritative_source_map.keys() == result.parser_source_map.keys()
     assert result.coverage["overall"] > 0.95
 
@@ -1019,7 +1023,7 @@ def test_page_index_validator_rejects_cycles_and_bad_term_evidence() -> None:
     assert any("term evidence" in error for error in validation.errors)
 
 
-def test_page_index_validator_rejects_repeated_sibling_and_whole_page_duplication() -> None:
+def test_page_index_validator_allows_repeated_sibling_text_at_distinct_occurrences() -> None:
     candidates = [
         CandidateBlock(
             block_id="p0001-b001",
@@ -1077,8 +1081,73 @@ def test_page_index_validator_rejects_repeated_sibling_and_whole_page_duplicatio
     validation = page_index_module._validate_block_assignments(candidates, assignments, page_text="Shared content")
 
     assert validation.valid is False
-    assert any("repeats the same sibling excerpt" in error for error in validation.errors)
+    assert not any("repeats the same sibling excerpt" in error for error in validation.errors)
     assert any("duplicates the whole page" in error for error in validation.errors)
+
+
+def test_page_index_validator_rejects_reused_sibling_source_occurrence() -> None:
+    candidates = [
+        CandidateBlock(
+            block_id="p0001-b001",
+            page_number=1,
+            order=1,
+            start_char=0,
+            end_char=15,
+            line_start=1,
+            line_end=1,
+            indent=0,
+            kind_hint="heading_markdown",
+            confidence=0.98,
+            text="Shared content",
+            node_type_hint="SECTION",
+            title_hint="Shared content",
+            heading_level=1,
+        ),
+        CandidateBlock(
+            block_id="p0001-b002",
+            page_number=1,
+            order=2,
+            start_char=16,
+            end_char=31,
+            line_start=2,
+            line_end=2,
+            indent=0,
+            kind_hint="paragraph",
+            confidence=0.8,
+            text="Shared content",
+            node_type_hint="PARAGRAPH",
+            title_hint="Shared content",
+        ),
+        CandidateBlock(
+            block_id="p0001-b003",
+            page_number=1,
+            order=3,
+            start_char=16,
+            end_char=31,
+            line_start=3,
+            line_end=3,
+            indent=0,
+            kind_hint="paragraph",
+            confidence=0.8,
+            text="Shared content",
+            node_type_hint="PARAGRAPH",
+            title_hint="Shared content",
+        ),
+    ]
+    assignments = [
+        BlockAssignment(block_id="p0001-b001", parent_id=None, node_type="SECTION", title="Shared content"),
+        BlockAssignment(block_id="p0001-b002", parent_id="p0001-b001", node_type="PARAGRAPH", title="Shared content"),
+        BlockAssignment(block_id="p0001-b003", parent_id="p0001-b001", node_type="PARAGRAPH", title="Shared content"),
+    ]
+
+    validation = page_index_module._validate_block_assignments(
+        candidates,
+        assignments,
+        page_text="Shared content",
+    )
+
+    assert validation.valid is False
+    assert any("reuses overlapping source occurrence" in error for error in validation.errors)
 
 
 def test_page_index_nested_validation_reports_only_the_failing_descendant() -> None:
@@ -1770,7 +1839,6 @@ def test_page_index_heading_container_projects_source_text_to_leaf() -> None:
     assert results.aggregate_content_pointers[0].verbatim_text == "# Results\n\nIntro.\n\n## Measurements\n\nBody."
     assert results.metadata["page_index_role"] == "heading_container"
     assert results.metadata["semantic_kind"] == "heading"
-
     heading = results.child_nodes[0]
     assert heading.node_type == "HEADING_TEXT"
     assert heading.title == "Results"
@@ -1789,6 +1857,54 @@ def test_page_index_heading_container_projects_source_text_to_leaf() -> None:
 
 
 @pytest.mark.ci
+def test_page_index_repeated_heading_titles_have_distinct_stable_ids() -> None:
+    result = parse_page_index_document(
+        document_id="page-index-repeated-heading",
+        title="Page Index Document",
+        raw_text="# Repeat\n\nFirst body.\n\n# Repeat\n\nSecond body.\n",
+        source_format="markdown",
+        mode="heuristic",
+    )
+
+    page = result.semantic_tree.child_nodes[0]
+    repeated = [
+        node
+        for node in page.child_nodes
+        if node.metadata.get("page_index_role") == "heading_container" and node.title == "Repeat"
+    ]
+
+    assert len(repeated) == 2
+    assert repeated[0].node_id != repeated[1].node_id
+    assert repeated[0].total_content_pointers == []
+    assert repeated[1].total_content_pointers == []
+
+
+@pytest.mark.ci
+def test_page_index_heading_ids_ignore_title_edits_at_same_source_occurrence() -> None:
+    def materialize(title: str):
+        spec = PageIndexBlockSpec(
+            title=title,
+            node_type="HEADING",
+            excerpt="# Stable occurrence",
+            source_role="heading",
+        )
+        nodes, _ = page_index_module._materialize_block_tree(
+            block_specs=[spec],
+            page_text="# Stable occurrence",
+            unit_id="unit-1",
+            parent_id="page-1",
+            level_from_root=2,
+        )
+        return nodes[0]
+
+    original = materialize("Original title")
+    edited = materialize("Edited title")
+
+    assert original.node_id == edited.node_id
+    assert original.child_nodes[0].node_id == edited.child_nodes[0].node_id
+    assert original.total_content_pointers == edited.total_content_pointers == []
+
+@pytest.mark.ci
 def test_page_index_summary_can_be_disabled_without_changing_grounding() -> None:
     result = parse_page_index_document(
         document_id="page-index-summary-disabled",
@@ -1802,6 +1918,14 @@ def test_page_index_summary_can_be_disabled_without_changing_grounding() -> None
     assert results.summary == ""
     assert results.aggregate_content_pointers[0].verbatim_text == "# Results\n\nIntro."
     assert results.child_nodes[0].total_content_pointers[0].verbatim_text == "# Results"
+
+    payload = semantic_tree_to_kge_payload(
+        result.semantic_tree,
+        doc_id=result.workflow_input.request_id,
+    )
+    persisted = next(node for node in payload["nodes"] if node["id"] == results.node_id)
+    assert persisted["summary"] == ""
+    assert persisted["metadata"]["summary_unavailable"] is False
 
 
 @pytest.mark.manual

@@ -428,6 +428,7 @@ def test_workflow_design_matches_expected_step_sequence():
         "check_layer_satisfaction",
         "repair_layer_pointers",
         "dedupe_and_filter_layer",
+        "validate_layer_commit",
         "commit_layer_children",
         "check_children_expandable",
         "enqueue_next_layer_frontier",
@@ -450,6 +451,10 @@ def test_workflow_design_matches_expected_step_sequence():
     assert ("triage_parse_strategy", "layer_boundary_method") in edge_pairs
     assert ("check_layer_satisfaction", "parse_failure") in edge_pairs
     assert ("check_layer_satisfaction", "triage_parse_strategy") in edge_pairs
+    assert ("check_layer_satisfaction", "repair_layer_pointers") in edge_pairs
+    assert ("dedupe_and_filter_layer", "validate_layer_commit") in edge_pairs
+    assert ("validate_layer_commit", "commit_layer_children") in edge_pairs
+    assert ("validate_layer_commit", "check_layer_satisfaction") in edge_pairs
     assert ("page_index_layer", "review_cud_proposal") in edge_pairs
     assert ("page_index_layer", "validate_tree") not in edge_pairs
     guarded = {
@@ -459,6 +464,7 @@ def test_workflow_design_matches_expected_step_sequence():
     }
     assert guarded[("triage_parse_strategy", "layer_boundary_method")] == "parse_strategy_layer_boundary"
     assert guarded[("check_layer_satisfaction", "parse_failure")] == "all_strategies_exhausted"
+    assert guarded[("check_layer_satisfaction", "repair_layer_pointers")] == "batch_has_repair_candidates"
 
 
 @pytest.mark.ci

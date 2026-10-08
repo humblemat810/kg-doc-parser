@@ -263,6 +263,17 @@ class ValidationReport(ModeSlicingMixin, BaseModel):
 
     overall_text_coverage: Annotated[float, DtoField(), BackendField(), FrontendField(), LLMField()]
     per_cluster_coverage: Annotated[dict[str, float], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=dict)
+    terminal_coverage: Annotated[dict[str, Any], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
+        default_factory=dict
+    )
+    terminal_coverage_status: Annotated[
+        Literal["complete", "atomic_valid", "partial_degraded", "failed"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = "failed"
+    coverage_basis: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()] = "legacy_union"
     corrected_pointer_count: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     validation_notes: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
 
@@ -651,6 +662,12 @@ class CurrentLayerReview(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+    committable_parent_node_ids: Annotated[
+        list[str], DtoField(), BackendField(), FrontendField(), ExcludeMode("llm")
+    ] = Field(default_factory=list)
+    failed_parent_node_ids: Annotated[
+        list[str], DtoField(), BackendField(), FrontendField(), ExcludeMode("llm")
+    ] = Field(default_factory=list)
 
 
 class LLMCurrentLayerReview(BaseModel):

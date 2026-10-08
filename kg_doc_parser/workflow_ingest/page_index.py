@@ -924,12 +924,17 @@ def _validate_block_assignments(
     for parent_id, siblings in sibling_groups.items():
         if len(siblings) <= 1:
             continue
-        normalized = [" ".join(block.text.split()).strip().lower() for block in siblings if block.text.strip()]
-        if len(normalized) != len(siblings):
+        if any(not block.text.strip() for block in siblings):
             errors.append(f"parent {parent_id!r} has empty sibling text")
             continue
-        if len(set(normalized)) == 1:
-            errors.append(f"parent {parent_id!r} repeats the same sibling excerpt")
+        for left_index, left in enumerate(siblings):
+            for right in siblings[left_index + 1 :]:
+                if left.end_char < right.start_char or right.end_char < left.start_char:
+                    continue
+                errors.append(
+                    f"parent {parent_id!r} reuses overlapping source occurrence "
+                    f"{left.block_id!r}/{right.block_id!r}"
+                )
     if any(" ".join(candidate.text.split()).strip().lower() == normalized_page_text for candidate in candidates) and len(candidates) > 1:
         errors.append("candidate excerpt duplicates the whole page")
 
@@ -1131,6 +1136,12 @@ def _validate_page_index_block_structure(
         errors.append("block tree is empty")
 
     normalized_page_text = _normalize_page_index_excerpt(page_text)
+    flattened_specs = _flatten_page_index_specs(block_specs)
+    spec_candidate_by_identity = (
+        {id(spec): candidate for spec, candidate in zip(flattened_specs, candidates)}
+        if len(flattened_specs) == len(candidates)
+        else {}
+    )
     baseline_assignments = _deterministic_block_assignments(candidates)
     candidate_by_id = {candidate.block_id: candidate for candidate in candidates}
     baseline_nested_heading_count = sum(
@@ -1177,9 +1188,24 @@ def _validate_page_index_block_structure(
                 errors.append(f"block {current_path} excerpt is too generic")
             normalized_sibling_excerpts.append(normalized_excerpt)
             _validate_siblings(spec.child_nodes, path=current_path)
-        non_empty = [excerpt for excerpt in normalized_sibling_excerpts if excerpt]
-        if len(non_empty) > 1 and len(set(non_empty)) == 1:
-            errors.append(f"block siblings at {path or 'root'} repeat the same excerpt")
+        for left_index, left in enumerate(siblings):
+            for right in siblings[left_index + 1 :]:
+                left_candidate = spec_candidate_by_identity.get(id(left))
+                right_candidate = spec_candidate_by_identity.get(id(right))
+                if left_candidate is None or right_candidate is None:
+                    if (
+                        _normalize_page_index_excerpt(left.excerpt)
+                        == _normalize_page_index_excerpt(right.excerpt)
+                    ):
+                        errors.append(
+                            f"block siblings at {path or 'root'} repeat the same excerpt"
+                        )
+                    continue
+                if left_candidate.end_char < right_candidate.start_char or right_candidate.end_char < left_candidate.start_char:
+                    continue
+                errors.append(
+                    f"block siblings at {path or 'root'} reuse overlapping source occurrences"
+                )
 
     _validate_siblings(block_specs, path="")
     return PageIndexValidationResult(
@@ -1192,6 +1218,18 @@ def _validate_page_index_block_structure(
 
 def _normalize_page_index_excerpt(text: str) -> str:
     return " ".join(text.split()).strip().lower()
+
+
+def _flatten_page_index_specs(specs: list[PageIndexBlockSpec]) -> list[PageIndexBlockSpec]:
+    flattened: list[PageIndexBlockSpec] = []
+
+    def walk(items: list[PageIndexBlockSpec]) -> None:
+        for item in items:
+            flattened.append(item)
+            walk(item.child_nodes)
+
+    walk(specs)
+    return flattened
 
 
 def _page_index_path_id(path: tuple[int, ...]) -> str:
@@ -1373,15 +1411,20 @@ def _refine_page_index_block_excerpts(
                 ancestor_excerpts += (normalized,)
             current_nodes = ancestor.child_nodes
         parent_nodes = refined if len(path) == 1 else _get_page_index_block_spec_at_path(refined, path[:-1]).child_nodes
-        sibling_norms = [
+        sibling_norms = {
             _normalize_page_index_excerpt(sibling.excerpt)
             for sibling_index, sibling in enumerate(parent_nodes)
             if sibling_index != path[-1] and _normalize_page_index_excerpt(sibling.excerpt)
-        ]
+        }
         normalized_proposed = _normalize_page_index_excerpt(proposed)
-        if normalized_proposed in ancestor_excerpts or normalized_proposed in sibling_norms:
+        if normalized_proposed in ancestor_excerpts:
             diagnostics["refine_excerpts_rejected"] += 1
             continue
+        if normalized_proposed in sibling_norms:
+            normalized_source = _normalize_page_index_excerpt(page_text)
+            if normalized_source.count(normalized_proposed) < 2:
+                diagnostics["refine_excerpts_rejected"] += 1
+                continue
 
         candidate_spec = deepcopy(original_spec)
         candidate_spec.excerpt = proposed
@@ -2261,6 +2304,20 @@ def _materialize_block_tree(
         )
         cursor = pointer.end_char + 1
         is_heading = spec.source_role == "heading"
+        node_id = (
+            str(
+                stable_id(
+                    "workflow_ingest.page_index.heading_container",
+                    parent_id,
+                    spec.node_type,
+                    pointer.source_cluster_id,
+                    pointer.start_char,
+                    pointer.end_char,
+                )
+            )
+            if is_heading
+            else None
+        )
         node = _make_semantic_node(
             title=spec.title,
             node_type=spec.node_type,
@@ -2277,6 +2334,8 @@ def _materialize_block_tree(
                 "summary_unavailable": bool(summary_enabled and not spec.summary.strip()),
             },
         )
+        if node_id is not None:
+            node = node.model_copy(update={"node_id": node_id})
         heading_leaf = None
         if is_heading:
             heading_leaf = _make_semantic_node(
@@ -2292,6 +2351,19 @@ def _materialize_block_tree(
                     "display_excerpt": spec.display_excerpt,
                     "summary_unavailable": bool(summary_enabled and not spec.summary.strip()),
                 },
+            )
+            heading_leaf = heading_leaf.model_copy(
+                update={
+                    "node_id": str(
+                        stable_id(
+                            "workflow_ingest.page_index.heading_text",
+                            node.node_id,
+                            pointer.source_cluster_id,
+                            pointer.start_char,
+                            pointer.end_char,
+                        )
+                    )
+                }
             )
         child_nodes, cursor = _materialize_block_tree(
             block_specs=spec.child_nodes,
@@ -2399,7 +2471,6 @@ def parse_page_index_layer(
                     "workflow_ingest.page_index_layer_child",
                     parent_id,
                     node.node_type,
-                    node.title,
                     [pointer.model_dump(mode="json") for pointer in pointers],
                 )
             )
@@ -2414,7 +2485,6 @@ def parse_page_index_layer(
                         "workflow_ingest.page_index_layer_materialized_child",
                         candidate_id,
                         child.node_type,
-                        child.title,
                         [pointer.model_dump(mode="json") for pointer in child_pointers],
                     )
                 )
@@ -2532,7 +2602,23 @@ def parse_page_index_document(
         key=lambda item: (item[1].page_number, item[1].cluster_number or 0, item[0]),
     )
 
-    root_pointers: list[HydratedTextPointer] = []
+    root_pointers = [
+        HydratedTextPointer(
+            source_cluster_id=unit_id,
+            start_char=0,
+            end_char=max(0, len(record.text) - 1),
+            verbatim_text=record.text,
+        )
+        for unit_id, record in page_units
+    ]
+    root_node = SemanticNode(
+        title=title,
+        node_type="DOCUMENT_ROOT",
+        parent_id=None,
+        level_from_root=0,
+        total_content_pointers=root_pointers,
+        child_nodes=[],
+    )
     page_nodes: list[SemanticNode] = []
     page_diagnostics: list[dict[str, Any]] = []
     for page_number, (unit_id, record) in enumerate(page_units, start=1):
@@ -2540,14 +2626,6 @@ def parse_page_index_document(
             trace_log(
                 f"page_index_page_start page_number={page_number} unit_id={unit_id} mode={mode}"
             )
-        root_pointers.append(
-            HydratedTextPointer(
-                source_cluster_id=unit_id,
-                start_char=0,
-                end_char=max(0, len(record.text) - 1),
-                verbatim_text=record.text,
-            )
-        )
         page_text = record.text
         if mode == "heuristic":
             block_specs, page_diagnostics_item = _heuristic_page_outline(
@@ -2629,7 +2707,7 @@ def parse_page_index_document(
         page_node = _make_semantic_node(
             title=f"Page {page_number}",
             node_type="PAGE",
-            parent_id=None,
+            parent_id=root_node.node_id,
             level_from_root=1,
             pointers=[
                 HydratedTextPointer(
@@ -2658,14 +2736,7 @@ def parse_page_index_document(
                 f"page_index_page_end page_number={page_number} unit_id={unit_id} child_count={len(child_nodes)}"
             )
 
-    semantic_tree = SemanticNode(
-        title=title,
-        node_type="DOCUMENT_ROOT",
-        parent_id=None,
-        level_from_root=0,
-        total_content_pointers=root_pointers,
-        child_nodes=page_nodes,
-    )
+    semantic_tree = root_node.model_copy(update={"child_nodes": page_nodes})
     coverage = compute_pointer_coverage(semantic_tree, parser_source_map)
     validation_errors = [error for item in page_diagnostics for error in item.get("validation_errors", [])]
     validation_warnings = [warning for item in page_diagnostics for warning in item.get("validation_warnings", [])]

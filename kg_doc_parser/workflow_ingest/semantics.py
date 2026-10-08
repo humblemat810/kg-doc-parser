@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from kogwistar.id_provider import stable_id
 from pydantic import BaseModel, Field, model_validator
@@ -99,6 +99,35 @@ def correct_and_validate_pointer(
     )
 
 
+def pointer_source_validation_error(
+    pointer: HydratedTextPointer,
+    source_map: dict[str, dict[str, Any]],
+) -> str | None:
+    """Return a deterministic error when a pointer is not source-grounded.
+
+    Repair may use normalized or fuzzy matching while locating a pointer. Final
+    validation is stricter: the persisted excerpt must agree with the exact
+    authoritative source slice after the parser's documented whitespace
+    normalization.
+    """
+
+    source = source_map.get(pointer.source_cluster_id)
+    if source is None:
+        return f"unknown source cluster {pointer.source_cluster_id!r}"
+    text = str(source.get("text", "") or "")
+    if pointer.start_char < 0:
+        return "pointer start is negative"
+    end = len(text) - 1 if pointer.end_char == -1 else pointer.end_char
+    if end < pointer.start_char:
+        return "pointer range is reversed"
+    if end >= len(text):
+        return "pointer exceeds source bounds"
+    actual = text[pointer.start_char : end + 1]
+    if _normalize_text(actual) != _normalize_text(pointer.verbatim_text):
+        return "pointer excerpt does not match authoritative source slice"
+    return None
+
+
 def compute_pointer_coverage(
     root_node: SemanticNode,
     source_map: dict[str, dict[str, Any]],
@@ -157,6 +186,101 @@ def compute_pointer_coverage(
     return {"per_cluster": per_cluster, "overall": overall}
 
 
+def compute_terminal_content_coverage(
+    root_node: SemanticNode,
+    source_map: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Measure exact ownership by terminal content nodes.
+
+    This intentionally does not count document/page wrappers, aggregate
+    pointers, or ancestor extents. It is the release-gate metric; the older
+    ``compute_pointer_coverage`` remains available for compatibility.
+    """
+
+    def _ranges(values: list[int]) -> list[dict[str, int]]:
+        if not values:
+            return []
+        result: list[dict[str, int]] = []
+        start = previous = values[0]
+        for value in values[1:]:
+            if value != previous + 1:
+                result.append({"start": start, "end": previous})
+                start = value
+            previous = value
+        result.append({"start": start, "end": previous})
+        return result
+
+    ownership: dict[str, dict[int, list[str]]] = {}
+    invalid_pointers: list[dict[str, str]] = []
+
+    def walk(node: SemanticNode) -> None:
+        if not node.child_nodes:
+            node_id = str(node.node_id or "<missing-node-id>")
+            for pointer in node.total_content_pointers:
+                error = pointer_source_validation_error(pointer, source_map)
+                if error is not None:
+                    invalid_pointers.append({"node_id": node_id, "error": error})
+                    continue
+                source_text = str(source_map[pointer.source_cluster_id].get("text", "") or "")
+                end = len(source_text) - 1 if pointer.end_char == -1 else pointer.end_char
+                owners = ownership.setdefault(pointer.source_cluster_id, {})
+                for position in range(pointer.start_char, end + 1):
+                    if not source_text[position].isspace():
+                        owners.setdefault(position, []).append(node_id)
+        for child in node.child_nodes:
+            walk(child)
+
+    walk(root_node)
+    per_cluster: dict[str, float] = {}
+    missing_ranges: dict[str, list[dict[str, int]]] = {}
+    multiply_owned_ranges: dict[str, list[dict[str, int]]] = {}
+    total_nonws = 0
+    covered_nonws = 0
+
+    for cluster_id, record in source_map.items():
+        text = str(record.get("text", "") or "")
+        meaningful_positions = [index for index, char in enumerate(text) if not char.isspace()]
+        total_nonws += len(meaningful_positions)
+        owners = ownership.get(cluster_id, {})
+        missing = [index for index in meaningful_positions if not owners.get(index)]
+        multiply_owned = [index for index in meaningful_positions if len(owners.get(index, [])) > 1]
+        covered = len(meaningful_positions) - len(missing)
+        covered_nonws += covered
+        per_cluster[cluster_id] = covered / len(meaningful_positions) if meaningful_positions else 1.0
+        if missing:
+            missing_ranges[cluster_id] = _ranges(missing)
+        if multiply_owned:
+            multiply_owned_ranges[cluster_id] = _ranges(multiply_owned)
+
+    return {
+        "total_nonws": total_nonws,
+        "covered_nonws": covered_nonws,
+        "missing_nonws_ranges": missing_ranges,
+        "multiply_owned_nonws_ranges": multiply_owned_ranges,
+        "per_cluster": per_cluster,
+        "overall": covered_nonws / total_nonws if total_nonws else 1.0,
+        "coverage_basis": "terminal_content_owners_exactly_once",
+        "invalid_pointers": invalid_pointers,
+        "valid": not invalid_pointers and not missing_ranges and not multiply_owned_ranges,
+    }
+
+
+def classify_terminal_coverage_status(
+    root_node: SemanticNode,
+    coverage: dict[str, Any],
+) -> Literal["complete", "atomic_valid", "partial_degraded", "failed"]:
+    """Convert terminal ownership evidence into a truthful operator status."""
+    if not coverage.get("valid", False):
+        return "partial_degraded" if coverage.get("covered_nonws", 0) > 0 else "failed"
+    pending = [root_node]
+    while pending:
+        node = pending.pop()
+        if node.metadata.get("atomic_retained"):
+            return "atomic_valid"
+        pending.extend(node.child_nodes)
+    return "complete"
+
+
 def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
@@ -203,19 +327,24 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
         # A structural page-index container is grounded by its aggregate span;
         # ordinary legacy structural nodes retain the existing synthetic fallback.
         mentions = [{"spans": spans(node.total_content_pointers or node.aggregate_content_pointers)}]
+        node_metadata = {
+            "semantic_node_type": node.node_type,
+            "doc_id": doc_id,
+            "parent_id": node.parent_id,
+            "level_from_root": node.level_from_root,
+            **dict(node.metadata or {}),
+        }
+        if not node.summary and "summary_unavailable" not in node_metadata:
+            # Do not silently turn a title into an LLM summary.  Consumers can
+            # decide whether to request a summary or display the title only.
+            node_metadata["summary_unavailable"] = True
         nodes.append(
             {
                 "id": node.node_id,
                 "label": node.title,
                 "type": "entity",
-                "summary": node.summary or node.title,
-                "metadata": {
-                    "semantic_node_type": node.node_type,
-                    "doc_id": doc_id,
-                    "parent_id": node.parent_id,
-                    "level_from_root": node.level_from_root,
-                    **dict(node.metadata or {}),
-                },
+                "summary": node.summary,
+                "metadata": node_metadata,
                 "mentions": mentions,
                 "aggregate_mentions": [{"spans": aggregate_spans}] if aggregate_spans else [],
             }

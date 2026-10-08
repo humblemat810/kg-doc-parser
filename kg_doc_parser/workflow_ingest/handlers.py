@@ -45,14 +45,18 @@ from .parser_core import (
     prepare_layer_frontier,
     propose_layer_breakdown,
     repair_layer_candidates,
+    requeue_failed_frontier_items,
     review_layer,
     switch_split_strategy,
+    validate_layer_commit,
 )
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
 from .semantics import (
     SemanticNode,
+    classify_terminal_coverage_status,
     compute_pointer_coverage,
+    compute_terminal_content_coverage,
     correct_and_validate_pointer,
     semantic_tree_to_kge_payload,
 )
@@ -571,6 +575,7 @@ def register_layerwise_parser_steps(
                 "parse_strategy": "page_index",
                 "page_index_layer_only": True,
                 "allow_empty_layer": not bool(candidates),
+                "atomic_retained": not bool(candidates),
             },
         )
         with ctx.state_write as st:
@@ -838,20 +843,57 @@ def register_layerwise_parser_steps(
         )
         with ctx.state_write as st:
             st["current_layer_result"] = filtered.model_dump(field_mode="backend", dump_format="json")
-        return _success("commit_layer_children")
+        return _success("validate_layer_commit")
+
+    @_register_step(resolver, step_name="validate_layer_commit", runtime_deps=runtime_deps)
+    def _validate_layer_commit(ctx: StepContext) -> StepRunResult:
+        current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
+        current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
+        review = validate_layer_commit(
+            current_layer_context=current_layer_context,
+            current_layer_result=current_layer_result,
+            parser_source_map=ctx.state_view.get("parser_source_map"),
+        )
+        with ctx.state_write as st:
+            if review.updated_result is not None:
+                st["current_layer_result"] = review.updated_result.model_dump(
+                    field_mode="backend",
+                    dump_format="json",
+                )
+            st["current_layer_review"] = review.model_dump(
+                field_mode="backend",
+                dump_format="json",
+            )
+        return _success("commit_layer_children" if review.satisfied else "check_layer_satisfaction")
 
     @_register_step(resolver, step_name="commit_layer_children", runtime_deps=runtime_deps)
     def _commit_layer_children(ctx: StepContext) -> StepRunResult:
         semantic_tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
+        current_layer_review = CurrentLayerReview.model_validate(ctx.state_view["current_layer_review"])
         updated_tree = commit_layer_children(
             semantic_tree=semantic_tree,
             current_layer_result=current_layer_result,
             current_depth=current_layer_context.depth,
+            parent_node_ids=current_layer_context.parent_node_ids,
         )
         with ctx.state_write as st:
             st["semantic_tree"] = updated_tree.model_dump()
+            failed_parent_ids = list(current_layer_review.failed_parent_node_ids)
+            if failed_parent_ids:
+                queued = requeue_failed_frontier_items(
+                    frontier_queue=[
+                        LayerFrontierItem.model_validate(item)
+                        for item in ctx.state_view.get("layer_frontier_queue", [])
+                    ],
+                    parent_node_ids=failed_parent_ids,
+                    depth=current_layer_context.depth,
+                )
+                st["layer_frontier_queue"] = [
+                    item.model_dump(field_mode="backend", dump_format="json")
+                    for item in queued
+                ]
         return _success("check_children_expandable")
 
     @_register_step(resolver, step_name="check_children_expandable", runtime_deps=runtime_deps)
@@ -911,15 +953,47 @@ def register_postparse_steps(
             if rec.get("participates_in_semantic_text", True)
         }
         coverage = compute_pointer_coverage(tree, text_only_map)
+        terminal_coverage = compute_terminal_content_coverage(tree, text_only_map)
         report = ValidationReport(
             overall_text_coverage=coverage["overall"],
             per_cluster_coverage=coverage["per_cluster"],
+            terminal_coverage=terminal_coverage,
+            terminal_coverage_status=classify_terminal_coverage_status(tree, terminal_coverage),
+            coverage_basis=str(terminal_coverage.get("coverage_basis", "legacy_union")),
             corrected_pointer_count=int(ctx.state_view.get("corrected_pointer_count", 0)),
             validation_notes=[],
         )
         bundle = _build_export_bundle(ctx=ctx, runtime_deps=runtime_deps)
         threshold = float(runtime_deps.get("coverage_threshold", 1.0))
-        if report.overall_text_coverage < threshold:
+        if not terminal_coverage.get("valid", False):
+            overall = float(terminal_coverage.get("overall", 0.0))
+            ownership_message = (
+                "terminal content ownership is incomplete or invalid: "
+                f"overall={overall:.3f}"
+            )
+            # Preserve the older threshold diagnostic when incomplete
+            # ownership also lowers coverage.  Callers can therefore
+            # distinguish the quality failure without losing the stricter
+            # terminal-ownership reason.
+            error_message = (
+                f"text coverage below threshold: {report.overall_text_coverage:.3f} < {threshold:.3f}; "
+                f"{ownership_message}"
+                if overall < threshold
+                else ownership_message
+            )
+            with ctx.state_write as st:
+                st["validation_report"] = report.model_dump(field_mode="backend", dump_format="json")
+                st["export_bundle"] = bundle.model_dump(field_mode="backend", dump_format="json")
+            return RunFailure(
+                conversation_node_id=None,
+                state_update=[],
+                update={
+                    "workflow_errors": [error_message],
+                    "validation_report": report.model_dump(field_mode="backend", dump_format="json"),
+                },
+                errors=[error_message],
+            )
+        if terminal_coverage["overall"] < threshold:
             error_message = (
                 f"text coverage below threshold: {report.overall_text_coverage:.3f} < {threshold:.3f}"
             )

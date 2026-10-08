@@ -12,7 +12,7 @@ flowchart TD
     N4 --> N5["check_frontier_remaining"]
 
     N5 -->|frontier remains| N6["prepare_layer_frontier"]
-    N5 -->|frontier empty| N18["finalize_semantic_tree"]
+    N5 -->|frontier empty| N19["finalize_semantic_tree"]
 
     N6 --> N7["propose_layer_breakdown"]
     N7 --> N8["review_cud_proposal"]
@@ -26,17 +26,19 @@ flowchart TD
     N11 -->|accept layer| N13["repair_layer_pointers"]
 
     N13 --> N14["dedupe_and_filter_layer"]
-    N14 --> N15["commit_layer_children"]
-    N15 --> N16["check_children_expandable"]
+    N14 --> N15["validate_layer_commit"]
+    N15 -->|candidates valid| N16["commit_layer_children"]
+    N15 -->|candidates invalid| N11
+    N16 --> N17["check_children_expandable"]
 
-    N16 -->|enqueue next frontier| N17["enqueue_next_layer_frontier"]
-    N17 --> N5
-    N16 -->|check frontier again| N5
+    N17 -->|enqueue next frontier| N18["enqueue_next_layer_frontier"]
+    N18 --> N5
+    N17 -->|check frontier again| N5
 
-    N18 --> N19["validate_tree"]
-    N19 --> N20["export_graph"]
-    N20 --> N21["persist_canonical_graph"]
-    N21 --> N22["end"]
+    N19 --> N20["validate_tree"]
+    N20 --> N21["export_graph"]
+    N21 --> N22["persist_canonical_graph"]
+    N22 --> N23["end"]
 ```
 
 Mermaid overview: OCR ingress
@@ -62,7 +64,7 @@ flowchart TD
     N4 --> N5["check_frontier_remaining"]
 
     N5 -->|frontier remains| N6["prepare_layer_frontier"]
-    N5 -->|frontier empty| N18["finalize_semantic_tree"]
+    N5 -->|frontier empty| N19["finalize_semantic_tree"]
 
     N6 --> N7["propose_layer_breakdown"]
     N7 --> N8["review_cud_proposal"]
@@ -76,17 +78,19 @@ flowchart TD
     N11 -->|accept layer| N13["repair_layer_pointers"]
 
     N13 --> N14["dedupe_and_filter_layer"]
-    N14 --> N15["commit_layer_children"]
-    N15 --> N16["check_children_expandable"]
+    N14 --> N15["validate_layer_commit"]
+    N15 -->|candidates valid| N16["commit_layer_children"]
+    N15 -->|candidates invalid| N11
+    N16 --> N17["check_children_expandable"]
 
-    N16 -->|enqueue next frontier| N17["enqueue_next_layer_frontier"]
-    N17 --> N5
-    N16 -->|check frontier again| N5
+    N17 -->|enqueue next frontier| N18["enqueue_next_layer_frontier"]
+    N18 --> N5
+    N17 -->|check frontier again| N5
 
-    N18 --> N19["validate_tree"]
-    N19 --> N20["export_graph"]
-    N20 --> N21["persist_canonical_graph"]
-    N21 --> N22["end"]
+    N19 --> N20["validate_tree"]
+    N20 --> N21["export_graph"]
+    N21 --> N22["persist_canonical_graph"]
+    N22 --> N23["end"]
 ```
 
 Mermaid overview: OCR pages mirroring legacy
