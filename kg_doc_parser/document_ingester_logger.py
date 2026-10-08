@@ -91,7 +91,8 @@ import traceback
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple, Callable
+from collections.abc import Mapping
+from typing import Callable
 from threading import Lock
 from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.outputs.chat_generation import ChatGeneration
@@ -106,7 +107,7 @@ from kg_doc_parser.workflow_ingest.serialization import safe_json_dumps
 # ---------------------------
 
 # per-1K token pricing in USD (example values; keep yours here)
-_COST_TABLE: Dict[str, Dict[str, float]] = {
+_COST_TABLE: dict[str, dict[str, float]] = {
     "gemini-3-flash-preview": {"input": 0.0005, "output": 0.003, "cache": 0.0},
     "gemini-3.0-pro": {"input": 0.002000, "output": 0.0120, "cache": 0.00031},
     "gemini-2.0-flash": {"input": 0.0001, "output": 0.0004, "cache": 0.0},
@@ -174,13 +175,13 @@ class _IngestEvent:
     Internal event embedding queued from callback thread(s) to writer thread.
     """
     ts_iso: str
-    document_id: Optional[str]
-    run_id: Optional[str]
-    parent_run_id: Optional[str]
+    document_id: str | None
+    run_id: str | None
+    parent_run_id: str | None
     event_name: str
-    model_name: Optional[str]
-    filename: Optional[str]
-    line_number: Optional[int]
+    model_name: str | None
+    filename: str | None
+    line_number: int | None
     token_count: int
     cost_usd: float
     n_try: float
@@ -370,7 +371,7 @@ class SQLiteIngestEventWriter:
 # Helper: error frame info
 # ---------------------------
 
-def _best_effort_error_location(exc: BaseException) -> Tuple[Optional[str], Optional[int]]:
+def _best_effort_error_location(exc: BaseException) -> tuple[str | None, int | None]:
     """
     Extract (filename, line_number) from the deepest traceback frame.
 
@@ -400,8 +401,12 @@ def _utc_now_iso() -> str:
 # ---------------------------
 # The LangChain callback
 # ---------------------------
-def _invoked_model_name(kwargs: Dict[str, Any]) -> Optional[str]:
-    inv_params = kwargs.get("invocation_params") or {}
+def _as_mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _invoked_model_name(kwargs: Mapping[str, object]) -> str | None:
+    inv_params = _as_mapping(kwargs.get("invocation_params"))
     m = inv_params.get("model")
     return str(m) if m else None
 class DocumentIngestSQLiteCallback(BaseCallbackHandler):
@@ -453,15 +458,15 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         self.include_traceback = include_traceback
         self.max_text_chars = int(max_text_chars)
         self.redact = redact or (lambda s: s)
-        self._run_meta: dict[str, dict[str, Any]] = {}
+        self._run_meta: dict[str, dict[str, object]] = {}
         self._run_meta_lock = Lock()
-    def _remember(self, run_id: UUID, metadata: dict[str, Any] | None, tags: list[str] | None) -> None:
+    def _remember(self, run_id: UUID, metadata: dict[str, object] | None, tags: list[str] | None) -> None:
         md = dict(metadata or {})
         md["_tags"] = list(tags or [])
         with self._run_meta_lock:
             self._run_meta[str(run_id)] = md
 
-    def _recall(self, run_id: UUID, metadata: dict[str, Any] | None, tags: list[str] | None) -> dict[str, Any]:
+    def _recall(self, run_id: UUID, metadata: dict[str, object] | None, tags: list[str] | None) -> dict[str, object]:
         # prefer real-time metadata if present; else fallback to remembered
         if metadata:
             return dict(metadata)
@@ -485,14 +490,14 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
 
     def on_chat_model_start(
         self,
-        serialized: Dict[str, Any],
+        serialized: dict[str, object],
         messages: list[list[BaseMessage]],
         *,
         run_id: "UUID",
-        parent_run_id: Optional["UUID"] = None,
-        tags: Optional[list[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, object] | None = None,
+        **kwargs: object,
     ) -> None:
         self._remember(run_id, metadata, tags)
         md = metadata or {}
@@ -500,7 +505,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         filename = md.get("source_filename")
         n_try = float(md.get("n_try", 0))
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, object] = {
             "serialized": serialized,
             "tags": tags or [],
             "metadata": md,
@@ -543,14 +548,14 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         )
     def on_llm_start(
         self,
-        serialized: Dict[str, Any],
+        serialized: dict[str, object],
         prompts: list[str],
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[list[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, object] | None = None,
+        **kwargs: object,
     ) -> None:
         
         self._remember(run_id, metadata, tags)
@@ -604,10 +609,10 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         response: LLMResult,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[list[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, object] | None = None,
+        **kwargs: object,
     ) -> None:
         """
         Called after the LLM returns.
@@ -623,7 +628,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
 
         # Defaults if we can't find usage
         input_tokens = output_tokens = cached_tokens = reasoning_tokens = 0
-        model_name: Optional[str] = None
+        model_name: str | None = None
 
         # LangChain response.generations: List[List[Generation]]
         for gen_list in response.generations:
@@ -670,10 +675,10 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
             "response_llm_output": getattr(response, "llm_output", None),
         }            
         if self.log_responses:
-            outs: list[dict[str, Any]] = []
+            outs: list[dict[str, object]] = []
             for gen_list in response.generations:
                 for gen in gen_list:
-                    item: dict[str, Any] = {"type": type(gen).__name__}
+                    item: dict[str, object] = {"type": type(gen).__name__}
 
                     # Text-y
                     if hasattr(gen, "text") and gen.text:
@@ -720,10 +725,10 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         error: BaseException,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
-        tags: Optional[list[str]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs: Any,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, object] | None = None,
+        **kwargs: object,
     ) -> None:
         """
         Called when the LLM call errors.
