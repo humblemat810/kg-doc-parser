@@ -17,7 +17,11 @@ from .models import (
     LayerSpanConflict,
     ParseSessionState,
 )
-from .semantics import HydratedTextPointer, SemanticNode
+from .semantics import (
+    HydratedTextPointer,
+    SemanticNode,
+    pointer_source_validation_error,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
@@ -257,6 +261,62 @@ def detect_layer_invariants(
             child for child in current_layer_result.children if child.parent_node_id == parent_id
         ]
         if not parent_children:
+            if current_layer_result.metadata.get("atomic_retained"):
+                parent_pointers_for_atomic = parent_pointers.get(parent_id, [])
+                if not parent_pointers_for_atomic:
+                    coverage_gaps.append(
+                        LayerCoverageGap(
+                            parent_node_id=parent_id,
+                            source_cluster_id="<missing-parent-pointer>",
+                            gap_start=0,
+                            gap_end=0,
+                            expected_text="atomic retention requires a verified parent pointer",
+                        )
+                    )
+                    review_notes.append(
+                        f"parent {parent_id} requested atomic retention without a verified parent pointer"
+                    )
+                elif parser_source_map is not None:
+                    for parent_ptr in parent_pointers_for_atomic:
+                        pointer_error = pointer_source_validation_error(parent_ptr, parser_source_map)
+                        if pointer_error is not None:
+                            coverage_gaps.append(
+                                LayerCoverageGap(
+                                    parent_node_id=parent_id,
+                                    source_cluster_id=parent_ptr.source_cluster_id,
+                                    gap_start=max(parent_ptr.start_char, 0),
+                                    gap_end=_pointer_end(parent_ptr, parser_source_map),
+                                    expected_text=pointer_error,
+                                )
+                            )
+                            review_notes.append(
+                                f"atomic parent pointer for {parent_id} is invalid: {pointer_error}"
+                            )
+                if not coverage_gaps or not any(
+                    gap.parent_node_id == parent_id for gap in coverage_gaps
+                ):
+                    review_notes.append(f"parent {parent_id} retained as an explicit atomic unit")
+            else:
+                for parent_ptr in parent_pointers.get(parent_id, []):
+                    parent_end = _pointer_end(parent_ptr, parser_source_map)
+                    cluster_text = str(
+                        (parser_source_map or {}).get(parent_ptr.source_cluster_id, {}).get("text", "")
+                        or ""
+                    )
+                    expected_text = cluster_text[parent_ptr.start_char : parent_end + 1]
+                    if _has_meaningful_gap_text(expected_text):
+                        coverage_gaps.append(
+                            LayerCoverageGap(
+                                parent_node_id=parent_id,
+                                source_cluster_id=parent_ptr.source_cluster_id,
+                                gap_start=parent_ptr.start_char,
+                                gap_end=parent_end,
+                                expected_text=expected_text,
+                            )
+                        )
+                review_notes.append(
+                    f"parent {parent_id} returned no children without explicit atomic retention"
+                )
             continue
 
         seen_signatures: dict[tuple[str, tuple[tuple[str, int, int, str], ...]], str] = {}
@@ -327,17 +387,75 @@ def detect_layer_invariants(
                         )
 
         for parent_ptr in parent_pointers.get(parent_id, []):
+            parent_pointer_error = (
+                pointer_source_validation_error(parent_ptr, parser_source_map)
+                if parser_source_map is not None
+                else None
+            )
+            if parent_pointer_error is not None:
+                coverage_gaps.append(
+                    LayerCoverageGap(
+                        parent_node_id=parent_id,
+                        source_cluster_id=parent_ptr.source_cluster_id,
+                        gap_start=max(parent_ptr.start_char, 0),
+                        gap_end=_pointer_end(parent_ptr, parser_source_map),
+                        expected_text=parent_pointer_error,
+                    )
+                )
+                review_notes.append(
+                    f"invalid parent pointer for {parent_id}: {parent_pointer_error}"
+                )
+                continue
             parent_end = _pointer_end(parent_ptr, parser_source_map)
             parent_start = max(parent_ptr.start_char, 0)
             if parent_end < parent_start:
                 continue
             child_intervals = []
             for child in parent_children:
+                if not child.total_content_pointers:
+                    review_notes.append(
+                        f"child {child.node_id} under {parent_id} has no content pointer"
+                    )
+                    continue
                 for child_ptr in child.total_content_pointers:
+                    pointer_error = (
+                        pointer_source_validation_error(child_ptr, parser_source_map)
+                        if parser_source_map is not None
+                        else None
+                    )
+                    if pointer_error is not None:
+                        coverage_gaps.append(
+                            LayerCoverageGap(
+                                parent_node_id=parent_id,
+                                source_cluster_id=child_ptr.source_cluster_id,
+                                gap_start=max(child_ptr.start_char, 0),
+                                gap_end=_pointer_end(child_ptr, parser_source_map),
+                                expected_text=pointer_error,
+                            )
+                        )
+                        review_notes.append(
+                            f"invalid child pointer {child.node_id} under {parent_id}: {pointer_error}"
+                        )
+                        continue
                     if child_ptr.source_cluster_id != parent_ptr.source_cluster_id:
                         continue
+                    child_end = _pointer_end(child_ptr, parser_source_map)
+                    if child_ptr.start_char < parent_start or child_end > parent_end:
+                        coverage_gaps.append(
+                            LayerCoverageGap(
+                                parent_node_id=parent_id,
+                                source_cluster_id=child_ptr.source_cluster_id,
+                                gap_start=max(child_ptr.start_char, 0),
+                                gap_end=child_end,
+                                expected_text="child pointer is outside parent extent",
+                            )
+                        )
+                        review_notes.append(
+                            f"child pointer {child.node_id} is outside parent {parent_id}"
+                        )
+                        continue
                     child_intervals.append(
-                        (max(child_ptr.start_char, 0), _pointer_end(child_ptr, parser_source_map))
+                        (max(child_ptr.start_char, 0), child_end)
                     )
             merged = _merge_intervals(child_intervals)
             cursor = parent_start
@@ -551,7 +669,10 @@ def legacy_children_for_context(
                     title=child.title,
                     node_type=child.node_type,
                     total_content_pointers=list(child.total_content_pointers),
-                    expandable=child.node_type != "KEY_VALUE_PAIR",
+                    # The legacy full tree is already authoritative.  Only
+                    # nodes with children need another layer; treating every
+                    # text node as expandable manufactures empty leaf layers.
+                    expandable=bool(child.child_nodes),
                     metadata={"source": "legacy_compat"},
                 )
             )
@@ -619,13 +740,33 @@ def review_layer(
     review_layer_fn: ReviewLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
 ) -> tuple[CurrentLayerReview, ParseSessionState]:
-    if parse_session.mode == "legacy_compat" or not parse_session.allow_review:
+    if parse_session.mode == "legacy_compat":
         return (
             CurrentLayerReview(
                 updated_result=current_layer_result.model_copy(update={"satisfied": True}),
                 coverage_ok=True,
                 satisfied=True,
                 strategy_used=current_layer_context.split_strategy,
+            ),
+            parse_session,
+        )
+    if not parse_session.allow_review:
+        coverage_ok, invariant_satisfied, overlap_conflicts, coverage_gaps, duplicate_notes, invariant_notes = detect_layer_invariants(
+            current_layer_context=current_layer_context,
+            current_layer_result=current_layer_result,
+            parser_source_map=parser_source_map,
+        )
+        return (
+            CurrentLayerReview(
+                updated_result=current_layer_result.model_copy(update={"satisfied": invariant_satisfied}),
+                coverage_ok=coverage_ok,
+                satisfied=invariant_satisfied,
+                strategy_used=current_layer_context.split_strategy,
+                overlap_conflicts=overlap_conflicts,
+                coverage_gap_notes=coverage_gaps,
+                duplicate_child_notes=duplicate_notes,
+                review_notes=["semantic review disabled", *invariant_notes[:20]],
+                metadata={"review_skipped": True, "deterministic_validation": True},
             ),
             parse_session,
         )
@@ -873,7 +1014,7 @@ def check_layer_coverage(
         notes = current_layer_result.metadata.get("review_notes") or []
         return metadata_flag, [str(note) for note in notes]
 
-    if current_layer_result.metadata.get("allow_empty_layer"):
+    if current_layer_result.metadata.get("atomic_retained"):
         return True, []
 
     parent_ids = set(current_layer_context.parent_node_ids)
@@ -984,15 +1125,11 @@ def dedupe_and_filter_layer(
     current_layer_context: CurrentLayerContext,
     current_layer_result: CurrentLayerResult,
 ) -> CurrentLayerResult:
-    parent_title_lookup = {
-        node_id: title for node_id, title in zip(current_layer_context.parent_node_ids, current_layer_context.parent_titles)
-    }
+    parent_ids = set(current_layer_context.parent_node_ids)
     seen: set[tuple[str, str, str, tuple[tuple[str, int, int, str], ...]]] = set()
     filtered: list[LayerChildCandidate] = []
     for child in current_layer_result.children:
-        if child.parent_node_id not in parent_title_lookup:
-            continue
-        if child.title.strip() == parent_title_lookup[child.parent_node_id].strip():
+        if child.parent_node_id not in parent_ids:
             continue
         key = (
             child.parent_node_id,
@@ -1007,13 +1144,119 @@ def dedupe_and_filter_layer(
     return current_layer_result.model_copy(update={"children": filtered})
 
 
+def validate_layer_commit(
+    *,
+    current_layer_context: CurrentLayerContext,
+    current_layer_result: CurrentLayerResult,
+    parser_source_map: ParserSourceMap | None = None,
+) -> CurrentLayerReview:
+    """Revalidate the final candidate set immediately before persistence.
+
+    Review and pointer repair may change the candidate set. This gate is kept
+    separate from the earlier review so no stale reviewer verdict can authorize
+    a partially repaired or deduplicated layer.
+    """
+
+    parent_ids = list(current_layer_context.parent_node_ids)
+    if not parent_ids:
+        coverage_ok, satisfied, overlap_conflicts, coverage_gaps, duplicate_notes, notes = (
+            detect_layer_invariants(
+                current_layer_context=current_layer_context,
+                current_layer_result=current_layer_result,
+                parser_source_map=parser_source_map,
+            )
+        )
+        return CurrentLayerReview(
+            updated_result=current_layer_result.model_copy(update={"satisfied": satisfied}),
+            coverage_ok=coverage_ok,
+            satisfied=satisfied,
+            strategy_used=current_layer_context.split_strategy,
+            overlap_conflicts=overlap_conflicts,
+            coverage_gap_notes=coverage_gaps,
+            duplicate_child_notes=duplicate_notes,
+            review_notes=["post-repair pre-commit validation", *notes[:20]],
+            metadata={"commit_validation": True},
+            committable_parent_node_ids=parent_ids if satisfied else [],
+            failed_parent_node_ids=[] if satisfied else parent_ids,
+        )
+
+    titles = dict(zip(parent_ids, current_layer_context.parent_titles))
+    valid_parent_ids: list[str] = []
+    failed_parent_ids: list[str] = []
+    valid_children: list[LayerChildCandidate] = []
+    overlap_conflicts: list[LayerSpanConflict] = []
+    coverage_gaps: list[LayerCoverageGap] = []
+    duplicate_notes: list[LayerDuplicateChildNote] = []
+    notes: list[str] = []
+    for parent_id in parent_ids:
+        local_context = current_layer_context.model_copy(
+            update={
+                "parent_node_ids": [parent_id],
+                "parent_titles": [titles.get(parent_id, parent_id)],
+                "parent_content_pointers_by_id": {
+                    parent_id: current_layer_context.parent_content_pointers_by_id.get(parent_id, [])
+                },
+            }
+        )
+        local_result = current_layer_result.model_copy(
+            update={
+                "children": [
+                    child for child in current_layer_result.children if child.parent_node_id == parent_id
+                ]
+            }
+        )
+        local_coverage_ok, local_satisfied, local_overlaps, local_gaps, local_duplicates, local_notes = (
+            detect_layer_invariants(
+                current_layer_context=local_context,
+                current_layer_result=local_result,
+                parser_source_map=parser_source_map,
+            )
+        )
+        overlap_conflicts.extend(local_overlaps)
+        coverage_gaps.extend(local_gaps)
+        duplicate_notes.extend(local_duplicates)
+        notes.extend(f"parent {parent_id}: {note}" for note in local_notes[:12])
+        if local_coverage_ok and local_satisfied:
+            valid_parent_ids.append(parent_id)
+            valid_children.extend(local_result.children)
+        else:
+            failed_parent_ids.append(parent_id)
+
+    partial_commit = bool(valid_parent_ids and failed_parent_ids)
+    updated_result = current_layer_result.model_copy(
+        update={"children": valid_children, "satisfied": bool(valid_parent_ids)}
+    )
+    return CurrentLayerReview(
+        updated_result=updated_result,
+        coverage_ok=not failed_parent_ids,
+        satisfied=bool(valid_parent_ids),
+        strategy_used=current_layer_context.split_strategy,
+        overlap_conflicts=overlap_conflicts,
+        coverage_gap_notes=coverage_gaps,
+        duplicate_child_notes=duplicate_notes,
+        review_notes=["post-repair pre-commit validation", *notes[:20]],
+        metadata={
+            "commit_validation": True,
+            "committable_parent_node_ids": valid_parent_ids,
+            "failed_parent_node_ids": failed_parent_ids,
+            "partial_commit": partial_commit,
+        },
+        committable_parent_node_ids=valid_parent_ids,
+        failed_parent_node_ids=failed_parent_ids,
+    )
+
+
 def commit_layer_children(
     *,
     semantic_tree: SemanticNode,
     current_layer_result: CurrentLayerResult,
     current_depth: int,
+    parent_node_ids: list[str] | None = None,
 ) -> SemanticNode:
     tree = SemanticNode.model_validate(semantic_tree.model_dump())
+    retained_parent_ids = {
+        str(node_id) for node_id in (parent_node_ids or [])
+    }
     children_by_parent: dict[str, dict[str, SemanticNode]] = {}
     for child in current_layer_result.children:
         children_by_parent.setdefault(child.parent_node_id, {})[child.node_id] = SemanticNode(
@@ -1052,9 +1295,43 @@ def commit_layer_children(
             updated_children = list(existing_by_id.values())
         payload = node.model_dump()
         payload["child_nodes"] = [child.model_dump() for child in updated_children]
+        if (
+            current_layer_result.metadata.get("atomic_retained")
+            and not current_layer_result.children
+            and str(node.node_id) in retained_parent_ids
+        ):
+            metadata = dict(payload.get("metadata") or {})
+            metadata["atomic_retained"] = True
+            payload["metadata"] = metadata
         return SemanticNode.model_validate(payload)
 
     return walk(tree)
+
+
+def requeue_failed_frontier_items(
+    *,
+    frontier_queue: list[LayerFrontierItem],
+    parent_node_ids: list[str],
+    depth: int,
+) -> list[LayerFrontierItem]:
+    """Requeue only failed batch parents without duplicating frontier work."""
+    queued = list(frontier_queue)
+    existing = {(item.parent_node_id, item.depth) for item in queued}
+    next_order = max((item.order for item in queued), default=-1) + 1
+    for parent_id in parent_node_ids:
+        key = (parent_id, depth)
+        if key in existing:
+            continue
+        queued.append(
+            LayerFrontierItem(
+                parent_node_id=parent_id,
+                depth=depth,
+                order=next_order,
+            )
+        )
+        existing.add(key)
+        next_order += 1
+    return queued
 
 
 def enqueue_next_layer_frontier(
@@ -1126,15 +1403,9 @@ def finalize_semantic_tree(
             if pointer.end_char != -1 and pointer.end_char < pointer.start_char:
                 raise ValueError(f"reversed pointer bounds for node {node_id!r}")
             if parser_source_map is not None:
-                source = parser_source_map.get(pointer.source_cluster_id)
-                if source is None:
-                    raise ValueError(
-                        f"node {node_id!r} references unknown source cluster "
-                        f"{pointer.source_cluster_id!r}"
-                    )
-                source_text = str(source.get("text", "") or "")
-                if pointer.end_char >= len(source_text) and pointer.end_char != -1:
-                    raise ValueError(f"pointer exceeds source bounds for node {node_id!r}")
+                pointer_error = pointer_source_validation_error(pointer, parser_source_map)
+                if pointer_error is not None:
+                    raise ValueError(f"node {node_id!r}: {pointer_error}")
         for child in node.child_nodes:
             walk(child, node_id)
         visiting.remove(node_id)

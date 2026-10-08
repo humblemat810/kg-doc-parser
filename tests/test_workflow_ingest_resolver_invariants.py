@@ -10,6 +10,7 @@ from kg_doc_parser.workflow_ingest.models import (
     LayerChildCandidate,
     LayerCoverageGap,
     LayerDuplicateChildNote,
+    LayerFrontierItem,
     LayerSpanConflict,
     ParseSessionState,
 )
@@ -21,11 +22,16 @@ from kg_doc_parser.workflow_ingest.parser_core import (
     enqueue_next_layer_frontier,
     finalize_semantic_tree,
     repair_layer_candidates,
+    requeue_failed_frontier_items,
+    review_layer,
+    validate_layer_commit,
 )
 from kg_doc_parser.workflow_ingest.semantics import (
     HydratedTextPointer,
     SemanticNode,
+    classify_terminal_coverage_status,
     compute_pointer_coverage,
+    compute_terminal_content_coverage,
 )
 
 pytestmark = [pytest.mark.workflow, pytest.mark.ci]
@@ -122,7 +128,7 @@ def test_detect_layer_invariants_reports_overlap_gap_and_duplicate_notes():
     assert any("gap in parent" in note for note in notes)
 
 
-def test_dedupe_and_filter_layer_keeps_unique_children_and_drops_parent_title():
+def test_dedupe_and_filter_layer_keeps_grounded_same_title_and_drops_true_duplicate():
     context = CurrentLayerContext(
         depth=1,
         parent_node_ids=["doc|root", "doc|section-a"],
@@ -168,8 +174,57 @@ def test_dedupe_and_filter_layer_keeps_unique_children_and_drops_parent_title():
         current_layer_result=result,
     )
 
-    assert [child.node_id for child in filtered.children] == ["child-b"]
-    assert filtered.children[0].title == "Section B"
+    assert [child.node_id for child in filtered.children] == ["child-a-1", "child-b"]
+    assert filtered.children[0].title == "Section A"
+
+
+def test_detect_layer_invariants_rejects_empty_child_and_invalid_parent_source():
+    parent_id = "doc|root"
+    pointer = _pointer("doc|p1_t0", "Alpha", 0, 4)
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=[parent_id],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={parent_id: [pointer]},
+    )
+    result = CurrentLayerResult(
+        children=[
+            LayerChildCandidate(
+                node_id="empty-child",
+                parent_node_id=parent_id,
+                title="Empty",
+                node_type="HEADING",
+                total_content_pointers=[],
+            )
+        ],
+        satisfied=True,
+    )
+
+    coverage_ok, satisfied, _overlaps, gaps, _duplicates, notes = detect_layer_invariants(
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map={"doc|p1_t0": {"text": "Alpha"}},
+    )
+
+    assert coverage_ok is False
+    assert satisfied is False
+    assert gaps
+    assert any("no content pointer" in note for note in notes)
+
+    invalid_context = context.model_copy(
+        update={
+            "parent_content_pointers_by_id": {
+                parent_id: [_pointer("missing", "Alpha", 0, 4)]
+            }
+        }
+    )
+    invalid = detect_layer_invariants(
+        current_layer_context=invalid_context,
+        current_layer_result=result,
+        parser_source_map={"doc|p1_t0": {"text": "Alpha"}},
+    )
+    assert invalid[0] is False
+    assert any("unknown source cluster" in note for note in invalid[-1])
 
 
 def test_dedupe_and_filter_layer_keeps_same_label_at_distinct_source_spans():
@@ -343,6 +398,35 @@ def test_commit_and_frontier_enqueue_are_idempotent_on_replay():
     ]
 
 
+def test_atomic_noop_disposition_survives_commit_for_final_status():
+    pointer = _pointer("doc|p1_t0", "Alpha", 0, 4)
+    tree = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+        total_content_pointers=[pointer],
+    )
+    result = CurrentLayerResult(
+        children=[],
+        satisfied=True,
+        metadata={"atomic_retained": True, "allow_empty_layer": True},
+    )
+
+    committed = commit_layer_children(
+        semantic_tree=tree,
+        current_layer_result=result,
+        current_depth=0,
+        parent_node_ids=["doc|root"],
+    )
+
+    coverage = compute_terminal_content_coverage(
+        committed,
+        {"doc|p1_t0": {"text": "Alpha"}},
+    )
+    assert classify_terminal_coverage_status(committed, coverage) == "atomic_valid"
+    assert committed.metadata["atomic_retained"] is True
+
+
 def test_pointer_coverage_counts_unreferenced_source_clusters():
     root = SemanticNode(
         node_id="doc|root",
@@ -372,6 +456,245 @@ def test_pointer_coverage_counts_unreferenced_source_clusters():
     assert coverage["overall"] < 1.0
 
 
+def test_terminal_content_coverage_ignores_wrapper_and_detects_missing_content():
+    root = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+        total_content_pointers=[_pointer("doc|p1_t0", "Alpha Beta", 0, 9)],
+        child_nodes=[
+            SemanticNode(
+                node_id="page",
+                parent_id="doc|root",
+                title="Page 1",
+                node_type="PAGE",
+                total_content_pointers=[_pointer("doc|p1_t0", "Alpha Beta", 0, 9)],
+                child_nodes=[
+                    SemanticNode(
+                        node_id="content",
+                        parent_id="page",
+                        title="Alpha",
+                        total_content_pointers=[_pointer("doc|p1_t0", "Alpha Beta", 0, 4)],
+                    )
+                ],
+            )
+        ],
+    )
+
+    coverage = compute_terminal_content_coverage(
+        root,
+        {"doc|p1_t0": {"text": "Alpha Beta"}},
+    )
+
+    assert coverage["coverage_basis"] == "terminal_content_owners_exactly_once"
+    assert coverage["overall"] < 1.0
+    assert coverage["valid"] is False
+    assert coverage["missing_nonws_ranges"]["doc|p1_t0"]
+
+
+def test_terminal_content_coverage_rejects_duplicate_positions_but_allows_whitespace_gaps():
+    text = "Alpha \n Beta"
+    root = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[
+            SemanticNode(
+                node_id="left",
+                parent_id="doc|root",
+                title="Alpha",
+                total_content_pointers=[_pointer("doc|p1_t0", text, 0, 4)],
+            ),
+            SemanticNode(
+                node_id="right",
+                parent_id="doc|root",
+                title="Beta",
+                total_content_pointers=[_pointer("doc|p1_t0", text, 8, 11)],
+            ),
+        ],
+    )
+
+    whitespace_gap = compute_terminal_content_coverage(root, {"doc|p1_t0": {"text": text}})
+    assert whitespace_gap["valid"] is True
+    assert whitespace_gap["overall"] == 1.0
+
+    duplicate = root.model_copy(
+        update={
+            "child_nodes": [
+                root.child_nodes[0],
+                root.child_nodes[0].model_copy(update={"node_id": "duplicate"}),
+                root.child_nodes[1],
+            ]
+        }
+    )
+    duplicate_coverage = compute_terminal_content_coverage(
+        duplicate,
+        {"doc|p1_t0": {"text": text}},
+    )
+    assert duplicate_coverage["valid"] is False
+    assert duplicate_coverage["multiply_owned_nonws_ranges"]["doc|p1_t0"]
+
+    assert classify_terminal_coverage_status(root, whitespace_gap) == "complete"
+    assert classify_terminal_coverage_status(
+        root.model_copy(update={"metadata": {"atomic_retained": True}}),
+        whitespace_gap,
+    ) == "atomic_valid"
+    assert classify_terminal_coverage_status(root, duplicate_coverage) == "partial_degraded"
+    assert classify_terminal_coverage_status(root, {"valid": False, "covered_nonws": 0}) == "failed"
+
+
+def test_review_disabled_still_runs_deterministic_invariants():
+    text = "Alpha Beta"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={"doc|root": [_pointer("doc|p1_t0", text, 0, len(text) - 1)]},
+    )
+    result = CurrentLayerResult(
+        children=[
+            _child(
+                node_id="child",
+                parent_node_id="doc|root",
+                title="Alpha",
+                node_type="TEXT_FLOW",
+                pointer=_pointer("doc|p1_t0", text, 0, 4),
+            )
+        ],
+        satisfied=True,
+    )
+    review, _ = review_layer(
+        parse_session=ParseSessionState(
+            collection_id="doc",
+            root_node_id="doc|root",
+            allow_review=False,
+        ),
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map={"doc|p1_t0": {"text": text}},
+    )
+    assert review.metadata["review_skipped"] is True
+    assert review.coverage_ok is False
+    assert review.satisfied is False
+
+
+def test_validate_layer_commit_rejects_changed_candidate_set():
+    text = "Alpha Beta"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={"doc|root": [_pointer("doc|p1_t0", text, 0, len(text) - 1)]},
+    )
+    review = validate_layer_commit(
+        current_layer_context=context,
+        current_layer_result=CurrentLayerResult(
+            children=[
+                _child(
+                    node_id="child",
+                    parent_node_id="doc|root",
+                    title="Alpha",
+                    node_type="TEXT_FLOW",
+                    pointer=_pointer("doc|p1_t0", text, 0, 4),
+                )
+            ],
+            satisfied=True,
+        ),
+        parser_source_map={"doc|p1_t0": {"text": text}},
+    )
+    assert review.coverage_ok is False
+    assert review.metadata["commit_validation"] is True
+    assert review.coverage_gap_notes
+
+
+def test_validate_layer_commit_preserves_valid_parent_when_batch_sibling_fails():
+    valid_text = "Alpha"
+    invalid_text = "Beta"
+    valid_parent = "doc|section-a"
+    invalid_parent = "doc|section-b"
+    context = CurrentLayerContext(
+        depth=1,
+        parent_node_ids=[valid_parent, invalid_parent],
+        parent_titles=["A", "B"],
+        parent_content_pointers_by_id={
+            valid_parent: [_pointer("doc|p1_t0", valid_text, 0, 4)],
+            invalid_parent: [_pointer("doc|p1_t1", invalid_text, 0, 3)],
+        },
+    )
+    result = CurrentLayerResult(
+        children=[
+            _child(
+                node_id="child-a",
+                parent_node_id=valid_parent,
+                title="Alpha",
+                node_type="TEXT_FLOW",
+                pointer=_pointer("doc|p1_t0", valid_text, 0, 4),
+            )
+        ],
+        satisfied=True,
+    )
+
+    review = validate_layer_commit(
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map={
+            "doc|p1_t0": {"text": valid_text},
+            "doc|p1_t1": {"text": invalid_text},
+        },
+    )
+
+    assert review.satisfied is True
+    assert review.coverage_ok is False
+    assert review.committable_parent_node_ids == [valid_parent]
+    assert review.failed_parent_node_ids == [invalid_parent]
+    assert review.metadata["partial_commit"] is True
+    assert [child.node_id for child in review.updated_result.children] == ["child-a"]
+
+    tree = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[
+            SemanticNode(
+                node_id=valid_parent,
+                parent_id="doc|root",
+                title="A",
+                node_type="SECTION",
+                total_content_pointers=[_pointer("doc|p1_t0", valid_text, 0, 4)],
+            ),
+            SemanticNode(
+                node_id=invalid_parent,
+                parent_id="doc|root",
+                title="B",
+                node_type="SECTION",
+                total_content_pointers=[_pointer("doc|p1_t1", invalid_text, 0, 3)],
+            ),
+        ],
+    )
+    committed = commit_layer_children(
+        semantic_tree=tree,
+        current_layer_result=review.updated_result,
+        current_depth=1,
+        parent_node_ids=review.committable_parent_node_ids,
+    )
+    assert [child.node_id for child in committed.child_nodes[0].child_nodes] == ["child-a"]
+    assert committed.child_nodes[1].child_nodes == []
+
+
+def test_failed_batch_parents_are_requeued_at_same_depth_once():
+    queued = requeue_failed_frontier_items(
+        frontier_queue=[
+            LayerFrontierItem(parent_node_id="already-queued", depth=2, order=4),
+        ],
+        parent_node_ids=["failed-a", "already-queued", "failed-a"],
+        depth=2,
+    )
+    assert [(item.parent_node_id, item.depth, item.order) for item in queued] == [
+        ("already-queued", 2, 4),
+        ("failed-a", 2, 5),
+    ]
+
+
 def test_finalize_semantic_tree_rejects_dangling_source_pointer():
     root = SemanticNode(
         node_id="doc|root",
@@ -388,6 +711,32 @@ def test_finalize_semantic_tree_rejects_dangling_source_pointer():
     )
 
     with pytest.raises(ValueError, match="unknown source cluster"):
+        finalize_semantic_tree(root, parser_source_map={"doc|p1_t0": {"text": "Alpha"}})
+
+
+def test_finalize_semantic_tree_rejects_excerpt_that_disagrees_with_source():
+    root = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[
+            SemanticNode(
+                node_id="child-a",
+                parent_id="doc|root",
+                title="Wrong",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id="doc|p1_t0",
+                        start_char=0,
+                        end_char=4,
+                        verbatim_text="Wrong",
+                    )
+                ],
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="excerpt does not match"):
         finalize_semantic_tree(root, parser_source_map={"doc|p1_t0": {"text": "Alpha"}})
 
 
