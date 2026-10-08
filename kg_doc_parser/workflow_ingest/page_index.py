@@ -39,7 +39,7 @@ import re
 from collections.abc import Callable, Iterator
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from kogwistar.id_provider import stable_id
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
@@ -106,7 +106,7 @@ PageIndexNodeType = Literal[
 PageIndexSourceRole = Literal["heading", "content"]
 
 
-def _callback_call_counts(callbacks: list[Any] | None) -> dict[int, int | None]:
+def _callback_call_counts(callbacks: list[object] | None) -> dict[int, int | None]:
     """Snapshot callback accounting before a provider invocation."""
 
     return {
@@ -116,7 +116,7 @@ def _callback_call_counts(callbacks: list[Any] | None) -> dict[int, int | None]:
 
 
 def _notify_untracked_provider_call(
-    callbacks: list[Any] | None,
+    callbacks: list[object] | None,
     before_counts: dict[int, int | None],
     call_key: str,
 ) -> None:
@@ -239,11 +239,11 @@ class PageIndexParseResult:
     source_format: PageIndexSourceFormat
     workflow_input: WorkflowIngestInput
     authoritative_source_map: dict[str, GroundedSourceRecord]
-    parser_input_dict: dict[str, Any]
-    parser_source_map: dict[str, dict[str, Any]]
+    parser_input_dict: dict[str, object]
+    parser_source_map: dict[str, dict[str, object]]
     semantic_tree: SemanticNode
-    coverage: dict[str, Any]
-    diagnostics: dict[str, Any]
+    coverage: dict[str, object]
+    diagnostics: dict[str, object]
 
 
 @dataclass(slots=True)
@@ -268,7 +268,7 @@ class _BlockSpan:
     heading_level: int | None = None
 
 
-def _page_index_assignment_debug_payload(assignments: list[BlockAssignment]) -> list[dict[str, Any]]:
+def _page_index_assignment_debug_payload(assignments: list[BlockAssignment]) -> list[dict[str, object]]:
     return [
         {
             "block_id": assignment.block_id,
@@ -280,8 +280,8 @@ def _page_index_assignment_debug_payload(assignments: list[BlockAssignment]) -> 
     ]
 
 
-def _page_index_block_spec_debug_payload(block_specs: list[PageIndexBlockSpec]) -> list[dict[str, Any]]:
-    def _walk(spec: PageIndexBlockSpec, *, path: str) -> dict[str, Any]:
+def _page_index_block_spec_debug_payload(block_specs: list[PageIndexBlockSpec]) -> list[dict[str, object]]:
+    def _walk(spec: PageIndexBlockSpec, *, path: str) -> dict[str, object]:
         return {
             "path": path,
             "title": spec.title,
@@ -954,7 +954,7 @@ def _salvage_page_index_assignments(
     candidates: list[CandidateBlock],
     assignments: list[BlockAssignment],
     page_text: str,
-) -> tuple[list[BlockAssignment] | None, dict[str, Any]]:
+) -> tuple[list[BlockAssignment] | None, dict[str, object]]:
     """Keep valid provider branches while replacing locally invalid blocks.
 
     Salvage is deliberately conservative: the assignment set must still cover
@@ -1268,10 +1268,10 @@ def _refine_page_index_block_excerpts(
     page_number: int,
     unit_id: str,
     provider_settings: WorkflowProviderSettings,
-    callbacks: list[Any] | None = None,
+    callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
-) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
     entries = [
         {
             "path_id": _page_index_path_id(path),
@@ -1452,10 +1452,10 @@ def _refine_page_index_summaries_hierarchically(
     block_specs: list[PageIndexBlockSpec],
     page_number: int,
     provider_settings: WorkflowProviderSettings,
-    callbacks: list[Any] | None = None,
+    callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
-) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
     """Optionally regenerate summaries one tree depth at a time.
 
     The initial assignment remains authoritative for structure and grounding.
@@ -1464,7 +1464,7 @@ def _refine_page_index_summaries_hierarchically(
     """
 
     paths = list(_iter_page_index_block_specs_with_paths(block_specs))
-    diagnostics: dict[str, Any] = {
+    diagnostics: dict[str, object] = {
         "hierarchical_summary_enabled": True,
         "hierarchical_summary_attempted": len(paths),
         "hierarchical_summary_accepted": 0,
@@ -1628,7 +1628,7 @@ def _build_page_outline_from_candidates(
     assignment_mode: str,
     assignments: list[BlockAssignment],
     validation: PageIndexValidationResult,
-) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     if validation.valid:
         block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=assignments)
@@ -1654,7 +1654,7 @@ def _heuristic_page_outline(
     *,
     page_number: int,
     source_format: PageIndexSourceFormat,
-) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     assignments = _deterministic_block_assignments(candidates)
     validation = _validate_block_assignments(candidates, assignments, page_text=page_text)
@@ -1676,10 +1676,10 @@ def _llm_page_outline(
     page_number: int,
     source_format: PageIndexSourceFormat,
     provider_settings: WorkflowProviderSettings,
-    callbacks: list[Any] | None = None,
+    callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
-) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     assignment_mode_prefix = "ollama" if provider_settings.parser.provider == "ollama" else "llm"
     if not candidates:
@@ -1821,7 +1821,7 @@ def _llm_page_outline(
         fallback_reason: str,
         retry_prompt_summary: str | None = None,
         structure_retry_prompt_summary: str | None = None,
-    ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+    ) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
         fallback_assignments = _deterministic_block_assignments(candidates)
         fallback_block_specs = _assemble_page_index_blocks(
             candidates=candidates,
@@ -1865,7 +1865,7 @@ def _llm_page_outline(
         validation_warnings: list[str],
         retry_prompt_summary: str | None = None,
         structure_retry_prompt_summary: str | None = None,
-    ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]] | None:
+    ) -> tuple[list[PageIndexBlockSpec], dict[str, object]] | None:
         if batch is None:
             return None
         salvaged_assignments, salvage_diagnostics = _salvage_page_index_assignments(
@@ -1918,7 +1918,7 @@ def _llm_page_outline(
         assignment_retry_validation_errors: list[str],
         validation_warnings: list[str],
         retry_prompt_summary: str | None = None,
-    ) -> tuple[list[PageIndexBlockSpec], dict[str, Any]]:
+    ) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
         block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=batch.assignments)
         structure_validation = _validate_page_index_block_structure(
             candidates=candidates,
@@ -2265,7 +2265,7 @@ def _make_semantic_node(
     level_from_root: int,
     pointers: list[HydratedTextPointer],
     summary: str = "",
-    metadata: dict[str, Any] | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> SemanticNode:
     return SemanticNode(
         title=title,
@@ -2398,7 +2398,7 @@ def parse_page_index_layer(
     parent_id: str,
     parent_title: str,
     parent_pointers: list[HydratedTextPointer],
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_source_map: dict[str, dict[str, object]],
     source_format: PageIndexSourceFormat = "text",
     summary_enabled: bool = True,
 ) -> list[LayerChildCandidate]:
@@ -2567,7 +2567,7 @@ def parse_page_index_document(
     source_format: PageIndexSourceFormat = "text",
     mode: PageIndexMode = "heuristic",
     provider_settings: WorkflowProviderSettings | None = None,
-    callbacks: list[Any] | None = None,
+    callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
     refine_excerpts: bool = False,
@@ -2620,7 +2620,7 @@ def parse_page_index_document(
         child_nodes=[],
     )
     page_nodes: list[SemanticNode] = []
-    page_diagnostics: list[dict[str, Any]] = []
+    page_diagnostics: list[dict[str, object]] = []
     for page_number, (unit_id, record) in enumerate(page_units, start=1):
         if trace_log is not None:
             trace_log(
