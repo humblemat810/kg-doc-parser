@@ -100,6 +100,7 @@ CodexBridgeChatModel = StructuredBridgeChatModel
 _codex_messages = bridge_messages
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
+TConstructedProvider = TypeVar("TConstructedProvider")
 ChatProviderName = Literal["anthropic", "gemini", "ollama", "openai", "azure", "vertex", "fake", "codex"]
 EmbeddingProviderName = Literal["fake", "openai", "vertex", "ollama"]
 ProposalMode = Literal["children", "boundaries"]
@@ -124,6 +125,23 @@ class ProviderDiagnosticsSink(Protocol):
     """Receive one structured provider-call diagnostic record."""
 
     def __call__(self, diagnostics: Mapping[str, object], /) -> None: ...
+
+
+class _EmbeddingBackend(Protocol):
+    """Minimal runtime surface shared by optional LangChain embedding adapters."""
+
+    def embed_documents(self, texts: list[str]) -> object: ...
+
+    def embed_query(self, text: str) -> object: ...
+
+
+def _construct_provider(  # noqa: UP047 - PyPy 3.11 remains supported
+    factory: Callable[..., TConstructedProvider],
+    options: Mapping[str, object],
+) -> TConstructedProvider:
+    """Construct an optional provider at the dynamic third-party boundary."""
+
+    return factory(**dict(options))
 
 _PROVIDER_IN_FLIGHT_LOCK = threading.Lock()
 _PROVIDER_IN_FLIGHT = 0
@@ -945,7 +963,7 @@ def build_embedding_function(
                 kwargs["base_url"] = spec.base_url
             if spec.api_key_env and os.getenv(spec.api_key_env):
                 kwargs["api_key"] = os.getenv(spec.api_key_env)
-            return OpenAIEmbeddings(**kwargs)
+            return _construct_provider(OpenAIEmbeddings, kwargs)
         if spec.provider == "vertex":
             from langchain_google_vertexai import (  # pyright: ignore[reportMissingImports]
                 VertexAIEmbeddings,
@@ -956,7 +974,7 @@ def build_embedding_function(
                 kwargs["project"] = spec.project
             if spec.location:
                 kwargs["location"] = spec.location
-            return VertexAIEmbeddings(**kwargs)
+            return _construct_provider(VertexAIEmbeddings, kwargs)
         if spec.provider == "ollama":
             from langchain_ollama import (  # pyright: ignore[reportMissingImports]
                 OllamaEmbeddings,
@@ -965,10 +983,10 @@ def build_embedding_function(
             kwargs = {"model": spec.model}
             if spec.base_url:
                 kwargs["base_url"] = spec.base_url
-            return OllamaEmbeddings(**kwargs)
+            return _construct_provider(OllamaEmbeddings, kwargs)
         raise ValueError(f"unsupported embedding provider: {spec.provider}")
 
-    embeddings = _build_langchain_embeddings()
+    embeddings = cast(_EmbeddingBackend, _build_langchain_embeddings())
 
     class _LangChainEmbeddingFunction:
         def name(self) -> str:
@@ -1030,7 +1048,7 @@ def build_chat_model(
             kwargs["max_output_tokens"] = spec.max_output_tokens
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["google_api_key"] = os.getenv(spec.api_key_env)
-        return cast(SupportsStructuredOutput, ChatGoogleGenerativeAI(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(ChatGoogleGenerativeAI, kwargs))
     if spec.provider == "openai":
         max_output_tokens = (
             spec.max_output_tokens
@@ -1053,7 +1071,7 @@ def build_chat_model(
             kwargs["base_url"] = spec.base_url
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["api_key"] = os.getenv(spec.api_key_env)
-        return cast(SupportsStructuredOutput, ChatOpenAI(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(ChatOpenAI, kwargs))
     if spec.provider == "azure":
         max_output_tokens = (
             spec.max_output_tokens
@@ -1082,7 +1100,7 @@ def build_chat_model(
             kwargs["api_version"] = os.getenv("AZURE_OPENAI_API_VERSION")
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["api_key"] = os.getenv(spec.api_key_env)
-        return cast(SupportsStructuredOutput, AzureChatOpenAI(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(AzureChatOpenAI, kwargs))
     if spec.provider == "anthropic":
         try:
             from langchain_anthropic import ChatAnthropic
@@ -1103,7 +1121,7 @@ def build_chat_model(
             kwargs["base_url"] = spec.base_url
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["anthropic_api_key"] = os.getenv(spec.api_key_env)
-        return cast(SupportsStructuredOutput, ChatAnthropic(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(ChatAnthropic, kwargs))
     if spec.provider == "ollama":
         from langchain_ollama import ChatOllama  # pyright: ignore[reportMissingImports]
 
@@ -1116,7 +1134,7 @@ def build_chat_model(
             kwargs["num_predict"] = spec.max_output_tokens
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
-        return cast(SupportsStructuredOutput, ChatOllama(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(ChatOllama, kwargs))
     if spec.provider == "vertex":
         from langchain_google_vertexai import (  # pyright: ignore[reportMissingImports]
             ChatVertexAI,
@@ -1134,7 +1152,7 @@ def build_chat_model(
             kwargs["project"] = spec.project
         if spec.location:
             kwargs["location"] = spec.location
-        return cast(SupportsStructuredOutput, ChatVertexAI(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(ChatVertexAI, kwargs))
     raise ValueError(f"unsupported chat provider: {spec.provider}")
 
 
