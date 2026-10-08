@@ -1,8 +1,8 @@
 
-from typing import Dict, Literal, Any
+from typing import Literal
 from .semantic_document_splitting_layerwise_edits import parse_doc
 
-def text_to_ocr_format(text: str, filename: str = "input_text") -> Dict:
+def text_to_ocr_format(text: str, filename: str = "input_text") -> dict[str, object]:
     """
     Wraps a raw string into the expected OCR dictionary format with a single dummy cluster.
     """
