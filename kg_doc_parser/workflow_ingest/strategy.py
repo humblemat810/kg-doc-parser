@@ -6,8 +6,8 @@ but it cannot bypass the host's allowed strategies or the provider timeout.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, Literal, Protocol
+from collections.abc import Callable, Mapping
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -72,7 +72,7 @@ class ParseStrategyDecision(BaseModel):
 
 
 class StrategyTriageFn(Protocol):
-    def __call__(self, context: dict[str, Any], /) -> ParseStrategyTriage: ...
+    def __call__(self, context: Mapping[str, object], /) -> ParseStrategyTriage: ...
 
 
 def hardcoded_strategy(
@@ -110,7 +110,7 @@ def hardcoded_strategy(
     )
 
 
-def _triage_prompt(context: dict[str, Any]) -> str:
+def _triage_prompt(context: Mapping[str, object]) -> str:
     return (
         "Choose one parser strategy for this bounded document summary.\n"
         "Consider the trade-offs explicitly: layer_excerpt preserves verbatim leaf evidence and is the preferred "
@@ -135,7 +135,7 @@ def build_llm_strategy_triage(
 
     structured = chat.with_structured_output(ParseStrategyTriage, include_raw=True)
 
-    def _triage(context: dict[str, Any]) -> ParseStrategyTriage:
+    def _triage(context: Mapping[str, object]) -> ParseStrategyTriage:
         diagnostics: dict[str, object] = {}
         try:
             response = invoke_with_timeout(
@@ -182,7 +182,7 @@ def build_llm_strategy_triage(
 def select_parse_strategy(
     *,
     requested: ParseStrategyRequest,
-    context: dict[str, Any],
+    context: Mapping[str, object],
     triage_enabled: bool,
     triage_fn: StrategyTriageFn | None = None,
     strategy_order: tuple[ParseStrategy, ...] = HARD_CODED_STRATEGY_PRIORITY,
