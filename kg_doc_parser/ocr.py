@@ -31,6 +31,9 @@ from kogwistar.llm_tasks.providers import SupportsStructuredOutput
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 from .pdf2png import RawFileLoader
 PastCompatibleSplitPage: TypeAlias = SplitPage
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
 
 
 class StructuredOutputPayload(TypedDict):
@@ -49,22 +52,26 @@ def _build_ocr_llm(
     return build_chat_model(spec, callbacks=callbacks)
 
 
-def get_page_json(folder_path: str, page_num: int) -> dict[str, Any]:
+def get_page_json(folder_path: str, page_num: int) -> JsonObject:
     with open(os.path.join(folder_path, 'page_'+str(page_num)+'.json'), 'r') as f:
         file_json_raw = json.load(f)
-    return file_json_raw
-def regen_page(file_json_raw: Mapping[str, Any], use_raw: bool) -> dict[str, Any]:
+    return cast(JsonObject, file_json_raw)
+
+
+def regen_page(file_json_raw: Mapping[str, JsonValue], use_raw: bool) -> JsonObject:
         # add compatible to union if want to compatible with past models
     """regen from json returned by SplitPage.to_doc(), can be view as SplitPage.FromJson(filepath)"""
-    p = PastCompatibleSplitPage(**file_json_raw)
+    p = PastCompatibleSplitPage.model_validate(file_json_raw)
     if use_raw:
-        return p.dump_supercede_parse()
+        return cast(JsonObject, p.dump_supercede_parse())
     try:
         res = p.to_doc()
     except:
         raise
-    return res
-def regen_doc(folder_path: str, use_raw: bool = False) -> list[dict[str, Any]]:
+    return cast(JsonObject, res)
+
+
+def regen_doc(folder_path: str, use_raw: bool = False) -> list[JsonObject]:
     pages_nums = sorted((int(i.rsplit(".json",1)[0].split("page_",1)[1]) for i in os.listdir(folder_path) if i.endswith('.json') and i.startswith("page_")))
     pages = []
     split_pages = []
