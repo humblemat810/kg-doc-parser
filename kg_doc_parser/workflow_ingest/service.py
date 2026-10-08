@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -25,7 +25,19 @@ class WorkflowEdgeLike(Protocol):
 
 
 WorkflowState = Mapping[str, object]
-WorkflowPredicate = Callable[[WorkflowEdgeLike, WorkflowState, object], bool]
+
+
+class WorkflowPredicate(Protocol):
+    """Evaluate one persisted workflow transition without provider authority."""
+
+    def __call__(
+        self,
+        edge: WorkflowEdgeLike,
+        state: WorkflowState,
+        result: object,
+    ) -> bool: ...
+
+
 WorkflowPredicates = dict[str, WorkflowPredicate]
 
 
