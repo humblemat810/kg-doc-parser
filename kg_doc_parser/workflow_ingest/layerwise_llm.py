@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Literal, Protocol, TypedDict, TypeVar, cast
 
 from kogwistar.fuzzy_offsets import find_fuzzy_spans, offset_repair_threshold
-from kogwistar.runtime import RetryExhaustedError, RetryResult, retry_with_context
+from kogwistar.json_types import JsonValue
+from kogwistar.runtime import (
+    RetryAttemptRecord,
+    RetryExhaustedError,
+    RetryResult,
+    retry_with_context,
+)
 from kogwistar.utils import SourcePointerValidationError, validate_source_pointer
 from pydantic import BaseModel
 
@@ -241,6 +247,14 @@ def _offset_value(value: object, default: int) -> int:
     return default
 
 
+def _object_list(value: object) -> list[object]:
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def _object_dict(value: object) -> dict[str, object]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _pointer_signature(pointer: object, *, parser_source_map: dict[str, dict[str, object]]) -> tuple[str, int, int, str]:
     return (
         str(_pointer_field(pointer, "source_cluster_id") or ""),
@@ -471,7 +485,7 @@ def _boundary_candidates_for_pointer(
     candidates = _legal_cutpoints_for_text(text, max_points=max_points)
     if not candidates:
         return []
-    start_char = int(_pointer_field(pointer, "start_char") or 0)
+    start_char = _offset_value(_pointer_field(pointer, "start_char"), 0)
     return [
         candidate.model_copy(
             update={
@@ -494,10 +508,10 @@ def _boundary_prompt_candidate_context(
     pointers_by_id = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
     candidates: list[dict[str, object]] = []
     for parent_id in parent_ids:
-        for pointer in list(pointers_by_id.get(parent_id) or []):
+        for pointer in _object_list(pointers_by_id.get(parent_id)):
             text = _pointer_text(pointer, parser_source_map=parser_source_map)
             legal = _legal_cutpoints_for_text(text, max_points=max_points)
-            start_char = int(_pointer_field(pointer, "start_char") or 0)
+            start_char = _offset_value(_pointer_field(pointer, "start_char"), 0)
             candidates.append(
                 {
                     "parent_node_id": parent_id,
@@ -555,7 +569,9 @@ def _boundary_candidate_lookup(
     for parent in boundary_candidates:
         parent_node_id = str(parent.get("parent_node_id") or "")
         source_cluster_id = str(parent.get("source_cluster_id") or "")
-        for candidate in list(parent.get("legal_cutpoints") or []):
+        for candidate in _object_list(parent.get("legal_cutpoints")):
+            if not isinstance(candidate, dict):
+                continue
             candidate_id = str(candidate.get("candidate_id") or "")
             if not candidate_id:
                 continue
@@ -585,7 +601,7 @@ def _normalize_boundary_cutpoints_from_candidates(
                     if (
                         str(lookup_candidate.get("parent_node_id") or "") == parent_node_id
                         and str(lookup_candidate.get("source_cluster_id") or "") == source_cluster_id
-                        and int(lookup_candidate.get("cut_offset") or -1) == cut_offset
+                        and _offset_value(lookup_candidate.get("cut_offset"), -1) == cut_offset
                     ):
                         candidate = lookup_candidate
                         break
@@ -598,7 +614,7 @@ def _normalize_boundary_cutpoints_from_candidates(
                     "candidate_id": candidate_id,
                     "parent_node_id": str(candidate["parent_node_id"]),
                     "source_cluster_id": str(candidate["source_cluster_id"]),
-                    "cut_offset": int(candidate["cut_offset"]),
+                    "cut_offset": _offset_value(candidate.get("cut_offset"), cutpoint.cut_offset),
                     "boundary_kind": str(candidate.get("boundary_kind") or cutpoint.boundary_kind),
                     "text_before_cut": str(
                         candidate.get("text_before_cut") or candidate.get("text_before_cut_preview") or cutpoint.text_before_cut
@@ -722,7 +738,7 @@ def _repair_boundary_cutpoint_from_source(
     text = _pointer_text(pointer, parser_source_map=parser_source_map)
     if not text:
         return None
-    start_char = int(_pointer_field(pointer, "start_char") or 0)
+    start_char = _offset_value(_pointer_field(pointer, "start_char"), 0)
     local_cut = cutpoint.cut_offset - start_char
     if local_cut < 0 or local_cut > len(text):
         return None
@@ -834,13 +850,13 @@ def _parent_context_excerpt(
 
 
 def _proposal_attempt_context(*, parse_session: object, current_layer_context: object) -> dict[str, object]:
-    parse_session_dump = _dump_model(parse_session) if parse_session is not None else {}
-    attempts = dict(parse_session_dump.get("layer_attempts") or {})
+    parse_session_dump = _object_dict(_dump_model(parse_session) if parse_session is not None else {})
+    attempts = _object_dict(parse_session_dump.get("layer_attempts"))
     depth_key = str(getattr(current_layer_context, "depth", 0))
     return {
-        "attempt_number_for_depth": int(attempts.get(depth_key, 0)) + 1,
+        "attempt_number_for_depth": _offset_value(attempts.get(depth_key), 0) + 1,
         "attempts_by_depth": attempts,
-        "strategy_history": list(parse_session_dump.get("strategy_history") or []),
+        "strategy_history": _object_list(parse_session_dump.get("strategy_history")),
         "fallback_split_strategy": parse_session_dump.get("fallback_split_strategy"),
         "workflow_mode": parse_session_dump.get("mode"),
         "prior_review": parse_session_dump.get("last_review") or {},
@@ -1005,7 +1021,7 @@ def _boundary_refinement_prompt_context(
     target_excerpt = _pointer_text(target_pointer, parser_source_map=parser_source_map) if target_pointer is not None else ""
     legal_cutpoints: list[dict[str, object]] = []
     if target_pointer is not None:
-        start_char = int(_pointer_field(target_pointer, "start_char") or 0)
+        start_char = _offset_value(_pointer_field(target_pointer, "start_char"), 0)
         for boundary in _legal_cutpoints_for_text(target_excerpt, max_points=128):
             legal_cutpoints.append(
                 {
@@ -1081,7 +1097,7 @@ def _boundary_review_decision(
         )
 
     text = _pointer_text(pointer, parser_source_map=parser_source_map)
-    start_char = int(_pointer_field(pointer, "start_char") or 0)
+    start_char = _offset_value(_pointer_field(pointer, "start_char"), 0)
     _start_char, _end_char_exclusive = _pointer_span_bounds(pointer, parser_source_map=parser_source_map)
     local_cut = cutpoint.cut_offset - start_char
     if cutpoint.candidate_id:
@@ -1209,8 +1225,8 @@ def _boundary_unit_summaries(
             _make_boundary_summary(
                 parent_node_id=str(unit["parent_node_id"]),
                 source_cluster_id=str(unit["source_cluster_id"]),
-                start_char=int(unit["start_char"]),
-                end_char=int(unit["end_char"]),
+                start_char=_offset_value(unit.get("start_char"), 0),
+                end_char=_offset_value(unit.get("end_char"), 0),
                 parser_source_map=parser_source_map,
                 boundary_kind=str(unit.get("boundary_kind") or "semantic"),
             )
@@ -1228,16 +1244,16 @@ def _boundary_parent_coverage_report(
 ) -> dict[str, object]:
     covered_ranges = [
         {
-            "start_char": int(segment["start_char"]),
-            "end_char": int(segment["end_char"]),
+            "start_char": _offset_value(segment.get("start_char"), 0),
+            "end_char": _offset_value(segment.get("end_char"), 0),
         }
         for segment in segments
         if not bool(segment.get("skipped"))
     ]
     gap_ranges = [
         {
-            "start_char": int(segment["start_char"]),
-            "end_char": int(segment["end_char"]),
+            "start_char": _offset_value(segment.get("start_char"), 0),
+            "end_char": _offset_value(segment.get("end_char"), 0),
             "reason": str(segment.get("skip_reason") or "unresolved"),
         }
         for segment in segments
@@ -1418,18 +1434,21 @@ def _assemble_layer_result_from_boundaries(
             total_content_pointers=[
                 HydratedTextPointer(
                     source_cluster_id=str(item["source_cluster_id"]),
-                    start_char=int(item["start_char"]),
-                    end_char=int(item["end_char"]),
+                    start_char=_offset_value(item.get("start_char"), 0),
+                    end_char=_offset_value(item.get("end_char"), 0),
                     verbatim_text=str(item["verbatim_text"] or item["exact_text"] or item["summary_text"] or ""),
                 )
             ],
             expandable=bool(item["expandable"]),
-            metadata={
-                "source": "boundary_first",
-                "boundary_kind": item["boundary_kind"],
-                "summary_text": item["summary_text"],
-                "exact_text": item["exact_text"],
-            },
+            metadata=cast(
+                dict[str, JsonValue],
+                {
+                    "source": "boundary_first",
+                    "boundary_kind": item["boundary_kind"],
+                    "summary_text": item["summary_text"],
+                    "exact_text": item["exact_text"],
+                },
+            ),
         )
         for index, item in enumerate(child_items)
     ]
@@ -1443,13 +1462,16 @@ def _assemble_layer_result_from_boundaries(
         children=children,
         satisfied=True,
         reasoning_history=[],
-        metadata={
-            "proposal_mode": "boundaries",
-            "boundary_unit_summaries": [summary.model_dump() for summary in summaries],
-            "boundary_parent_coverage": coverage_reports,
-            "boundary_review_notes": list(review_batch.review_notes),
-            "unresolved_interval_count": unresolved_intervals,
-        },
+        metadata=cast(
+            dict[str, JsonValue],
+            {
+                "proposal_mode": "boundaries",
+                "boundary_unit_summaries": [summary.model_dump() for summary in summaries],
+                "boundary_parent_coverage": coverage_reports,
+                "boundary_review_notes": list(review_batch.review_notes),
+                "unresolved_interval_count": unresolved_intervals,
+            },
+        ),
     )
     return result, summaries, accepted_cutpoints
 
@@ -1472,14 +1494,14 @@ def _boundary_identical_parent_child_ids(
         child_pointer = child_pointers[0]
         child_key = (
             str(_pointer_field(child_pointer, "source_cluster_id") or ""),
-            int(_pointer_field(child_pointer, "start_char") or 0),
-            int(_pointer_field(child_pointer, "end_char") or -1),
+            _offset_value(_pointer_field(child_pointer, "start_char"), 0),
+            _offset_value(_pointer_field(child_pointer, "end_char"), -1),
         )
         for parent_pointer in parent_pointers_by_id.get(child.parent_node_id, []):
             parent_key = (
                 str(_pointer_field(parent_pointer, "source_cluster_id") or ""),
-                int(_pointer_field(parent_pointer, "start_char") or 0),
-                int(_pointer_field(parent_pointer, "end_char") or -1),
+                _offset_value(_pointer_field(parent_pointer, "start_char"), 0),
+                _offset_value(_pointer_field(parent_pointer, "end_char"), -1),
             )
             if child_key == parent_key:
                 identical_ids.append(str(child.node_id))
@@ -1704,14 +1726,16 @@ def build_layerwise_llm_callbacks(
     proposal_mode: str | None = None,
     boundary_refinement_rounds: int = 1,
 ) -> LayerwiseLLMCallbacks:
-    model_callback_kwargs: dict[str, object] = {}
     if model_callbacks:
-        model_callback_kwargs["callbacks"] = list(model_callbacks)
-    chat_model = build_chat_model_for_role(
-        "parser",
-        provider_settings,
-        **model_callback_kwargs,
-    )
+        chat_model = build_chat_model_for_role(
+            "parser",
+            provider_settings,
+            callbacks=list(model_callbacks),
+        )
+    else:
+        # Preserve the narrow legacy factory shape used by lightweight callers
+        # and test doubles that do not accept optional callback plumbing.
+        chat_model = build_chat_model_for_role("parser", provider_settings)
     fallback_builder = fallback_layer_result_fn or _fallback_layer_result
     proposal_mode = str(proposal_mode or getattr(provider_settings, "proposal_mode", "children") or "children")
     if proposal_mode not in {"children", "boundaries"}:
@@ -1724,7 +1748,7 @@ def build_layerwise_llm_callbacks(
         if callable(event_sink):
             event_sink(stage, **extra)
 
-    def _emit_provider_diagnostics(diagnostics: dict[str, object]) -> None:
+    def _emit_provider_diagnostics(diagnostics: Mapping[str, object]) -> None:
         """Publish one structured call record without exposing provider payloads."""
 
         nonlocal last_provider_failure_type
@@ -1810,10 +1834,12 @@ def build_layerwise_llm_callbacks(
                 recovery_example: dict[str, object] | None = None
                 if previous_error:
                     for boundary_candidate in boundary_candidates:
-                        legal_cutpoints = list(boundary_candidate.get("legal_cutpoints") or [])
+                        legal_cutpoints = _object_list(boundary_candidate.get("legal_cutpoints"))
                         if not legal_cutpoints:
                             continue
                         legal_cutpoint = legal_cutpoints[0]
+                        if not isinstance(legal_cutpoint, dict):
+                            continue
                         recovery_example = {
                             "cutpoints": [
                                 {
@@ -1879,7 +1905,7 @@ def build_layerwise_llm_callbacks(
                     ("human", safe_json_dumps(prompt_payload, sort_keys=True)),
                 ]
 
-            def _emit_boundary_retry(record: object) -> None:
+            def _emit_boundary_retry(record: RetryAttemptRecord[list[tuple[str, str]]]) -> None:
                 retry_budget = proposal_retry_rounds + 1
                 delay_seconds = _bounded_retry_delay(
                     attempt_number=record.attempt_number,
@@ -2356,12 +2382,15 @@ def build_layerwise_llm_callbacks(
                         children=[],
                         satisfied=True,
                         reasoning_history=list(fallback.reasoning_history),
-                        metadata={
-                            **dict(fallback.metadata),
-                            "allow_empty_layer": True,
-                            "atomic_retained": True,
-                            "boundary_rejected_child_ids": fallback_identical_ids,
-                        },
+                        metadata=cast(
+                            dict[str, JsonValue],
+                            {
+                                **dict(fallback.metadata),
+                                "allow_empty_layer": True,
+                                "atomic_retained": True,
+                                "boundary_rejected_child_ids": fallback_identical_ids,
+                            },
+                        ),
                     )
                 annotated = _annotate_proposal_result(
                     fallback,
@@ -2397,7 +2426,9 @@ def build_layerwise_llm_callbacks(
             shifted_count = sum(1 for decision in review_decisions if decision.decision in {"shift_left", "shift_right"})
             rejected_count = sum(1 for decision in review_decisions if decision.decision == "reject")
             refinement_count = sum(1 for decision in review_decisions if decision.decision == "needs_refinement")
-            unresolved_interval_count = int(runtime_result.metadata.get("unresolved_interval_count", 0) or 0)
+            unresolved_interval_count = _offset_value(
+                runtime_result.metadata.get("unresolved_interval_count"), 0
+            )
             if accepted_count + shifted_count == 0:
                 failure_reason = "boundary proposal produced no accepted cutpoints"
                 _emit(
@@ -2552,7 +2583,7 @@ def build_layerwise_llm_callbacks(
                 ("human", safe_json_dumps(prompt_payload, sort_keys=True)),
             ]
 
-        def _emit_child_retry(record: object) -> None:
+        def _emit_child_retry(record: RetryAttemptRecord[list[tuple[str, str]]]) -> None:
             retry_budget = proposal_retry_rounds + 1
             delay_seconds = _bounded_retry_delay(
                 attempt_number=record.attempt_number,
