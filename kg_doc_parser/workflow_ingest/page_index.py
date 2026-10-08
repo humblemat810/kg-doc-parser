@@ -39,9 +39,10 @@ import re
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from kogwistar.id_provider import stable_id
+from kogwistar.json_types import JsonValue
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
 from kogwistar.utils.fuzzy_offsets import find_best_fuzzy_span
 from pydantic import BaseModel, Field
@@ -105,6 +106,34 @@ PageIndexNodeType = Literal[
     "TABLE_ROW",
 ]
 PageIndexSourceRole = Literal["heading", "content"]
+
+
+def _increment_diagnostic(diagnostics: dict[str, object], key: str, amount: int = 1) -> None:
+    current = diagnostics.get(key)
+    diagnostics[key] = (int(current) if isinstance(current, (int, float)) else 0) + amount
+
+
+def _stable_part(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+
+
+def _object_list(value: object) -> list[object]:
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def _object_int(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
 
 
 def _callback_call_counts(callbacks: list[object] | None) -> dict[int, int | None]:
@@ -1593,7 +1622,7 @@ def _refine_page_index_summaries_hierarchically(
                 if provider_diagnostics_sink is not None:
                     provider_diagnostics_sink(dict(call_diagnostics))
                 diagnostics["hierarchical_summary_fallback"] = True
-                diagnostics["hierarchical_summary_rejected"] += len(chunk)
+                _increment_diagnostic(diagnostics, "hierarchical_summary_rejected", len(chunk))
                 if trace_log is not None:
                     trace_log(
                         f"page_index_hierarchical_summary_fallback page_number={page_number} "
@@ -1608,7 +1637,7 @@ def _refine_page_index_summaries_hierarchically(
             for assignment in batch.assignments:
                 path = expected_paths.get(assignment.path_id)
                 if path is None or not assignment.summary.strip():
-                    diagnostics["hierarchical_summary_rejected"] += 1
+                    _increment_diagnostic(diagnostics, "hierarchical_summary_rejected")
                     continue
                 summary = assignment.summary.strip()
                 current_nodes = refined
@@ -1616,7 +1645,7 @@ def _refine_page_index_summaries_hierarchically(
                     current_nodes = current_nodes[index].child_nodes
                 current_nodes[path[-1]].summary = summary
                 summary_by_path[path] = summary
-                diagnostics["hierarchical_summary_accepted"] += 1
+                _increment_diagnostic(diagnostics, "hierarchical_summary_accepted")
 
     return refined, diagnostics
 
@@ -1901,7 +1930,8 @@ def _llm_page_outline(
             "first_validation_errors": [],
             "retry_validation_errors": [],
             "validation_errors": [],
-            "validation_warnings": validation_warnings + list(salvage_diagnostics["validation_warnings"]),
+            "validation_warnings": validation_warnings
+            + _object_list(salvage_diagnostics["validation_warnings"]),
             "fallback_reason": None,
             "branch_local_salvage": salvage_diagnostics,
             "retry_prompt_summary": retry_prompt_summary,
@@ -2309,11 +2339,11 @@ def _materialize_block_tree(
             str(
                 stable_id(
                     "workflow_ingest.page_index.heading_container",
-                    parent_id,
-                    spec.node_type,
-                    pointer.source_cluster_id,
-                    pointer.start_char,
-                    pointer.end_char,
+                    _stable_part(parent_id),
+                    _stable_part(spec.node_type),
+                    _stable_part(pointer.source_cluster_id),
+                    _stable_part(pointer.start_char),
+                    _stable_part(pointer.end_char),
                 )
             )
             if is_heading
@@ -2358,10 +2388,10 @@ def _materialize_block_tree(
                     "node_id": str(
                         stable_id(
                             "workflow_ingest.page_index.heading_text",
-                            node.node_id,
-                            pointer.source_cluster_id,
-                            pointer.start_char,
-                            pointer.end_char,
+                            _stable_part(node.node_id),
+                            _stable_part(pointer.source_cluster_id),
+                            _stable_part(pointer.start_char),
+                            _stable_part(pointer.end_char),
                         )
                     )
                 }
@@ -2470,9 +2500,9 @@ def parse_page_index_layer(
             candidate_id = str(
                 stable_id(
                     "workflow_ingest.page_index_layer_child",
-                    parent_id,
-                    node.node_type,
-                    [pointer.model_dump(mode="json") for pointer in pointers],
+                    _stable_part(parent_id),
+                    _stable_part(node.node_type),
+                    _stable_part([pointer.model_dump(mode="json") for pointer in pointers]),
                 )
             )
             materialized_children: list[LayerChildCandidate] = []
@@ -2484,9 +2514,9 @@ def parse_page_index_layer(
                 child_id = str(
                     stable_id(
                         "workflow_ingest.page_index_layer_materialized_child",
-                        candidate_id,
-                        child.node_type,
-                        [pointer.model_dump(mode="json") for pointer in child_pointers],
+                        _stable_part(candidate_id),
+                        _stable_part(child.node_type),
+                        _stable_part([pointer.model_dump(mode="json") for pointer in child_pointers]),
                     )
                 )
                 materialized_children.append(
@@ -2497,12 +2527,15 @@ def parse_page_index_layer(
                         node_type=child.node_type,
                         total_content_pointers=child_pointers,
                         expandable=bool(child.child_nodes),
-                        metadata={
-                            **dict(child.metadata),
-                            "parse_strategy": "page_index",
-                            "page_index_materialized_child": True,
-                            "summary": child.summary,
-                        },
+                        metadata=cast(
+                            dict[str, JsonValue],
+                            {
+                                **dict(child.metadata),
+                                "parse_strategy": "page_index",
+                                "page_index_materialized_child": True,
+                                "summary": child.summary,
+                            },
+                        ),
                     )
                 )
             candidates.append(
@@ -2513,12 +2546,15 @@ def parse_page_index_layer(
                     node_type=node.node_type,
                     total_content_pointers=pointers,
                     expandable=bool(node.child_nodes),
-                    metadata={
-                        **dict(node.metadata),
-                        "parse_strategy": "page_index",
-                        "page_index_layer_only": True,
-                        "summary": node.summary,
-                    },
+                    metadata=cast(
+                        dict[str, JsonValue],
+                        {
+                            **dict(node.metadata),
+                            "parse_strategy": "page_index",
+                            "page_index_layer_only": True,
+                            "summary": node.summary,
+                        },
+                    ),
                     child_candidates=materialized_children,
                 )
             )
@@ -2738,17 +2774,20 @@ def parse_page_index_document(
             )
 
     semantic_tree = root_node.model_copy(update={"child_nodes": page_nodes})
-    coverage = compute_pointer_coverage(semantic_tree, parser_source_map)
-    validation_errors = [error for item in page_diagnostics for error in item.get("validation_errors", [])]
-    validation_warnings = [warning for item in page_diagnostics for warning in item.get("validation_warnings", [])]
-    first_validation_errors = [error for item in page_diagnostics for error in item.get("first_validation_errors", [])]
-    retry_validation_errors = [error for item in page_diagnostics for error in item.get("retry_validation_errors", [])]
-    assignment_validation_errors = [error for item in page_diagnostics for error in item.get("assignment_validation_errors", [])]
-    structure_validation_errors = [error for item in page_diagnostics for error in item.get("structure_validation_errors", [])]
+    coverage = compute_pointer_coverage(
+        semantic_tree,
+        cast(dict[str, dict[str, JsonValue]], parser_source_map),
+    )
+    validation_errors = [error for item in page_diagnostics for error in _object_list(item.get("validation_errors"))]
+    validation_warnings = [warning for item in page_diagnostics for warning in _object_list(item.get("validation_warnings"))]
+    first_validation_errors = [error for item in page_diagnostics for error in _object_list(item.get("first_validation_errors"))]
+    retry_validation_errors = [error for item in page_diagnostics for error in _object_list(item.get("retry_validation_errors"))]
+    assignment_validation_errors = [error for item in page_diagnostics for error in _object_list(item.get("assignment_validation_errors"))]
+    structure_validation_errors = [error for item in page_diagnostics for error in _object_list(item.get("structure_validation_errors"))]
     fallback_reasons = [item.get("fallback_reason") for item in page_diagnostics if item.get("fallback_reason")]
-    candidate_count = sum(int(item.get("candidate_count", 0) or 0) for item in page_diagnostics)
-    assignment_count = sum(int(item.get("assignment_count", 0) or 0) for item in page_diagnostics)
-    assignment_attempt_count = sum(int(item.get("assignment_attempt_count", 1) or 1) for item in page_diagnostics)
+    candidate_count = sum(_object_int(item.get("candidate_count"), 0) for item in page_diagnostics)
+    assignment_count = sum(_object_int(item.get("assignment_count"), 0) for item in page_diagnostics)
+    assignment_attempt_count = sum(_object_int(item.get("assignment_attempt_count"), 1) for item in page_diagnostics)
     assignment_retry_used = any(bool(item.get("assignment_retry_used")) for item in page_diagnostics)
     assignment_retry_succeeded = any(bool(item.get("assignment_retry_succeeded")) for item in page_diagnostics)
     structure_retry_used = any(bool(item.get("structure_retry_used")) for item in page_diagnostics)
@@ -2761,12 +2800,12 @@ def parse_page_index_document(
         item["branch_local_salvage"] for item in page_diagnostics if item.get("branch_local_salvage")
     ]
     refinement_enabled = any(bool(item.get("refine_excerpts_enabled")) for item in page_diagnostics)
-    refinement_attempted = sum(int(item.get("refine_excerpts_attempted", 0) or 0) for item in page_diagnostics)
-    refinement_accepted = sum(int(item.get("refine_excerpts_accepted", 0) or 0) for item in page_diagnostics)
-    refinement_rejected = sum(int(item.get("refine_excerpts_rejected", 0) or 0) for item in page_diagnostics)
+    refinement_attempted = sum(_object_int(item.get("refine_excerpts_attempted"), 0) for item in page_diagnostics)
+    refinement_accepted = sum(_object_int(item.get("refine_excerpts_accepted"), 0) for item in page_diagnostics)
+    refinement_rejected = sum(_object_int(item.get("refine_excerpts_rejected"), 0) for item in page_diagnostics)
     refinement_fallback_pages = sum(1 for item in page_diagnostics if item.get("refine_excerpts_fallback"))
-    pointer_fuzzy_repairs = sum(int(item.get("pointer_fuzzy_repairs", 0) or 0) for item in page_diagnostics)
-    pointer_fuzzy_failures = sum(int(item.get("pointer_fuzzy_failures", 0) or 0) for item in page_diagnostics)
+    pointer_fuzzy_repairs = sum(_object_int(item.get("pointer_fuzzy_repairs"), 0) for item in page_diagnostics)
+    pointer_fuzzy_failures = sum(_object_int(item.get("pointer_fuzzy_failures"), 0) for item in page_diagnostics)
     if mode == "heuristic":
         overall_assignment_mode = "heuristic_deterministic"
     elif fallback_reasons:
@@ -2844,6 +2883,6 @@ def parse_page_index_document(
         parser_input_dict=parser_input_dict,
         parser_source_map=parser_source_map,
         semantic_tree=semantic_tree,
-        coverage=coverage,
+        coverage=cast(dict[str, object], coverage),
         diagnostics=diagnostics,
     )
