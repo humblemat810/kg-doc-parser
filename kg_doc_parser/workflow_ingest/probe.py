@@ -6,14 +6,13 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _jsonable(value: Any) -> Any:
+def _jsonable(value: object) -> object:
     if hasattr(value, "model_dump"):
         try:
             return value.model_dump(field_mode="backend", dump_format="json")
@@ -44,7 +43,7 @@ class WorkflowProbe:
         self._lock = threading.Lock()
         self._sys_monitoring: _SysMonitoringState | None = None
 
-    def emit(self, kind: str, /, **payload: Any) -> None:
+    def emit(self, kind: str, /, **payload: object) -> None:
         event = {"ts": _utc_now(), "kind": str(kind), **_jsonable(payload)}
         line = json.dumps(event, ensure_ascii=True)
         with self._lock:
@@ -91,13 +90,13 @@ class WorkflowProbe:
             )
             self._sys_monitoring = state
 
-            def _should_log(code: Any) -> bool:
+            def _should_log(code: object) -> bool:
                 filename = str(getattr(code, "co_filename", "") or "")
                 if state.code_name_allowlist and getattr(code, "co_name", "") not in state.code_name_allowlist:
                     return False
                 return any(part in filename for part in state.file_substrings)
 
-            def _on_start(code: Any, offset: int) -> None:
+            def _on_start(code: object, offset: int) -> None:
                 if _should_log(code):
                     self.emit(
                         "probe.sys_monitoring.start",
@@ -106,7 +105,7 @@ class WorkflowProbe:
                         offset=int(offset),
                     )
 
-            def _on_return(code: Any, offset: int, value: Any) -> None:
+            def _on_return(code: object, offset: int, value: object) -> None:
                 if _should_log(code):
                     self.emit(
                         "probe.sys_monitoring.return",
@@ -115,7 +114,7 @@ class WorkflowProbe:
                         offset=int(offset),
                     )
 
-            def _on_raise(code: Any, offset: int, exc: Any) -> None:
+            def _on_raise(code: object, offset: int, exc: object) -> None:
                 if _should_log(code):
                     self.emit(
                         "probe.sys_monitoring.raise",
@@ -158,7 +157,7 @@ class WorkflowProbe:
         self.emit("probe.closed", path=str(self.path))
 
 
-def emit_probe_event(probe: WorkflowProbe | None, kind: str, /, **payload: Any) -> None:
+def emit_probe_event(probe: WorkflowProbe | None, kind: str, /, **payload: object) -> None:
     if probe is None:
         return
     probe.emit(kind, **payload)
