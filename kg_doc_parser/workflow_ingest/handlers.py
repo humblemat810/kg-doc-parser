@@ -31,6 +31,8 @@ from .models import (
 )
 from .page_index import PageIndexSourceFormat, parse_page_index_layer
 from .parser_core import (
+    ParserPayload,
+    ParserSourceMap,
     ParseSemanticFn,
     ProposeLayerFn,
     ReviewLayerFn,
@@ -68,6 +70,29 @@ from .strategy import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _parser_payload(value: object) -> ParserPayload:
+    """Decode one JSON object from runtime state into parser payload shape."""
+
+    if not isinstance(value, dict):
+        raise TypeError("parser payload must be a JSON object")
+    return dict(value)
+
+
+def _parser_source_map(value: object | None) -> ParserSourceMap:
+    """Decode the nested parser source map carried through checkpoint state."""
+
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError("parser source map must be a JSON object")
+    source_map: ParserSourceMap = {}
+    for cluster_id, payload in value.items():
+        if not isinstance(payload, dict):
+            raise TypeError(f"parser source cluster {cluster_id!r} must be a JSON object")
+        source_map[str(cluster_id)] = dict(payload)
+    return source_map
 
 
 def _page_index_source_format(inp: WorkflowIngestInput) -> PageIndexSourceFormat:
@@ -316,8 +341,8 @@ def register_base_ingest_steps(
         propose_layer_fn = runtime_deps.get("propose_layer_fn")
         session, frontier, root = initialize_parse_session(
             collection=collection,
-            parser_input_dict=ctx.state_view["parser_input_dict"],
-            parser_source_map=ctx.state_view["parser_source_map"],
+            parser_input_dict=_parser_payload(ctx.state_view["parser_input_dict"]),
+            parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
             max_depth=int(runtime_deps.get("max_depth", 10)),
             allow_review=bool(runtime_deps.get("allow_review", True)),
             split_strategy=runtime_deps.get("split_strategy", "excerpt_first"),
@@ -405,7 +430,7 @@ def register_layerwise_parser_steps(
             except Exception as exc:  # noqa: BLE001 - unavailable providers use deterministic fallback.
                 triage_build_error = f"triage provider unavailable: {type(exc).__name__}: {exc}"
         parent_context: list[dict[str, JsonValue]] = []
-        parser_source_map = ctx.state_view.get("parser_source_map") or {}
+        parser_source_map = _parser_source_map(ctx.state_view.get("parser_source_map"))
         for parent_id, title in zip(
             current_layer_context.parent_node_ids,
             current_layer_context.parent_titles,
@@ -553,7 +578,7 @@ def register_layerwise_parser_steps(
     def _page_index_layer(ctx: StepContext) -> StepRunResult:
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         normalized_input = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
-        parser_source_map = ctx.state_view.get("parser_source_map") or {}
+        parser_source_map = _parser_source_map(ctx.state_view.get("parser_source_map"))
         source_format = _page_index_source_format(normalized_input)
         candidates = []
         for parent_id, parent_title in zip(
@@ -643,8 +668,8 @@ def register_layerwise_parser_steps(
         semantic_tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
         result = propose_layer_breakdown(
             collection=collection,
-            parser_input_dict=ctx.state_view["parser_input_dict"],
-            parser_source_map=ctx.state_view["parser_source_map"],
+            parser_input_dict=_parser_payload(ctx.state_view["parser_input_dict"]),
+            parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
             parse_session=parse_session,
             current_layer_context=current_layer_context,
             semantic_tree=semantic_tree,
@@ -664,7 +689,7 @@ def register_layerwise_parser_steps(
             parse_session=parse_session,
             current_layer_context=current_layer_context,
             current_layer_result=current_layer_result,
-            parser_source_map=ctx.state_view["parser_source_map"],
+            parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
             review_layer_fn=runtime_deps.get("review_layer_fn"),
             llm_cache=runtime_deps.get("llm_cache"),
         )
@@ -827,7 +852,7 @@ def register_layerwise_parser_steps(
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         repaired, repaired_count = repair_layer_candidates(
             current_layer_result=current_layer_result,
-            parser_source_map=ctx.state_view["parser_source_map"],
+            parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
             correct_pointer_fn=correct_and_validate_pointer,
         )
         with ctx.state_write as st:
@@ -854,7 +879,7 @@ def register_layerwise_parser_steps(
         review = validate_layer_commit(
             current_layer_context=current_layer_context,
             current_layer_result=current_layer_result,
-            parser_source_map=ctx.state_view.get("parser_source_map"),
+            parser_source_map=_parser_source_map(ctx.state_view.get("parser_source_map")),
         )
         with ctx.state_write as st:
             if review.updated_result is not None:
@@ -933,7 +958,7 @@ def register_layerwise_parser_steps(
     def _finalize_semantic_tree(ctx: StepContext) -> StepRunResult:
         tree = finalize_semantic_tree(
             SemanticNode.model_validate(ctx.state_view["semantic_tree"]),
-            parser_source_map=ctx.state_view.get("parser_source_map") or {},
+            parser_source_map=_parser_source_map(ctx.state_view.get("parser_source_map")),
         )
         with ctx.state_write as st:
             st["semantic_tree"] = tree.model_dump()
