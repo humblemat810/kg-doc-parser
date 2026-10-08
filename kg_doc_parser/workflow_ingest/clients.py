@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import Any, Literal, Protocol, cast
+from typing import Literal, Protocol, cast
 from uuid import uuid4
 
 from kogwistar.engine_core.models import Edge, Node
@@ -71,13 +71,13 @@ class CanonicalGraphPersistenceClient(ABC):
         raise NotImplementedError
 
 
-def _jsonable_payload(value: Any) -> Any:
+def _jsonable_payload(value: object) -> object:
     if hasattr(value, "model_dump"):
         try:
             return value.model_dump(field_mode="backend", dump_format="json")
         except TypeError:
             return value.model_dump()
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return {str(k): _jsonable_payload(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_jsonable_payload(item) for item in value]
@@ -86,11 +86,31 @@ def _jsonable_payload(value: Any) -> Any:
     return value
 
 
-def _to_temp_id_graph_payload(graph_payload: dict[str, Any]) -> dict[str, Any]:
+def _record_list(value: object, *, field_name: str) -> list[dict[str, object]]:
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"graph payload field {field_name!r} must be a list")
+    records: list[dict[str, object]] = []
+    for item in value:
+        converted = _jsonable_payload(item)
+        if not isinstance(converted, dict):
+            raise TypeError(f"graph payload {field_name!r} items must be objects")
+        records.append({str(key): payload for key, payload in converted.items()})
+    return records
+
+
+def _string_list(value: object, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"graph payload field {field_name!r} must be a list")
+    return [str(item) for item in value]
+
+
+def _to_temp_id_graph_payload(graph_payload: Mapping[str, object]) -> dict[str, object]:
     """Adapt a canonical export bundle into the server's batch-temp-id contract."""
 
-    nodes = [_jsonable_payload(node) for node in graph_payload.get("nodes", [])]
-    edges = [_jsonable_payload(edge) for edge in graph_payload.get("edges", [])]
+    nodes = _record_list(graph_payload.get("nodes", []), field_name="nodes")
+    edges = _record_list(graph_payload.get("edges", []), field_name="edges")
 
     node_id_map: dict[str, str] = {}
     for idx, node in enumerate(nodes, start=1):
@@ -109,13 +129,21 @@ def _to_temp_id_graph_payload(graph_payload: dict[str, Any]) -> dict[str, Any]:
         edge["id"] = temp_id
 
     for edge in edges:
-        edge["source_ids"] = [node_id_map.get(str(x), str(x)) for x in edge.get("source_ids", [])]
-        edge["target_ids"] = [node_id_map.get(str(x), str(x)) for x in edge.get("target_ids", [])]
+        edge["source_ids"] = [
+            node_id_map.get(value, value)
+            for value in _string_list(edge.get("source_ids"), field_name="source_ids")
+        ]
+        edge["target_ids"] = [
+            node_id_map.get(value, value)
+            for value in _string_list(edge.get("target_ids"), field_name="target_ids")
+        ]
         edge["source_edge_ids"] = [
-            edge_id_map.get(str(x), str(x)) for x in edge.get("source_edge_ids", []) or []
+            edge_id_map.get(value, value)
+            for value in _string_list(edge.get("source_edge_ids"), field_name="source_edge_ids")
         ]
         edge["target_edge_ids"] = [
-            edge_id_map.get(str(x), str(x)) for x in edge.get("target_edge_ids", []) or []
+            edge_id_map.get(value, value)
+            for value in _string_list(edge.get("target_edge_ids"), field_name="target_edge_ids")
         ]
 
     return {
@@ -190,7 +218,7 @@ class IngestExecutionClient(ABC):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, Any] | None = None,
+        deps: dict[str, object] | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
@@ -232,7 +260,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, Any] | None = None,
+        deps: dict[str, object] | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
@@ -427,7 +455,7 @@ class ServerCanonicalKgClient(IngestExecutionClient):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, Any] | None = None,
+        deps: dict[str, object] | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
