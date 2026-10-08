@@ -62,6 +62,7 @@ from .semantics import (
     semantic_tree_to_kge_payload,
 )
 from .strategy import (
+    StrategyTriageFn,
     build_llm_strategy_triage,
     select_parse_strategy,
 )
@@ -115,7 +116,7 @@ class WorkflowRuntimeDeps(TypedDict, total=False):
     layer_frontier_batch_size: int
     coverage_threshold: float
     provider_settings: WorkflowProviderSettings
-    triage_strategy_fn: Callable[[dict[str, object]], object]
+    triage_strategy_fn: StrategyTriageFn
     provider_diagnostics_sink: ProviderDiagnosticsSink
 
 
