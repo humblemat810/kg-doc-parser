@@ -74,11 +74,12 @@ class CanonicalGraphPersistenceClient(ABC):
 
 
 def _jsonable_payload(value: object) -> object:
-    if hasattr(value, "model_dump"):
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
         try:
-            return value.model_dump(field_mode="backend", dump_format="json")
+            return model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return value.model_dump()
+            return model_dump()
     if isinstance(value, Mapping):
         return {str(k): _jsonable_payload(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -106,6 +107,23 @@ def _string_list(value: object, *, field_name: str) -> list[str]:
     if not isinstance(value, (list, tuple)):
         raise TypeError(f"graph payload field {field_name!r} must be a list")
     return [str(item) for item in value]
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    """Read an integer counter from an untrusted JSON response."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
 
 
 def _to_temp_id_graph_payload(graph_payload: Mapping[str, object]) -> JsonObject:
@@ -151,8 +169,8 @@ def _to_temp_id_graph_payload(graph_payload: Mapping[str, object]) -> JsonObject
     return {
         "doc_id": str(graph_payload.get("doc_id") or "workflow-ingest-doc"),
         "insertion_method": str(graph_payload.get("insertion_method") or "workflow_ingest"),
-        "nodes": nodes,
-        "edges": edges,
+        "nodes": cast(JsonValue, nodes),
+        "edges": cast(JsonValue, edges),
     }
 
 
@@ -175,6 +193,8 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
         self.server_parser_used = server_parser_used
 
     def persist_graph_payload(self, bundle: WorkflowExportBundle) -> CanonicalGraphWriteResult:
+        node_count = len(_record_list(bundle.graph_payload.get("nodes", []), field_name="nodes"))
+        edge_count = len(_record_list(bundle.graph_payload.get("edges", []), field_name="edges"))
         payload = _to_temp_id_graph_payload(bundle.graph_payload)
         endpoint = self.endpoint
         if self.base_url and not endpoint.startswith("http://") and not endpoint.startswith("https://"):
@@ -196,15 +216,15 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
             persistence_mode="server_canonical",
             kg_authority="server",
             canonical_write_confirmed=str(response_json.get("status") or "").lower() == "ok",
-            nodes_written=int(
+            nodes_written=_json_int(
                 engine_result.get("nodes_added")
                 or response_json.get("inserted_nodes")
-                or len(payload["nodes"])
+                or node_count
             ),
-            edges_written=int(
+            edges_written=_json_int(
                 engine_result.get("edges_added")
                 or response_json.get("inserted_edges")
-                or len(payload["edges"])
+                or edge_count
             ),
             transport=self.transport,
             server_parser_used=self.server_parser_used,
