@@ -68,6 +68,7 @@ from typing import (
     ClassVar,
     Literal,
     Protocol,
+    TypedDict,
     TypeVar,
     Union,
     cast,
@@ -105,7 +106,21 @@ ProposalMode = Literal["children", "boundaries"]
 
 _PROVIDER_IN_FLIGHT_LOCK = threading.Lock()
 _PROVIDER_IN_FLIGHT = 0
-_PROVIDER_METRICS: dict[str, object] = {
+class ProviderCallMetrics(TypedDict):
+    """Stable process-local provider invocation counters."""
+
+    calls_started: int
+    calls_completed: int
+    calls_succeeded: int
+    calls_failed: int
+    timeouts_observed: int
+    orphaned_calls: int
+    in_flight_rejections: int
+    active_calls: int
+    failure_counts: dict[str, int]
+
+
+_PROVIDER_METRICS: ProviderCallMetrics = {
     "calls_started": 0,
     "calls_completed": 0,
     "calls_succeeded": 0,
@@ -142,7 +157,7 @@ def _record_provider_completion(*, success: bool, failure_type: str | None = Non
         )
 
 
-def provider_call_metrics_snapshot() -> dict[str, object]:
+def provider_call_metrics_snapshot() -> ProviderCallMetrics:
     """Return a stable, process-local snapshot of provider call health.
 
     The counters describe the shared invocation boundary, not a vendor SDK.
@@ -152,11 +167,17 @@ def provider_call_metrics_snapshot() -> dict[str, object]:
     """
 
     with _PROVIDER_IN_FLIGHT_LOCK:
-        snapshot = dict(_PROVIDER_METRICS)
-        failure_counts = _PROVIDER_METRICS.get("failure_counts", {})
-        snapshot["failure_counts"] = dict(failure_counts) if isinstance(failure_counts, dict) else {}
-        snapshot["active_calls"] = _PROVIDER_IN_FLIGHT
-        return snapshot
+        return {
+            "calls_started": _PROVIDER_METRICS["calls_started"],
+            "calls_completed": _PROVIDER_METRICS["calls_completed"],
+            "calls_succeeded": _PROVIDER_METRICS["calls_succeeded"],
+            "calls_failed": _PROVIDER_METRICS["calls_failed"],
+            "timeouts_observed": _PROVIDER_METRICS["timeouts_observed"],
+            "orphaned_calls": _PROVIDER_METRICS["orphaned_calls"],
+            "in_flight_rejections": _PROVIDER_METRICS["in_flight_rejections"],
+            "active_calls": _PROVIDER_IN_FLIGHT,
+            "failure_counts": dict(_PROVIDER_METRICS["failure_counts"]),
+        }
 
 
 _PROVIDER_USAGE_FIELDS: dict[str, tuple[str, ...]] = {
