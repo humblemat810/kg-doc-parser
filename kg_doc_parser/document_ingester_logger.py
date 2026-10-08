@@ -92,7 +92,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections.abc import Mapping
-from typing import Callable
+from typing import Protocol
 from threading import Lock
 from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.outputs.chat_generation import ChatGeneration
@@ -101,6 +101,12 @@ from langchain_core.messages import BaseMessage
 from uuid import UUID
 
 from kg_doc_parser.workflow_ingest.serialization import safe_json_dumps
+
+
+class TextRedactor(Protocol):
+    """Redact one text value before it is written to ingestion telemetry."""
+
+    def __call__(self, text: str, /) -> str: ...
 
 # ---------------------------
 # Pricing / cost calculation
@@ -446,7 +452,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         log_errors: bool = True,
         include_traceback: bool = True,
         max_text_chars: int = 40_000,
-        redact: Callable[[str], str] | None = None,
+        redact: TextRedactor | None = None,
     ) -> None:
         super().__init__()
         self._writer = SQLiteIngestEventWriter(db_path=db_path)
