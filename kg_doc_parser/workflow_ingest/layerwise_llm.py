@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Any, Literal, Protocol, TypedDict, TypeVar, cast
+from typing import Literal, Protocol, TypedDict, TypeVar, cast
 
 from kogwistar.fuzzy_offsets import find_fuzzy_spans, offset_repair_threshold
 from kogwistar.runtime import RetryExhaustedError, RetryResult, retry_with_context
@@ -125,14 +125,14 @@ class _BoundaryAnchorResolution:
     reason: str | None
 
 
-def _trim_text(value: Any, *, max_chars: int = 400) -> str:
+def _trim_text(value: object, *, max_chars: int = 400) -> str:
     text = str(value or "").strip()
     if len(text) <= max_chars:
         return text
     return f"{text[: max_chars - 3]}..."
 
 
-def _trim_multiline_text(value: Any, *, max_lines: int = 3, max_chars: int = 400) -> str:
+def _trim_multiline_text(value: object, *, max_lines: int = 3, max_chars: int = 400) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
@@ -142,7 +142,7 @@ def _trim_multiline_text(value: Any, *, max_lines: int = 3, max_chars: int = 400
     return _trim_text(text, max_chars=max_chars)
 
 
-def _dump_model(value: Any) -> Any:
+def _dump_model(value: object) -> object:
     if hasattr(value, "model_dump"):
         try:
             return value.model_dump(field_mode="backend", dump_format="json")
@@ -156,19 +156,19 @@ def _dump_model(value: Any) -> Any:
 
 
 def _summarize_for_prompt(
-    value: Any,
+    value: object,
     *,
     max_depth: int = 3,
     max_items: int = 6,
     max_string: int = 400,
-) -> Any:
+) -> object:
     if hasattr(value, "model_dump"):
         value = _dump_model(value)
     if isinstance(value, dict):
         if max_depth <= 0:
             return {"summary": f"{len(value)} keys omitted"}
         items = list(value.items())
-        summary: dict[str, Any] = {}
+        summary: dict[str, object] = {}
         for key, item in items[:max_items]:
             summary[str(key)] = _summarize_for_prompt(
                 item,
@@ -200,12 +200,12 @@ def _summarize_for_prompt(
 
 
 def _source_map_excerpt(
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_source_map: dict[str, dict[str, object]],
     *,
     max_records: int = 12,
     max_text_chars: int = 1200,
-) -> dict[str, dict[str, Any]]:
-    excerpt: dict[str, dict[str, Any]] = {}
+) -> dict[str, dict[str, object]]:
+    excerpt: dict[str, dict[str, object]] = {}
     for key, record in list(parser_source_map.items())[:max_records]:
         text = str(record.get("text") or "")
         excerpt[str(key)] = {
@@ -216,13 +216,13 @@ def _source_map_excerpt(
     return excerpt
 
 
-def _pointer_field(pointer: Any, field_name: str) -> Any:
+def _pointer_field(pointer: object, field_name: str) -> object:
     if isinstance(pointer, dict):
         return pointer.get(field_name)
     return getattr(pointer, field_name, None)
 
 
-def _pointer_signature(pointer: Any, *, parser_source_map: dict[str, dict[str, Any]]) -> tuple[str, int, int, str]:
+def _pointer_signature(pointer: object, *, parser_source_map: dict[str, dict[str, object]]) -> tuple[str, int, int, str]:
     return (
         str(_pointer_field(pointer, "source_cluster_id") or ""),
         int(_pointer_field(pointer, "start_char") or 0),
@@ -232,9 +232,9 @@ def _pointer_signature(pointer: Any, *, parser_source_map: dict[str, dict[str, A
 
 
 def _pointer_end_inclusive(
-    pointer: Any,
+    pointer: object,
     *,
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_source_map: dict[str, dict[str, object]],
 ) -> int:
     end_char = _pointer_field(pointer, "end_char")
     if isinstance(end_char, int) and end_char >= 0:
@@ -249,9 +249,9 @@ def _pointer_end_inclusive(
 
 
 def _pointer_span_bounds(
-    pointer: Any,
+    pointer: object,
     *,
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_source_map: dict[str, dict[str, object]],
 ) -> tuple[int, int]:
     start_char = int(_pointer_field(pointer, "start_char") or 0)
     end_char_exclusive = _pointer_end_inclusive(pointer, parser_source_map=parser_source_map) + 1
@@ -259,9 +259,9 @@ def _pointer_span_bounds(
 
 
 def _pointer_text(
-    pointer: Any,
+    pointer: object,
     *,
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_source_map: dict[str, dict[str, object]],
 ) -> str:
     source_cluster_id = str(_pointer_field(pointer, "source_cluster_id") or "")
     start_char = _pointer_field(pointer, "start_char")
@@ -276,9 +276,9 @@ def _pointer_text(
 
 
 def _pointer_span_text(
-    pointer: Any,
+    pointer: object,
     *,
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_source_map: dict[str, dict[str, object]],
     start_offset: int | None = None,
     end_offset: int | None = None,
 ) -> str:
@@ -441,9 +441,9 @@ def _legal_cutpoints_for_text(
 
 
 def _boundary_candidates_for_pointer(
-    pointer: Any,
+    pointer: object,
     *,
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_source_map: dict[str, dict[str, object]],
     max_points: int = 32,
 ) -> list[BoundaryCutpoint]:
     text = _pointer_text(pointer, parser_source_map=parser_source_map)
@@ -467,13 +467,13 @@ def _boundary_candidates_for_pointer(
 
 def _boundary_prompt_candidate_context(
     *,
-    current_layer_context: Any,
-    parser_source_map: dict[str, dict[str, Any]],
+    current_layer_context: object,
+    parser_source_map: dict[str, dict[str, object]],
     max_points: int = 128,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, object]]:
     parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
     pointers_by_id = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
-    candidates: list[dict[str, Any]] = []
+    candidates: list[dict[str, object]] = []
     for parent_id in parent_ids:
         for pointer in list(pointers_by_id.get(parent_id) or []):
             text = _pointer_text(pointer, parser_source_map=parser_source_map)
@@ -530,9 +530,9 @@ def _boundary_prompt_candidate_context(
 
 
 def _boundary_candidate_lookup(
-    boundary_candidates: list[dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
-    lookup: dict[str, dict[str, Any]] = {}
+    boundary_candidates: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    lookup: dict[str, dict[str, object]] = {}
     for parent in boundary_candidates:
         parent_node_id = str(parent.get("parent_node_id") or "")
         source_cluster_id = str(parent.get("source_cluster_id") or "")
@@ -551,7 +551,7 @@ def _boundary_candidate_lookup(
 def _normalize_boundary_cutpoints_from_candidates(
     parsed: LLMBoundaryProposalBatch,
     *,
-    candidate_lookup: dict[str, dict[str, Any]],
+    candidate_lookup: dict[str, dict[str, object]],
 ) -> LLMBoundaryProposalBatch:
     normalized: list[BoundaryCutpoint] = []
     for cutpoint in parsed.cutpoints:
@@ -689,8 +689,8 @@ def _resolve_boundary_anchor(
 def _repair_boundary_cutpoint_from_source(
     cutpoint: BoundaryCutpoint,
     *,
-    current_layer_context: Any,
-    parser_source_map: dict[str, dict[str, Any]],
+    current_layer_context: object,
+    parser_source_map: dict[str, dict[str, object]],
 ) -> BoundaryCutpoint | None:
     parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
     pointer = None
@@ -738,7 +738,7 @@ def _make_boundary_summary(
     source_cluster_id: str,
     start_char: int,
     end_char: int,
-    parser_source_map: dict[str, dict[str, Any]],
+    parser_source_map: dict[str, dict[str, object]],
     boundary_kind: str,
 ) -> BoundaryUnitSummary:
     record = parser_source_map.get(source_cluster_id) or parser_source_map.get(str(source_cluster_id))
@@ -769,7 +769,7 @@ def _make_boundary_summary(
     )
 
 
-def _pointer_excerpt(pointer: Any, *, parser_source_map: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _pointer_excerpt(pointer: object, *, parser_source_map: dict[str, dict[str, object]]) -> dict[str, object]:
     source_cluster_id = str(_pointer_field(pointer, "source_cluster_id") or "")
     start_char = _pointer_field(pointer, "start_char")
     end_char = _pointer_field(pointer, "end_char")
@@ -790,13 +790,13 @@ def _pointer_excerpt(pointer: Any, *, parser_source_map: dict[str, dict[str, Any
 
 def _parent_context_excerpt(
     *,
-    current_layer_context: Any,
-    parser_source_map: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
+    current_layer_context: object,
+    parser_source_map: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
     parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
     parent_titles = list(getattr(current_layer_context, "parent_titles", []) or [])
     pointers_by_id = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
-    parents: list[dict[str, Any]] = []
+    parents: list[dict[str, object]] = []
     for index, parent_id in enumerate(parent_ids):
         title = parent_titles[index] if index < len(parent_titles) else None
         pointers = list(pointers_by_id.get(parent_id) or [])
@@ -814,7 +814,7 @@ def _parent_context_excerpt(
     return parents
 
 
-def _proposal_attempt_context(*, parse_session: Any, current_layer_context: Any) -> dict[str, Any]:
+def _proposal_attempt_context(*, parse_session: object, current_layer_context: object) -> dict[str, object]:
     parse_session_dump = _dump_model(parse_session) if parse_session is not None else {}
     attempts = dict(parse_session_dump.get("layer_attempts") or {})
     depth_key = str(getattr(current_layer_context, "depth", 0))
@@ -830,9 +830,9 @@ def _proposal_attempt_context(*, parse_session: Any, current_layer_context: Any)
 
 def _proposal_validation_reason(
     *,
-    parsed: Any,
-    current_layer_context: Any,
-    parser_source_map: dict[str, dict[str, Any]],
+    parsed: object,
+    current_layer_context: object,
+    parser_source_map: dict[str, dict[str, object]],
 ) -> str | None:
     children = list(getattr(parsed, "children", []) or [])
     if not children:
@@ -843,7 +843,7 @@ def _proposal_validation_reason(
     child_parent_ids = {str(getattr(child, "parent_node_id", "") or "") for child in children}
     if current_parent_ids and not child_parent_ids.issubset(current_parent_ids):
         return "proposal referenced parent ids outside the current layer"
-    children_by_parent: dict[str, list[Any]] = {}
+    children_by_parent: dict[str, list[object]] = {}
     parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
     source_text_by_cluster = {
         str(source_cluster_id): str((record or {}).get("text") or "")
@@ -904,9 +904,9 @@ def _proposal_pointer_validation_reason(exc: SourcePointerValidationError) -> st
 
 def _boundary_validation_reason(
     *,
-    parsed: Any,
-    current_layer_context: Any,
-    parser_source_map: dict[str, dict[str, Any]],
+    parsed: object,
+    current_layer_context: object,
+    parser_source_map: dict[str, dict[str, object]],
 ) -> str | None:
     cutpoints = list(getattr(parsed, "cutpoints", []) or [])
     if not cutpoints:
@@ -971,10 +971,10 @@ def _boundary_refinement_targets(
 
 def _boundary_refinement_prompt_context(
     *,
-    current_layer_context: Any,
-    parser_source_map: dict[str, dict[str, Any]],
+    current_layer_context: object,
+    parser_source_map: dict[str, dict[str, object]],
     target: BoundaryCutpoint,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
     parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
     target_parent_pointers = list(parent_pointers.get(target.parent_node_id) or [])
@@ -984,7 +984,7 @@ def _boundary_refinement_prompt_context(
             target_pointer = pointer
             break
     target_excerpt = _pointer_text(target_pointer, parser_source_map=parser_source_map) if target_pointer is not None else ""
-    legal_cutpoints: list[dict[str, Any]] = []
+    legal_cutpoints: list[dict[str, object]] = []
     if target_pointer is not None:
         start_char = int(_pointer_field(target_pointer, "start_char") or 0)
         for boundary in _legal_cutpoints_for_text(target_excerpt, max_points=128):
@@ -1017,7 +1017,7 @@ def _boundary_decision_key(decision: BoundaryReviewDecision) -> tuple[str, str, 
     )
 
 
-def _boundary_review_decision_summary(decisions: list[BoundaryReviewDecision]) -> list[dict[str, Any]]:
+def _boundary_review_decision_summary(decisions: list[BoundaryReviewDecision]) -> list[dict[str, object]]:
     return [
         {
             "candidate_id": decision.candidate_id,
@@ -1038,8 +1038,8 @@ def _boundary_review_decision_summary(decisions: list[BoundaryReviewDecision]) -
 def _boundary_review_decision(
     *,
     cutpoint: BoundaryCutpoint,
-    current_layer_context: Any,
-    parser_source_map: dict[str, dict[str, Any]],
+    current_layer_context: object,
+    parser_source_map: dict[str, dict[str, object]],
     max_repair_shift_chars: int = MAX_BOUNDARY_REPAIR_SHIFT_CHARS,
 ) -> BoundaryReviewDecision:
     parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
@@ -1180,9 +1180,9 @@ def _boundary_review_decision(
 
 def _boundary_unit_summaries(
     *,
-    current_layer_context: Any,
-    parser_source_map: dict[str, dict[str, Any]],
-    accepted_units: list[dict[str, Any]],
+    current_layer_context: object,
+    parser_source_map: dict[str, dict[str, object]],
+    accepted_units: list[dict[str, object]],
 ) -> list[BoundaryUnitSummary]:
     summaries: list[BoundaryUnitSummary] = []
     for unit in accepted_units:
@@ -1205,8 +1205,8 @@ def _boundary_parent_coverage_report(
     source_cluster_id: str,
     start_char: int,
     end_char_exclusive: int,
-    segments: list[dict[str, Any]],
-) -> dict[str, Any]:
+    segments: list[dict[str, object]],
+) -> dict[str, object]:
     covered_ranges = [
         {
             "start_char": int(segment["start_char"]),
@@ -1246,13 +1246,13 @@ def _boundary_parent_coverage_report(
 
 def _assemble_layer_result_from_boundaries(
     *,
-    current_layer_context: Any,
-    parser_source_map: dict[str, dict[str, Any]],
+    current_layer_context: object,
+    parser_source_map: dict[str, dict[str, object]],
     review_batch: BoundaryReviewBatch,
-) -> tuple[CurrentLayerResult, list[BoundaryUnitSummary], list[dict[str, Any]]]:
-    accepted_cutpoints: list[dict[str, Any]] = []
-    child_items: list[dict[str, Any]] = []
-    coverage_reports: list[dict[str, Any]] = []
+) -> tuple[CurrentLayerResult, list[BoundaryUnitSummary], list[dict[str, object]]]:
+    accepted_cutpoints: list[dict[str, object]] = []
+    child_items: list[dict[str, object]] = []
+    coverage_reports: list[dict[str, object]] = []
     unresolved_intervals = 0
     decisions_by_parent: dict[tuple[str, str], list[BoundaryReviewDecision]] = {}
     for decision in review_batch.decisions:
@@ -1269,7 +1269,7 @@ def _assemble_layer_result_from_boundaries(
             text = _pointer_text(pointer, parser_source_map=parser_source_map)
             start_char, end_char_exclusive = _pointer_span_bounds(pointer, parser_source_map=parser_source_map)
             absolute_offsets = [start_char]
-            pointer_segments: list[dict[str, Any]] = []
+            pointer_segments: list[dict[str, object]] = []
             pointer_decisions = decisions_by_parent.get((parent_id, source_cluster_id), [])
             for decision in pointer_decisions:
                 resolved_offset = decision.resolved_cut_offset if decision.resolved_cut_offset is not None else decision.cut_offset
@@ -1437,7 +1437,7 @@ def _assemble_layer_result_from_boundaries(
 
 def _boundary_identical_parent_child_ids(
     *,
-    current_layer_context: Any,
+    current_layer_context: object,
     current_layer_result: CurrentLayerResult,
 ) -> list[str]:
     """Find assembled children that reproduce a complete parent pointer."""
@@ -1506,7 +1506,7 @@ def _annotate_proposal_result(
     if summary_count is not None:
         metadata["summary_count"] = summary_count
     reasoning_history = list(getattr(result, "reasoning_history", []) or [])
-    marker_payload: dict[str, Any] = {
+    marker_payload: dict[str, object] = {
         "source": "workflow_layered_proposal",
         "proposal_source": proposal_source,
         "proposal_mode": proposal_mode,
@@ -1784,7 +1784,7 @@ def build_layerwise_llm_callbacks(
                             "RECOVERY PASS: do not invent offsets or anchors; omit an ambiguous cutpoint instead of retrying it.",
                         ]
                     )
-                recovery_example: dict[str, Any] | None = None
+                recovery_example: dict[str, object] | None = None
                 if previous_error:
                     for boundary_candidate in boundary_candidates:
                         legal_cutpoints = list(boundary_candidate.get("legal_cutpoints") or [])
@@ -1856,7 +1856,7 @@ def build_layerwise_llm_callbacks(
                     ("human", safe_json_dumps(prompt_payload, sort_keys=True)),
                 ]
 
-            def _emit_boundary_retry(record: Any) -> None:
+            def _emit_boundary_retry(record: object) -> None:
                 retry_budget = proposal_retry_rounds + 1
                 delay_seconds = _bounded_retry_delay(
                     attempt_number=record.attempt_number,
@@ -2529,7 +2529,7 @@ def build_layerwise_llm_callbacks(
                 ("human", safe_json_dumps(prompt_payload, sort_keys=True)),
             ]
 
-        def _emit_child_retry(record: Any) -> None:
+        def _emit_child_retry(record: object) -> None:
             retry_budget = proposal_retry_rounds + 1
             delay_seconds = _bounded_retry_delay(
                 attempt_number=record.attempt_number,
