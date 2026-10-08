@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Public import surface for the document parser package."""
+
+from __future__ import annotations
 
 from . import workflow_ingest
 from .workflow_ingest import *  # noqa: F401,F403

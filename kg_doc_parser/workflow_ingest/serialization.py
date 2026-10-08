@@ -6,11 +6,14 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import TypeAlias
+from typing_extensions import TypeAliasType
 from uuid import UUID
 
-JsonScalar: TypeAlias = None | bool | int | float | str
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+JsonScalar = TypeAliasType("JsonScalar", None | bool | int | float | str)
+JsonValue = TypeAliasType(
+    "JsonValue",
+    JsonScalar | list["JsonValue"] | dict[str, "JsonValue"],
+)
 
 
 def json_safe(value: object, *, _seen: set[int] | None = None) -> JsonValue:
