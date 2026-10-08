@@ -7,7 +7,7 @@ but it cannot bypass the host's allowed strategies or the provider timeout.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -85,17 +85,30 @@ def hardcoded_strategy(
     disabled = disabled_strategies or set()
     if set(strategy_order) != set(HARD_CODED_STRATEGY_PRIORITY) or len(strategy_order) != len(HARD_CODED_STRATEGY_PRIORITY):
         raise ValueError("strategy_order must contain each parser strategy exactly once")
-    order = (
-        (requested, *[item for item in strategy_order if item != requested])
-        if requested != "auto"
-        else strategy_order
+    order: tuple[ParseStrategy, ...]
+    if requested == "auto":
+        order = strategy_order
+    else:
+        explicit = cast(ParseStrategy, requested)
+        order = cast(
+            tuple[ParseStrategy, ...],
+            (explicit,)
+            + tuple(
+                cast(ParseStrategy, item)
+                for item in strategy_order
+                if item != explicit
+            ),
+        )
+    available = cast(
+        tuple[ParseStrategy, ...],
+        tuple(item for item in order if item not in disabled),
     )
-    available = tuple(item for item in order if item not in disabled)
     if not available:
         raise ValueError("all parser strategies are disabled for this layer")
     if requested != "auto" and requested not in disabled:
+        explicit = cast(ParseStrategy, requested)
         return ParseStrategyDecision(
-            selected_strategy=requested,
+            selected_strategy=explicit,
             source="config",
             confidence=1.0,
             rationale="explicit parse strategy requested by the caller",

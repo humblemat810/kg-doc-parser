@@ -61,7 +61,7 @@ import os
 import queue
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import (
     Annotated,
@@ -300,7 +300,7 @@ def _default_schema_payload(schema: type[BaseModel]) -> dict[str, object]:
 
 @runtime_checkable
 class ChatModelProvider(Protocol):
-    def build(self, *, callbacks: list[object] | None = None) -> SupportsStructuredOutput: ...
+    def build(self, *, callbacks: Sequence[object] | None = None) -> SupportsStructuredOutput: ...
 
 
 @runtime_checkable
@@ -956,7 +956,7 @@ def build_embedding_function(
 def build_chat_model(
     spec: ProviderEndpointConfig | None = None,
     *,
-    callbacks: list[object] | None = None,
+    callbacks: Sequence[object] | None = None,
 ) -> SupportsStructuredOutput:
     """Build a vendor-specific chat model behind a stable adapter boundary.
 
@@ -965,7 +965,7 @@ def build_chat_model(
     when selected; optional provider packages need not be installed otherwise.
     """
     spec = spec or ProviderEndpointConfig()
-    callbacks = callbacks or []
+    callback_list = list(callbacks or [])
     if spec.provider == "fake":
         return cast(SupportsStructuredOutput, FakeChatModel())
     if spec.provider == "codex":
@@ -985,7 +985,7 @@ def build_chat_model(
         kwargs: dict[str, object] = {
             "model": spec.model,
             "temperature": spec.temperature,
-            "callbacks": callbacks,
+            "callbacks": callback_list,
             "max_retries": spec.max_retries,
         }
         if spec.max_output_tokens is not None:
@@ -1004,7 +1004,7 @@ def build_chat_model(
         kwargs = {
             "model": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
-            "callbacks": callbacks,
+            "callbacks": callback_list,
             "max_retries": spec.max_retries,
         }
         if max_output_tokens is not None:
@@ -1027,7 +1027,7 @@ def build_chat_model(
         kwargs = {
             "azure_deployment": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
-            "callbacks": callbacks,
+            "callbacks": callback_list,
             "max_retries": spec.max_retries,
         }
         if max_output_tokens is not None:
@@ -1056,7 +1056,7 @@ def build_chat_model(
         kwargs = {
             "model": spec.model,
             "temperature": spec.temperature,
-            "callbacks": callbacks,
+            "callbacks": callback_list,
             "max_retries": spec.max_retries,
         }
         if spec.max_output_tokens is not None:
@@ -1072,7 +1072,7 @@ def build_chat_model(
         kwargs = {
             "model": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
-            "callbacks": callbacks,
+            "callbacks": callback_list,
         }
         if spec.max_output_tokens is not None:
             kwargs["num_predict"] = spec.max_output_tokens
@@ -1087,7 +1087,7 @@ def build_chat_model(
         kwargs = {
             "model": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
-            "callbacks": callbacks,
+            "callbacks": callback_list,
             "max_retries": spec.max_retries,
         }
         if spec.max_output_tokens is not None:
@@ -1104,7 +1104,7 @@ def build_chat_model_for_role(
     role: Literal["ocr", "parser"],
     spec: WorkflowProviderSettings | None = None,
     *,
-    callbacks: list[object] | None = None,
+    callbacks: Sequence[object] | None = None,
 ) -> SupportsStructuredOutput:
     """Build the chat model used for either OCR or parsing.
 

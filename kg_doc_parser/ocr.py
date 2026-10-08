@@ -179,8 +179,8 @@ def get_first_round_response(draft_responses: dict[str, str], llm: SupportsStruc
                              messages: list[BaseMessage], sys_message, img_message, usage_metadata) -> OCRClusterResponse | None:
     
                     chain = build_structured_output_runnable(llm, RawOCRResponse, include_raw=True)
-                    before_parse: Runnable = chain.steps[0]
-                    after_parse: Runnable = chain.steps[1]
+                    before_parse = cast(Runnable, chain.steps[0])
+                    after_parse = cast(Runnable, chain.steps[1])
                     raw_response = before_parse.invoke(messages, config={"callbacks": [cb]}
                                             )
                     
@@ -788,7 +788,8 @@ def batch_gemini_ocr_image(
                                         page_file_name, 
                                         file_name=pdf_fname, 
                                         folder=pdf_folder, 
-                                        exist_behavior=exist_behavior)
+                                        exist_behavior=exist_behavior,
+                                        model_retry_priority_list=None)
             time.sleep(2)
     if bounded_executor:
         bounded_executor.wait_for_all()
