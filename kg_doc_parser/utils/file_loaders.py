@@ -4,7 +4,7 @@ import pathlib
 from collections.abc import Callable, Iterator
 from functools import partial
 from json import JSONDecodeError
-from typing import Optional
+from typing import Optional, Protocol
 
 import pathspec
 
@@ -15,8 +15,18 @@ logger.debug("library loading")
 
 
 WalkEntry = tuple[str, list[str], list[str]]
-FileWalker = Callable[[str], Iterator[WalkEntry]]
-PathFilter = Callable[[str], bool]
+
+
+class FileWalker(Protocol):
+    """Yield directory entries rooted at the requested path."""
+
+    def __call__(self, path: str) -> Iterator[WalkEntry]: ...
+
+
+class PathFilter(Protocol):
+    """Return whether a filesystem path should be pruned or filtered."""
+
+    def __call__(self, path: str) -> bool: ...
 
 def bool2yn(maybe_bool: bool):
     if type(maybe_bool) is bool:
