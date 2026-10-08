@@ -144,11 +144,12 @@ def _trim_multiline_text(value: object, *, max_lines: int = 3, max_chars: int = 
 
 
 def _dump_model(value: object) -> object:
-    if hasattr(value, "model_dump"):
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
         try:
-            return value.model_dump(field_mode="backend", dump_format="json")
+            return model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return value.model_dump()
+            return model_dump()
     if isinstance(value, dict):
         return {str(key): _dump_model(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -1587,10 +1588,12 @@ def _structured_invoke(  # noqa: UP047 - PEP 695 syntax would drop PyPy 3.11 sup
                 if parsed is not None:
                     if isinstance(parsed, schema):
                         result = parsed
-                    elif hasattr(parsed, "model_dump"):
-                        result = schema.model_validate(parsed.model_dump())
                     else:
-                        result = schema.model_validate(parsed)
+                        parsed_dump = getattr(parsed, "model_dump", None)
+                        if callable(parsed_dump):
+                            result = schema.model_validate(parsed_dump())
+                        else:
+                            result = schema.model_validate(parsed)
                 else:
                     parsing_error = response.get("parsing_error")
                     if parsing_error is not None:
@@ -1598,10 +1601,12 @@ def _structured_invoke(  # noqa: UP047 - PEP 695 syntax would drop PyPy 3.11 sup
                     result = schema.model_validate(response)
             elif isinstance(response, schema):
                 result = response
-            elif hasattr(response, "model_dump"):
-                result = schema.model_validate(response.model_dump())
             else:
-                result = schema.model_validate(response)
+                response_dump = getattr(response, "model_dump", None)
+                if callable(response_dump):
+                    result = schema.model_validate(response_dump())
+                else:
+                    result = schema.model_validate(response)
         except Exception as exc:
             call_diagnostics.update(
                 {
