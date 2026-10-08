@@ -44,7 +44,7 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image
@@ -61,8 +61,9 @@ from .providers import (
     build_chat_model_for_role,
     invoke_with_timeout,
 )
-from .service import run_ingest_workflow
+from .service import _RunCompat, run_ingest_workflow
 from kogwistar.json_types import JsonValue
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1626,9 +1627,9 @@ def run_ocr_ingest_workflow(
     document_id: str,
     title: str,
     output_dir: str | Path,
-    workflow_engine: Any,
-    conversation_engine: Any,
-    knowledge_engine: Any | None = None,
+    workflow_engine: GraphKnowledgeEngine,
+    conversation_engine: GraphKnowledgeEngine,
+    knowledge_engine: GraphKnowledgeEngine | None = None,
     image_payloads: Sequence[OCRImagePayload] | None = None,
     pdf_path: str | Path | None = None,
     provider_settings: WorkflowProviderSettings | None = None,
@@ -1637,7 +1638,7 @@ def run_ocr_ingest_workflow(
     ocr_candidate_models: Sequence[str] | None = None,
     deps: dict[str, object] | None = None,
     probe: WorkflowProbe | None = None,
-) -> tuple[Any, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
+) -> tuple[_RunCompat, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
     """Run OCR preparation and then feed the normalized result into workflow ingest.
 
     This is the high-level two-stage orchestration:
