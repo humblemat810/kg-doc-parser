@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, ClassVar, Literal, Optional
+from typing import Annotated, ClassVar, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_extension.model_slicing import BackendField, FrontendField
@@ -66,7 +66,7 @@ class SourceUnit(ModeSlicingMixin, BaseModel):
         ExcludeMode("llm"),
     ] = None
     metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -100,7 +100,7 @@ class NormalizedPage(ModeSlicingMixin, BaseModel):
     page_number: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
     units: Annotated[list[SourceUnit], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -124,7 +124,7 @@ class NormalizedSourceCollection(ModeSlicingMixin, BaseModel):
         ExcludeMode("llm"),
     ] = Field(default_factory=lambda: ["default_text"])
     metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -145,7 +145,7 @@ class WorkflowIngestInput(ModeSlicingMixin, BaseModel):
     request_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()] = "ingest-request"
     collections: Annotated[list[NormalizedSourceCollection], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -249,7 +249,7 @@ class GroundedSourceRecord(ModeSlicingMixin, BaseModel):
     ] = True
     bbox: Annotated[Optional[BoundingBox], DtoField(), BackendField(), FrontendField(), LLMField()] = None
     metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -263,7 +263,7 @@ class ValidationReport(ModeSlicingMixin, BaseModel):
 
     overall_text_coverage: Annotated[float, DtoField(), BackendField(), FrontendField(), LLMField()]
     per_cluster_coverage: Annotated[dict[str, float], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=dict)
-    terminal_coverage: Annotated[dict[str, Any], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
+    terminal_coverage: Annotated[dict[str, object], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
         default_factory=dict
     )
     terminal_coverage_status: Annotated[
@@ -325,21 +325,21 @@ class ParseSessionState(ModeSlicingMixin, BaseModel):
     ] = Field(default_factory=dict)
     # Normalized critic output carried into the next bounded proposal retry.
     last_review: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
     compat_full_tree: Annotated[
-        Optional[dict[str, Any]],
+        Optional[dict[str, object]],
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -415,7 +415,7 @@ class LayerChildCandidate(ModeSlicingMixin, BaseModel):
     ] = Field(default_factory=list)
     expandable: Annotated[bool, DtoField(), BackendField(), FrontendField(), LLMField()] = True
     metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -574,7 +574,7 @@ class CurrentLayerContext(ModeSlicingMixin, BaseModel):
     retry_count: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     max_retries: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 3
     metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -591,7 +591,7 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
     reasoning_history: Annotated[list[LayerReasoningEntry], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     review_rounds: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -656,7 +656,7 @@ class CurrentLayerReview(ModeSlicingMixin, BaseModel):
         default_factory=list
     )
     metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -713,7 +713,7 @@ class WorkflowExportBundle(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
-    graph_payload: Annotated[dict[str, Any], DtoField(), BackendField(), FrontendField(), LLMField()]
+    graph_payload: Annotated[dict[str, object], DtoField(), BackendField(), FrontendField(), LLMField()]
     authoritative_source_map: Annotated[
         dict[str, GroundedSourceRecord],
         DtoField(),
@@ -723,14 +723,14 @@ class WorkflowExportBundle(ModeSlicingMixin, BaseModel):
     ]
     embedding_spaces: Annotated[list[str], DtoField(), BackendField(), FrontendField(), ExcludeMode("llm")] = Field(default_factory=list)
     consolidation_candidates: Annotated[
-        list[dict[str, Any]],
+        list[dict[str, object]],
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=list)
     retrieval_metadata: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -816,7 +816,7 @@ class IngestRunResult(ModeSlicingMixin, BaseModel):
     ]
     bundle: Annotated[Optional[WorkflowExportBundle], DtoField(), BackendField(), FrontendField(), LLMField()] = None
     final_state: Annotated[
-        dict[str, Any],
+        dict[str, object],
         DtoField(),
         BackendField(),
         FrontendField(),
