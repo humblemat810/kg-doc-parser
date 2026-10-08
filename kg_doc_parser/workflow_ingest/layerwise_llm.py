@@ -224,11 +224,28 @@ def _pointer_field(pointer: object, field_name: str) -> object:
     return getattr(pointer, field_name, None)
 
 
+def _offset_value(value: object, default: int) -> int:
+    """Decode a persisted character offset without treating arbitrary objects as ints."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
 def _pointer_signature(pointer: object, *, parser_source_map: dict[str, dict[str, object]]) -> tuple[str, int, int, str]:
     return (
         str(_pointer_field(pointer, "source_cluster_id") or ""),
-        int(_pointer_field(pointer, "start_char") or 0),
-        int(_pointer_field(pointer, "end_char") or -1),
+        _offset_value(_pointer_field(pointer, "start_char"), 0),
+        _offset_value(_pointer_field(pointer, "end_char"), -1),
         _pointer_text(pointer, parser_source_map=parser_source_map).strip(),
     )
 
@@ -247,7 +264,7 @@ def _pointer_end_inclusive(
     if text:
         return max(0, len(text) - 1)
     start_char = _pointer_field(pointer, "start_char")
-    return int(start_char) if isinstance(start_char, int) else 0
+    return _offset_value(start_char, 0)
 
 
 def _pointer_span_bounds(
@@ -255,7 +272,7 @@ def _pointer_span_bounds(
     *,
     parser_source_map: dict[str, dict[str, object]],
 ) -> tuple[int, int]:
-    start_char = int(_pointer_field(pointer, "start_char") or 0)
+    start_char = _offset_value(_pointer_field(pointer, "start_char"), 0)
     end_char_exclusive = _pointer_end_inclusive(pointer, parser_source_map=parser_source_map) + 1
     return start_char, max(start_char + 1, end_char_exclusive)
 
