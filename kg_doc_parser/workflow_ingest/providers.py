@@ -103,6 +103,21 @@ TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 ChatProviderName = Literal["anthropic", "gemini", "ollama", "openai", "azure", "vertex", "fake", "codex"]
 EmbeddingProviderName = Literal["fake", "openai", "vertex", "ollama"]
 ProposalMode = Literal["children", "boundaries"]
+ParseStrategyName = Literal["layer_excerpt", "layer_boundary", "page_index"]
+ParseStrategyOrder = tuple[ParseStrategyName, ...]
+
+
+def _parse_strategy_order(raw: str) -> ParseStrategyOrder:
+    """Parse and validate the ordered strategy fallback list from the environment."""
+
+    values = tuple(value.strip() for value in raw.split(",") if value.strip())
+    expected: set[str] = {"layer_excerpt", "layer_boundary", "page_index"}
+    if len(values) != len(expected) or set(values) != expected:
+        raise ValueError(
+            "KG_DOC_PARSER_PARSE_STRATEGY_ORDER must contain layer_excerpt, "
+            "layer_boundary, and page_index exactly once"
+        )
+    return cast(ParseStrategyOrder, values)
 
 
 class ProviderDiagnosticsSink(Protocol):
@@ -560,7 +575,7 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
         ExcludeMode("llm"),
     ] = "auto"
     parse_strategy_order: Annotated[
-        tuple[Literal["layer_excerpt", "layer_boundary", "page_index"], ...],
+        ParseStrategyOrder,
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -660,12 +675,8 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 Literal["auto", "layer_excerpt", "layer_boundary", "page_index"],
                 str(_env("KG_DOC_PARSER_PARSE_STRATEGY", "auto")),
             ),
-            parse_strategy_order=tuple(
-                value.strip()
-                for value in str(
-                    _env("KG_DOC_PARSER_PARSE_STRATEGY_ORDER", "layer_excerpt,layer_boundary,page_index")
-                ).split(",")
-                if value.strip()
+            parse_strategy_order=_parse_strategy_order(
+                str(_env("KG_DOC_PARSER_PARSE_STRATEGY_ORDER", "layer_excerpt,layer_boundary,page_index"))
             ),
             triage_enabled=str(_env("KG_DOC_PARSER_TRIAGE_ENABLED", "1")).lower()
             not in {"0", "false", "no", "off"},
