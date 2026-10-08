@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from kogwistar.engine_core.models import Edge, Node
 from kogwistar.json_types import JsonValue
+from kogwistar.runtime.models import StepRunResult
 
 from .design import DEFAULT_WORKFLOW_ID, ensure_ingest_workflow_design
 from .models import (
@@ -31,6 +32,7 @@ from .models import (
     WorkflowIngestInput,
 )
 from .probe import emit_probe_event
+from .probe import WorkflowProbe
 
 
 class UnsupportedClientOperation(RuntimeError):
@@ -39,6 +41,15 @@ class UnsupportedClientOperation(RuntimeError):
 
 IngestStatus = Literal["succeeded", "failed", "failure", "suspended"]
 JsonObject = dict[str, JsonValue]
+
+
+def _workflow_probe(deps: Mapping[str, object] | None) -> WorkflowProbe | None:
+    value = (deps or {}).get("probe")
+    return value if isinstance(value, WorkflowProbe) else None
+
+
+def _state_json(value: Mapping[str, object]) -> dict[str, JsonValue]:
+    return cast(dict[str, JsonValue], dict(value))
 
 
 class HttpResponseLike(Protocol):
@@ -289,7 +300,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
         ensure_ingest_workflow_design(self.workflow_engine, workflow_id=workflow_id)
         from .service import build_runtime
 
-        probe = (deps or {}).get("probe")
+        probe = _workflow_probe(deps)
         runtime = build_runtime(
             workflow_engine=self.workflow_engine,
             conversation_engine=self.conversation_engine,
@@ -361,14 +372,15 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             ),
             status=_ingest_status(run.status),
             bundle=bundle,
-            final_state=dict(run.final_state),
+            final_state=_state_json(run.final_state),
         )
 
     def resume_ingest(self, **kwargs: object) -> IngestRunResult:
         from .service import build_runtime
 
-        deps = dict(kwargs.pop("deps", {}) or {})
-        probe = deps.get("probe")
+        raw_deps = kwargs.pop("deps", None)
+        deps = dict(raw_deps) if isinstance(raw_deps, Mapping) else {}
+        probe = _workflow_probe(deps)
         runtime = build_runtime(
             workflow_engine=self.workflow_engine,
             conversation_engine=self.conversation_engine,
@@ -386,11 +398,19 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             execution_mode="direct_runtime",
             run_id=kwargs.get("run_id"),
         )
-        resumed = runtime.resume_run(**kwargs)
+        resumed = runtime.resume_run(
+            run_id=str(kwargs["run_id"]),
+            suspended_node_id=str(kwargs["suspended_node_id"]),
+            suspended_token_id=str(kwargs["suspended_token_id"]),
+            client_result=cast(StepRunResult, kwargs["client_result"]),
+            workflow_id=str(kwargs["workflow_id"]),
+            conversation_id=str(kwargs["conversation_id"]),
+            turn_node_id=str(kwargs["turn_node_id"]),
+        )
         bundle = None
         if "export_bundle" in resumed.final_state:
             bundle = WorkflowExportBundle.model_validate(resumed.final_state["export_bundle"])
-        workflow_id = kwargs.get("workflow_id", DEFAULT_WORKFLOW_ID)
+        workflow_id = str(kwargs.get("workflow_id", DEFAULT_WORKFLOW_ID))
         emit_probe_event(
             probe,
             "workflow.resume_finished",
@@ -406,7 +426,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             ),
             status=_ingest_status(resumed.status),
             bundle=bundle,
-            final_state=dict(resumed.final_state),
+            final_state=_state_json(resumed.final_state),
         )
 
     def persist_graph_payload(self, bundle: WorkflowExportBundle) -> CanonicalGraphWriteResult:
@@ -420,12 +440,12 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             )
         nodes_written = 0
         edges_written = 0
-        for node in bundle.graph_payload.get("nodes", []):
+        for node in _record_list(bundle.graph_payload.get("nodes", []), field_name="nodes"):
             node_obj = node if isinstance(node, Node) else Node.model_validate(node)
             if not self.knowledge_engine.persist.exists_node(str(node_obj.safe_get_id())):
                 self.knowledge_engine.write.add_node(node_obj)
                 nodes_written += 1
-        for edge in bundle.graph_payload.get("edges", []):
+        for edge in _record_list(bundle.graph_payload.get("edges", []), field_name="edges"):
             edge_obj = edge if isinstance(edge, Edge) else Edge.model_validate(edge)
             if not self.knowledge_engine.persist.exists_edge(str(edge_obj.safe_get_id())):
                 self.knowledge_engine.write.add_edge(edge_obj)
@@ -488,7 +508,7 @@ class ServerCanonicalKgClient(IngestExecutionClient):
         ensure_ingest_workflow_design(self.workflow_engine, workflow_id=workflow_id)
         from .service import build_runtime
 
-        probe = (deps or {}).get("probe")
+        probe = _workflow_probe(deps)
         runtime = build_runtime(
             workflow_engine=self.workflow_engine,
             conversation_engine=self.conversation_engine,
@@ -536,7 +556,7 @@ class ServerCanonicalKgClient(IngestExecutionClient):
             ),
             status=_ingest_status(run.status),
             bundle=bundle,
-            final_state=dict(run.final_state),
+            final_state=_state_json(run.final_state),
         )
 
     def resume_ingest(self, **kwargs: object) -> IngestRunResult:
