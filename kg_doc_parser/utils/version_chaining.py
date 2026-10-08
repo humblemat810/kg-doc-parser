@@ -18,7 +18,8 @@ import uuid
 import datetime
 import hashlib
 import dotenv
-from typing import Literal, Optional, List, Dict, Any
+from collections.abc import Callable, Sequence
+from typing import Any, BinaryIO, Literal, Optional, List, Dict, Protocol, cast
 from kogwistar.utils.cache_backend import Memory
 from kg_doc_parser.llm_structured_output import build_structured_output_runnable
 memory = Memory(location = "./.version_chain")
@@ -30,8 +31,15 @@ import sqlite3
 # ====== optional PDF -> PNG renderers ======
 # we try pdf2image first, but fall back to PyMuPDF if needed
 try:
-    convert_from_path: Any = None
-    from pdf2image import convert_from_path
+    class PDFImageLike(Protocol):
+        def save(self, fp: BinaryIO, *, format: str) -> None: ...
+
+    convert_from_path: Callable[..., Sequence[PDFImageLike]] | None = None
+    from pdf2image import convert_from_path as _pdf2image_convert_from_path
+
+    convert_from_path = cast(
+        Callable[..., Sequence[PDFImageLike]], _pdf2image_convert_from_path
+    )
     _HAS_PDF2IMAGE = True
 except Exception:
     _HAS_PDF2IMAGE = False
@@ -61,6 +69,8 @@ def pdf_page_hashes_as_png(
     """
     try:
         if _HAS_PDF2IMAGE:
+            if convert_from_path is None:  # pragma: no cover - defensive invariant
+                raise RuntimeError("pdf2image renderer is unavailable")
             print(f"using pdf2image to convert file {file_path}")
             images = convert_from_path(file_path, dpi=dpi)
             out: list[str] = []
