@@ -6,7 +6,13 @@ from typing import Literal, Protocol, TypedDict, cast
 
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime import MappingStepResolver
-from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
+from kogwistar.runtime.models import (
+    RunFailure,
+    RunSuccess,
+    RunSuspended,
+    StateUpdate,
+    StepRunResult,
+)
 from kogwistar.runtime.runtime import StepContext
 
 from .adapters import (
@@ -22,6 +28,7 @@ from .models import (
     CurrentLayerContext,
     CurrentLayerResult,
     CurrentLayerReview,
+    GroundedSourceRecord,
     LayerFrontierItem,
     ParseSessionState,
     StrategyExecutionRecord,
@@ -64,12 +71,23 @@ from .semantics import (
     semantic_tree_to_kge_payload,
 )
 from .strategy import (
+    ParseStrategy,
     StrategyTriageFn,
     build_llm_strategy_triage,
     select_parse_strategy,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _strategy_attempt(state_view: Mapping[str, object], strategy: str) -> int:
+    raw = state_view.get("strategy_attempt_counts")
+    if not isinstance(raw, dict):
+        return 1
+    value = raw.get(strategy)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return int(value)
+    return 1
 
 
 def _parser_payload(value: object) -> ParserPayload:
@@ -159,15 +177,21 @@ def _build_export_bundle(
     kg_authority = str(ctx.state_view.get("kg_authority", deps.get("kg_authority", "local")))
     return WorkflowExportBundle(
         graph_payload=graph_payload,
-        authoritative_source_map=ctx.state_view["authoritative_source_map"],
+        authoritative_source_map=cast(
+            dict[str, GroundedSourceRecord],
+            ctx.state_view["authoritative_source_map"],
+        ),
         embedding_spaces=collection.embedding_spaces,
         consolidation_candidates=[],
-        retrieval_metadata={
-            "embedding_spaces": collection.embedding_spaces,
-            "supports_hybrid_retrieval": True,
-            "supports_split_embedding_spaces": True,
-            "collection_modality": collection.modality,
-        },
+        retrieval_metadata=cast(
+            dict[str, JsonValue],
+            {
+                "embedding_spaces": collection.embedding_spaces,
+                "supports_hybrid_retrieval": True,
+                "supports_split_embedding_spaces": True,
+                "collection_modality": collection.modality,
+            },
+        ),
         persistence_mode="server_canonical" if persistence_mode == "server_canonical" else "local_debug",
         kg_authority="server" if kg_authority == "server" else "local",
         canonical_write_confirmed=False,
@@ -180,7 +204,7 @@ def _build_export_bundle(
 def _success(
     next_step: str | None = None,
     *,
-    state_update: list[tuple[str, dict[str, object]]] | None = None,
+    state_update: list[StateUpdate] | None = None,
 ) -> RunSuccess:
     return RunSuccess(
         conversation_node_id=None,
@@ -371,10 +395,11 @@ def register_layerwise_parser_steps(
         parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
         normalized_input = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
         layer_metadata = dict(current_layer_context.metadata)
-        disabled_strategies = {
-            str(value)
-            for value in layer_metadata.get("disabled_strategies", [])
-            if str(value) in {"layer_excerpt", "layer_boundary", "page_index"}
+        raw_disabled = layer_metadata.get("disabled_strategies")
+        disabled_strategies: set[ParseStrategy] = {
+            cast(ParseStrategy, value)
+            for value in (raw_disabled if isinstance(raw_disabled, list) else [])
+            if value in {"layer_excerpt", "layer_boundary", "page_index"}
         }
         settings = runtime_deps.get("provider_settings")
         triage_fn = runtime_deps.get("triage_strategy_fn")
@@ -483,7 +508,9 @@ def register_layerwise_parser_steps(
             )
         metadata = dict(parse_session.metadata)
         metadata.update(
-            {
+            cast(
+                dict[str, JsonValue],
+                {
                 "parse_strategy": decision.selected_strategy,
                 "parse_strategy_source": decision.source,
                 "parse_strategy_confidence": decision.confidence,
@@ -495,7 +522,8 @@ def register_layerwise_parser_steps(
                 "disabled_strategies": sorted(disabled_strategies),
                     "page_index_summary_enabled": page_index_summary_enabled,
                     "page_index_hierarchical_summary_enabled": page_index_hierarchical_summary_enabled,
-            }
+                },
+            )
         )
         selected_split_strategy = (
             "boundary_first" if decision.selected_strategy == "layer_boundary" else "excerpt_first"
@@ -555,7 +583,12 @@ def register_layerwise_parser_steps(
                 field_mode="backend", dump_format="json"
             )
             st["parse_strategy_decision"] = decision.model_dump(mode="json")
-        attempt_counts = dict(ctx.state_view.get("strategy_attempt_counts") or {})
+        raw_attempt_counts = ctx.state_view.get("strategy_attempt_counts")
+        attempt_counts = {
+            str(key): int(value)
+            for key, value in (raw_attempt_counts.items() if isinstance(raw_attempt_counts, dict) else [])
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
         attempt = int(attempt_counts.get(decision.selected_strategy, 0)) + 1
         attempt_counts[decision.selected_strategy] = attempt
         selected_record = StrategyExecutionRecord(
@@ -641,11 +674,13 @@ def register_layerwise_parser_steps(
                 if settings is not None
                 else 1
             )
+        raw_frontier = ctx.state_view.get("layer_frontier_queue")
+        frontier_items = raw_frontier if isinstance(raw_frontier, list) else []
         context, remaining, updated_session = prepare_layer_frontier(
             parse_session=parse_session,
             frontier_queue=[
                 LayerFrontierItem.model_validate(item)
-                for item in ctx.state_view["layer_frontier_queue"]
+                for item in frontier_items
             ],
             semantic_tree=semantic_tree,
             max_retries=int(runtime_deps.get("max_review_retries", 3)),
@@ -778,9 +813,10 @@ def register_layerwise_parser_steps(
                     f"{len(current_layer_review.duplicate_child_notes)} duplicates"
                 )
             strategy = str(current_layer_context.metadata.get("parse_strategy", "layer_excerpt"))
+            raw_disabled = current_layer_context.metadata.get("disabled_strategies")
             disabled = {
                 str(value)
-                for value in current_layer_context.metadata.get("disabled_strategies", [])
+                for value in (raw_disabled if isinstance(raw_disabled, list) else [])
             }
             disabled.add(strategy)
             updated_context = current_layer_context.model_copy(
@@ -803,7 +839,7 @@ def register_layerwise_parser_steps(
                 strategy=strategy,  # type: ignore[arg-type]
                 depth=current_layer_context.depth,
                 parent_node_ids=list(current_layer_context.parent_node_ids),
-                attempt=int((ctx.state_view.get("strategy_attempt_counts") or {}).get(strategy, 1)),
+                attempt=_strategy_attempt(ctx.state_view, strategy),
                 event="failed",
                 failure_type="retry",
                 reasons=reasons[:12],
@@ -826,7 +862,7 @@ def register_layerwise_parser_steps(
             strategy=strategy,  # type: ignore[arg-type]
             depth=current_layer_context.depth,
             parent_node_ids=list(current_layer_context.parent_node_ids),
-            attempt=int((ctx.state_view.get("strategy_attempt_counts") or {}).get(strategy, 1)),
+            attempt=_strategy_attempt(ctx.state_view, strategy),
             event="succeeded",
         )
         return _success(
