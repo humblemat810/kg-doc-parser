@@ -1619,8 +1619,8 @@ def _structured_invoke(  # noqa: UP047 - PEP 695 syntax would drop PyPy 3.11 sup
 
 def _fallback_layer_result(
     *,
-    current_layer_context: Any,
-    parser_source_map: dict[str, dict[str, Any]],
+    current_layer_context: CurrentLayerContext,
+    parser_source_map: ParserSourceMap,
 ) -> CurrentLayerResult:
     children: list[LayerChildCandidate] = []
     if int(getattr(current_layer_context, "depth", 0)) > 0:
@@ -1674,14 +1674,14 @@ def build_layerwise_llm_callbacks(
     provider_settings: WorkflowProviderSettings,
     *,
     event_sink: LayerwiseEventSink | None = None,
-    model_callbacks: list[Any] | None = None,
+    model_callbacks: Sequence[object] | None = None,
     fallback_layer_result_fn: LayerwiseFallbackBuilder | None = None,
     max_depth: int = 2,
     allow_review: bool = True,
     proposal_mode: str | None = None,
     boundary_refinement_rounds: int = 1,
 ) -> LayerwiseLLMCallbacks:
-    model_callback_kwargs: dict[str, Any] = {}
+    model_callback_kwargs: dict[str, object] = {}
     if model_callbacks:
         model_callback_kwargs["callbacks"] = list(model_callbacks)
     chat_model = build_chat_model_for_role(
@@ -1697,7 +1697,7 @@ def build_layerwise_llm_callbacks(
     proposal_retry_rounds = max(0, int(getattr(provider_settings.parser, "max_retries", 0) or 0))
     last_provider_failure_type: str | None = None
 
-    def _emit(stage: str, **extra: Any) -> None:
+    def _emit(stage: str, **extra: object) -> None:
         if callable(event_sink):
             event_sink(stage, **extra)
 
@@ -1721,11 +1721,11 @@ def build_layerwise_llm_callbacks(
         return "transport/provider_exception"
 
     def _proposal_attempt_payload(
-        payload: dict[str, Any],
+        payload: ParserPayload,
         *,
         attempt_index: int,
         prior_error: str | None,
-    ) -> dict[str, Any]:
+    ) -> ParserPayload:
         payload = dict(payload)
         payload["proposal_attempt"] = attempt_index + 1
         payload["proposal_retry_rounds"] = proposal_retry_rounds
@@ -1735,13 +1735,13 @@ def build_layerwise_llm_callbacks(
 
     def _propose_layer_fn(
         *,
-        parser_source_map,
-        current_layer_context,
-        semantic_tree,
-        split_strategy,
-        parser_input_dict,
-        parse_session,
-        **kwargs,
+        parser_source_map: ParserSourceMap,
+        current_layer_context: CurrentLayerContext,
+        semantic_tree: SemanticNode,
+        split_strategy: SplitStrategy,
+        parser_input_dict: ParserPayload,
+        parse_session: ParseSessionState,
+        **kwargs: object,
     ) -> CurrentLayerResult:
         if proposal_mode == "boundaries":
             boundary_candidates = _boundary_prompt_candidate_context(
