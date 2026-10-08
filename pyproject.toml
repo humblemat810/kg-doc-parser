@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "graph-knowledge-doc-parser"
-version = "0.2.5"
+version = "0.2.6"
 description = "doc parser using llm driven engine with graph knowledge awareness"
 authors = ["humblemat810 <67593116+humblemat810@users.noreply.github.com>"]
 readme = "README.md"
