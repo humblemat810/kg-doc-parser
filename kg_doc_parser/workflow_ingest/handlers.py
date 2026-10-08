@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Literal, Protocol, TypedDict, cast
 
+from kogwistar.json_types import JsonValue
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended, StepRunResult
 from kogwistar.runtime.runtime import StepContext
@@ -402,7 +403,7 @@ def register_layerwise_parser_steps(
                 )
             except Exception as exc:  # noqa: BLE001 - unavailable providers use deterministic fallback.
                 triage_build_error = f"triage provider unavailable: {type(exc).__name__}: {exc}"
-        parent_context: list[dict[str, object]] = []
+        parent_context: list[dict[str, JsonValue]] = []
         parser_source_map = ctx.state_view.get("parser_source_map") or {}
         for parent_id, title in zip(
             current_layer_context.parent_node_ids,

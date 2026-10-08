@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Literal, Protocol, cast
 
+from kogwistar.json_types import JsonValue
 from pydantic import BaseModel, Field, model_validator
 
 from .providers import (
@@ -20,6 +21,7 @@ from .providers import (
 ParseStrategy = Literal["layer_excerpt", "layer_boundary", "page_index"]
 ParseStrategyRequest = Literal["auto", "layer_excerpt", "layer_boundary", "page_index"]
 ParseStrategySource = Literal["config", "hardcoded_fallback", "llm_triage", "llm_triage_fallback"]
+JsonObject = dict[str, JsonValue]
 
 HARD_CODED_STRATEGY_PRIORITY: tuple[ParseStrategy, ...] = (
     "layer_excerpt",
@@ -72,7 +74,7 @@ class ParseStrategyDecision(BaseModel):
 
 
 class StrategyTriageFn(Protocol):
-    def __call__(self, context: Mapping[str, object], /) -> ParseStrategyTriage: ...
+    def __call__(self, context: Mapping[str, JsonValue], /) -> ParseStrategyTriage: ...
 
 
 def hardcoded_strategy(
@@ -123,7 +125,7 @@ def hardcoded_strategy(
     )
 
 
-def _triage_prompt(context: Mapping[str, object]) -> str:
+def _triage_prompt(context: Mapping[str, JsonValue]) -> str:
     return (
         "Choose one parser strategy for this bounded document summary.\n"
         "Consider the trade-offs explicitly: layer_excerpt preserves verbatim leaf evidence and is the preferred "
@@ -139,7 +141,7 @@ def _triage_prompt(context: Mapping[str, object]) -> str:
 def build_llm_strategy_triage(
     provider_settings: WorkflowProviderSettings,
     *,
-    diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+    diagnostics_sink: Callable[[JsonObject], None] | None = None,
 ) -> StrategyTriageFn:
     """Build a provider-backed triage callable with the parser timeout."""
 
@@ -148,8 +150,8 @@ def build_llm_strategy_triage(
 
     structured = chat.with_structured_output(ParseStrategyTriage, include_raw=True)
 
-    def _triage(context: Mapping[str, object]) -> ParseStrategyTriage:
-        diagnostics: dict[str, object] = {}
+    def _triage(context: Mapping[str, JsonValue]) -> ParseStrategyTriage:
+        diagnostics: JsonObject = {}
         try:
             response = invoke_with_timeout(
                 lambda: structured.invoke(
@@ -195,7 +197,7 @@ def build_llm_strategy_triage(
 def select_parse_strategy(
     *,
     requested: ParseStrategyRequest,
-    context: Mapping[str, object],
+    context: Mapping[str, JsonValue],
     triage_enabled: bool,
     triage_fn: StrategyTriageFn | None = None,
     strategy_order: tuple[ParseStrategy, ...] = HARD_CODED_STRATEGY_PRIORITY,
