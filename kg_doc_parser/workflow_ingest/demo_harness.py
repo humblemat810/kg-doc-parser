@@ -24,7 +24,7 @@ import time
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Callable, Literal, Protocol
 
 from .cache import WorkflowLLMCallCache
 from .clients import DocumentTreeApiPersistenceClient, ServerCanonicalKgClient
@@ -42,6 +42,26 @@ from .service import StorageBackendFactory, build_default_engines
 
 _DEMO_JWT_SECRET = "kg-doc-parser-demo-test-secret"
 _LOGGER = logging.getLogger(__name__)
+
+
+class DemoResponseLike(Protocol):
+    """Small response surface shared by the demo HTTP clients."""
+
+    status_code: int
+    text: str
+    ok: bool
+
+    def raise_for_status(self) -> None: ...
+
+
+class DemoHttpClientLike(Protocol):
+    """HTTP client surface used by the demo server and persistence helpers."""
+
+    def get(self, url: str, **kwargs: object) -> DemoResponseLike: ...
+
+    def post(self, url: str, **kwargs: object) -> DemoResponseLike: ...
+
+    def close(self) -> None: ...
 
 
 @dataclass
@@ -62,7 +82,7 @@ class DemoHarnessConfig:
     probe_filename: str = "probe-events.jsonl"
     summary_filename: str = "demo-summary.json"
     cache_dirname: str = "llm-cache"
-    deps: dict[str, Any] = field(default_factory=dict)
+    deps: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -82,10 +102,17 @@ class DemoHarnessArtifacts:
     kg_authority: str | None = None
 
 
-class _ServerContext(AbstractContextManager):
+class _ServerContext(AbstractContextManager[bool]):
     """Wrapper for server transports so shutdown behavior stays explicit."""
 
-    def __init__(self, *, client: Any, transport: str, base_url: str = "", cleanup=None) -> None:
+    def __init__(
+        self,
+        *,
+        client: DemoHttpClientLike,
+        transport: str,
+        base_url: str = "",
+        cleanup: Callable[..., None] | None = None,
+    ) -> None:
         self.client = client
         self.transport = transport
         self.base_url = base_url
@@ -244,7 +271,9 @@ def _connect_external_server(base_url: str) -> _ServerContext:
     )
 
 
-def _shutdown_subprocess_server(proc: subprocess.Popen[str], session: Any | None) -> None:
+def _shutdown_subprocess_server(
+    proc: subprocess.Popen[str], session: DemoHttpClientLike | None
+) -> None:
     """Terminate the subprocess server and close its HTTP session."""
     if session is not None:
         session.close()
@@ -257,7 +286,7 @@ def _shutdown_subprocess_server(proc: subprocess.Popen[str], session: Any | None
             proc.wait(timeout=5)
 
 
-def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, Any]:
+def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, object]:
     """Build deterministic proposal/review hooks for the fake layered demo mode."""
     text = inp.collections[0].pages[0].units[0].text or ""
     unit_id = f"{inp.request_id}|p1_t0"
@@ -370,7 +399,7 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
         engine_dir=output_dir / "engines",
         server_data_dir=output_dir / "server-data",
     )
-    engines: tuple[Any, ...] = ()
+    engines: tuple[object, ...] = ()
     inp = WorkflowIngestInput.from_text(
         document_id=config.document_id,
         text=config.text,
