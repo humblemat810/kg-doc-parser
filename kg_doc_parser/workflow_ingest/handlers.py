@@ -52,7 +52,7 @@ from .parser_core import (
     validate_layer_commit,
 )
 from .probe import WorkflowProbe, emit_probe_event
-from .providers import WorkflowProviderSettings
+from .providers import ProviderDiagnosticsSink, WorkflowProviderSettings
 from .semantics import (
     SemanticNode,
     classify_terminal_coverage_status,
@@ -116,7 +116,7 @@ class WorkflowRuntimeDeps(TypedDict, total=False):
     coverage_threshold: float
     provider_settings: WorkflowProviderSettings
     triage_strategy_fn: Callable[[dict[str, object]], object]
-    provider_diagnostics_sink: Callable[[dict[str, object]], None]
+    provider_diagnostics_sink: ProviderDiagnosticsSink
 
 
 def _build_export_bundle(

@@ -41,11 +41,13 @@ import logging
 import shutil
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.json_types import JsonValue
 from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -57,13 +59,12 @@ from .adapters import OCRPageJSON, normalize_ocr_pages
 from .models import WorkflowExportBundle, WorkflowIngestInput
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import (
+    ProviderDiagnosticsSink,
     WorkflowProviderSettings,
     build_chat_model_for_role,
     invoke_with_timeout,
 )
 from .service import _RunCompat, run_ingest_workflow
-from kogwistar.json_types import JsonValue
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1274,7 +1275,7 @@ def _run_live_ocr_page(
     page_number: int,
     provider_settings: WorkflowProviderSettings,
     *,
-    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+    provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
 ) -> OCRClusterResponse:
     """Run one page image through the configured OCR provider.
 

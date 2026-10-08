@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import Literal, Protocol, TypedDict, TypeVar, cast
@@ -32,6 +32,7 @@ from .models import (
 )
 from .parser_core import ParserPayload, ParserSourceMap, SplitStrategy
 from .providers import (
+    ProviderDiagnosticsSink,
     SupportsStructuredOutput,
     WorkflowProviderSettings,
     build_chat_model_for_role,
@@ -1545,7 +1546,7 @@ def _structured_invoke(  # noqa: UP047 - PEP 695 syntax would drop PyPy 3.11 sup
     *,
     timeout_seconds: float = 120.0,
     diagnostics: dict[str, object] | None = None,
-    diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+    diagnostics_sink: ProviderDiagnosticsSink | None = None,
     operation: str = "parser_structured_call",
     max_in_flight: int = 1,
     attempt_index: int = 1,

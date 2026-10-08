@@ -104,6 +104,12 @@ ChatProviderName = Literal["anthropic", "gemini", "ollama", "openai", "azure", "
 EmbeddingProviderName = Literal["fake", "openai", "vertex", "ollama"]
 ProposalMode = Literal["children", "boundaries"]
 
+
+class ProviderDiagnosticsSink(Protocol):
+    """Receive one structured provider-call diagnostic record."""
+
+    def __call__(self, diagnostics: Mapping[str, object], /) -> None: ...
+
 _PROVIDER_IN_FLIGHT_LOCK = threading.Lock()
 _PROVIDER_IN_FLIGHT = 0
 class ProviderCallMetrics(TypedDict):

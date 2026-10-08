@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import Literal, Protocol
@@ -61,6 +61,7 @@ from .models import (
     WorkflowIngestInput,
 )
 from .providers import (
+    ProviderDiagnosticsSink,
     WorkflowProviderSettings,
     build_chat_model_for_role,
     invoke_with_timeout,
@@ -1270,7 +1271,7 @@ def _refine_page_index_block_excerpts(
     provider_settings: WorkflowProviderSettings,
     callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
-    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+    provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
     entries = [
         {
@@ -1454,7 +1455,7 @@ def _refine_page_index_summaries_hierarchically(
     provider_settings: WorkflowProviderSettings,
     callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
-    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+    provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
     """Optionally regenerate summaries one tree depth at a time.
 
@@ -1678,7 +1679,7 @@ def _llm_page_outline(
     provider_settings: WorkflowProviderSettings,
     callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
-    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+    provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
 ) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     assignment_mode_prefix = "ollama" if provider_settings.parser.provider == "ollama" else "llm"
@@ -2569,7 +2570,7 @@ def parse_page_index_document(
     provider_settings: WorkflowProviderSettings | None = None,
     callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
-    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+    provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
     refine_excerpts: bool = False,
     summary_enabled: bool = True,
     hierarchical_summary_enabled: bool | None = None,

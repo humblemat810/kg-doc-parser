@@ -6,13 +6,14 @@ but it cannot bypass the host's allowed strategies or the provider timeout.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Literal, Protocol, cast
 
 from kogwistar.json_types import JsonValue
 from pydantic import BaseModel, Field, model_validator
 
 from .providers import (
+    ProviderDiagnosticsSink,
     WorkflowProviderSettings,
     build_chat_model_for_role,
     invoke_with_timeout,
@@ -141,7 +142,7 @@ def _triage_prompt(context: Mapping[str, JsonValue]) -> str:
 def build_llm_strategy_triage(
     provider_settings: WorkflowProviderSettings,
     *,
-    diagnostics_sink: Callable[[JsonObject], None] | None = None,
+    diagnostics_sink: ProviderDiagnosticsSink | None = None,
 ) -> StrategyTriageFn:
     """Build a provider-backed triage callable with the parser timeout."""
 
