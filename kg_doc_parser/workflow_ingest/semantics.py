@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Literal
 
 from kogwistar.id_provider import stable_id
+from kogwistar.json_types import JsonValue
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -30,7 +31,9 @@ class SemanticNode(BaseModel):
     aggregate_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
     child_nodes: list[SemanticNode] = Field(default_factory=list)
     level_from_root: int = 0
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    # Pydantic's recursive alias expansion is not stable across the supported
+    # runtimes; keep the model field opaque while JSON boundaries stay typed.
+    metadata: dict[str, object] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _ensure_stable_node_id(self) -> SemanticNode:
@@ -58,7 +61,7 @@ SemanticNode.model_rebuild()
 
 def correct_and_validate_pointer(
     pointer: HydratedTextPointer,
-    source_map: dict[str, dict[str, Any]],
+    source_map: dict[str, dict[str, JsonValue]],
 ) -> HydratedTextPointer | None:
     source = source_map.get(pointer.source_cluster_id)
     if source is None:
@@ -101,7 +104,7 @@ def correct_and_validate_pointer(
 
 def pointer_source_validation_error(
     pointer: HydratedTextPointer,
-    source_map: dict[str, dict[str, Any]],
+    source_map: dict[str, dict[str, JsonValue]],
 ) -> str | None:
     """Return a deterministic error when a pointer is not source-grounded.
 
@@ -130,8 +133,8 @@ def pointer_source_validation_error(
 
 def compute_pointer_coverage(
     root_node: SemanticNode,
-    source_map: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
+    source_map: dict[str, dict[str, JsonValue]],
+) -> dict[str, JsonValue]:
     def _meaningful_length(value: str) -> int:
         return sum(1 for char in value if not char.isspace())
 
@@ -188,8 +191,8 @@ def compute_pointer_coverage(
 
 def compute_terminal_content_coverage(
     root_node: SemanticNode,
-    source_map: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
+    source_map: dict[str, dict[str, JsonValue]],
+) -> dict[str, JsonValue]:
     """Measure exact ownership by terminal content nodes.
 
     This intentionally does not count document/page wrappers, aggregate
@@ -267,7 +270,7 @@ def compute_terminal_content_coverage(
 
 def classify_terminal_coverage_status(
     root_node: SemanticNode,
-    coverage: dict[str, Any],
+    coverage: dict[str, JsonValue],
 ) -> Literal["complete", "atomic_valid", "partial_degraded", "failed"]:
     """Convert terminal ownership evidence into a truthful operator status."""
     if not coverage.get("valid", False):
@@ -281,11 +284,11 @@ def classify_terminal_coverage_status(
     return "complete"
 
 
-def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str, Any]:
-    nodes: list[dict[str, Any]] = []
-    edges: list[dict[str, Any]] = []
+def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str, JsonValue]:
+    nodes: list[dict[str, JsonValue]] = []
+    edges: list[dict[str, JsonValue]] = []
 
-    def spans(ptrs: list[HydratedTextPointer]) -> list[dict[str, Any]]:
+    def spans(ptrs: list[HydratedTextPointer]) -> list[dict[str, JsonValue]]:
         if not ptrs:
             return [
                 {
