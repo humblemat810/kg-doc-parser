@@ -6,11 +6,14 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import TypeAlias
 from uuid import UUID
 
+JsonScalar: TypeAlias = None | bool | int | float | str
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
-def json_safe(value: Any, *, _seen: set[int] | None = None) -> Any:
+
+def json_safe(value: object, *, _seen: set[int] | None = None) -> JsonValue:
     """Convert structured and third-party values into JSON-safe primitives.
 
     This is intentionally conservative at provider boundaries: unknown objects
@@ -49,10 +52,10 @@ def json_safe(value: Any, *, _seen: set[int] | None = None) -> Any:
         seen.discard(identity)
 
 
-def safe_json_dumps(value: Any, **kwargs: Any) -> str:
+def safe_json_dumps(value: object, **kwargs: object) -> str:
     """Serialize a value after applying :func:`json_safe`."""
 
     return json.dumps(json_safe(value), **kwargs)
 
 
-__all__ = ["json_safe", "safe_json_dumps"]
+__all__ = ["JsonValue", "json_safe", "safe_json_dumps"]
