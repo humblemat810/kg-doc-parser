@@ -65,7 +65,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import (
     Annotated,
-    Any,
     ClassVar,
     Literal,
     Protocol,
@@ -835,7 +834,7 @@ def _embedding_vector(text: str, *, dimension: int) -> list[float]:
 
 
 def _validate_embedding_vectors(
-    value: Any,
+    value: object,
     *,
     dimension: int,
     provider: str,
@@ -896,11 +895,11 @@ def build_embedding_function(
             provider=spec.provider,
         )
 
-    def _build_langchain_embeddings() -> Any:
+    def _build_langchain_embeddings() -> object:
         if spec.provider == "openai":
             from langchain_openai import OpenAIEmbeddings
 
-            kwargs: dict[str, Any] = {
+            kwargs: dict[str, object] = {
                 "model": spec.model,
                 "dimensions": spec.dimension,
             }
@@ -983,7 +982,7 @@ def build_chat_model(
     if spec.provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        kwargs: dict[str, Any] = {
+        kwargs: dict[str, object] = {
             "model": spec.model,
             "temperature": spec.temperature,
             "callbacks": callbacks,
