@@ -1488,7 +1488,11 @@ def build_document_tree(
         depth=current_depth,
     )
     return root_node    
-def prepare_frontend_children(nodes_at_this_level, level_response, fixed_children: list[LLMChildNodeResponseBE]):
+def prepare_frontend_children(
+    nodes_at_this_level: list[SemanticNode],
+    level_response: LLMLevelResponse | LLMLevelResponseBE,
+    fixed_children: list[LLMChildNodeResponseBE],
+) -> tuple[list[LLMChildNodeResponse], list[str], list[tuple[str, str, set[str]]]]:
         # RUN LLM loop make sure missing content will be guarded by LLM
         corrected_level_response = LLMLevelResponse.model_validate(level_response.model_dump())
         
@@ -1529,13 +1533,18 @@ def prepare_frontend_children(nodes_at_this_level, level_response, fixed_childre
         fe_children = dedupe_children_level(fe_children)
         return fe_children, layer_parent_types, layer_parent_sigs
         
-def iterative_review_loop(fe_children: list[LLMChildNodeResponse], layer_parent_types, layer_parent_sigs, source_map,
-                        model_names, 
-                        doc_id: str,
-                        full_document_json_str, 
-                        current_depth, 
-                        llm_input_dict, 
-                        nodes_at_this_level:  list[SemanticNode]):
+def iterative_review_loop(
+    fe_children: list[LLMChildNodeResponse],
+    layer_parent_types: list[str],
+    layer_parent_sigs: list[tuple[str, str, set[str]]],
+    source_map: dict[str, dict[str, Any]],
+    model_names: list[str],
+    doc_id: str,
+    full_document_json_str: str,
+    current_depth: int,
+    llm_input_dict: dict[str, Any],
+    nodes_at_this_level: list[SemanticNode],
+) -> tuple[list[LLMChildNodeResponseBE], list[dict[str, object]]]:
     """_summary_
 
     Args:
@@ -1817,7 +1826,7 @@ def _soft_exact_positions(
         return [(orig_s, orig_e)], {"name" : "LCSseq.normalized_similarity", "threshold": thr, "collapsed": True}
     # --- True RapidFuzz path (fast): use LCS ratio as a cheap, positionable proxy ---
     import difflib
-    def locate_span(query: str, text: str):
+    def locate_span(query: str, text: str) -> tuple[int, int] | None:
         sm = difflib.SequenceMatcher(
             None,
             text.lower(),
@@ -2028,7 +2037,9 @@ def correct_and_validate_pointer(
 # ============================================================================
 
 def _correct_child_deterministic(
-    child: LLMChildNodeResponseBE, source_map: dict, with_coverage_check = True
+    child: LLMChildNodeResponseBE,
+    source_map: dict[str, dict[str, Any]],
+    with_coverage_check: bool = True,
 ) -> tuple[LLMChildNodeResponseBE | None, list[HydratedTextPointer]]:
     """Attempt to fix all pointers deterministically. Returns (fixed_child, unresolved_pointers).
     If at least one pointer is unrecoverable deterministically, include it in unresolved list.
