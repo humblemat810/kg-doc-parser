@@ -16,6 +16,8 @@ from .clients import (
 from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
 from .design import (
     DEFAULT_WORKFLOW_ID,
+    WorkflowEngineLike,
+    WorkflowPersistenceLike,
     build_ingest_workflow_design,
     ensure_ingest_workflow_design,
 )
@@ -179,9 +181,11 @@ __all__ = [
     "UnsupportedClientOperation",
     "ValidationReport",
     "WorkflowCommandResult",
+    "WorkflowEngineLike",
     "WorkflowExportBundle",
     "WorkflowIngestInput",
     "WorkflowLLMCallCache",
+    "WorkflowPersistenceLike",
     "WorkflowProbe",
     "WorkflowProviderSettings",
     "apply_cud_update",
