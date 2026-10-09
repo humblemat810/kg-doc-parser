@@ -8,6 +8,7 @@ from typing import Literal, Protocol
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import StorageBackend
 from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.contract import Predicate
 from kogwistar.typing_interfaces import EmbeddingFunctionLike
 
 from .clients import DirectRuntimeIngestClient
@@ -38,7 +39,13 @@ class WorkflowPredicate(Protocol):
     ) -> bool: ...
 
 
-WorkflowPredicates = dict[str, WorkflowPredicate]
+WorkflowPredicates = dict[str, Predicate]
+
+
+def _string_set(value: object) -> set[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return set()
+    return {str(item) for item in value}
 
 
 def workflow_predicates() -> WorkflowPredicates:
@@ -65,28 +72,35 @@ def workflow_predicates() -> WorkflowPredicates:
             "page_index_layer": "page_index",
         }.get(target, "")
 
-    def _selected_strategy(edge: WorkflowEdgeLike, state: WorkflowState, _result: object) -> bool:
+    def _selected_strategy(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+        del result
         return str(_metadata(state).get("parse_strategy")) == _strategy_name(edge)
 
-    def _failed_with_remaining(_edge: WorkflowEdgeLike, state: WorkflowState, _result: object) -> bool:
-        disabled = set(_metadata(state).get("disabled_strategies", []))
+    def _failed_with_remaining(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+        del edge, result
+        disabled = _string_set(_metadata(state).get("disabled_strategies", []))
         return bool(disabled) and len(disabled) < 3
 
-    def _exhausted(_edge: WorkflowEdgeLike, state: WorkflowState, _result: object) -> bool:
-        return len(set(_metadata(state).get("disabled_strategies", []))) >= 3
+    def _exhausted(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+        del edge, result
+        return len(_string_set(_metadata(state).get("disabled_strategies", []))) >= 3
 
-    def _strategy_selection_failed(_edge: WorkflowEdgeLike, state: WorkflowState, _result: object) -> bool:
+    def _strategy_selection_failed(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+        del edge, result
         return bool(state.get("strategy_selection_error"))
 
-    def _commit_candidates_valid(_edge: WorkflowEdgeLike, state: WorkflowState, _result: object) -> bool:
+    def _commit_candidates_valid(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+        del edge, result
         review = state.get("current_layer_review")
         return isinstance(review, dict) and bool(review.get("metadata", {}).get("commit_validation")) and review.get("satisfied") is True
 
-    def _commit_candidates_invalid(_edge: WorkflowEdgeLike, state: WorkflowState, _result: object) -> bool:
+    def _commit_candidates_invalid(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+        del edge, result
         review = state.get("current_layer_review")
         return isinstance(review, dict) and bool(review.get("metadata", {}).get("commit_validation")) and review.get("satisfied") is False
 
-    def _batch_has_repair_candidates(_edge: WorkflowEdgeLike, state: WorkflowState, _result: object) -> bool:
+    def _batch_has_repair_candidates(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+        del edge, result
         context = _context(state)
         review = state.get("current_layer_review")
         result = state.get("current_layer_result")
@@ -103,7 +117,8 @@ def workflow_predicates() -> WorkflowPredicates:
             for child in children
         )
 
-    def _satisfied(_edge: WorkflowEdgeLike, state: WorkflowState, _result: object) -> bool:
+    def _satisfied(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+        del edge, result
         review = state.get("current_layer_review")
         result = state.get("current_layer_result")
         if not isinstance(review, dict) or not isinstance(result, dict):
@@ -121,7 +136,7 @@ def workflow_predicates() -> WorkflowPredicates:
         "parse_strategy_layer_excerpt": _selected_strategy,
         "parse_strategy_layer_boundary": _selected_strategy,
         "parse_strategy_page_index": _selected_strategy,
-        "strategy_attempted": lambda _edge, _state, _result: True,
+        "strategy_attempted": lambda edge, state, result: True,
         "layer_satisfied": _satisfied,
         "strategy_failed_with_remaining": _failed_with_remaining,
         "all_strategies_exhausted": _exhausted,
@@ -140,7 +155,7 @@ _workflow_predicates = workflow_predicates
 @dataclass(slots=True)
 class _RunCompat:
     run_id: str
-    final_state: dict[str, object]
+    final_state: Mapping[str, object]
     status: str
 
 
