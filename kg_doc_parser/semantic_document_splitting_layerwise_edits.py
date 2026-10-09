@@ -102,6 +102,7 @@ from uuid import UUID
 from kogwistar.id_provider import stable_id
 from kogwistar.llm_tasks.providers import SupportsStructuredOutput
 from kogwistar.utils.cache_backend import (
+    CachedCallable,
     CacheBackend,
     Memory,
     cache_dump,
@@ -923,6 +924,11 @@ _PARSER_CACHE_BACKEND = cast(
 )
 memory = Memory(location=_PARSER_CACHE_DIR, backend=_PARSER_CACHE_BACKEND)
 
+
+def _cache_function(function: Callable[P, R]) -> CachedCallable[P, R]:
+    """Preserve the wrapped function signature through the shared cache API."""
+    return cast(CachedCallable[P, R], memory.cache(function))
+
 _PARSER_LLM_CACHE_REVISION_ENV = "KG_DOC_PARSER_LLM_CACHE_REVISION"
 _PARSER_LLM_CACHE_REVISION = "parser-llm-cache-v4"
 
@@ -1233,7 +1239,7 @@ def level_node_llm_parsing(
     ]
     return retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set)
 
-@memory.cache
+@_cache_function
 def get_node(pid, child_def, parent_level: int):
     # child_def: Union[LLMChildNodeResponse, LLMChildNodeResponseBE].model_dump()
     child_def_obj: LLMChildNodeResponseBE = LLMChildNodeResponseBE.model_validate(child_def)
@@ -1260,7 +1266,7 @@ def get_node(pid, child_def, parent_level: int):
         # value_pointers=None # You would add logic to handle this
     )
     return child_node.model_dump()            
-@memory.cache
+@_cache_function
 def get_root_node(title, source_map):
     # root_node = SemanticNode(
     #     title=title,
@@ -2629,7 +2635,7 @@ def CUD_proposal(
             attempt=attempt,
             model_names=model_names,
         )
-        resp:CUDResponse[llm] | CResponse[llm]  = _default_call_llm_structured(
+        resp = _default_call_llm_structured(
             prompt=prompt,
             model_names=model_names,
             schema=ResponseModel,
