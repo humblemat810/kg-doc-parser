@@ -13,11 +13,13 @@ T = TypeVar("T")
 
 
 def _jsonable(value: object) -> object:
-    if hasattr(value, "model_dump"):
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dump = cast(Callable[..., object], model_dump)
         try:
-            return value.model_dump(field_mode="backend", dump_format="json")
+            return dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return value.model_dump()
+            return dump()
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
