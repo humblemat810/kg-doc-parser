@@ -65,7 +65,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import (
     Annotated,
-    Any,
     ClassVar,
     Literal,
     Protocol,
@@ -312,10 +311,10 @@ class FakeChatModel:
 
     def with_structured_output(
         self,
-        schema: type[TStructuredModel] | dict[str, Any],
+        schema: type[TStructuredModel] | Mapping[str, object],
         *,
         include_raw: bool = True,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> _FakeStructuredResponse:
         _ = kwargs
         if not isinstance(schema, type):
