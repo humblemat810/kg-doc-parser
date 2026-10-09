@@ -10,6 +10,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import cast
 
 from kogwistar.json_types import JsonValue
 from pydantic import BaseModel, ConfigDict, Field
@@ -111,7 +112,7 @@ def initialize_layered_parse(request: LayeredParseSeedRequest) -> LayeredParseSe
     session, frontier, root = initialize_parse_session(
         collection=collection,
         parser_input_dict=dict(request.parser_input),
-        parser_source_map=dict(request.source_map),
+        parser_source_map=_parser_source_map(request.source_map),
         max_depth=request.limits.max_depth,
     )
     session = session.model_copy(
@@ -142,7 +143,13 @@ def expand_layered_frontier(
 ) -> LayeredParseExpandResult:
     """Expand at most ``max_frontier_items`` items and return JSON-safe state."""
 
-    parser_calls = int(dict(request.session.metadata or {}).get("parser_calls") or 0)
+    raw_parser_calls = dict(request.session.metadata or {}).get("parser_calls")
+    parser_calls = (
+        int(raw_parser_calls)
+        if isinstance(raw_parser_calls, (int, float, str))
+        and not isinstance(raw_parser_calls, bool)
+        else 0
+    )
     if parser_calls >= request.limits.max_parser_calls:
         raise ValueError("layered parse parser-call budget is exhausted")
     started = time.monotonic()
@@ -184,7 +191,7 @@ def expand_layered_frontier(
         layer_result = propose_layer_breakdown(
             collection=_model_or_mapping(request.collection, "collection"),
             parser_input_dict=dict(request.parser_input),
-            parser_source_map=dict(request.source_map),
+            parser_source_map=_parser_source_map(request.source_map),
             parse_session=session,
             current_layer_context=context,
             semantic_tree=semantic_tree,
@@ -245,6 +252,15 @@ def _estimate_context_tokens(context: object) -> int:
         for pointer in pointer_list:
             text += " " + str(getattr(pointer, "verbatim_text", "") or "")
     return max(1, (len(text) + 3) // 4)
+
+
+def _parser_source_map(source_map: LayeredSourceMap) -> dict[str, dict[str, object]]:
+    """Adapt JSON-safe DTO records to the parser core's open payload contract."""
+
+    return {
+        source_id: cast(dict[str, object], dict(record))
+        for source_id, record in source_map.items()
+    }
 
 
 def _model_or_mapping(value: Mapping[str, JsonValue], name: str) -> _LayeredCollection:
