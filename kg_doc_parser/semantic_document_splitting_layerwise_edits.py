@@ -85,7 +85,7 @@ from enum import Enum
 from functools import wraps
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 try:
     from typing import TypeAlias
@@ -94,7 +94,7 @@ except ImportError:  # pragma: no cover
 import math
 import os
 from collections import deque
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable
 from contextvars import ContextVar
 from typing import ClassVar, ParamSpec, TypeVar, cast
 from uuid import UUID
@@ -127,7 +127,7 @@ from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_mode
 _LAYERWISE_TRACE_ENV = "KG_DOC_LAYERWISE_TRACE_FILE"
 
 
-def _emit_layerwise_trace(kind: str, **data: Any) -> None:
+def _emit_layerwise_trace(kind: str, **data: object) -> None:
     trace_path = os.environ.get(_LAYERWISE_TRACE_ENV)
     if not trace_path:
         return
@@ -145,7 +145,7 @@ def _emit_layerwise_trace(kind: str, **data: Any) -> None:
     except Exception:
         pass
 
-def get_llm(model_name:str):
+def get_llm(model_name: str) -> SupportsStructuredOutput:
     settings = WorkflowProviderSettings.from_env()
     spec = settings.parser.model_copy(update={"model": model_name})
     return build_chat_model(spec, callbacks=[cb])
@@ -180,15 +180,21 @@ cb = DocumentIngestSQLiteCallback(db_path=_DOCUMENT_INGEST_LOG_DB,
 
 P = ParamSpec("P")
 R = TypeVar("R")
+T = TypeVar("T")
 
-def memory_cached(memory: Memory, *arg, **kwarg):
+def memory_cached(
+    memory: Memory, *arg: object, **kwarg: object
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
     def wrapper(fn: Callable[P, R]) -> Callable[P, R]:
         return cast(Callable[P, R], memory.cache(fn, *arg, **kwarg))
     return wrapper
 
 
-def partition(iterable, predicate):
-    t1, t2 = [], []
+def partition(
+    iterable: Iterable[T], predicate: Callable[[T], bool]
+) -> tuple[list[T], list[T]]:
+    t1 = []
+    t2 = []
     for x in iterable:
         (t1 if predicate(x) else t2).append(x)
     return t1, t2
@@ -216,7 +222,7 @@ class HydratedTextPointer(ModeSlicingMixin, BaseModel):
     # backend and llm used, default to dump include, but ExcludeMode("llm") specified must be excluded when dumping to llm mode
     
     @model_validator(mode="after")
-    def end_char_minus_1_to_ending_index(self):
+    def end_char_minus_1_to_ending_index(self) -> Self:
         if self.end_char == -1 and self.verbatim_text:
             self.end_char += len(self.verbatim_text)
         return self
@@ -302,12 +308,12 @@ class LLMChildNodeResponse(ModeSlicingMixin, BaseModel): # for LLM
                                                             "If a sentence has been broken down into multiple text_clusters, leave them separatedly included in this list of pointers. ")
     # value_pointers: Optional[List[HydratedTextPointer]] = Field(None, description="(Used for KEY_VALUE_PAIR only, Null/None otherwise) Pointers to the value part of the node.")
     @field_validator("parent_node_id")
-    def _check_parent_in_prev_layer(cls, v):
+    def _check_parent_in_prev_layer(cls, v: str) -> str:
         allowed_ids = [str(i.node_id) for i in current_level_nodes.get()]
         if str(v) not in allowed_ids:
             raise ValueError("parent_node_id not in current allowed parent layer")
         return v
-    def to_BE(self):
+    def to_BE(self) -> "LLMChildNodeResponseBE":
         return LLMChildNodeResponseBE.model_validate(self.model_dump())
     # @model_validator(mode="after")
     # def _check_consistency(self):
@@ -355,7 +361,7 @@ class SemanticNode(BaseModel):
     level_from_root: int
 
     @model_validator(mode="after")
-    def _ensure_stable_node_id(self):
+    def _ensure_stable_node_id(self) -> Self:
         if self.node_id is not None:
             return self
         pointer_fp = "|".join(
