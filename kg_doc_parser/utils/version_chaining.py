@@ -18,15 +18,26 @@ import datetime
 import hashlib
 import uuid
 from collections.abc import Callable, Sequence
-from typing import Any, BinaryIO, Literal, Protocol, cast
+from typing import Any, BinaryIO, Literal, ParamSpec, Protocol, TypeVar, cast
 
 import dotenv
 from kogwistar.utils.cache_backend import Memory
 from pydantic import BaseModel, Field, model_validator
 
-from kg_doc_parser.llm_structured_output import build_structured_output_runnable
+from kg_doc_parser.llm_structured_output import (
+    StructuredOutputModel,
+    build_structured_output_runnable,
+)
 
 memory = Memory(location = "./.version_chain")
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def _cache_function(function: Callable[P, R]) -> Callable[P, R]:
+    """Keep the public call signature when applying the shared cache backend."""
+    return cast(Callable[P, R], memory.cache(function))
 
 dotenv.load_dotenv()
 
@@ -874,7 +885,7 @@ class FileMetadata(BaseModel):
             raise ValueError("file_hash must be provided for the model to be hashable")
         return int(self.file_hash, base=16)
 
-@memory.cache
+@_cache_function
 def get_file_hash(file_path, last_modified, size_bytes, algorithm="sha256", block_size=65536, ):
     """Compute a hash for the given file using the specified algorithm."""
     h = hashlib.new(algorithm)
@@ -926,7 +937,7 @@ class FileVersionChainingResponse(BaseModel):
     root_agreement : str  = Field(..., description = "The file name of the origin/master agreement that covers everything before any term variations are applied to. ")
     pass
 
-@memory.cache
+@_cache_function
 def version_chain(metadata_list: list[FileMetadata], model = 'gemini-2.5-pro', attempt = 0):
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_google_genai import ChatGoogleGenerativeAI
@@ -948,7 +959,7 @@ def version_chain(metadata_list: list[FileMetadata], model = 'gemini-2.5-pro', a
     ),
     HumanMessage(f"{[i.model_dump(exclude = {'file_hash'}) for i in metadata_list]}")]
 
-    llm = ChatGoogleGenerativeAI(model = model)
+    llm = cast(StructuredOutputModel, ChatGoogleGenerativeAI(model = model))
     cnt = 0
     max_cnt = 4
     chaining_result: Any = None
@@ -974,7 +985,7 @@ def version_chain(metadata_list: list[FileMetadata], model = 'gemini-2.5-pro', a
         raise RuntimeError("version-chain model returned no result")
     return chaining_result['parsed'].model_dump()['chains']
 
-@memory.cache
+@_cache_function
 def dedup_llm_pick_newest(meta_list_dumped, model = 'gemini-2.5-flash'):
     from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_google_genai import ChatGoogleGenerativeAI
@@ -990,10 +1001,13 @@ def dedup_llm_pick_newest(meta_list_dumped, model = 'gemini-2.5-flash'):
     while representative_file_name not in name_list:
         messages = [SystemMessage("You are given a list of files sharing the same file hash and you need to choose one that is the most representative. "),
                     HumanMessage(f"{meta_list_dumped}")]
-        llm = ChatGoogleGenerativeAI(model = model)
+        llm = cast(StructuredOutputModel, ChatGoogleGenerativeAI(model = model))
         res = build_structured_output_runnable(llm, DedupResponse, include_raw=True).invoke(messages)
         if not res.get('parsing_error'):
-            representative_file_name = res['parsed'].representative_file_name
+            parsed = res.get("parsed")
+            if not isinstance(parsed, DedupResponse):
+                raise TypeError("structured output did not return DedupResponse")
+            representative_file_name = parsed.representative_file_name
             if representative_file_name not in name_list:
                 messages.append(SystemMessage("Error, the answer mentioned file name does not exist in any of the file at all. Only choose the exact file name in the list. "))
             else:
@@ -1061,7 +1075,7 @@ class AddFilesResponse(BaseModel):
     reasoning: str  = Field(..., description = 'reasoning in top level perspective')
     additions : list[FileAddition] = Field(..., description = 'list of file additions')
 
-@memory.cache
+@_cache_function
 def add_new_file_to_existing_chains(chains, all_d_hash_to_meta: dict[str, FileMetadata], new_file_name, model = 'gemini-2.5-pro', attempt = 0 ) -> AddFilesResponse:
     from langchain_core.messages import HumanMessage, SystemMessage
     messages = [SystemMessage("Given existing file versioning chain and a new file with metadata of all files, you need to decide the position of the new file in the version chain. "
@@ -1080,14 +1094,17 @@ def add_new_file_to_existing_chains(chains, all_d_hash_to_meta: dict[str, FileMe
     max_retry = 3
     n = 0
     while True:
-        llm = ChatGoogleGenerativeAI(model = model)
+        llm = cast(StructuredOutputModel, ChatGoogleGenerativeAI(model = model))
         res = build_structured_output_runnable(llm, AddFilesResponse, include_raw=True).invoke(messages)
         if res.get("parsing_error"):
             n += 1
             if n >= max_retry:
                 raise Exception(f"Max Retry reached {max_retry}")
         else:
-            return res.get('parsed')
+            parsed = res.get("parsed")
+            if isinstance(parsed, AddFilesResponse):
+                return parsed
+            raise TypeError("structured output did not return AddFilesResponse")
 
 def apply_chain_updates_db(db: VersionChainDB, updates, all_meta: dict[str, FileMetadata]):
     additions: list[FileAddition] = updates.additions
