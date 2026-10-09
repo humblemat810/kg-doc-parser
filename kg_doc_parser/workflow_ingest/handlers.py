@@ -63,6 +63,7 @@ from .parser_core import (
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import ProviderDiagnosticsSink, WorkflowProviderSettings
 from .semantics import (
+    HydratedTextPointer,
     SemanticNode,
     classify_terminal_coverage_status,
     compute_pointer_coverage,
@@ -111,6 +112,60 @@ def _parser_source_map(value: object | None) -> ParserSourceMap:
             raise TypeError(f"parser source cluster {cluster_id!r} must be a JSON object")
         source_map[str(cluster_id)] = dict(payload)
     return source_map
+
+
+def _correct_parser_pointer(
+    pointer: HydratedTextPointer,
+    parser_source_map: ParserSourceMap,
+) -> HydratedTextPointer | None:
+    """Adapt rich parser payloads to the text-only pointer validator."""
+
+    text_source_map: dict[str, dict[str, JsonValue]] = {}
+    for cluster_id, payload in parser_source_map.items():
+        text = payload.get("text", "")
+        text_source_map[cluster_id] = {"text": text if isinstance(text, str) else str(text)}
+    return correct_and_validate_pointer(pointer, text_source_map)
+
+
+def _state_object_map(value: object) -> dict[str, dict[str, JsonValue]]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): cast(dict[str, JsonValue], item)
+        for key, item in value.items()
+        if isinstance(item, dict)
+    }
+
+
+def _state_list(value: object) -> list[object]:
+    return list(value) if isinstance(value, list) else []
+
+
+def _state_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return default
+
+
+def _state_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _coverage_map(value: object) -> dict[str, float]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): _state_float(item)
+        for key, item in value.items()
+    }
 
 
 def _page_index_source_format(inp: WorkflowIngestInput) -> PageIndexSourceFormat:
@@ -317,7 +372,7 @@ def _register_step(
             )
             return result
 
-        return _wrapped
+        return cast(StepHandler, _wrapped)
 
     return decorator
 
@@ -889,11 +944,13 @@ def register_layerwise_parser_steps(
         repaired, repaired_count = repair_layer_candidates(
             current_layer_result=current_layer_result,
             parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
-            correct_pointer_fn=correct_and_validate_pointer,
+            correct_pointer_fn=_correct_parser_pointer,
         )
         with ctx.state_write as st:
             st["current_layer_result"] = repaired.model_dump(field_mode="backend", dump_format="json")
-            st["corrected_pointer_count"] = int(ctx.state_view.get("corrected_pointer_count", 0)) + repaired_count
+            st["corrected_pointer_count"] = _state_int(
+                ctx.state_view.get("corrected_pointer_count")
+            ) + repaired_count
         return _success("dedupe_and_filter_layer")
 
     @_register_step(resolver, step_name="dedupe_and_filter_layer", runtime_deps=runtime_deps)
@@ -948,7 +1005,7 @@ def register_layerwise_parser_steps(
                 queued = requeue_failed_frontier_items(
                     frontier_queue=[
                         LayerFrontierItem.model_validate(item)
-                        for item in ctx.state_view.get("layer_frontier_queue", [])
+                        for item in _state_list(ctx.state_view.get("layer_frontier_queue"))
                     ],
                     parent_node_ids=failed_parent_ids,
                     depth=current_layer_context.depth,
@@ -973,7 +1030,7 @@ def register_layerwise_parser_steps(
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         frontier_queue = [
             LayerFrontierItem.model_validate(item)
-            for item in ctx.state_view.get("layer_frontier_queue", [])
+            for item in _state_list(ctx.state_view.get("layer_frontier_queue"))
         ]
         updated_queue = enqueue_next_layer_frontier(
             frontier_queue=frontier_queue,
@@ -1009,7 +1066,7 @@ def register_postparse_steps(
     @_register_step(resolver, step_name="validate_tree", runtime_deps=runtime_deps)
     def _validate_tree(ctx: StepContext) -> StepRunResult:
         tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
-        authoritative_source_map = ctx.state_view["authoritative_source_map"]
+        authoritative_source_map = _state_object_map(ctx.state_view["authoritative_source_map"])
         text_only_map = {
             unit_id: {"text": rec["parser_text"], "id": unit_id}
             for unit_id, rec in authoritative_source_map.items()
@@ -1018,18 +1075,18 @@ def register_postparse_steps(
         coverage = compute_pointer_coverage(tree, text_only_map)
         terminal_coverage = compute_terminal_content_coverage(tree, text_only_map)
         report = ValidationReport(
-            overall_text_coverage=coverage["overall"],
-            per_cluster_coverage=coverage["per_cluster"],
+            overall_text_coverage=_state_float(coverage.get("overall")),
+            per_cluster_coverage=_coverage_map(coverage.get("per_cluster")),
             terminal_coverage=terminal_coverage,
             terminal_coverage_status=classify_terminal_coverage_status(tree, terminal_coverage),
             coverage_basis=str(terminal_coverage.get("coverage_basis", "legacy_union")),
-            corrected_pointer_count=int(ctx.state_view.get("corrected_pointer_count", 0)),
+            corrected_pointer_count=_state_int(ctx.state_view.get("corrected_pointer_count")),
             validation_notes=[],
         )
         bundle = _build_export_bundle(ctx=ctx, runtime_deps=runtime_deps)
         threshold = float(runtime_deps.get("coverage_threshold", 1.0))
         if not terminal_coverage.get("valid", False):
-            overall = float(terminal_coverage.get("overall", 0.0))
+            overall = _state_float(terminal_coverage.get("overall"))
             ownership_message = (
                 "terminal content ownership is incomplete or invalid: "
                 f"overall={overall:.3f}"
@@ -1056,7 +1113,7 @@ def register_postparse_steps(
                 },
                 errors=[error_message],
             )
-        if terminal_coverage["overall"] < threshold:
+        if _state_float(terminal_coverage.get("overall")) < threshold:
             error_message = (
                 f"text coverage below threshold: {report.overall_text_coverage:.3f} < {threshold:.3f}"
             )
@@ -1148,7 +1205,7 @@ def register_postparse_steps(
 
     @_register_step(resolver, step_name="parse_failure", runtime_deps=runtime_deps)
     def _parse_failure(ctx: StepContext) -> StepRunResult:
-        errors = [str(value) for value in (ctx.state_view.get("workflow_errors") or [])]
+        errors = [str(value) for value in _state_list(ctx.state_view.get("workflow_errors"))]
         if not errors:
             errors = ["layer parsing failed after all strategies were exhausted"]
         return RunFailure(
