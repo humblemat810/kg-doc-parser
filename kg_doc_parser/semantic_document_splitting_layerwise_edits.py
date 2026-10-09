@@ -2292,7 +2292,7 @@ class UDTarget(BaseModel):
     title: str | None = None
 
     @model_validator(mode="after")
-    def _at_least_one_selector(self):
+    def _at_least_one_selector(self) -> Self:
         if not (self.node_id or (self.node_type and self.title is not None)):
             raise ValueError("UDTarget requires either node_id OR (node_type AND title).")
         return self
@@ -2318,7 +2318,7 @@ class CUDProposal(BaseModel):
     patch: LLMChildNodePatch | None = Field(default=None, description="Partial patch for EDIT.")
     reasoning: str = Field(description="Reasoning for each proposal")
     @model_validator(mode="after")
-    def _check_consistency(self):
+    def _check_consistency(self) -> Self:
         if self.edit_type == "ADD_NODE":
             if self.add is None:
                 raise ValueError("ADD_NODE requires 'add'.")
@@ -2340,7 +2340,7 @@ class DProposal(BaseModel):
     target: UDTarget = Field(..., description="Target required for DELETE existing node.")
     reasoning_delete : str = Field(..., description = "reason for delete")
     @model_validator(mode="after")
-    def _check_consistency(self):
+    def _check_consistency(self) -> Self:
         if self.edit_type == "DELETE_NODE":
             if self.target is None:
                 raise ValueError("DELETE_NODE requires 'target'.")
@@ -2353,7 +2353,7 @@ class UProposal(BaseModel):
     patch: LLMChildNodePatch = Field(..., description="Partial patch for EDIT existing node.")
     reasoning_update : str = Field(..., description = "reason for Update")
     @model_validator(mode="after")
-    def _check_consistency(self):
+    def _check_consistency(self) -> Self:
         if self.edit_type == "EDIT_NODE":
             if self.target is None or self.patch is None:
                 raise ValueError("EDIT_NODE requires both 'target' and 'patch'.")
@@ -2366,7 +2366,7 @@ class CProposal(BaseModel):
     add: LLMChildNodeAdd = Field(..., description="Strict child for ADD or CREAT new node.")
     reasoning_create : str = Field(..., description = "reason for Create")
     @model_validator(mode="after")
-    def _check_consistency(self):
+    def _check_consistency(self) -> Self:
         if self.edit_type == "ADD_NODE":
             if self.add is None:
                 raise ValueError("ADD_NODE requires 'add'.")
@@ -2382,9 +2382,9 @@ class CUDResponse(ModeSlicingMixin, BaseModel):
     cproposals: list[CProposal] = Field(default_factory=list, description = 'a list of create proposals, empty if existing is good. ')
     uproposals: list[UProposal] = Field(default_factory=list, description = 'a list of update proposals, empty if existing is good. ')
     dproposals: list[DProposal] = Field(default_factory=list, description = 'a list of delete proposals, empty if existing is good. ')
-    def is_empty(self):
+    def is_empty(self) -> bool:
         return len(self.get_proposals()) > 0
-    def get_proposals(self):
+    def get_proposals(self) -> list[CProposal | UProposal | DProposal]:
         return self.cproposals + self.uproposals + self.dproposals
 class CResponse(ModeSlicingMixin, BaseModel):
     default_include_modes:  ClassVar= {"frontend", "llm", "backend", "dto"}
@@ -2393,9 +2393,9 @@ class CResponse(ModeSlicingMixin, BaseModel):
     reasoning:str = Field(description = 'reasoning at top level')    
     reasoning:str = Field(description = 'reasoning at top level')
     proposals: list[CProposal] = Field(default_factory=list)
-    def is_empty(self):
+    def is_empty(self) -> bool:
         return len(self.get_proposals()) > 0
-    def get_proposals(self):
+    def get_proposals(self) -> list[CProposal]:
         return self.proposals
 # ---------- small helpers ----------
 def _normalize_title(s: str) -> str:
@@ -2910,7 +2910,7 @@ def compute_pointer_coverage(
     # 1) collect all pointers in the tree
     all_pointers: list[HydratedTextPointer] = []
 
-    def _walk(node: SemanticNode):
+    def _walk(node: SemanticNode) -> None:
         # a node may have multiple pointers
         if node.node_type != 'DOCUMENT_ROOT':
             all_pointers.extend(node.total_content_pointers or [])
@@ -3026,7 +3026,7 @@ def analyze_and_validate_tree(
     def check_leaf_completeness(root: SemanticNode, source: dict) -> bool:
         leaf_pointers: list[HydratedTextPointer] = []
 
-        def collect_leaves(n: SemanticNode):
+        def collect_leaves(n: SemanticNode) -> None:
             if not n.child_nodes and n.node_type != "DOCUMENT_ROOT":
                 leaf_pointers.extend(n.total_content_pointers)
             else:
