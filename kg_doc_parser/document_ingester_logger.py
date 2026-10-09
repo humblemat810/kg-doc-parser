@@ -109,6 +109,38 @@ class TextRedactor(Protocol):
 
     def __call__(self, text: str, /) -> str: ...
 
+
+def _metadata_float(value: object, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _metadata_int_or_none(value: object) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _metadata_text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
 # ---------------------------
 # Pricing / cost calculation
 # ---------------------------
@@ -510,7 +542,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         md = metadata or {}
         document_id = md.get("document_id")
         filename = md.get("source_filename")
-        n_try = float(md.get("n_try", 0))
+        n_try = _metadata_float(md.get("n_try", 0))
 
         payload: dict[str, object] = {
             "serialized": serialized,
@@ -546,7 +578,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                 event_name="chat_model_start",
                 model_name=_invoked_model_name(kwargs) or None,
                 filename=str(filename) if filename is not None else None,
-                line_number=md.get("line_number"),
+                line_number=_metadata_int_or_none(md.get("line_number")),
                 token_count=0,
                 cost_usd=0.0,
                 n_try=n_try,
@@ -578,9 +610,9 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         document_id = md.get("document_id")
         filename = md.get("source_filename")
         if model_name is None:
-            if inv_params := kwargs.get('invocation_params'):
-                if inv_params.get("model"):
-                    model_name=inv_params.get("model")
+            inv_params = kwargs.get("invocation_params")
+            if isinstance(inv_params, Mapping) and inv_params.get("model"):
+                model_name = str(inv_params["model"])
         payload = {
             "serialized": serialized,
             "tags": tags or [],
@@ -591,7 +623,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         if self.log_prompts:
             payload["prompts"] = [self._clip(p) for p in prompts]
         if model_name is None:
-            mdn: str | None= md.get("model_name")
+            mdn = _metadata_text(md.get("model_name"))
             if mdn is not None:
                 model_name = mdn
         self._writer.enqueue(
@@ -603,7 +635,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                 event_name="llm_start",
                 model_name=model_name,
                 filename=str(filename) if filename is not None else None,
-                line_number=md.get("line_number"),
+                line_number=_metadata_int_or_none(md.get("line_number")),
                 token_count=0,
                 cost_usd=0.0,
                 n_try = payload.get('n_try', 0),
@@ -660,9 +692,9 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                     gi = getattr(gen, "generation_info", None) or {}
                     model_name = gi.get("model_name") or model_name
         if model_name is None:
-            if inv_params := kwargs.get('invocation_params'):
-                if inv_params.get("model"):
-                    model_name=inv_params.get("model")
+            inv_params = kwargs.get("invocation_params")
+            if isinstance(inv_params, Mapping) and inv_params.get("model"):
+                model_name = str(inv_params["model"])
         token_count = int(input_tokens + output_tokens)
         cost_usd = 0.0
         if model_name and (input_tokens or output_tokens or cached_tokens):
@@ -707,7 +739,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
             payload["outputs"] = outs
 
         if model_name is None:
-            mdn: str | None= md.get("model_name")
+            mdn = _metadata_text(md.get("model_name"))
             if mdn is not None:
                 model_name = mdn
         self._writer.enqueue(
@@ -719,7 +751,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                 event_name="llm_end",
                 model_name=str(model_name) if model_name is not None else None,
                 filename=str(filename) if filename is not None else None,
-                line_number=md.get("line_number"),
+                line_number=_metadata_int_or_none(md.get("line_number")),
                 token_count=token_count,
                 cost_usd=float(cost_usd),
                 n_try=float(payload.get('n_try', 0)),
@@ -770,11 +802,11 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         else:
             payload["error_type"] = type(error).__name__        
         if model_name is None:
-            if inv_params := kwargs.get('invocation_params'):
-                if inv_params.get("model"):
-                    model_name=inv_params.get("model")
+            inv_params = kwargs.get("invocation_params")
+            if isinstance(inv_params, Mapping) and inv_params.get("model"):
+                model_name = str(inv_params["model"])
         if model_name is None:
-            mdn: str | None= md.get("model_name")
+            mdn = _metadata_text(md.get("model_name"))
             if mdn is not None:
                 model_name = mdn
         self._writer.enqueue(
