@@ -1,7 +1,9 @@
 import logging
 import os
 import pathlib
+import re
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from functools import partial
 from json import JSONDecodeError
 from typing import Protocol
@@ -27,13 +29,15 @@ class PathFilter(Protocol):
 
     def __call__(self, path: str) -> bool: ...
 
-def bool2yn(maybe_bool: bool):
+def bool2yn(maybe_bool: object) -> object:
     if type(maybe_bool) is bool:
         return "Yes" if maybe_bool else "No"
     else:
         return maybe_bool
 
-def recur_apply_json_inplace(json : dict | list | bool | str | float, fn: Callable):
+def recur_apply_json_inplace(
+    json: object, fn: Callable[[object], object]
+) -> object:
     if isinstance(json, dict):
         for k, v in json.items():
             json[k] = recur_apply_json_inplace(v, fn)
@@ -46,9 +50,9 @@ def recur_apply_json_inplace(json : dict | list | bool | str | float, fn: Callab
     return json
 
 # convert any boolean to yes no
-json_bool_to_yn: Callable = partial(recur_apply_json_inplace, fn = bool2yn)
+json_bool_to_yn: Callable[[object], object] = partial(recur_apply_json_inplace, fn=bool2yn)
 
-def nullable_concat(a: list| None, b: list| None) -> list | None:
+def nullable_concat(a: list[str] | None, b: list[str] | None) -> list[str] | None:
     if a is None and b is None:
         return None
     return (a or []) + (b or [])
@@ -149,15 +153,18 @@ class RawFileLoader():
     def __init__(self, env_flist_path: str | None = None, 
                  allow_file_list: None | list[str]  = None,
                  allow_file_list_ref: str | None = None,
-                 max_num_file = float('inf'), oldest_datetime = None, newest_datetime = None, root_folder_name : str | None= None, 
+                 max_num_file: int | float = float('inf'),
+                 oldest_datetime: datetime | str | None = None,
+                 newest_datetime: datetime | str | None = None,
+                 root_folder_name : str | None= None, 
                 #  in_folder_name :Optional[str] = None,
                  walk_root:str | None = None, compare_root:str | None = None,
-                 include = None,
-                 bucket_blob_connection_str = None,
+                 include: list[str] | set[str] | None = None,
+                 bucket_blob_connection_str: str | None = None,
                  file_walker_callback: FileWalker | None = None,
-                 pattern = None,
-                 allow_startwith_relative_paths = False,
-                 filtering_callbacks : list[Callable] | None = None):
+                 pattern: re.Pattern[str] | None = None,
+                 allow_startwith_relative_paths: bool = False,
+                 filtering_callbacks: list[Callable[[str], bool]] | None = None) -> None:
         """file loader to either backward support for local folder loading behaviour, or cloud bucket/ blob stoages
 
         Args:
@@ -250,7 +257,7 @@ class RawFileLoader():
         if self.resolve_paths:
             self.check_allowed_relative_path()
         pass
-    def check_allowed_relative_path(self, paths= None, ):
+    def check_allowed_relative_path(self, paths: list[str] | None = None) -> None:
         # ensure allowed 
         allow_file_list = nullable_concat(self.allow_file_list, paths)
         if allow_file_list is None:
@@ -266,11 +273,12 @@ class RawFileLoader():
                 raise
         self.allow_file_list = out_file_list
         
-    def __iter__(self, leaf_only = False, file_non_exist_ok = False, include = None,
+    def __iter__(self, leaf_only: bool = False, file_non_exist_ok: bool = False,
+                 include: list[str] | set[str] | None = None,
                  allowed_files: list[str] | None = None,
                  # allowed_prefixes : Optional[list[str | int]] = None,
                  allowed_relative_paths: list[str] | None= None,
-                 ):
+                 ) -> Iterator[str]:
         """Iterate through availble files 
 
         Args:
@@ -292,18 +300,20 @@ class RawFileLoader():
             include.update(self.include)
         count = 0
         from datetime import datetime
-        if self.oldest_datetime is not None:
-            if type(self.oldest_datetime) is str:
-                time_threshold_dt = datetime.strptime(self.oldest_datetime, '%Y-%m-%d %H:%M')
+        oldest_datetime = self.oldest_datetime
+        if oldest_datetime is not None:
+            if isinstance(oldest_datetime, str):
+                time_threshold_dt: datetime | None = datetime.strptime(oldest_datetime, '%Y-%m-%d %H:%M')
             else:
-                time_threshold_dt = self.oldest_datetime
+                time_threshold_dt = oldest_datetime
         else:
             time_threshold_dt = None
-        if self.newest_datetime is not None:
-            if type(self.newest_datetime) is str:
-                time_threshold_upper_dt = datetime.strptime(self.newest_datetime, '%Y-%m-%d %H:%M')
+        newest_datetime = self.newest_datetime
+        if newest_datetime is not None:
+            if isinstance(newest_datetime, str):
+                time_threshold_upper_dt: datetime | None = datetime.strptime(newest_datetime, '%Y-%m-%d %H:%M')
             else:
-                time_threshold_upper_dt = self.newest_datetime
+                time_threshold_upper_dt = newest_datetime
         else:
             time_threshold_upper_dt = None
         nullable_allowed_relative_paths_set = []
@@ -402,10 +412,11 @@ class RawFileLoader():
         print(filter_stat.most_common())
     pass
 
-def filter_folder(folder_root = os.path.join(
+def filter_folder(folder_root: str = os.path.join(
         "..", "odc_data", "split_pages"
         
-        ), min_page = 45, max_page: float = 55, first = 10, verbose = True):
+        ), min_page: int = 45, max_page: float = 55,
+        first: int | None = 10, verbose: bool = True) -> list[str]:
     folders = []
     for root, dirs, files in os.walk(folder_root):
         if dirs == []:
