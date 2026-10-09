@@ -18,7 +18,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
 
 from .ocr_pipeline import (
     OCRImagePayload,
@@ -48,6 +48,48 @@ OCRParseResult = OCRWorkflowArtifacts
 PageIndexParseResultType = PageIndexParseResult
 TreeParseResult = tuple["LegacySemanticNode", dict[str, object]]
 ParseDocumentResult = OCRParseResult | PageIndexParseResultType | TreeParseResult
+
+
+class OCRParseKwargs(TypedDict):
+    document_id: str
+    title: str
+    output_dir: str | Path
+    image_payloads: NotRequired[Sequence[OCRImagePayload] | None]
+    pdf_path: NotRequired[str | Path | None]
+    provider_settings: NotRequired[WorkflowProviderSettings | None]
+    provider: NotRequired[str | None]
+    model: NotRequired[str | None]
+    ocr_runner: NotRequired[OCRRunner | None]
+    pdf_rasterizer: NotRequired[PDFRasterizer | None]
+    ocr_candidate_models: NotRequired[Sequence[str] | None]
+    probe: NotRequired[WorkflowProbe | None]
+
+
+class PageIndexParseKwargs(TypedDict):
+    document_id: str
+    title: str
+    raw_text: str
+    source_format: NotRequired[PageIndexSourceFormat]
+    mode: NotRequired[PageIndexMode]
+    provider_settings: NotRequired[WorkflowProviderSettings | None]
+    provider: NotRequired[str | None]
+    model: NotRequired[str | None]
+    callbacks: NotRequired[list[object] | None]
+    provider_diagnostics_sink: NotRequired[ProviderDiagnosticsSink | None]
+    refine_excerpts: NotRequired[bool]
+    summary_enabled: NotRequired[bool]
+    hierarchical_summary_enabled: NotRequired[bool | None]
+
+
+class TreeParseKwargs(TypedDict):
+    doc_id: str
+    raw_doc_dict: dict[str, object]
+    parsing_mode: NotRequired[Literal["snippet", "delimiter"]]
+    max_depth: NotRequired[int]
+    model_names: NotRequired[Sequence[str] | None]
+    provider_settings: NotRequired[WorkflowProviderSettings | None]
+    provider: NotRequired[str | None]
+    model: NotRequired[str | None]
 
 
 @dataclass(slots=True)
@@ -248,24 +290,64 @@ def parse_tree_document(
     )
 
     with _temporary_env(env_overrides):
-        return legacy_parse_doc(
+        result = legacy_parse_doc(
             doc_id=doc_id,
             raw_doc_dict=raw_doc_dict,
             parsing_mode=parsing_mode,
             max_depth=max_depth,
             model_names=parser_model_names,
         )
+        return cast(TreeParseResult, result)
 
 
 def parse_document(*, mode: ParseMode, **kwargs: object) -> ParseDocumentResult:
     """Dispatch to the requested parse mode and return the mode-specific result."""
 
     if mode == "ocr":
-        return parse_ocr_document(**kwargs)
+        request = OCRParseRequest(**cast(OCRParseKwargs, kwargs))
+        return parse_ocr_document(
+            document_id=request.document_id,
+            title=request.title,
+            output_dir=request.output_dir,
+            image_payloads=request.image_payloads,
+            pdf_path=request.pdf_path,
+            provider_settings=request.provider_settings,
+            provider=request.provider,
+            model=request.model,
+            ocr_runner=request.ocr_runner,
+            pdf_rasterizer=request.pdf_rasterizer,
+            ocr_candidate_models=request.ocr_candidate_models,
+            probe=request.probe,
+        )
     if mode == "page_index":
-        return parse_page_index_document(**kwargs)
+        request = PageIndexParseRequest(**cast(PageIndexParseKwargs, kwargs))
+        return parse_page_index_document(
+            document_id=request.document_id,
+            title=request.title,
+            raw_text=request.raw_text,
+            source_format=request.source_format,
+            mode=request.mode,
+            provider_settings=request.provider_settings,
+            provider=request.provider,
+            model=request.model,
+            callbacks=request.callbacks,
+            provider_diagnostics_sink=request.provider_diagnostics_sink,
+            refine_excerpts=request.refine_excerpts,
+            summary_enabled=request.summary_enabled,
+            hierarchical_summary_enabled=request.hierarchical_summary_enabled,
+        )
     if mode == "tree":
-        return parse_tree_document(**kwargs)
+        request = TreeParseRequest(**cast(TreeParseKwargs, kwargs))
+        return parse_tree_document(
+            doc_id=request.doc_id,
+            raw_doc_dict=request.raw_doc_dict,
+            parsing_mode=request.parsing_mode,
+            max_depth=request.max_depth,
+            model_names=request.model_names,
+            provider_settings=request.provider_settings,
+            provider=request.provider,
+            model=request.model,
+        )
     raise ValueError(f"unsupported parse mode: {mode}")
 
 
