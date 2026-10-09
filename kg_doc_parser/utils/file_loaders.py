@@ -156,7 +156,7 @@ class RawFileLoader():
                  max_num_file: int | float = float('inf'),
                  oldest_datetime: datetime | str | None = None,
                  newest_datetime: datetime | str | None = None,
-                 root_folder_name : str | None= None, 
+                 root_folder_name: str | None = None,
                 #  in_folder_name :Optional[str] = None,
                  walk_root:str | None = None, compare_root:str | None = None,
                  include: list[str] | set[str] | None = None,
