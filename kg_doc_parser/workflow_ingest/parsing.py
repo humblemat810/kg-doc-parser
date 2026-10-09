@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 ParseMode = Literal["ocr", "page_index", "tree"]
 OCRParseResult = OCRWorkflowArtifacts
 PageIndexParseResultType = PageIndexParseResult
-TreeParseResult = tuple["LegacySemanticNode", dict[str, object]]
+TreeParseResult = tuple["LegacySemanticNode", dict[str, dict[str, object]]]
 ParseDocumentResult = OCRParseResult | PageIndexParseResultType | TreeParseResult
 
 
