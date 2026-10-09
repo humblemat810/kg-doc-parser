@@ -7,7 +7,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
 from _kogwistar_test_helpers import load_kogwistar_fake_backend
 from kg_doc_parser.workflow_ingest import (
     DocumentTreeApiPersistenceClient,
@@ -15,7 +14,10 @@ from kg_doc_parser.workflow_ingest import (
     WorkflowIngestInput,
 )
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-from kg_doc_parser.workflow_ingest.service import _TinyEmbeddingFunction, build_default_engines
+from kg_doc_parser.workflow_ingest.service import (
+    _TinyEmbeddingFunction,
+    build_default_engines,
+)
 
 pytestmark = [pytest.mark.workflow, pytest.mark.ci_full]
 

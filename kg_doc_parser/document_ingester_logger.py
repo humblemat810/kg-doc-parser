@@ -88,17 +88,18 @@ import sqlite3
 import threading
 import time
 import traceback
+from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from collections.abc import Mapping
-from typing import Protocol
 from threading import Lock
+from typing import Protocol
+from uuid import UUID
+
 from langchain_core.callbacks.base import BaseCallbackHandler
+from langchain_core.messages import BaseMessage
 from langchain_core.outputs.chat_generation import ChatGeneration
 from langchain_core.outputs.llm_result import LLMResult
-from langchain_core.messages import BaseMessage
-from uuid import UUID
 
 from kg_doc_parser.workflow_ingest.serialization import safe_json_dumps
 
@@ -233,7 +234,7 @@ class SQLiteIngestEventWriter:
 
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
 
-        self._q: "queue.Queue[_IngestEvent]" = queue.Queue()
+        self._q: queue.Queue[_IngestEvent] = queue.Queue()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="sqlite_ingest_writer", daemon=True)
 
@@ -499,7 +500,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         serialized: dict[str, object],
         messages: list[list[BaseMessage]],
         *,
-        run_id: "UUID",
+        run_id: UUID,
         parent_run_id: UUID | None = None,
         tags: list[str] | None = None,
         metadata: dict[str, object] | None = None,

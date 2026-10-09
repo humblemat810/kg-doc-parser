@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, ClassVar, Literal, Optional
+from typing import Annotated, ClassVar, Literal
 
 from kogwistar.json_types import JsonValue
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -42,7 +42,7 @@ class SourceUnit(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
-    unit_id: Annotated[Optional[str], DtoField(), BackendField(), FrontendField()] = None
+    unit_id: Annotated[str | None, DtoField(), BackendField(), FrontendField()] = None
     modality: Annotated[
         Literal["text", "ocr_text", "non_text", "image_region", "pure_image"],
         DtoField(),
@@ -50,17 +50,17 @@ class SourceUnit(ModeSlicingMixin, BaseModel):
         FrontendField(),
         LLMField(),
     ]
-    page_number: Annotated[Optional[int], DtoField(), BackendField(), FrontendField(), LLMField()] = None
-    cluster_number: Annotated[Optional[int], DtoField(), BackendField(), FrontendField()] = None
-    text: Annotated[Optional[str], DtoField(), BackendField(), FrontendField(), LLMField()] = None
-    description: Annotated[Optional[str], DtoField(), BackendField(), FrontendField(), LLMField()] = None
-    bbox: Annotated[Optional[BoundingBox], DtoField(), BackendField(), FrontendField(), LLMField()] = None
-    source_uri: Annotated[Optional[str], DtoField(), BackendField(), FrontendField()] = None
+    page_number: Annotated[int | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    cluster_number: Annotated[int | None, DtoField(), BackendField(), FrontendField()] = None
+    text: Annotated[str | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    description: Annotated[str | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    bbox: Annotated[BoundingBox | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    source_uri: Annotated[str | None, DtoField(), BackendField(), FrontendField()] = None
     # This is a logical embedding-space label, not a guarantee that a separate
     # embedder is already wired for the unit.
     embedding_space: Annotated[str, DtoField(), BackendField(), FrontendField(), ExcludeMode("llm")] = "default_text"
     parser_hint_text: Annotated[
-        Optional[str],
+        str | None,
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -74,7 +74,7 @@ class SourceUnit(ModeSlicingMixin, BaseModel):
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
     @model_validator(mode="after")
-    def _check_content(self) -> "SourceUnit":
+    def _check_content(self) -> SourceUnit:
         if self.modality in {"text", "ocr_text"} and not (self.text and self.text.strip()):
             raise ValueError(f"{self.modality} units require non-empty text")
         if self.modality in {"non_text", "image_region", "pure_image"} and not (
@@ -133,7 +133,7 @@ class NormalizedSourceCollection(ModeSlicingMixin, BaseModel):
     ] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _check_pages(self) -> "NormalizedSourceCollection":
+    def _check_pages(self) -> NormalizedSourceCollection:
         if not self.pages:
             raise ValueError("collection must include at least one page")
         return self
@@ -155,28 +155,28 @@ class WorkflowIngestInput(ModeSlicingMixin, BaseModel):
     # Optional request-level overrides take precedence over provider defaults.
     # They are workflow controls, not model-visible document content.
     parse_strategy: Annotated[
-        Optional[Literal["auto", "layer_excerpt", "layer_boundary", "page_index"]],
+        Literal["auto", "layer_excerpt", "layer_boundary", "page_index"] | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     parse_strategy_order: Annotated[
-        Optional[list[Literal["layer_excerpt", "layer_boundary", "page_index"]]],
+        list[Literal["layer_excerpt", "layer_boundary", "page_index"]] | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     triage_enabled: Annotated[
-        Optional[bool],
+        bool | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
     page_index_summary_enabled: Annotated[
-        Optional[bool],
+        bool | None,
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -191,13 +191,13 @@ class WorkflowIngestInput(ModeSlicingMixin, BaseModel):
     ] = None
 
     @model_validator(mode="after")
-    def _check_collections(self) -> "WorkflowIngestInput":
+    def _check_collections(self) -> WorkflowIngestInput:
         if not self.collections:
             raise ValueError("at least one collection is required")
         return self
 
     @model_validator(mode="after")
-    def _check_strategy_order(self) -> "WorkflowIngestInput":
+    def _check_strategy_order(self) -> WorkflowIngestInput:
         if self.parse_strategy_order is not None:
             expected = {"layer_excerpt", "layer_boundary", "page_index"}
             if len(self.parse_strategy_order) != 3 or set(self.parse_strategy_order) != expected:
@@ -207,7 +207,7 @@ class WorkflowIngestInput(ModeSlicingMixin, BaseModel):
         return self
 
     @classmethod
-    def from_text(cls, *, document_id: str, text: str, title: Optional[str] = None) -> "WorkflowIngestInput":
+    def from_text(cls, *, document_id: str, text: str, title: str | None = None) -> WorkflowIngestInput:
         return cls(
             request_id=document_id,
             collections=[
@@ -234,10 +234,10 @@ class GroundedSourceRecord(ModeSlicingMixin, BaseModel):
     collection_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     modality: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     page_number: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
-    cluster_number: Annotated[Optional[int], DtoField(), BackendField(), FrontendField()] = None
+    cluster_number: Annotated[int | None, DtoField(), BackendField(), FrontendField()] = None
     text: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     parser_text: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
-    source_uri: Annotated[Optional[str], DtoField(), BackendField(), FrontendField()] = None
+    source_uri: Annotated[str | None, DtoField(), BackendField(), FrontendField()] = None
     # This is carried for future routing / projection. The current engine still
     # uses one configured embedding function per engine instance.
     embedding_space: Annotated[str, DtoField(), BackendField(), FrontendField(), ExcludeMode("llm")] = "default_text"
@@ -248,7 +248,7 @@ class GroundedSourceRecord(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = True
-    bbox: Annotated[Optional[BoundingBox], DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    bbox: Annotated[BoundingBox | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
     metadata: Annotated[
         dict[str, JsonValue],
         DtoField(),
@@ -333,7 +333,7 @@ class ParseSessionState(ModeSlicingMixin, BaseModel):
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
     compat_full_tree: Annotated[
-        Optional[dict[str, JsonValue]],
+        dict[str, JsonValue] | None,
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -426,7 +426,7 @@ class LayerChildCandidate(ModeSlicingMixin, BaseModel):
     # tree (for example a heading plus its title-text leaf). This is backend
     # state, never an LLM-authored response field.
     child_candidates: Annotated[
-        list["LayerChildCandidate"],
+        list[LayerChildCandidate],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -464,7 +464,7 @@ class LLMBoundaryProposal(BaseModel):
     source_cluster_id: str
     cutpoints: list[BoundaryCutpoint] = Field(default_factory=list)
     satisfied: bool | None = None
-    reasoning_history: list["LayerReasoningEntry"] = Field(default_factory=list)
+    reasoning_history: list[LayerReasoningEntry] = Field(default_factory=list)
     review_rounds: int = 0
 
 
@@ -473,7 +473,7 @@ class LLMBoundaryProposalBatch(BaseModel):
 
     cutpoints: list[BoundaryCutpoint] = Field(default_factory=list)
     satisfied: bool | None = None
-    reasoning_history: list["LayerReasoningEntry"] = Field(default_factory=list)
+    reasoning_history: list[LayerReasoningEntry] = Field(default_factory=list)
     review_rounds: int = 0
 
 
@@ -588,7 +588,7 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
     children: Annotated[list[LayerChildCandidate], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
-    satisfied: Annotated[Optional[bool], DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    satisfied: Annotated[bool | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
     reasoning_history: Annotated[list[LayerReasoningEntry], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     review_rounds: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     metadata: Annotated[
@@ -625,14 +625,14 @@ class CurrentLayerReview(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
     updated_result: Annotated[
-        Optional[CurrentLayerResult],
+        CurrentLayerResult | None,
         DtoField(),
         BackendField(),
         FrontendField(),
         LLMField(),
     ] = None
-    coverage_ok: Annotated[Optional[bool], DtoField(), BackendField(), FrontendField(), LLMField()] = None
-    satisfied: Annotated[Optional[bool], DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    coverage_ok: Annotated[bool | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    satisfied: Annotated[bool | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
     strategy_used: Annotated[
         Literal["excerpt_first", "boundary_first"],
         DtoField(),
@@ -707,7 +707,7 @@ class CanonicalGraphWriteResult(ModeSlicingMixin, BaseModel):
     edges_written: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
     transport: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()] = "direct_runtime"
     server_parser_used: Annotated[bool, DtoField(), BackendField(), FrontendField(), LLMField()] = False
-    error: Annotated[Optional[str], DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    error: Annotated[str | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
 
 
 class WorkflowExportBundle(ModeSlicingMixin, BaseModel):
@@ -773,7 +773,7 @@ class WorkflowExportBundle(ModeSlicingMixin, BaseModel):
         LLMField(),
     ] = False
     canonical_write_result: Annotated[
-        Optional[CanonicalGraphWriteResult],
+        CanonicalGraphWriteResult | None,
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -815,7 +815,7 @@ class IngestRunResult(ModeSlicingMixin, BaseModel):
         FrontendField(),
         LLMField(),
     ]
-    bundle: Annotated[Optional[WorkflowExportBundle], DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    bundle: Annotated[WorkflowExportBundle | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
     final_state: Annotated[
         dict[str, JsonValue],
         DtoField(),

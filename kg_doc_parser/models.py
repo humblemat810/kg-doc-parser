@@ -47,25 +47,18 @@ Edges (Relationships):
 """
 if True:
     import logging
-    import os
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
-from typing import List, Literal, Optional, Dict, Any, Type, Union, Annotated, ClassVar, Self
-try:
-    from typing import TypeAlias
-except ImportError:  # pragma: no cover
-    from typing_extensions import TypeAlias
-from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo
+from typing import Any, Literal, Self
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic_extension.model_slicing import (
+    DtoType,
+    ModeSlicingMixin,
+)
+from pydantic_extension.model_slicing.mixin import DtoField
 
-from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, FrontendField, BackendField, LLMField,
-                DtoType,
-                BackendType,
-                FrontendType,
-                LLMType,
-                use_mode)
-from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
-JsonPrimitive = Union[str, int, float, bool, None]
+JsonPrimitive = str | int | float | bool | None
 #========================= OCR DOC
 
 # pre-validation model
@@ -102,8 +95,8 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
        the first image box id (cluster numebr) will be '2', the next signature will be '3' """
     OCR_text_clusters: DtoType[list[TextCluster]] = Field(description="the OCR text results. Share cluster number uniqueness with non-OCR objects. Include emoji or unicode text")
     non_text_objects:  DtoType[list[NonTextCluster]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
-    is_empty_page: DtoType[Optional[bool]] = Field(default = False, description="true if the whole page is empty without recognisable text.")
-    printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
+    is_empty_page: DtoType[bool | None] = Field(default = False, description="true if the whole page is empty without recognisable text.")
+    printed_page_number: DtoType[str | None] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
@@ -154,7 +147,7 @@ class SplitPage(OCRClusterResponseBc):
     # model not for LLM response
     pdf_page_num: int
     metadata: SplitPageMeta
-    refined_version: Optional[OCRClusterResponse[DtoField]] = Field(default = None, description = "refined processed/ grouped/ merged version of ocr text clusters. ")
+    refined_version: OCRClusterResponse[DtoField] | None = Field(default = None, description = "refined processed/ grouped/ merged version of ocr text clusters. ")
     def model_dump(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:
         return self.to_doc()
     def dump_raw(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:

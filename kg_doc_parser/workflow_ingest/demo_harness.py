@@ -21,10 +21,11 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal, Protocol
+from typing import Literal, Protocol
 
 from .cache import WorkflowLLMCallCache
 from .clients import DocumentTreeApiPersistenceClient, ServerCanonicalKgClient

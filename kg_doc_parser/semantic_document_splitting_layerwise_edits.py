@@ -74,38 +74,33 @@ entry func : build_document_tree
 # ==============================================================================
 # PHASE 1: SETUP - MODELS AND IMPORTS
 # ==============================================================================
+import inspect
 import json
 import re
-import time
-import inspect
-from hashlib import sha256
-from functools import wraps
-from contextlib import contextmanager
-from pathlib import Path
 import tempfile
-
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
-from typing import Annotated, List, Union, Literal, Dict, Any, Tuple, Optional
+from functools import wraps
+from hashlib import sha256
+from pathlib import Path
+from typing import Annotated, Any, Literal
+
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover
-    from typing_extensions import TypeAlias
-from kogwistar.llm_tasks.providers import SupportsStructuredOutput
-from pydantic import BaseModel, Field, ValidationError, validator, field_validator
-from typing import ClassVar
-from uuid import UUID
-from collections import deque
-from pydantic import BaseModel, Field, model_validator
+    from typing import TypeAlias
 import math
 import os
-from rapidfuzz.distance import LCSseq
-from datetime import datetime
-from typing import Callable, Generator, TypeVar, ParamSpec, cast
+from collections import deque
+from collections.abc import Callable, Generator
 from contextvars import ContextVar
-from kg_doc_parser.document_ingester_logger import DocumentIngestSQLiteCallback
-from kg_doc_parser.llm_structured_output import build_structured_output_runnable
+from typing import ClassVar, ParamSpec, TypeVar, cast
+from uuid import UUID
+
 from kogwistar.id_provider import stable_id
+from kogwistar.llm_tasks.providers import SupportsStructuredOutput
 from kogwistar.utils.cache_backend import (
     CacheBackend,
     Memory,
@@ -113,6 +108,18 @@ from kogwistar.utils.cache_backend import (
     cache_hash,
     cache_load,
 )
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from rapidfuzz.distance import LCSseq
+
+from kg_doc_parser.document_ingester_logger import DocumentIngestSQLiteCallback
+from kg_doc_parser.llm_structured_output import build_structured_output_runnable
+
 from .document_ingest_log_config import configured_document_ingest_log_db
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 
@@ -143,7 +150,7 @@ def get_llm(model_name:str):
     return build_chat_model(spec, callbacks=[cb])
 
 
-def _default_parser_model_names() -> List[str]:
+def _default_parser_model_names() -> list[str]:
     """Use the active parser model unless an explicit list is provided."""
     try:
         settings = WorkflowProviderSettings.from_env()
@@ -184,20 +191,27 @@ def partition(iterable, predicate):
     for x in iterable:
         (t1 if predicate(x) else t2).append(x)
     return t1, t2
-from pydantic_extension.model_slicing import DtoType, BackendField, BackendType, FrontendField, FrontendType
-from pydantic_extension.model_slicing.mixin import DtoField, LLMField, LLMType, ExcludeMode, ModeSlicingMixin
+from pydantic_extension.model_slicing import BackendField, FrontendField
+from pydantic_extension.model_slicing.mixin import (
+    DtoField,
+    ExcludeMode,
+    LLMField,
+    ModeSlicingMixin,
+)
+
+
 class HydratedTextPointer(ModeSlicingMixin, BaseModel):
     default_include_modes:  ClassVar= {"dto", "backend", "frontend"}
     default_exclude_modes: ClassVar = {"llm"}
     source_cluster_id: Annotated[str, FrontendField(), BackendField(), DtoField(), LLMField()] = Field(description="The unique ID of the source text block (e.g., 'p1_c0').")
     start_char: Annotated[int, FrontendField(), BackendField(), DtoField(), LLMField()] = Field(description="The starting character index within the source text block.")
     end_char: Annotated[int, FrontendField(), BackendField(), DtoField(), LLMField()] = Field(description="The inclusive ending character index. Use -1 for 'to the end'.")
-    verbatim_text: Annotated[Optional[str], FrontendField(), BackendField(), DtoField(), LLMField()] = Field(None, description="The exact text of this fragment. This MUST match the text at the specified pointer location. Required if delimiters are not provided.")
+    verbatim_text: Annotated[str | None, FrontendField(), BackendField(), DtoField(), LLMField()] = Field(None, description="The exact text of this fragment. This MUST match the text at the specified pointer location. Required if delimiters are not provided.")
     
-    start_delimiter: Annotated[Optional[str], FrontendField(), BackendField(), DtoField(), LLMField()] = Field(None, description="Start delimiter to locate the text")
-    end_delimiter: Annotated[Optional[str], FrontendField(), BackendField(), DtoField(), LLMField()] = Field(None, description="End delimiter to locate the text")
+    start_delimiter: Annotated[str | None, FrontendField(), BackendField(), DtoField(), LLMField()] = Field(None, description="Start delimiter to locate the text")
+    end_delimiter: Annotated[str | None, FrontendField(), BackendField(), DtoField(), LLMField()] = Field(None, description="End delimiter to locate the text")
 
-    validation_method: Optional[Annotated[str, BackendField(), LLMField(), ExcludeMode("llm")]] = Field(None, description="The exact text of this fragment. This MUST match the text at the specified pointer location.")
+    validation_method: Annotated[str, BackendField(), LLMField(), ExcludeMode("llm")] | None = Field(None, description="The exact text of this fragment. This MUST match the text at the specified pointer location.")
     # backend and llm used, default to dump include, but ExcludeMode("llm") specified must be excluded when dumping to llm mode
     
     @model_validator(mode="after")
@@ -213,9 +227,9 @@ class HydratedTextPointer(ModeSlicingMixin, BaseModel):
         *,
         doc_id: str,
         insertion_method: str = "semantic_document_parser_v1",
-        base_doc_url: Optional[str] = None,
-        page_num: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        base_doc_url: str | None = None,
+        page_num: int | None = None,
+    ) -> dict[str, Any]:
         """
         Convert this pointer to a plain dict reference, no external model required.
         We encode the cluster id in document_page_url as ...#{source_cluster_id},
@@ -246,7 +260,7 @@ class HydratedTextPointer(ModeSlicingMixin, BaseModel):
     # ref dict -> pointer
     # --------------------------
     @classmethod
-    def from_ref_dict(cls, ref: Dict[str, Any]) -> "HydratedTextPointer":
+    def from_ref_dict(cls, ref: dict[str, Any]) -> "HydratedTextPointer":
         """
         Rebuild a pointer from a plain dict ref.
         We rely on document_page_url ending with '#{cluster_id}'.
@@ -282,7 +296,7 @@ class LLMChildNodeResponse(ModeSlicingMixin, BaseModel): # for LLM
     parent_node_id: Annotated[str, DtoField(),BackendField(),LLMField()] = Field(description="The UUID string of the parent node this child belongs to.")
     node_type: Annotated[Literal["TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"], BackendField(), LLMField(),DtoField()] = Field(description="The semantic type of the child node.")
     title: Annotated[str, BackendField(), LLMField(),DtoField()]= Field(description="The title, key, or a concise summary of the child section.")
-    pointers: Annotated[List[HydratedTextPointer], BackendField(), LLMField(),DtoField()] = Field(description="A list of rich, hydrated pointers that physically constitute this logical child node."
+    pointers: Annotated[list[HydratedTextPointer], BackendField(), LLMField(),DtoField()] = Field(description="A list of rich, hydrated pointers that physically constitute this logical child node."
                                                             "For key value pair, can split the key and value into 2 different pointers. "
                                                             "If a sentence has been broken down into multiple text_clusters, leave them separatedly included in this list of pointers. ")
     # value_pointers: Optional[List[HydratedTextPointer]] = Field(None, description="(Used for KEY_VALUE_PAIR only, Null/None otherwise) Pointers to the value part of the node.")
@@ -312,7 +326,7 @@ class LLMChildNodeResponseBE(ModeSlicingMixin, BaseModel):
     parent_node_id: Annotated[str, DtoField(), BackendField()] = Field(description="The UUID string of the parent node this child belongs to.")
     node_type: Annotated[Literal["TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"], DtoField(), BackendField()] = Field(description="The semantic type of the child node.")
     title: Annotated[str, DtoField(), BackendField()] = Field(description="The title, key, or a concise summary of the child section.")
-    pointers: List[Annotated[HydratedTextPointer, DtoField(), BackendField()]] = Field(description="A list of rich, hydrated pointers that physically constitute this logical child node.")
+    pointers: list[Annotated[HydratedTextPointer, DtoField(), BackendField()]] = Field(description="A list of rich, hydrated pointers that physically constitute this logical child node.")
     # value_pointers: Optional[List[HydratedTextPointer]] = Field(None, description="(For KEY_VALUE_PAIR only) Pointers to the value part of the node.")
 
 
@@ -322,21 +336,21 @@ class LLMLevelResponse(ModeSlicingMixin, BaseModel):
     default_include_modes:  ClassVar= {"frontend", "llm", "backend", "dto"}
     default_exclude_modes: ClassVar = set()
     include_unmarked_for_modes: ClassVar = {"dto", "frontend", "backend", "llm"}    
-    children: List[Annotated[LLMChildNodeResponse, BackendField(), FrontendField(), DtoField(), LLMField()]] = Field(description='a list of parsing response, prefer gently narrow down scope.')
+    children: list[Annotated[LLMChildNodeResponse, BackendField(), FrontendField(), DtoField(), LLMField()]] = Field(description='a list of parsing response, prefer gently narrow down scope.')
 
 class LLMLevelResponseBE(ModeSlicingMixin, BaseModel):
     default_include_modes:  ClassVar= {"dto", "backend", "frontend"}
     include_unmarked_for_modes: ClassVar = {"dto", "frontend", "backend", "llm"}    
-    children: List[Annotated[LLMChildNodeResponseBE, DtoField(), LLMField(), FrontendField(), BackendField()]]
+    children: list[Annotated[LLMChildNodeResponseBE, DtoField(), LLMField(), FrontendField(), BackendField()]]
 
 
 class SemanticNode(BaseModel):
     node_id: UUID | None = None
-    parent_id: Optional[UUID] = None
+    parent_id: UUID | None = None
     node_type: Literal["DOCUMENT_ROOT", "TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"] = Field("TEXT_FLOW")
     title: str
-    total_content_pointers: List[HydratedTextPointer]
-    child_nodes: List['SemanticNode'] = Field([])
+    total_content_pointers: list[HydratedTextPointer]
+    child_nodes: list['SemanticNode'] = Field([])
     level_from_root: int
 
     @model_validator(mode="after")
@@ -359,7 +373,7 @@ class SemanticNode(BaseModel):
     # -------------------------------------------------
     # 🔍 Search descriptor builder (unchanged)
     # -------------------------------------------------
-    def _build_search_descriptors(self, source_map: Dict[str, Dict]) -> Dict[str, Any]:
+    def _build_search_descriptors(self, source_map: dict[str, dict]) -> dict[str, Any]:
         text = "".join((p.verbatim_text or "") for p in self.total_content_pointers)
         title = self.title or ""
         lowered = title.lower()
@@ -380,13 +394,13 @@ class SemanticNode(BaseModel):
     # -------------------------------------------------
     def to_kg_node(
         self,
-        source_map: Dict[str, Dict],
+        source_map: dict[str, dict],
         doc_id: str,
         *,
         insertion_method: str = "semantic_document_parser_v1",
         namespace: str = "docs",
-        base_doc_url: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        base_doc_url: str | None = None,
+    ) -> dict[str, Any]:
         """Serialize this SemanticNode into a well-formed KGE Node dictionary."""
 
         # 1️ Convert pointers → ref dicts using built-in reversible mapping
@@ -440,7 +454,7 @@ class SemanticNode(BaseModel):
     #  from_kg_node — reconstruct from Node dict
     # -------------------------------------------------
     @classmethod
-    def from_kg_node(cls, kg_node: Dict[str, Any]) -> 'SemanticNode':
+    def from_kg_node(cls, kg_node: dict[str, Any]) -> 'SemanticNode':
         """Rebuild a SemanticNode from a KGE Node dictionary."""
         # meta = {} # kg_node.get("metadata") or {}
         # pointers_raw = meta.get("pointers") or []
@@ -471,13 +485,13 @@ class SemanticNode(BaseModel):
     # -------------------------------------------------
     def flatten_tree_to_kge_payload(
         self,
-        source_map: Dict[str, Dict],
+        source_map: dict[str, dict],
         doc_id: str,
         *,
         insertion_method: str = "semantic_document_parser_v1",
         namespace: str = "docs",
-        base_doc_url: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        base_doc_url: str | None = None,
+    ) -> dict[str, Any]:
         """
         Flatten this SemanticNode hierarchy into a full KGE upsert payload.
         Returns:
@@ -486,8 +500,8 @@ class SemanticNode(BaseModel):
               "edges": [...]
             }
         """
-        nodes: List[Dict[str, Any]] = []
-        edges: List[Dict[str, Any]] = []
+        nodes: list[dict[str, Any]] = []
+        edges: list[dict[str, Any]] = []
 
         def walk(node: 'SemanticNode'):
             # add node
@@ -567,7 +581,7 @@ def not_self_like(parent: SemanticNode, child: LLMChildNodeResponse) -> bool:
 # ==============================================================================
 # PHASE 2: PRE-PROCESSING
 # ==============================================================================
-def prepare_document_for_llm(doc_dict: Dict) -> Tuple[Dict, Dict[str, Dict]]:
+def prepare_document_for_llm(doc_dict: dict) -> tuple[dict, dict[str, dict]]:
     # Simple restructure of input format
     filename = list(doc_dict.keys())[0]
     pages_data = doc_dict[filename]
@@ -587,7 +601,7 @@ def prepare_document_for_llm(doc_dict: Dict) -> Tuple[Dict, Dict[str, Dict]]:
     return {"document_filename": filename, "pages": pages_data}, source_cluster_map
 
 
-def _source_map_entry_text(entry: Dict[str, Any]) -> str:
+def _source_map_entry_text(entry: dict[str, Any]) -> str:
     """Best-effort text extraction for OCR-shaped source-map entries.
 
     The legacy parser sometimes sees raw OCR cluster dicts and sometimes sees
@@ -710,7 +724,6 @@ You MUST output a valid JSON object conforming to the `LLMLevelResponse` schema,
 # ```
 # }"""
 from string import Template
-import json
 from uuid import UUID
 
 PROMPT_BATCH_SUBDIVIDER_DELIMITER = Template(
@@ -898,7 +911,8 @@ $parent_sections_json
 # ```
 # """
 
-from langchain_core.messages import HumanMessage,SystemMessage,BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+
 _PARSER_CACHE_DIR = os.getenv(
     "KG_DOC_PARSER_CACHE_DIR",
     os.getenv("KG_DOC_PARSER_JOBLIB_CACHE_DIR", ".joblib"),
@@ -1145,7 +1159,7 @@ def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id
                         
                         if response.get('parsing_error'):
                             raise response['parsing_error']
-                        parsed: LLMLevelResponse["llm"] = response['parsed']
+                        parsed: LLMLevelResponse[llm] = response['parsed']
                         assert all(i.parent_node_id in parent_node_id_set for i in parsed.children), "llm generated non existed parent id"
                         return response['parsed'].model_dump()
                     except Exception as e:
@@ -1170,11 +1184,11 @@ def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id
                     raise Exception(f"All models ({model_names}) failed for this batch.") from e
 @parser_llm_cache
 def level_node_llm_parsing(
-    nodes_at_level: List[dict],  # type: ignore
-    source_map: Dict,
+    nodes_at_level: list[dict],  # type: ignore
+    source_map: dict,
     full_document_json_str: str,
     doc_id: str,
-    model_names: List[str],
+    model_names: list[str],
     event_name: str,
     parsing_mode: Literal["snippet", "delimiter"] = "snippet"
 ) -> LLMLevelResponse:
@@ -1219,7 +1233,6 @@ def level_node_llm_parsing(
     ]
     return retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set)
 
-from functools import lru_cache
 @memory.cache
 def get_node(pid, child_def, parent_level: int):
     # child_def: Union[LLMChildNodeResponse, LLMChildNodeResponseBE].model_dump()
@@ -1291,12 +1304,12 @@ def _normalize_child_type(parent, child):
 
 def build_document_tree(
                 doc_id : str,
-                llm_input_dict: Dict,
-                source_map: Dict,
+                llm_input_dict: dict,
+                source_map: dict,
                 max_depth: int = 10,
                 allow_review = True,
                 parsing_mode: Literal["snippet", "delimiter"] = "snippet",
-                model_names: List[str] | None = None,
+                model_names: list[str] | None = None,
                 ) -> SemanticNode:
     """Builds the hierarchy using an efficient, batched, layer-wise (BFS) approach.
     Initial breakdown -> check pointers/ spans validated
@@ -1362,7 +1375,7 @@ def build_document_tree(
             level=current_depth,
         )
         @memory_cached(memory)
-        def get_level_response(llm_response_json) -> Dict[str, Any]:
+        def get_level_response(llm_response_json) -> dict[str, Any]:
             response_cacheable = LLMLevelResponseBE.model_validate(llm_response_json).model_dump() # only dumped version cacheable by joblib
             return response_cacheable
         response_cacheable = get_level_response(llm_response_json)
@@ -1443,7 +1456,7 @@ def build_document_tree(
         depth=current_depth,
     )
     return root_node    
-def prepare_frontend_children(nodes_at_this_level, level_response, fixed_children: List[LLMChildNodeResponseBE]):
+def prepare_frontend_children(nodes_at_this_level, level_response, fixed_children: list[LLMChildNodeResponseBE]):
         # RUN LLM loop make sure missing content will be guarded by LLM
         corrected_level_response = LLMLevelResponse.model_validate(level_response.model_dump())
         
@@ -1460,7 +1473,7 @@ def prepare_frontend_children(nodes_at_this_level, level_response, fixed_childre
         layer_parent_sigs = [] # data for simple sanity, non exhausitive non perfect check for duplication
         layer_parent_types = [] # data for simple sanity, non exhausitive non perfect check for duplication
         child_definitions: list[LLMChildNodeResponse]  = []
-        fe_children: List[LLMChildNodeResponse] = []
+        fe_children: list[LLMChildNodeResponse] = []
         for parent_node in nodes_at_this_level:
             child_definitions = child_map.get(str(parent_node.node_id), [])
 
@@ -1484,7 +1497,7 @@ def prepare_frontend_children(nodes_at_this_level, level_response, fixed_childre
         fe_children = dedupe_children_level(fe_children)
         return fe_children, layer_parent_types, layer_parent_sigs
         
-def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_types, layer_parent_sigs, source_map,
+def iterative_review_loop(fe_children: list[LLMChildNodeResponse], layer_parent_types, layer_parent_sigs, source_map,
                         model_names, 
                         doc_id: str,
                         full_document_json_str, 
@@ -1628,12 +1641,10 @@ def iterative_review_loop(fe_children: List[LLMChildNodeResponse], layer_parent_
     )
     return fixed_children, CUD_reasoning_history
         
-from typing import Dict, List, Optional, Tuple, Callable, Iterable
-import re, json
+from collections.abc import Callable, Iterable
 from uuid import UUID
 
-from pydantic import BaseModel, ValidationError
-
+from pydantic import BaseModel
 
 # ============================================================================
 # Utilities — deterministic, no‑LLM fixes first
@@ -1648,13 +1659,13 @@ def _safe_slice(text: str, start: int, end_inclusive: int) -> str:
     return text[start:end_excl]
 
 
-def _all_exact_occurrences(haystack: str, needle: str) -> List[Tuple[int, int]]:
+def _all_exact_occurrences(haystack: str, needle: str) -> list[tuple[int, int]]:
     """Return all (start, end_inclusive) exact matches for `needle` in `haystack`.
     Uses Python's find() loop for speed and determinism. Empty needle => none.
     """
     if not needle:
         return []
-    out: List[Tuple[int, int]] = []
+    out: list[tuple[int, int]] = []
     i = 0
     L = len(needle)
     while True:
@@ -1667,8 +1678,8 @@ def _all_exact_occurrences(haystack: str, needle: str) -> List[Tuple[int, int]]:
 
 
 def _best_occurrence_by_proximity(
-    occurrences: List[Tuple[int, int]], proposed_start: int
-) -> Optional[Tuple[int, int]]:
+    occurrences: list[tuple[int, int]], proposed_start: int
+) -> tuple[int, int] | None:
     if not occurrences:
         return None
     return min(occurrences, key=lambda ab: abs(ab[0] - (proposed_start or 0)))
@@ -1682,10 +1693,10 @@ def _soft_exact_positions(
     source_text: str,
     verbatim: str,
     *,
-    fuzzy_threshold: Optional[float] = None,   # 0..100 if rapidfuzz; 0..1 with difflib (we normalize to 0..100)
+    fuzzy_threshold: float | None = None,   # 0..100 if rapidfuzz; 0..1 with difflib (we normalize to 0..100)
     fuzzy_len_stretch: float = 0.25,          # allow window length to vary ±25%
     fuzzy_stride_frac: float = 0.10,          # stride as a fraction of |verbatim|
-) -> Tuple[List[Tuple[int, int]], Dict | None]:
+) -> tuple[list[tuple[int, int]], dict | None]:
     """Exact match with minimal sanitation; optional fuzzy fallback.
     Returns list of candidate (start, end_incl) positions.
     """
@@ -1698,7 +1709,7 @@ def _soft_exact_positions(
     v2 = _whitespace_collapse(verbatim)
     if not v2:
         return [], None
-    spans: List[Tuple[int, int]] = []  # (orig_start, orig_end_incl) per collapsed char
+    spans: list[tuple[int, int]] = []  # (orig_start, orig_end_incl) per collapsed char
     collapsed_chars = []
     i = 0
     N = len(source_text)
@@ -1722,7 +1733,7 @@ def _soft_exact_positions(
     collapsed_text = "".join(collapsed_chars)
     occ2 = _all_exact_occurrences(collapsed_text, v2)
     if occ2:
-        mapped: List[Tuple[int, int]] = []
+        mapped: list[tuple[int, int]] = []
         for s_idx, e_idx in occ2:
             mapped.append((spans[s_idx][0], spans[e_idx][1]))
         return mapped, {"name": "exact", "collapsed": True}
@@ -1732,7 +1743,7 @@ def _soft_exact_positions(
         return [], None
 
     # --- helper to map collapsed [s,e] -> original inclusive span
-    def _map_back(s_idx: int, e_idx: int) -> Tuple[int, int]:
+    def _map_back(s_idx: int, e_idx: int) -> tuple[int, int]:
         try:
             _ = spans[s_idx][0], spans[e_idx][1]
         except Exception as _e:
@@ -1808,8 +1819,8 @@ def _soft_exact_positions(
 
 def resolve_delimiter_pointer(
     pointer: HydratedTextPointer,
-    source_map: Dict,
-) -> Optional[HydratedTextPointer]:
+    source_map: dict,
+) -> HydratedTextPointer | None:
     """
     Resolves a pointer using start/end delimiters.
     Raises ValueError if delimiters are ambiguous or not found.
@@ -1870,8 +1881,8 @@ def resolve_delimiter_pointer(
 
 def correct_and_validate_pointer(
     proposed_pointer: HydratedTextPointer,
-    source_map: Dict,
-) -> Optional[HydratedTextPointer]:
+    source_map: dict,
+) -> HydratedTextPointer | None:
     """Deterministic multi‑step correction. Returns fixed pointer or None.
 
     Steps:
@@ -1985,14 +1996,14 @@ def correct_and_validate_pointer(
 # ============================================================================
 
 def _correct_child_deterministic(
-    child: LLMChildNodeResponseBE, source_map: Dict, with_coverage_check = True
-) -> Tuple[Optional[LLMChildNodeResponseBE], List[HydratedTextPointer]]:
+    child: LLMChildNodeResponseBE, source_map: dict, with_coverage_check = True
+) -> tuple[LLMChildNodeResponseBE | None, list[HydratedTextPointer]]:
     """Attempt to fix all pointers deterministically. Returns (fixed_child, unresolved_pointers).
     If at least one pointer is unrecoverable deterministically, include it in unresolved list.
     If *all* pointers are fixed, returns the fully corrected child and empty unresolved list.
     """
-    fixed_pointers: List[HydratedTextPointer] = []
-    unresolved: List[HydratedTextPointer] = []
+    fixed_pointers: list[HydratedTextPointer] = []
+    unresolved: list[HydratedTextPointer] = []
 
     for p in child.pointers:
         ok = correct_and_validate_pointer(p, source_map)
@@ -2017,8 +2028,8 @@ def _correct_child_deterministic(
         [],
     )
 
-from collections import namedtuple
 from typing import NamedTuple
+
 
 class ChildrenCorrectionResult(NamedTuple):
     fixed_children: list[LLMChildNodeResponseBE]
@@ -2027,7 +2038,7 @@ class ChildrenCorrectionResult(NamedTuple):
 # ============================================================================
 # LLM batch correction wiring (pluggable)
 # ============================================================================
-from typing import Protocol, Type, Any, List, TypeVar
+from typing import Any, Protocol, TypeVar
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -2035,8 +2046,8 @@ class StructuredLLMCaller(Protocol):
     def __call__(
         self, 
         prompt: str, 
-        model_names: List[str], 
-        schema: Type[T], 
+        model_names: list[str], 
+        schema: type[T], 
         doc_id: str,
         model_json_schema: dict, 
         event_name: str,
@@ -2049,14 +2060,14 @@ class StructuredLLMCaller(Protocol):
 # successful structured response can be replayed without another LLM call.
 @parser_llm_cache
 def _default_call_llm_structured(
-    prompt: str, model_names: List[str], schema: type[T] ,doc_id: str, model_json_schema : dict, event_name: str, i_attempt: int
+    prompt: str, model_names: list[str], schema: type[T] ,doc_id: str, model_json_schema : dict, event_name: str, i_attempt: int
 ) -> T:
     """Default implementation using LangChain Google Generative AI stack.
     Swap this out if you prefer OpenAI or another provider.
     """
-    from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
+    from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
-    messages: List[BaseMessage] = [HumanMessage(prompt)]
+    messages: list[BaseMessage] = [HumanMessage(prompt)]
     last_err = None
     max_retry_per_model = 2
     for name in model_names:
@@ -2092,14 +2103,14 @@ def _default_call_llm_structured(
 # Iterative level correction orchestrator
 # ============================================================================
 T2 = TypeVar("T2", bound=BaseModel)
-from typing import Any, TypeVar, overload
+from typing import Any, TypeVar
 
 
 def iterative_correct_children_for_level(
-    children: List[LLMChildNodeResponseBE],
-    source_map: Dict,
-    full_document_json: Dict,
-    model_names: List[str] | None = None,
+    children: list[LLMChildNodeResponseBE],
+    source_map: dict,
+    full_document_json: dict,
+    model_names: list[str] | None = None,
     max_rounds: int = 3,
     doc_id: str | None = None,
     call_llm_structured: StructuredLLMCaller = _default_call_llm_structured,
@@ -2122,8 +2133,8 @@ def iterative_correct_children_for_level(
         model_names=model_names,
     )
 
-    fixed: Dict[str, LLMChildNodeResponseBE] = {}
-    pending: Dict[str, LLMChildNodeResponseBE] = {f"{i.parent_node_id}|{i.title}": i for i in children}
+    fixed: dict[str, LLMChildNodeResponseBE] = {}
+    pending: dict[str, LLMChildNodeResponseBE] = {f"{i.parent_node_id}|{i.title}": i for i in children}
     still_unsolved_same_cnt = 0
     pending_length_history = []
     for round_idx in range(max_rounds):
@@ -2138,7 +2149,7 @@ def iterative_correct_children_for_level(
             still_unsolved_same_cnt=still_unsolved_same_cnt,
         )
         # ----- 1) deterministic pass
-        still_unresolved: Dict[str, LLMChildNodeResponseBE] = {}
+        still_unresolved: dict[str, LLMChildNodeResponseBE] = {}
         for key, child in list(pending.items()):
             ok_child, unresolved_pointers = _correct_child_deterministic(child, source_map, with_coverage_check = True)
             if ok_child is not None:
@@ -2187,7 +2198,7 @@ def iterative_correct_children_for_level(
             )
             parsed_be = LLMLevelResponseBE.model_validate(parsed.model_dump())
             # validate each returned child again deterministically (trust but verify)
-            returned_by_key: Dict[str, LLMChildNodeResponseBE] = {}
+            returned_by_key: dict[str, LLMChildNodeResponseBE] = {}
             for ch in parsed_be.children:
                 key = f"{ch.parent_node_id}|{ch.title}"
                 ok_child, unresolved_pointers = _correct_child_deterministic(ch, source_map)
@@ -2228,14 +2239,14 @@ def iterative_correct_children_for_level(
 from string import Template as _CUDTemplate
 
 # ---------- Pydantic models for CUD ----------
+from typing import Any, Literal
 
-from typing import Optional, List, Literal, Dict, Any, Tuple, Union
 
 # --- how to select an existing child in THIS layer ---
 class UDTarget(BaseModel):
     node_id: str = Field(description="Optional direct child id if present in your FE objects.")
-    node_type: Optional[Literal["TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"]] = None
-    title: Optional[str] = None
+    node_type: Literal["TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"] | None = None
+    title: str | None = None
 
     @model_validator(mode="after")
     def _at_least_one_selector(self):
@@ -2246,22 +2257,22 @@ class UDTarget(BaseModel):
 
 # --- partial edit payload (only provided fields are changed) ---
 class LLMChildNodePatch(BaseModel):
-    parent_node_id: Optional[str] = None
-    node_type: Optional[Literal["TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"]] = None
-    title: Optional[str] = None
-    pointers: Optional[List[HydratedTextPointer]] = None
+    parent_node_id: str | None = None
+    node_type: Literal["TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"] | None = None
+    title: str | None = None
+    pointers: list[HydratedTextPointer] | None = None
 
 class LLMChildNodeAdd(BaseModel):
     parent_node_id: str
     node_type: Literal["TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"]
     title: str
-    pointers: List[HydratedTextPointer]
+    pointers: list[HydratedTextPointer]
 # --- strictly typed proposal ---
 class CUDProposal(BaseModel):
     edit_type: Literal["ADD_NODE", "DELETE_NODE", "EDIT_NODE"]
-    target: Optional[UDTarget] = Field(default=None, description="Target required for DELETE.")
-    add: Optional[LLMChildNodeAdd] = Field(default=None, description="Strict child for ADD.")
-    patch: Optional[LLMChildNodePatch] = Field(default=None, description="Partial patch for EDIT.")
+    target: UDTarget | None = Field(default=None, description="Target required for DELETE.")
+    add: LLMChildNodeAdd | None = Field(default=None, description="Strict child for ADD.")
+    patch: LLMChildNodePatch | None = Field(default=None, description="Partial patch for EDIT.")
     reasoning: str = Field(description="Reasoning for each proposal")
     @model_validator(mode="after")
     def _check_consistency(self):
@@ -2325,9 +2336,9 @@ class CUDResponse(ModeSlicingMixin, BaseModel):
     default_exclude_modes: ClassVar = set()
     include_unmarked_for_modes: ClassVar = {"dto", "frontend", "backend", "llm"}    
     reasoning:str = Field(description = 'reasoning at top level')
-    cproposals: List[CProposal] = Field(default_factory=list, description = 'a list of create proposals, empty if existing is good. ')
-    uproposals: List[UProposal] = Field(default_factory=list, description = 'a list of update proposals, empty if existing is good. ')
-    dproposals: List[DProposal] = Field(default_factory=list, description = 'a list of delete proposals, empty if existing is good. ')
+    cproposals: list[CProposal] = Field(default_factory=list, description = 'a list of create proposals, empty if existing is good. ')
+    uproposals: list[UProposal] = Field(default_factory=list, description = 'a list of update proposals, empty if existing is good. ')
+    dproposals: list[DProposal] = Field(default_factory=list, description = 'a list of delete proposals, empty if existing is good. ')
     def is_empty(self):
         return len(self.get_proposals()) > 0
     def get_proposals(self):
@@ -2338,7 +2349,7 @@ class CResponse(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar = {"dto", "frontend", "backend", "llm"}    
     reasoning:str = Field(description = 'reasoning at top level')    
     reasoning:str = Field(description = 'reasoning at top level')
-    proposals: List[CProposal] = Field(default_factory=list)
+    proposals: list[CProposal] = Field(default_factory=list)
     def is_empty(self):
         return len(self.get_proposals()) > 0
     def get_proposals(self):
@@ -2350,7 +2361,7 @@ def _normalize_title(s: str) -> str:
 def _pkey(p: HydratedTextPointer) -> tuple[str, int, int]:
     return (p.source_cluster_id, p.start_char, p.end_char)
 
-def dedupe_children_level(children: List[LLMChildNodeResponse]) -> List[LLMChildNodeResponse]:
+def dedupe_children_level(children: list[LLMChildNodeResponse]) -> list[LLMChildNodeResponse]:
     """
     Per-level structural dedupe: same node_type + normalized title + identical pointer set.
     """
@@ -2367,25 +2378,25 @@ def dedupe_children_level(children: List[LLMChildNodeResponse]) -> List[LLMChild
         out.append(ch)
     return out
 # ----- LAYER-AWARE GUARDS -----
-def build_parent_signatures(parents: List[SemanticNode]) -> List[tuple[str, str, set]]:
+def build_parent_signatures(parents: list[SemanticNode]) -> list[tuple[str, str, set]]:
     """
     For a layer of parents, return [(type, norm_title, span_set)] for each.
     span_set = set of (cluster, start, end).
     """
-    sigs: List[tuple[str,str,set]] = []
+    sigs: list[tuple[str,str,set]] = []
     for p in parents:
         spans = {_pkey(ptr) for ptr in p.total_content_pointers}
         sigs.append((p.node_type, _normalize_title(p.title), spans))
     return sigs
 
-def reject_self_recursion_multi(parent_types: List[str], child: LLMChildNodeResponse) -> bool:
+def reject_self_recursion_multi(parent_types: list[str], child: LLMChildNodeResponse) -> bool:
     """
     Forbid KEY_VALUE_PAIR directly under any KEY_VALUE_PAIR parent in the layer.
     Extend with other schema rules if needed.
     """
     return child.node_type == "KEY_VALUE_PAIR" and ("KEY_VALUE_PAIR" in parent_types)
 
-def not_self_like_multi(parent_sigs: List[tuple[str,str,set]], child: LLMChildNodeResponse) -> bool:
+def not_self_like_multi(parent_sigs: list[tuple[str,str,set]], child: LLMChildNodeResponse) -> bool:
     """
     Reject if child is a mirror of ANY parent in the layer:
       same type AND same normalized title AND identical span set.
@@ -2397,12 +2408,12 @@ def not_self_like_multi(parent_sigs: List[tuple[str,str,set]], child: LLMChildNo
             return False
     return True
 
-def _validate_child_pointers(child: LLMChildNodeResponse, source_map: Dict) -> Optional[LLMChildNodeResponse]:
+def _validate_child_pointers(child: LLMChildNodeResponse, source_map: dict) -> LLMChildNodeResponse | None:
     """
     Reuse your pointer correction: return a fixed child or None if any pointer can't be validated.
     Called after ADD/EDIT proposals to ensure trust-but-verify.
     """
-    fixed_ptrs: List[HydratedTextPointer] = []
+    fixed_ptrs: list[HydratedTextPointer] = []
     for p in child.pointers:
         ok = correct_and_validate_pointer(p, source_map)
         if not ok:
@@ -2550,7 +2561,7 @@ $current_layer_json
 # $current_layer_json
 # """)
 
-def _serialize_children_for_prompt(children: List[LLMChildNodeResponse]) -> str:
+def _serialize_children_for_prompt(children: list[LLMChildNodeResponse]) -> str:
     slim = []
     for i, c in enumerate(children):
         slim.append({
@@ -2570,12 +2581,12 @@ def _serialize_children_for_prompt(children: List[LLMChildNodeResponse]) -> str:
 @parser_llm_cache
 def CUD_proposal(
     # parent_id: str,
-    children: List[LLMChildNodeResponse],
-    source_map: Dict,
-    model_names: List[str],
+    children: list[LLMChildNodeResponse],
+    source_map: dict,
+    model_names: list[str],
     full_document_json_str: str,
     doc_id: str,
-    last_layer: List,
+    last_layer: list,
     attempt : int,
     reasoning_history: list[str]
 ) -> CUDResponse|CResponse:
@@ -2618,7 +2629,7 @@ def CUD_proposal(
             attempt=attempt,
             model_names=model_names,
         )
-        resp:CUDResponse['llm'] | CResponse['llm']  = _default_call_llm_structured(
+        resp:CUDResponse[llm] | CResponse[llm]  = _default_call_llm_structured(
             prompt=prompt,
             model_names=model_names,
             schema=ResponseModel,
@@ -2647,12 +2658,14 @@ def CUD_proposal(
         )
         raise e
         return []
-from typing import Sequence
+from collections.abc import Sequence
+
+
 def apply_proposal(
     proposals: Sequence[CUDProposal | CProposal | UProposal | DProposal],
-    children: List[LLMChildNodeResponse],
-    source_map: Dict,
-) -> tuple[List[LLMChildNodeResponse], list[str]]:
+    children: list[LLMChildNodeResponse],
+    source_map: dict,
+) -> tuple[list[LLMChildNodeResponse], list[str]]:
     """
     Apply proposals to THIS layer only.
     - ADD_NODE: add typed child (validated pointers)
@@ -2663,7 +2676,7 @@ def apply_proposal(
     out = {k:v for k,v in (enumerate(children))}
     next_id = len(children)
     proposal_error_messages = []
-    def _locate_index(tgt: UDTarget) -> Optional[int]:
+    def _locate_index(tgt: UDTarget) -> int | None:
         if tgt.node_id: # just the pre-edit index
             try:
                 lid = int(int(tgt.node_id))
@@ -2749,10 +2762,10 @@ def apply_proposal(
 @parser_llm_cache_terminal_correction
 def correct_level_children_with_iterative_pipeline(
     level_response_json: dict,
-    source_map: Dict,
-    full_document_json: Dict,
+    source_map: dict,
+    full_document_json: dict,
     doc_id: str,
-    model_names: List[str] | None = None,
+    model_names: list[str] | None = None,
 ) -> ChildrenCorrectionResult:
     """Helper to be used right after a level LLM call in your BFS.
 
@@ -2792,7 +2805,7 @@ def correct_level_children_with_iterative_pipeline(
 # ==============================================================================
 
 def _merge_child_ranges_for_cluster(
-    child_ranges: List[Tuple[int, int, str]],
+    child_ranges: list[tuple[int, int, str]],
     allowed_overlap: int = 0,
 ) -> bool:
     """
@@ -2822,9 +2835,9 @@ def _merge_child_ranges_for_cluster(
 
     return True
 
+
 from rapidfuzz import fuzz
 
-from typing import Dict, List, Tuple
 
 class CoverageResponse(BaseModel):
     per_cluster: dict[str, float]
@@ -2832,7 +2845,7 @@ class CoverageResponse(BaseModel):
     
 def compute_pointer_coverage(
     root_node: SemanticNode,
-    source_map: Dict,
+    source_map: dict,
     *,
     clamp_to_cluster: bool = True,
 ) ->CoverageResponse:
@@ -2852,7 +2865,7 @@ def compute_pointer_coverage(
     - If a cluster has zero length (empty OCR), it is ignored in overall calc.
     """
     # 1) collect all pointers in the tree
-    all_pointers: List[HydratedTextPointer] = []
+    all_pointers: list[HydratedTextPointer] = []
 
     def _walk(node: SemanticNode):
         # a node may have multiple pointers
@@ -2864,7 +2877,7 @@ def compute_pointer_coverage(
     _walk(root_node)
 
     # 2) group by cluster
-    cluster_ranges: Dict[str, List[Tuple[int, int]]] = {}
+    cluster_ranges: dict[str, list[tuple[int, int]]] = {}
     for ptr in all_pointers:
         cid = ptr.source_cluster_id
         src = source_map.get(cid)
@@ -2883,7 +2896,7 @@ def compute_pointer_coverage(
         cluster_ranges.setdefault(cid, []).append((start, end))
 
     # 3) merge per cluster and compute coverage
-    per_cluster_cov: Dict[str, float] = {}
+    per_cluster_cov: dict[str, float] = {}
     total_len = 0
     total_covered = 0
 
@@ -2898,7 +2911,7 @@ def compute_pointer_coverage(
 
         # merge
         ranges.sort(key=lambda x: x[0])
-        merged: List[Tuple[int, int]] = []
+        merged: list[tuple[int, int]] = []
         cur_s, cur_e = ranges[0]
         for s, e in ranges[1:]:
             if s <= cur_e + 1:
@@ -2925,7 +2938,7 @@ def compute_pointer_coverage(
 
 def analyze_and_validate_tree(
     root_node: SemanticNode,
-    source_map: Dict,
+    source_map: dict,
     *,
     allowed_overlap_per_cluster: int = 0,   # e.g. 2–5 chars to forgive punctuation/WS
     completeness_fuzz_threshold: int = 98,  # % similarity to still pass completeness
@@ -2937,7 +2950,7 @@ def analyze_and_validate_tree(
             return True
 
         # cluster_id -> list[(start, end_incl, child_label)]
-        cluster_ranges: Dict[str, List[Tuple[int, int, str]]] = {}
+        cluster_ranges: dict[str, list[tuple[int, int, str]]] = {}
 
         for idx, child in enumerate(node.child_nodes):
             child_label = f"{child.title}-{idx}"
@@ -2967,8 +2980,8 @@ def analyze_and_validate_tree(
         # recurse
         return all(check_sibling_overlaps(child) for child in node.child_nodes)
 
-    def check_leaf_completeness(root: SemanticNode, source: Dict) -> bool:
-        leaf_pointers: List[HydratedTextPointer] = []
+    def check_leaf_completeness(root: SemanticNode, source: dict) -> bool:
+        leaf_pointers: list[HydratedTextPointer] = []
 
         def collect_leaves(n: SemanticNode):
             if not n.child_nodes and n.node_type != "DOCUMENT_ROOT":
@@ -3019,7 +3032,7 @@ def normalize_text(text: str) -> str:
     """Removes all whitespace characters for a clean comparison."""
     return re.sub(r'\s+', '', text)
 
-def reconstruct_text_from_pointers(pointers: List[HydratedTextPointer], source_map: Dict) -> str:
+def reconstruct_text_from_pointers(pointers: list[HydratedTextPointer], source_map: dict) -> str:
     """
     Reconstructs text from pointers. If `relative_to` is provided, assumes pointers
     are relative to that text content. Otherwise, assumes they are absolute.
@@ -3051,7 +3064,7 @@ def parse_doc(
     raw_doc_dict,
     parsing_mode: Literal["snippet", "delimiter"] = "snippet",
     max_depth: int = 10,
-    model_names: List[str] | None = None,
+    model_names: list[str] | None = None,
 ):
     
     
@@ -3131,7 +3144,7 @@ def semantic_tree_to_kge_payload(
     *,
     doc_id: str | None = None,
     insertion_method: str = "semantic_document_parser_v1",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if doc_id is None:
         doc_id = str(
             stable_id(
@@ -3141,10 +3154,10 @@ def semantic_tree_to_kge_payload(
             )
         )
 
-    nodes: List[Dict[str, Any]] = []
-    edges: List[Dict[str, Any]] = []
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
 
-    def _pointers_to_references(ptrs: List["HydratedTextPointer"]) -> List[Dict[str, Any]]:
+    def _pointers_to_references(ptrs: list["HydratedTextPointer"]) -> list[dict[str, Any]]:
         return [
             {
                 "doc_id": doc_id,
@@ -3165,7 +3178,7 @@ def semantic_tree_to_kge_payload(
         mentions = [groundings]
         return mentions
         
-    def _pointers_to_spans(ptrs: List["HydratedTextPointer"]) -> list[dict]:
+    def _pointers_to_spans(ptrs: list["HydratedTextPointer"]) -> list[dict]:
         return [{
                 "doc_id": doc_id,
                 "collection_page_url": f"doc://{doc_id}",
@@ -3246,7 +3259,9 @@ def semantic_tree_to_kge_payload(
         "edges": edges,
     }
 from collections import defaultdict
-def _extract_pointers_from_mentions(mentions: List[dict[str, list[dict]]]):
+
+
+def _extract_pointers_from_mentions(mentions: list[dict[str, list[dict]]]):
     if len(mentions) > 1 :
         raise Exception("unsupported multiple mentions")
     mention = mentions[0]
@@ -3273,7 +3288,7 @@ def _extract_pointers_from_mentions(mentions: List[dict[str, list[dict]]]):
             )
         )
     return results
-def _extract_pointers_from_references(refs: List[Dict[str, Any]]):
+def _extract_pointers_from_references(refs: list[dict[str, Any]]):
     # turn MCP ref → HydratedTextPointer-like
     results = []
     for r in refs or []:
@@ -3309,11 +3324,11 @@ def _extract_pointers_from_references(refs: List[Dict[str, Any]]):
     return results
 
 
-def kge_payload_to_semantic_tree(payload: Dict[str, Any]) -> "SemanticNode":
-    nodes_data: List[Dict[str, Any]] = payload.get("nodes", [])
-    edges_data: List[Dict[str, Any]] = payload.get("edges", [])
+def kge_payload_to_semantic_tree(payload: dict[str, Any]) -> "SemanticNode":
+    nodes_data: list[dict[str, Any]] = payload.get("nodes", [])
+    edges_data: list[dict[str, Any]] = payload.get("edges", [])
 
-    sem_nodes: Dict[str, SemanticNode] = {}
+    sem_nodes: dict[str, SemanticNode] = {}
     for n in nodes_data:
         md = n.get("metadata") or {}
         # old path
@@ -3336,7 +3351,7 @@ def kge_payload_to_semantic_tree(payload: Dict[str, Any]) -> "SemanticNode":
         )
         sem_nodes[n["id"]] = sem
 
-    children_by_parent: Dict[str, List[str]] = defaultdict(list)
+    children_by_parent: dict[str, list[str]] = defaultdict(list)
     for e in edges_data:
         relation = e.get("relation") or e.get("predicate")
         if relation != "HAS_CHILD":
@@ -3442,8 +3457,8 @@ def _render_nodes_payload(nodes_payload: list[dict[str, Any]] | dict[str, Any]) 
 def batch_nodes(
     items: list[dict[str, Any]],
     *,
-    max_nodes: Optional[int] = None,
-    max_input_tokens: Optional[int] = None,
+    max_nodes: int | None = None,
+    max_input_tokens: int | None = None,
     token_estimator: Callable[[str], int] = _default_token_estimate,
     base_prompt_tokens: int = 450,
     per_node_overhead_tokens: int = 15,
@@ -3563,9 +3578,10 @@ def build_index_terms_for_semantic_node(
     max_nodes_per_batch: int | None = None,
     max_input_tokens_per_batch: int | None = 13500,
     token_estimator: Callable[[str], int] | None = None,
-) -> List[IndexingResponse] | Dict[str, List[IndexingResponse]]:
-    from langchain_core.messages import HumanMessage, SystemMessage
+) -> list[IndexingResponse] | dict[str, list[IndexingResponse]]:
     import inspect
+
+    from langchain_core.messages import HumanMessage, SystemMessage
 
     if token_estimator is None:
         token_estimator = _default_token_estimate

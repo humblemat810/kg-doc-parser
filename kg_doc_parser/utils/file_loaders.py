@@ -4,10 +4,9 @@ import pathlib
 from collections.abc import Callable, Iterator
 from functools import partial
 from json import JSONDecodeError
-from typing import Optional, Protocol
+from typing import Protocol
 
 import pathspec
-
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -34,7 +33,7 @@ def bool2yn(maybe_bool: bool):
     else:
         return maybe_bool
 
-def recur_apply_json_inplace(json : dict | list | bool |str | int | float, fn: Callable):
+def recur_apply_json_inplace(json : dict | list | bool | str | float, fn: Callable):
     if isinstance(json, dict):
         for k, v in json.items():
             json[k] = recur_apply_json_inplace(v, fn)
@@ -147,18 +146,18 @@ def find_folders_two_levels_from_leaves_mem_optimized(
             child_path = os.path.join(dirpath, dirname)
             memo.pop(child_path, None) # Safely remove the key
 class RawFileLoader():
-    def __init__(self, env_flist_path: Optional[str] = None, 
+    def __init__(self, env_flist_path: str | None = None, 
                  allow_file_list: None | list[str]  = None,
-                 allow_file_list_ref: Optional[str] = None,
+                 allow_file_list_ref: str | None = None,
                  max_num_file = float('inf'), oldest_datetime = None, newest_datetime = None, root_folder_name : str | None= None, 
                 #  in_folder_name :Optional[str] = None,
-                 walk_root:Optional[str] = None, compare_root:Optional[str] = None,
+                 walk_root:str | None = None, compare_root:str | None = None,
                  include = None,
                  bucket_blob_connection_str = None,
                  file_walker_callback: FileWalker | None = None,
                  pattern = None,
                  allow_startwith_relative_paths = False,
-                 filtering_callbacks : Optional[list[Callable]] = None):
+                 filtering_callbacks : list[Callable] | None = None):
         """file loader to either backward support for local folder loading behaviour, or cloud bucket/ blob stoages
 
         Args:
@@ -185,7 +184,7 @@ class RawFileLoader():
             compare_root = walk_root
         self.compare_root = compare_root
         self.max_num_file = max_num_file
-        allowed_relative_paths: Optional[list[str]] = None
+        allowed_relative_paths: list[str] | None = None
         
         if allow_file_list_ref is not None:
             if allow_file_list is None:
@@ -268,9 +267,9 @@ class RawFileLoader():
         self.allow_file_list = out_file_list
         
     def __iter__(self, leaf_only = False, file_non_exist_ok = False, include = None,
-                 allowed_files: Optional[list[str]] = None,
+                 allowed_files: list[str] | None = None,
                  # allowed_prefixes : Optional[list[str | int]] = None,
-                 allowed_relative_paths: Optional[list[str]]= None,
+                 allowed_relative_paths: list[str] | None= None,
                  ):
         """Iterate through availble files 
 
@@ -406,7 +405,7 @@ class RawFileLoader():
 def filter_folder(folder_root = os.path.join(
         "..", "odc_data", "split_pages"
         
-        ), min_page = 45, max_page: int | float = 55, first = 10, verbose = True):
+        ), min_page = 45, max_page: float = 55, first = 10, verbose = True):
     folders = []
     for root, dirs, files in os.walk(folder_root):
         if dirs == []:

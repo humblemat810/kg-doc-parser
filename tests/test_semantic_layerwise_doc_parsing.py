@@ -1,16 +1,16 @@
-import sys, pathlib
-
-
-        
-from typing import Callable, TypeVar, ParamSpec, cast, Any
-from contextlib import contextmanager
 import json
 import os
+import pathlib
 import subprocess
+import sys
 import threading
 import time
-from kogwistar.utils.cache_backend import Memory
+from collections.abc import Callable
+from contextlib import contextmanager
+from typing import Any, ParamSpec, TypeVar, cast
+
 import pytest
+from kogwistar.utils.cache_backend import Memory
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -74,8 +74,8 @@ def _configure_parser_env(monkeypatch: pytest.MonkeyPatch, *, provider: str, mod
 
 def _port_has_listener(base_url: str) -> bool:
     """Best-effort check for whether anything is bound to the target port."""
-    from urllib.parse import urlparse
     import socket
+    from urllib.parse import urlparse
 
     parsed = urlparse(base_url)
     if parsed.hostname is None or parsed.port is None:
@@ -158,8 +158,9 @@ def _ensure_local_server(base_urls: tuple[str, ...] = LOCAL_KOGWISTAR_BASE_URLS)
     except pytest.skip.Exception:
         pass
 
-    import requests
     from urllib.parse import urlparse
+
+    import requests
 
     workspace_root = pathlib.Path(__file__).resolve().parents[1]
     vendored_kogwistar = workspace_root / "kogwistar"
@@ -611,14 +612,14 @@ def _run_post_ocr_semantic_smoke_case(
         filtering_callbacks=[doc_selector],
         include=["dirs"],
     )
+    from kg_doc_parser.ocr import regen_doc
     from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
+        all_child_from_root,
+        build_index_terms_for_semantic_node,
+        kge_payload_to_semantic_tree,
         parse_doc,
         semantic_tree_to_kge_payload,
-        kge_payload_to_semantic_tree,
-        build_index_terms_for_semantic_node,
-        all_child_from_root,
     )
-    from kg_doc_parser.ocr import regen_doc
 
     memory = Memory(
         location=os.path.join(
@@ -815,8 +816,11 @@ def test_semantic_document_splitting(gemini_key, monkeypatch, parser_provider, m
     - if the server cannot bind or never reaches ``/health``, the test skips
       with a diagnostic explaining whether any candidate port is listening.
     """
-    from kg_doc_parser.utils.file_loaders import RawFileLoader, find_folders_two_levels_from_leaves_mem_optimized
     import os
+
+    from kg_doc_parser.utils.file_loaders import (
+        RawFileLoader,
+    )
     def filter_callback (file_path):
         # folder at least have some page ocr that ends with .json
         for i, f in enumerate(os.listdir(file_path)):
@@ -834,15 +838,17 @@ def test_semantic_document_splitting(gemini_key, monkeypatch, parser_provider, m
                            filtering_callbacks = [filter_callback],
                            include = ['dirs']
                            )
-    from kg_doc_parser.semantic_document_splitting_layerwise_edits import (parse_doc, 
-                                                                 semantic_tree_to_kge_payload, 
-                                                                 kge_payload_to_semantic_tree,
-                                                                 build_index_terms_for_semantic_node,
-                                                                 all_child_from_root,
-                                                                 SemanticNode)
+    import os
+
     from kg_doc_parser.ocr import regen_doc
+    from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
+        all_child_from_root,
+        build_index_terms_for_semantic_node,
+        kge_payload_to_semantic_tree,
+        parse_doc,
+        semantic_tree_to_kge_payload,
+    )
     from kogwistar.utils.cache_backend import Memory
-    import uuid, os
     memory = Memory(
         location=os.path.join(
             ".joblib",
@@ -1013,10 +1019,11 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
     cached by joblib under `.joblib/`; delete that directory for a fresh
     cacheless rerun, especially when retrying the manual Gemini case.
     """
-    from kg_doc_parser.pdf2png import batch_split_pdf
-    from kg_doc_parser.utils.file_loaders import RawFileLoader
     import os
     from functools import lru_cache
+
+    from kg_doc_parser.pdf2png import batch_split_pdf
+    from kg_doc_parser.utils.file_loaders import RawFileLoader
     from kogwistar.utils.cache_backend import Memory
 
     _configure_parser_env(
@@ -1063,14 +1070,14 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
     splitted_folder = (pathlib.Path(os.getcwd()).parent / "doc_data" / "split_pages").absolute()
     batch_split_pdf(file_loader=selected_loader, outfolder_path=splitted_folder, exists_ok="skip")
 
+    from kg_doc_parser.ocr import regen_doc
     from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
+        all_child_from_root,
+        build_index_terms_for_semantic_node,
+        kge_payload_to_semantic_tree,
         parse_doc,
         semantic_tree_to_kge_payload,
-        kge_payload_to_semantic_tree,
-        build_index_terms_for_semantic_node,
-        all_child_from_root,
     )
-    from kg_doc_parser.ocr import regen_doc
 
     memory = Memory(location=".joblib")
     for f in selected_loader:
@@ -1145,9 +1152,10 @@ def test_semantic_document_splitting_doc_group(gemini_key, monkeypatch, parser_p
     for a fresh cacheless rerun, especially when retrying the manual Gemini
     case.
     """
-    from kg_doc_parser.utils.file_loaders import RawFileLoader
     import os
     from functools import lru_cache
+
+    from kg_doc_parser.utils.file_loaders import RawFileLoader
     from kogwistar.utils.cache_backend import Memory
 
     _configure_parser_env(
@@ -1169,14 +1177,14 @@ def test_semantic_document_splitting_doc_group(gemini_key, monkeypatch, parser_p
         include=["files"],
     )
 
+    from kg_doc_parser.ocr import regen_doc_group
     from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
+        all_child_from_root,
+        build_index_terms_for_semantic_node,
+        kge_payload_to_semantic_tree,
         parse_doc,
         semantic_tree_to_kge_payload,
-        kge_payload_to_semantic_tree,
-        build_index_terms_for_semantic_node,
-        all_child_from_root,
     )
-    from kg_doc_parser.ocr import regen_doc_group
 
     memory = Memory(location=".joblib")
     VersionChainDB = _load_version_chain_db()

@@ -1,6 +1,8 @@
 
 from typing import Literal
+
 from .semantic_document_splitting_layerwise_edits import parse_doc
+
 
 def text_to_ocr_format(text: str, filename: str = "input_text") -> dict[str, object]:
     """

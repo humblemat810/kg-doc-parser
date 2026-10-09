@@ -31,8 +31,7 @@ from .models import (
     WorkflowExportBundle,
     WorkflowIngestInput,
 )
-from .probe import emit_probe_event
-from .probe import WorkflowProbe
+from .probe import WorkflowProbe, emit_probe_event
 
 
 class UnsupportedClientOperation(RuntimeError):

@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing_extensions import TypeAliasType
+from typing import TypeAliasType
 from uuid import UUID
 
 JsonScalar = TypeAliasType("JsonScalar", None | bool | int | float | str)

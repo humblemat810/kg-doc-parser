@@ -2,11 +2,13 @@
 #### log utils
 
 import logging
+import os
 import sqlite3
 import threading
-import os
 import traceback
 from contextlib import closing
+
+
 def safe_format_exception(exc: Exception, base_path: str | None = None) -> str:
     """Format exception with paths relative to project root."""
     if base_path is None:

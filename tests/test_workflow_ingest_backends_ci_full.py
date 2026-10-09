@@ -1,20 +1,25 @@
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
-
-from _kogwistar_test_helpers import load_kogwistar_fake_backend
-from _kogwistar_test_helpers import drain_phase1_indexes_until_idle
+from _kogwistar_test_helpers import (
+    drain_phase1_indexes_until_idle,
+    load_kogwistar_fake_backend,
+)
 from kg_doc_parser.workflow_ingest.models import WorkflowIngestInput
+from kg_doc_parser.workflow_ingest.providers import (
+    WorkflowProviderSettings,
+    build_embedding_function,
+)
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-from kg_doc_parser.workflow_ingest.providers import WorkflowProviderSettings, build_embedding_function
-from kg_doc_parser.workflow_ingest.service import _TinyEmbeddingFunction, run_ingest_workflow
+from kg_doc_parser.workflow_ingest.service import (
+    _TinyEmbeddingFunction,
+    run_ingest_workflow,
+)
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 
 def _scratch(name: str) -> Path:
@@ -87,8 +92,8 @@ def _build_engine_triplet(base_dir: Path, backend_kind: str):
         dsn = os.getenv("KG_DOC_PG_DSN")
         if not dsn:
             pytest.skip("KG_DOC_PG_DSN is required for pgvector ci_full tests")
-        from sqlalchemy import create_engine
         from kogwistar.engine_core.postgres_backend import PgVectorBackend
+        from sqlalchemy import create_engine
 
         engine = create_engine(dsn)
         schema_prefix = f"kgdoc_{uuid4().hex[:8]}"

@@ -5,31 +5,51 @@ if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     ocr_json_version = "0.1"
-import time
 import base64
+import time
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from typing import (
+    Any,
+    Literal,
+    NotRequired,
+    TypedDict,
+    cast,
+)
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import Runnable
-from .models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
+
 from .llm_structured_output import build_structured_output_runnable
-from typing import Any, Iterable, cast, Callable, Optional,  Literal, Union, NotRequired, TypedDict, Mapping, Iterator
+from .models import (
+    NonText_box_2d,
+    NonTextCluster,
+    OCRClusterResponse,
+    SplitPage,
+    TextCluster,
+)
+
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover
-    from typing_extensions import TypeAlias
+    from typing import TypeAlias
 import json
-from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, FrontendField, BackendField, LLMField,
-                DtoType,
-                BackendType,
-                FrontendType,
-                LLMType,
-                use_mode)
-from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
-from pydantic import BaseModel, Field, model_validator, field_validator, field_serializer
-from langchain_core.messages import SystemMessage, BaseMessage, HumanMessage
+
 from kogwistar.llm_tasks.providers import SupportsStructuredOutput
-from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from pydantic import (
+    BaseModel,
+    Field,
+    model_validator,
+)
+from pydantic_extension.model_slicing import (
+    DtoType,
+    ModeSlicingMixin,
+)
+from pydantic_extension.model_slicing.mixin import DtoField
+
 from .pdf2png import RawFileLoader
+from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+
 PastCompatibleSplitPage: TypeAlias = SplitPage
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
@@ -101,8 +121,8 @@ class RawOCRResponse(BaseModel):
     boxes_2d : list[box_2d] = Field(description = 'ocr text response, description of x min, y min, xmax and y max. Share id uniqueness with all non-ocr blocs')
     non_text_objects:  DtoType[list[NonText_box_2d]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts in box2d. "
                                                              "For example, if box2d list takes id 1, 2, 4, 5, non_text_objects will take up 3, 6... etc")
-    is_empty_page: DtoType[Optional[bool]] = Field(default = False, description="true if the whole page is empty without recognisable text.")
-    printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
+    is_empty_page: DtoType[bool | None] = Field(default = False, description="true if the whole page is empty without recognisable text.")
+    printed_page_number: DtoType[str | None] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
@@ -141,7 +161,7 @@ class RawOCRResponse(BaseModel):
 
 class OCRMetaResponse(BaseModel):
     "meatada of an OCR page"
-    printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
+    printed_page_number: DtoType[str | None] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
@@ -162,7 +182,7 @@ class OCRClusterResponseMetaless(ModeSlicingMixin, BaseModel):
     "response of OCR once meta is quickly skimmed/ determined in separate run"
     OCR_text_clusters: DtoType[list[TextCluster]] = Field(description="the OCR text results.")
     non_text_objects:  DtoType[list[NonText_box_2d]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
-    printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
+    printed_page_number: DtoType[str | None] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
@@ -170,7 +190,7 @@ class OCRClusterResponseMetaless(ModeSlicingMixin, BaseModel):
 class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
     boxes_2d : list[box_2d] = Field(description = 'description of x min, y min, xmax and y max')
     non_text_objects:  DtoType[list[NonText_box_2d]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
-    printed_page_number: DtoType[Optional[str]] = Field("",description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
+    printed_page_number: DtoType[str | None] = Field("",description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
@@ -428,6 +448,8 @@ def TextBoxResponsePlusMetaResponse_to_OCRClusterResponse(raw_response: TextBoxR
                                                              "cluster_number" : i['id']}) for i in non_text_blocks]
     return OCRClusterResponse.model_validate(temp)
 from .utils.langchain import GeminiCostCallbackHandler
+
+
 def refine_image_response(
     ok2: bool,
     response_dict: dict[str, Any],
@@ -751,7 +773,7 @@ def batch_gemini_ocr_image(
     gemini_key: str,
     folder: str = "split_pages",
     exist_behavior: Literal["ok", "skip", "raise", "rerun"] = "skip",
-    bounded_executor: Optional[BoundedExecutor] = None,
+    bounded_executor: BoundedExecutor | None = None,
     allowed_relative_paths: Iterable[str] | None = None,
     loader: RawFileLoader | None = None,
     ocr_callback: Callable[..., object] | None = None,

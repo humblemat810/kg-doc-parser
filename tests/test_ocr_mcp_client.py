@@ -1,15 +1,16 @@
 
-import sys
-import os
-import pytest
 import logging
-
+import os
 import pathlib
+
+import pytest
+
 if True:
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
 
 from kg_doc_parser.utils.log import SQLiteHandler
+
 if True:
     sqlite_handler = SQLiteHandler(os.path.join('.','logs', 'application_logs.db'))
     sqlite_handler.setLevel(logging.DEBUG)
@@ -17,19 +18,20 @@ if True:
     logger.debug("test's library loading")
 
 
-from typing import Optional
+
 from kogwistar.utils.cache_backend import Memory
 
 pytestmark = [pytest.mark.manual, pytest.mark.legacy]
 @pytest.mark.asyncio
 async def test_regen_doc_group_and_send_to_engine_for_storing():
+    from typing import Any
+
     from pydantic import BaseModel, Field
-    from typing import Dict, Any
     class TestDocumentDTO(BaseModel):
-        id: Optional[str] = Field(..., description="Unique document identifier")
+        id: str | None = Field(..., description="Unique document identifier")
         content: str = Field(..., description="Text content of the document")
         type: str = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
-        metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata for the document")
+        metadata: dict[str, Any] | None = Field(None, description="Additional metadata for the document")
 
     from kg_doc_parser.ocr import regen_doc_group
     graph_rag_port = 28110
@@ -62,13 +64,14 @@ async def test_regen_doc_group_and_send_to_engine_for_storing():
 
 @pytest.mark.asyncio
 async def test_regen_doc_group_and_send_to_engine_for_kg_extract():
+    from typing import Any
+
     from pydantic import BaseModel, Field
-    from typing import Dict, Any
     class TestDocumentDTO(BaseModel):
-        id: Optional[str] = Field(..., description="Unique document identifier")
+        id: str | None = Field(..., description="Unique document identifier")
         content: str = Field(..., description="Text content of the document")
         type: str = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
-        metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata for the document")
+        metadata: dict[str, Any] | None = Field(None, description="Additional metadata for the document")
 
     from ocr import regen_doc_group
     graph_rag_port = 28110

@@ -7,7 +7,6 @@ from kogwistar.llm_tasks.providers import (
     SupportsStructuredOutput,
 )
 
-
 # Keep the historical parser names as aliases, but use the core contracts as
 # the single source of truth for provider/schema compatibility.
 StructuredSchema: TypeAlias = StructuredModelLike
