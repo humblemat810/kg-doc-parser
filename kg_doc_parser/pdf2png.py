@@ -29,7 +29,11 @@ def batch_split_pdf(
     cnt = 0
     assert not ((document_folder is None) and (file_loader is None))
     class old_walker_inplace(RawFileLoader):
-        def __init__(self, walk_root = None, compare_root = None):
+        def __init__(
+            self,
+            walk_root: str | pathlib.Path | None = None,
+            compare_root: str | pathlib.Path | None = None,
+        ) -> None:
             self.walk_root: str | pathlib.Path
             if walk_root is None:
                 if document_folder:
@@ -44,7 +48,7 @@ def batch_split_pdf(
             self,
             leaf_only: bool = False,
             file_non_exist_ok: bool = False,
-            include=None,
+            include: object | None = None,
             allowed_files: list[str] | None = None,
             allowed_relative_paths: list[str] | None = None,
         ) -> Generator[str, None, None]:
@@ -289,7 +293,7 @@ def single_pdf2png(
     from concurrent.futures import ThreadPoolExecutor
 
 
-    def convert(folder_path, fname):
+    def convert(folder_path: str | pathlib.Path, fname: str | pathlib.Path) -> None:
         out_pdf_folder = fname # output folder
         page_pdf_files = [f for f in os.listdir(out_pdf_folder) if f.endswith('.pdf')]
         
