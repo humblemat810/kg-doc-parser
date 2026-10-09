@@ -2,12 +2,35 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from typing import Protocol
 
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.typing_interfaces import ReadLike, WriteLike
 
 DEFAULT_WORKFLOW_ID = "kg_doc_parser.ingest.v1"
 _LOGGER = logging.getLogger(__name__)
+
+
+class WorkflowPersistenceLike(Protocol):
+    """Minimal persistence capability required to install a workflow design."""
+
+    def exists_node(self, rid: str) -> bool: ...
+
+    def exists_edge(self, rid: str) -> bool: ...
+
+
+class WorkflowEngineLike(Protocol):
+    """Small engine seam shared by direct and server-backed parser clients."""
+
+    @property
+    def persist(self) -> WorkflowPersistenceLike: ...
+
+    @property
+    def read(self) -> ReadLike: ...
+
+    @property
+    def write(self) -> WriteLike: ...
 
 
 def _progress_bar(done: int, total: int, width: int = 20) -> str:
@@ -183,7 +206,10 @@ def build_ingest_workflow_design(
     return nodes, edges
 
 
-def ensure_ingest_workflow_design(workflow_engine, workflow_id: str = DEFAULT_WORKFLOW_ID) -> None:
+def ensure_ingest_workflow_design(
+    workflow_engine: WorkflowEngineLike,
+    workflow_id: str = DEFAULT_WORKFLOW_ID,
+) -> None:
     nodes, edges = build_ingest_workflow_design(workflow_id)
     total = len(nodes) + len(edges)
     done = 0

@@ -19,11 +19,16 @@ from collections.abc import Mapping
 from typing import Literal, Protocol, Required, TypedDict, Unpack, cast
 from uuid import uuid4
 
+from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Edge, Node
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.models import StepRunResult
 
-from .design import DEFAULT_WORKFLOW_ID, ensure_ingest_workflow_design
+from .design import (
+    DEFAULT_WORKFLOW_ID,
+    WorkflowEngineLike,
+    ensure_ingest_workflow_design,
+)
 from .models import (
     CanonicalGraphWriteResult,
     IngestRunHandle,
@@ -306,9 +311,9 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
     def __init__(
         self,
         *,
-        workflow_engine,
-        conversation_engine,
-        knowledge_engine=None,
+        workflow_engine: WorkflowEngineLike,
+        conversation_engine: WorkflowEngineLike,
+        knowledge_engine: WorkflowEngineLike | None = None,
     ) -> None:
         self.workflow_engine = workflow_engine
         self.conversation_engine = conversation_engine
@@ -328,8 +333,8 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
 
         probe = _workflow_probe(deps)
         runtime = build_runtime(
-            workflow_engine=self.workflow_engine,
-            conversation_engine=self.conversation_engine,
+            workflow_engine=cast(GraphKnowledgeEngine, self.workflow_engine),
+            conversation_engine=cast(GraphKnowledgeEngine, self.conversation_engine),
             deps={
                 "knowledge_engine": self.knowledge_engine,
                 "persistence_mode": "local_debug",
@@ -410,8 +415,8 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
         deps = dict(raw_deps) if isinstance(raw_deps, Mapping) else {}
         probe = _workflow_probe(deps)
         runtime = build_runtime(
-            workflow_engine=self.workflow_engine,
-            conversation_engine=self.conversation_engine,
+            workflow_engine=cast(GraphKnowledgeEngine, self.workflow_engine),
+            conversation_engine=cast(GraphKnowledgeEngine, self.conversation_engine),
             deps={
                 "knowledge_engine": self.knowledge_engine,
                 "persistence_mode": "local_debug",
@@ -512,8 +517,8 @@ class ServerCanonicalKgClient(IngestExecutionClient):
     def __init__(
         self,
         *,
-        workflow_engine,
-        conversation_engine,
+        workflow_engine: WorkflowEngineLike,
+        conversation_engine: WorkflowEngineLike,
         persistence_client: CanonicalGraphPersistenceClient,
     ) -> None:
         self.workflow_engine = workflow_engine
@@ -538,8 +543,8 @@ class ServerCanonicalKgClient(IngestExecutionClient):
 
         probe = _workflow_probe(deps)
         runtime = build_runtime(
-            workflow_engine=self.workflow_engine,
-            conversation_engine=self.conversation_engine,
+            workflow_engine=cast(GraphKnowledgeEngine, self.workflow_engine),
+            conversation_engine=cast(GraphKnowledgeEngine, self.conversation_engine),
             deps={
                 "knowledge_engine": None,
                 "persistence_mode": "server_canonical",
