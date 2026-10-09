@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Literal
 
 from kogwistar.id_provider import stable_id
@@ -61,7 +62,7 @@ SemanticNode.model_rebuild()
 
 def correct_and_validate_pointer(
     pointer: HydratedTextPointer,
-    source_map: dict[str, dict[str, JsonValue]],
+    source_map: Mapping[str, Mapping[str, object]],
 ) -> HydratedTextPointer | None:
     source = source_map.get(pointer.source_cluster_id)
     if source is None:
@@ -104,7 +105,7 @@ def correct_and_validate_pointer(
 
 def pointer_source_validation_error(
     pointer: HydratedTextPointer,
-    source_map: dict[str, dict[str, JsonValue]],
+    source_map: Mapping[str, Mapping[str, object]],
 ) -> str | None:
     """Return a deterministic error when a pointer is not source-grounded.
 
@@ -133,7 +134,7 @@ def pointer_source_validation_error(
 
 def compute_pointer_coverage(
     root_node: SemanticNode,
-    source_map: dict[str, dict[str, JsonValue]],
+    source_map: Mapping[str, Mapping[str, object]],
 ) -> dict[str, JsonValue]:
     def _meaningful_length(value: str) -> int:
         return sum(1 for char in value if not char.isspace())
@@ -191,7 +192,7 @@ def compute_pointer_coverage(
 
 def compute_terminal_content_coverage(
     root_node: SemanticNode,
-    source_map: dict[str, dict[str, JsonValue]],
+    source_map: Mapping[str, Mapping[str, object]],
 ) -> dict[str, JsonValue]:
     """Measure exact ownership by terminal content nodes.
 
