@@ -115,6 +115,35 @@ class SourceCollectionLike(Protocol):
     @property
     def title(self) -> str: ...
 
+class SourceUnitLike(Protocol):
+    """Minimum source-unit shape needed by deterministic fallback parsing."""
+
+    @property
+    def unit_id(self) -> str | None: ...
+
+    @property
+    def cluster_number(self) -> int | None: ...
+
+    @property
+    def text(self) -> str | None: ...
+
+
+class SourcePageLike(Protocol):
+    """Minimum page shape needed by deterministic fallback parsing."""
+
+    @property
+    def page_number(self) -> int: ...
+
+    @property
+    def units(self) -> Sequence[SourceUnitLike]: ...
+
+
+class SourceCollectionWithPagesLike(SourceCollectionLike, Protocol):
+    """Collection shape required by page-aware deterministic fallback parsing."""
+
+    @property
+    def pages(self) -> Sequence[SourcePageLike]: ...
+
 
 class _NodeWithOptionalId(Protocol):
     @property

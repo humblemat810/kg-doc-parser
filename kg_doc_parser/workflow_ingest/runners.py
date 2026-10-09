@@ -27,8 +27,11 @@ from .ocr_pipeline import (
 )
 from .page_index import PageIndexParseResult, PageIndexSourceFormat
 from .parser_core import (
+    ParserPayload,
+    ParserSourceMap,
     ParseSemanticFn,
     SourceCollectionLike,
+    SourceCollectionWithPagesLike,
     default_parse_semantic_fn,
 )
 from .parsing import parse_page_index_document, parse_tree_document
@@ -77,9 +80,9 @@ class LayerwiseWorkflowCommandResult(WorkflowCommandResult):
 
 def _fallback_parse_semantic_fn(
     *,
-    collection,
-    parser_input_dict: dict[str, object],
-    parser_source_map: dict[str, dict[str, object]],
+    collection: SourceCollectionWithPagesLike,
+    parser_input_dict: ParserPayload,
+    parser_source_map: ParserSourceMap,
 ) -> SemanticNode:
     root = SemanticNode(
         title=collection.title,
