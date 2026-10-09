@@ -22,7 +22,6 @@ from .providers import (
 ParseStrategy = Literal["layer_excerpt", "layer_boundary", "page_index"]
 ParseStrategyRequest = Literal["auto", "layer_excerpt", "layer_boundary", "page_index"]
 ParseStrategySource = Literal["config", "hardcoded_fallback", "llm_triage", "llm_triage_fallback"]
-JsonObject = dict[str, JsonValue]
 
 HARD_CODED_STRATEGY_PRIORITY: tuple[ParseStrategy, ...] = (
     "layer_excerpt",
@@ -152,7 +151,7 @@ def build_llm_strategy_triage(
     structured = chat.with_structured_output(ParseStrategyTriage, include_raw=True)
 
     def _triage(context: Mapping[str, JsonValue]) -> ParseStrategyTriage:
-        diagnostics: JsonObject = {}
+        diagnostics: dict[str, object] = {}
         try:
             response = invoke_with_timeout(
                 lambda: structured.invoke(

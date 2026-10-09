@@ -13,11 +13,12 @@ def _utc_now() -> str:
 
 
 def _jsonable(value: object) -> object:
-    if hasattr(value, "model_dump"):
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
         try:
-            return value.model_dump(field_mode="backend", dump_format="json")
+            return model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return value.model_dump()
+            return model_dump()
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
@@ -44,7 +45,10 @@ class WorkflowProbe:
         self._sys_monitoring: _SysMonitoringState | None = None
 
     def emit(self, kind: str, /, **payload: object) -> None:
-        event = {"ts": _utc_now(), "kind": str(kind), **_jsonable(payload)}
+        normalized_payload = _jsonable(payload)
+        event: dict[str, object] = {"ts": _utc_now(), "kind": str(kind)}
+        if isinstance(normalized_payload, dict):
+            event.update({str(key): value for key, value in normalized_payload.items()})
         line = json.dumps(event, ensure_ascii=True)
         with self._lock:
             with self.path.open("a", encoding="utf-8") as fh:

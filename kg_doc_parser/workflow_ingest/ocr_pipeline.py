@@ -71,6 +71,12 @@ _LOGGER = logging.getLogger(__name__)
 JsonObject = dict[str, JsonValue]
 
 
+def _json_object(value: object) -> JsonObject:
+    if isinstance(value, dict):
+        return cast(JsonObject, value)
+    return {}
+
+
 class OCRImagePayload(BaseModel):
     """Single OCR page input.
 
@@ -672,8 +678,12 @@ class OCRWorkflowStateStore:
         rebuilt_any = False
         progress_payload: JsonObject = {}
         if progress_path.exists():
-            progress_payload = json.loads(progress_path.read_text(encoding="utf-8"))
+            progress_payload = _json_object(
+                json.loads(progress_path.read_text(encoding="utf-8"))
+            )
         progress_pages = progress_payload.get("pages", {})
+        if not isinstance(progress_pages, dict):
+            progress_pages = {}
         for page_number, path in _scan_rendered_pages(rendered_dir):
             rebuilt_any = True
             self._upsert_page_state(
@@ -691,7 +701,9 @@ class OCRWorkflowStateStore:
             content_hash = None
             record = progress_pages.get(str(page_number))
             if isinstance(record, dict):
-                content_hash = record.get("image_sha256")
+                candidate_hash = record.get("image_sha256")
+                if isinstance(candidate_hash, str):
+                    content_hash = candidate_hash
             if content_hash is None:
                 content_hash = _find_matching_render_hash(rendered_dir, legacy_dir, page_number)
             rebuilt_any = True
@@ -1385,7 +1397,7 @@ def _write_summary(
     provider_settings: WorkflowProviderSettings,
     state_store: OCRWorkflowStateStore,
 ) -> None:
-    payload: JsonObject = {
+    payload: dict[str, object] = {
         "document_id": document_id,
         "ocr_provider": provider_settings.ocr.provider,
         "ocr_model": provider_settings.ocr.model,
