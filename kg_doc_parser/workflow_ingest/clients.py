@@ -62,11 +62,18 @@ class HttpResponseLike(Protocol):
 class HttpClientLike(Protocol):
     """HTTP client boundary used by server-backed graph persistence.
 
-    The keyword payload remains opaque because transports such as ``httpx``
-    and ``requests`` expose different concrete request types.
+    The demo and production adapters only send one JSON document.  Keeping
+    that narrow request shape avoids pretending every transport keyword is
+    interchangeable while remaining compatible with ``httpx`` and
+    ``requests`` clients.
     """
 
-    def post(self, endpoint: str, **kwargs: object) -> HttpResponseLike: ...
+    def post(
+        self,
+        url: str,
+        *,
+        json: JsonValue | None = None,
+    ) -> HttpResponseLike: ...
 
 
 def _ingest_status(value: str) -> IngestStatus:

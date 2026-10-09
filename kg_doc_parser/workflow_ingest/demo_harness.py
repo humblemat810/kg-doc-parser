@@ -27,8 +27,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
+from kogwistar.json_types import JsonValue
+
 from .cache import WorkflowLLMCallCache
-from .clients import DocumentTreeApiPersistenceClient, ServerCanonicalKgClient
+from .clients import (
+    DocumentTreeApiPersistenceClient,
+    HttpClientLike,
+    ServerCanonicalKgClient,
+)
 from .models import (
     CurrentLayerResult,
     CurrentLayerReview,
@@ -45,22 +51,8 @@ _DEMO_JWT_SECRET = "kg-doc-parser-demo-test-secret"
 _LOGGER = logging.getLogger(__name__)
 
 
-class DemoResponseLike(Protocol):
-    """Small response surface shared by the demo HTTP clients."""
-
-    status_code: int
-    text: str
-    ok: bool
-
-    def raise_for_status(self) -> None: ...
-
-
-class DemoHttpClientLike(Protocol):
+class DemoHttpClientLike(HttpClientLike, Protocol):
     """HTTP client surface used by the demo server and persistence helpers."""
-
-    def get(self, url: str, **kwargs: object) -> DemoResponseLike: ...
-
-    def post(self, url: str, **kwargs: object) -> DemoResponseLike: ...
 
     def close(self) -> None: ...
 
@@ -371,7 +363,7 @@ def _seed_demo_document(server_ctx: _ServerContext, *, document_id: str, text: s
     The generic tree-upsert route validates span excerpts against stored document
     content, so the demo must seed the raw document first.
     """
-    payload = {
+    payload: dict[str, JsonValue] = {
         "doc_id": document_id,
         "doc_type": "text",
         "insertion_method": "demo_harness",
