@@ -20,6 +20,7 @@ from .probe import WorkflowProbe
 from .providers import WorkflowProviderSettings
 from .runners import (
     _fallback_parse_semantic_fn,
+    WorkflowCommandResult,
     build_legacy_parse_semantic_fn,
     run_demo_harness_workflow,
     run_layerwise_batch_workflow,
@@ -152,7 +153,7 @@ def _add_provider_args(parser: argparse.ArgumentParser) -> None:
     group.add_argument("--parser-api-key-env", default=None)
 
 
-def _emit_result(result) -> None:
+def _emit_result(result: WorkflowCommandResult) -> None:
     payload = {
         "kind": result.kind,
         "input_path": str(result.input_path),
@@ -165,7 +166,7 @@ def _emit_result(result) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
-def _emit_result_list(results) -> None:
+def _emit_result_list(results: Iterable[WorkflowCommandResult]) -> None:
     print(
         json.dumps(
             [

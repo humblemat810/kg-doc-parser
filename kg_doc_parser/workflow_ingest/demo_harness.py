@@ -25,6 +25,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import TracebackType
 from typing import Literal, Protocol
 
 from kogwistar.json_types import JsonValue
@@ -36,6 +37,7 @@ from .clients import (
     ServerCanonicalKgClient,
 )
 from .models import (
+    CurrentLayerContext,
     CurrentLayerResult,
     CurrentLayerReview,
     LayerChildCandidate,
@@ -111,7 +113,12 @@ class _ServerContext(AbstractContextManager[bool]):
         self.base_url = base_url
         self._cleanup = cleanup
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         if self._cleanup is not None:
             self._cleanup(exc_type, exc, tb)
         return False
@@ -158,7 +165,11 @@ def _load_isolated_server_app(server_data_dir: Path) -> _ServerContext:
         restore_env()
         raise
 
-    def cleanup(exc_type, exc, tb) -> None:
+    def cleanup(
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         try:
             client.__exit__(exc_type, exc, tb)
         finally:
@@ -295,7 +306,9 @@ def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, object]:
             verbatim_text=fragment,
         )
 
-    def _propose_layer_fn(*, current_layer_context, **kwargs) -> CurrentLayerResult:
+    def _propose_layer_fn(
+        *, current_layer_context: CurrentLayerContext, **kwargs: object
+    ) -> CurrentLayerResult:
         if current_layer_context.depth == 0:
             return CurrentLayerResult(
                 children=[
@@ -331,7 +344,9 @@ def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, object]:
             ],
         )
 
-    def _review_layer_fn(*, current_layer_result, **kwargs) -> CurrentLayerReview:
+    def _review_layer_fn(
+        *, current_layer_result: CurrentLayerResult, **kwargs: object
+    ) -> CurrentLayerReview:
         return CurrentLayerReview(
             updated_result=current_layer_result.model_copy(update={"satisfied": True}),
             coverage_ok=True,

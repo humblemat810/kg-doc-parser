@@ -148,11 +148,11 @@ class SplitPage(OCRClusterResponseBc):
     pdf_page_num: int
     metadata: SplitPageMeta
     refined_version: OCRClusterResponse[DtoField] | None = Field(default = None, description = "refined processed/ grouped/ merged version of ocr text clusters. ")
-    def model_dump(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:
+    def model_dump(self, *arg: object, **kwarg: object) -> dict[str, Any]:
         return self.to_doc()
-    def dump_raw(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:
+    def dump_raw(self, *arg: object, **kwarg: object) -> dict[str, Any]:
         return super(SplitPage, self).model_dump(exclude = ["refined_version"], *arg, **kwarg)
-    def dump_supercede_parse(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:
+    def dump_supercede_parse(self, *arg: object, **kwarg: object) -> dict[str, Any]:
         return super(SplitPage, self).model_dump(exclude = ["refined_version", "metadata"], *arg, **kwarg)
     @model_validator(mode="after")
     def roundtrip_invariant(self, info: ValidationInfo) -> "SplitPage":

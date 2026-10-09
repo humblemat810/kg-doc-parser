@@ -189,8 +189,8 @@ def parse_ocr_document(
     provider_settings: WorkflowProviderSettings | None = None,
     provider: str | None = None,
     model: str | None = None,
-    ocr_runner=None,
-    pdf_rasterizer=None,
+    ocr_runner: OCRRunner | None = None,
+    pdf_rasterizer: PDFRasterizer | None = None,
     ocr_candidate_models: Sequence[str] | None = None,
     probe: WorkflowProbe | None = None,
 ) -> OCRWorkflowArtifacts:

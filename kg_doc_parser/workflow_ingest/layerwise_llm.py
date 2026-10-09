@@ -2730,12 +2730,12 @@ def build_layerwise_llm_callbacks(
 
     def _review_layer_fn(
         *,
-        current_layer_context,
-        current_layer_result,
-        split_strategy,
-        parser_source_map=None,
-        parse_session=None,
-        **kwargs,
+        current_layer_context: CurrentLayerContext,
+        current_layer_result: CurrentLayerResult,
+        split_strategy: SplitStrategy,
+        parser_source_map: ParserSourceMap | None = None,
+        parse_session: ParseSessionState | None = None,
+        **kwargs: object,
     ) -> CurrentLayerReview:
         review_payload = {
             "task": "Review the current semantic layer proposal for layerwise correctness and source-grounded coverage.",
