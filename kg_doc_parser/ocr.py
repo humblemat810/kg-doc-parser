@@ -12,6 +12,7 @@ from typing import (
     Any,
     Literal,
     NotRequired,
+    Self,
     TypedDict,
     cast,
 )
@@ -49,6 +50,7 @@ from pydantic_extension.model_slicing.mixin import DtoField
 
 from .pdf2png import RawFileLoader
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+from .utils.langchain import GeminiCostCallbackHandler, get_gemini_callback_cost
 
 PastCompatibleSplitPage: TypeAlias = SplitPage
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -99,7 +101,7 @@ def regen_doc(folder_path: str, use_raw: bool = False) -> list[JsonObject]:
         try:
             pages.append(get_page_json(folder_path, pn))
             split_pages.append(regen_page(pages[-1], use_raw = use_raw))
-        except Exception as e:
+        except Exception:
             print(f'error at page {pn}')
             print(f'in file {folder_path}')
             logger.error(f'error at page {pn}')
@@ -146,7 +148,7 @@ class RawOCRResponse(BaseModel):
     #                                                         "Share id uniqueness with OCR text boxes_2d. ")
     
     @model_validator(mode='after')
-    def check_cluster_meaningful_ordering_agreement(self):
+    def check_cluster_meaningful_ordering_agreement(self) -> Self:
         assert bool(self.is_empty_page) ^ (len(self.boxes_2d) > 0), f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters len={len(self.boxes_2d)}"
         overlap_id = set(i.id for i in self.non_text_objects).union(set(i.id for i in self.boxes_2d))
         if not len([i.id for i in (self.non_text_objects + self.boxes_2d)]) == len(set(i.id for i in self.non_text_objects + self.boxes_2d)):
@@ -202,8 +204,16 @@ def _raw_content(value: object) -> object | None:
     return content if content is not None else value
 
 
-def get_first_round_response(draft_responses: dict[str, str], llm: SupportsStructuredOutput, model_name: str, cb: BaseCallbackHandler,
-                             messages: list[BaseMessage], sys_message, img_message, usage_metadata) -> OCRClusterResponse | None:
+def get_first_round_response(
+    draft_responses: dict[str, str],
+    llm: SupportsStructuredOutput,
+    model_name: str,
+    cb: BaseCallbackHandler,
+    messages: list[BaseMessage],
+    sys_message: BaseMessage,
+    img_message: BaseMessage,
+    usage_metadata: list[object],
+) -> OCRClusterResponse | None:
     
                     chain = build_structured_output_runnable(llm, RawOCRResponse, include_raw=True)
                     before_parse = cast(Runnable, chain.steps[0])
@@ -230,7 +240,7 @@ def get_first_round_response(draft_responses: dict[str, str], llm: SupportsStruc
                             temp = json.loads(payload)
                             response1 = RawOCRResponse.model_validate(temp)
                             
-                        except:
+                        except Exception:
                             pass
                     if response1 is not None:
                         response = RawOCRResponse_to_OCRClusterResponse(response1)
@@ -261,7 +271,7 @@ def get_first_round_response(draft_responses: dict[str, str], llm: SupportsStruc
                                 if not isinstance(raw, (str, bytes, bytearray)):
                                     raise TypeError("raw OCR response did not contain JSON text")
                                 raw_ocr_response = RawOCRResponse.model_validate(json.loads(raw))
-                            except:
+                            except Exception:
                                 pass
                         if raw_ocr_response is not None:
                             response = RawOCRResponse_to_OCRClusterResponse(raw_ocr_response)
@@ -300,7 +310,6 @@ def validate_response_mutate_inplace(
                         try:
                             sp.to_doc()
                             response_dict.update(response_dict_local)
-                            ok = True
                         except Exception as e:
                             logger.error(f"Generated json fail to reproduce doc, file name = {image_file_path}, {model_name=}")
                             logger.error(e)
@@ -345,7 +354,6 @@ def final_resort(draft_responses: dict[str, str], messages: list[BaseMessage], p
                         max_v = ""
                         for k, v in draft_responses.items():
                             if len(v) > len(max_v):
-                                max_k = k,
                                 max_v = v
                         earlier_partial_ocr = draft_responses.get("gemini-2.5-pro") or draft_responses.get("gemini-2.5-flash") or max_v
                         llm = _build_ocr_llm("gemini-2.5-pro", callbacks=[cb])
@@ -422,7 +430,6 @@ def final_resort(draft_responses: dict[str, str], messages: list[BaseMessage], p
                                         sp = SplitPage(**response_dict)
                                     try:
                                         sp.to_doc()
-                                        ok = True
                                     except Exception as _e:
                                         raise Exception("Validation error response_dict cannot be validate into SplitPage")
                                 except  Exception as _e:
@@ -447,9 +454,6 @@ def TextBoxResponsePlusMetaResponse_to_OCRClusterResponse(raw_response: TextBoxR
                                                              "bb_x_max" : i['bounding_box'][3],
                                                              "cluster_number" : i['id']}) for i in non_text_blocks]
     return OCRClusterResponse.model_validate(temp)
-from .utils.langchain import GeminiCostCallbackHandler
-
-
 def refine_image_response(
     ok2: bool,
     response_dict: dict[str, Any],
@@ -543,10 +547,14 @@ def get_messages(image_file_path: str) -> tuple[SystemMessage, HumanMessage]:
                 ],
             )
             return sys_message, img_message
-def ocr_single_image(gemini_key: str, page_file_name, file_name, 
-                     folder, # out folder
-                     model_retry_priority_list : None | list[str],
-                     exist_behavior: Literal["ok", "skip", "raise", 'rerun']  = 'skip'):
+def ocr_single_image(
+    gemini_key: str,
+    page_file_name: str,
+    file_name: str,
+    folder: str,
+    model_retry_priority_list: None | list[str],
+    exist_behavior: Literal["ok", "skip", "raise", "rerun"] = "skip",
+) -> None:
     ok2 = False # stage 2 ok
     outfile_name = os.path.join(folder,file_name, page_file_name.rsplit('.',1)[0] + '.json')
     if os.path.exists(outfile_name):
@@ -576,7 +584,6 @@ def ocr_single_image(gemini_key: str, page_file_name, file_name,
     ok = False
     i_model = 0
     usage_metadata = []
-    from .utils.langchain import get_gemini_callback_cost
     response_dict: dict = {}
     image_file_path: str = os.path.join(folder, file_name, page_file_name)
     with get_gemini_callback_cost() as cb:
@@ -651,16 +658,16 @@ def refine_table_ocr(
         try:
             
             oc_refined_result: OCRRefineResponse
-            raw: str
+            _raw: str
             parsing_error: Exception
             temp: dict = cast(dict, build_structured_output_runnable(llm, OCRRefineResponse, include_raw=True).invoke(messages, config={"callbacks": [cb]}))
-            (raw, oc_refined_result, parsing_error) = (temp['raw'], temp['parsed'], temp['parsing_error'])
+            (_raw, oc_refined_result, parsing_error) = (temp['raw'], temp['parsed'], temp['parsing_error'])
             if parsing_error:
                 raise parsing_error
             text_before = [i.text for i in sp.OCR_text_clusters]
             text_after = ' '.join([i.text for i in oc_refined_result.OCR_text_clusters])
             from rapidfuzz import fuzz
-            def get_threshold(text_before):
+            def get_threshold(text_before: str) -> int:
                 if len(text_before) < 30:
                     threshold = 100
                 elif len(text_before) < 60:
@@ -748,7 +755,7 @@ def get_legacy_loader_like(
         else:
             # fix for non flat later cases tree structure
             allowed_files = allowed_relative_paths
-        def local_loader():
+        def local_loader() -> Iterator[str]:
             for root, dirs, files  in os.walk(folder):
                 import pathlib
                 if root==folder:
