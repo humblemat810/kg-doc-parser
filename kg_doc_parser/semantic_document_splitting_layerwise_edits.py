@@ -510,7 +510,7 @@ class SemanticNode(BaseModel):
         nodes: list[dict[str, Any]] = []
         edges: list[dict[str, Any]] = []
 
-        def walk(node: 'SemanticNode'):
+        def walk(node: "SemanticNode") -> None:
             # add node
             nodes.append(
                 node.to_kg_node(
@@ -1144,7 +1144,14 @@ def parser_llm_cache_terminal_correction(fn: Callable[P, R]) -> Callable[P, R]:
 
 
 @parser_llm_cache
-def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set):
+def retried_level_node_llm_parsing(
+    model_names: list[str],
+    nodes_at_level: list[SemanticNode],
+    messages: list[BaseMessage],
+    doc_id: str,
+    event_name: str,
+    parent_node_id_set: set[str],
+) -> dict[str, Any]:
         
         i_model = 0
         while True:
@@ -1173,7 +1180,7 @@ def retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id
                             raise response['parsing_error']
                         parsed: LLMLevelResponse[llm] = response['parsed']
                         assert all(i.parent_node_id in parent_node_id_set for i in parsed.children), "llm generated non existed parent id"
-                        return response['parsed'].model_dump()
+                        return cast(LLMLevelResponse, response["parsed"]).model_dump()
                     except Exception as e:
                         err_msg = str(e)
                         messages.append(SystemMessage((("error: " + err_msg[:10000] + '...' + err_msg[-2000:]) if len(err_msg)>=12000 else err_msg)))
@@ -1243,10 +1250,21 @@ def level_node_llm_parsing(
         ),
         HumanMessage(final_prompt),
     ]
-    return retried_level_node_llm_parsing(model_names, nodes_at_level, messages, doc_id, event_name, parent_node_id_set)
+    return LLMLevelResponse.model_validate(
+        retried_level_node_llm_parsing(
+            model_names,
+            nodes_at_level,
+            messages,
+            doc_id,
+            event_name,
+            parent_node_id_set,
+        )
+    )
 
 @_cache_function
-def get_node(pid, child_def, parent_level: int):
+def get_node(
+    pid: UUID | str | None, child_def: object, parent_level: int
+) -> dict[str, Any]:
     # child_def: Union[LLMChildNodeResponse, LLMChildNodeResponseBE].model_dump()
     child_def_obj: LLMChildNodeResponseBE = LLMChildNodeResponseBE.model_validate(child_def)
     absolute_pointers = child_def_obj.pointers
@@ -1263,7 +1281,7 @@ def get_node(pid, child_def, parent_level: int):
             str(parent_level + 1),
             pointer_fp,
         ),
-        parent_id=pid,
+        parent_id=cast(UUID | None, pid),
         title=child_def_obj.title,
         node_type=child_def_obj.node_type,
         total_content_pointers=absolute_pointers,
@@ -1273,7 +1291,9 @@ def get_node(pid, child_def, parent_level: int):
     )
     return child_node.model_dump()            
 @_cache_function
-def get_root_node(title, source_map):
+def get_root_node(
+    title: str, source_map: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
     # root_node = SemanticNode(
     #     title=title,
     #     node_type="DOCUMENT_ROOT",
@@ -1303,13 +1323,13 @@ def get_root_node(title, source_map):
     )
     return root_node.model_dump()
 
-def _schema_guard(parent, child) -> bool:
+def _schema_guard(parent: SemanticNode, child: SemanticNode) -> bool:
     # Disallow KEY_VALUE_PAIR directly under KEY_VALUE_PAIR
     if parent.node_type == "KEY_VALUE_PAIR" and child.node_type == "KEY_VALUE_PAIR":
         return False
     return True
 
-def _normalize_child_type(parent, child):
+def _normalize_child_type(parent: SemanticNode, child: SemanticNode) -> SemanticNode:
     if parent.node_type == "KEY_VALUE_PAIR" and child.node_type == "KEY_VALUE_PAIR":
         child.node_type = "TEXT_FLOW"  # coerce value to text fragment
     return child
@@ -1319,7 +1339,7 @@ def build_document_tree(
                 llm_input_dict: dict,
                 source_map: dict,
                 max_depth: int = 10,
-                allow_review = True,
+                allow_review: bool = True,
                 parsing_mode: Literal["snippet", "delimiter"] = "snippet",
                 model_names: list[str] | None = None,
                 ) -> SemanticNode:
@@ -1387,7 +1407,7 @@ def build_document_tree(
             level=current_depth,
         )
         @memory_cached(memory)
-        def get_level_response(llm_response_json) -> dict[str, Any]:
+        def get_level_response(llm_response_json: object) -> dict[str, Any]:
             response_cacheable = LLMLevelResponseBE.model_validate(llm_response_json).model_dump() # only dumped version cacheable by joblib
             return response_cacheable
         response_cacheable = get_level_response(llm_response_json)
