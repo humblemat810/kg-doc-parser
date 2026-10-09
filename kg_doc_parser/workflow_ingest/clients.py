@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, Required, TypedDict, Unpack, cast
 from uuid import uuid4
 
 from kogwistar.engine_core.models import Edge, Node
@@ -40,6 +40,24 @@ class UnsupportedClientOperation(RuntimeError):
 
 IngestStatus = Literal["succeeded", "failed", "failure", "suspended"]
 JsonObject = dict[str, JsonValue]
+
+
+class ResumeIngestArguments(TypedDict, total=False):
+    """Named arguments accepted by checkpoint-resume adapters.
+
+    The fields remain optional because the server-backed adapter deliberately
+    rejects resume before inspecting the payload, while the direct adapter
+    validates the required fields when it actually resumes a run.
+    """
+
+    run_id: Required[str]
+    suspended_node_id: Required[str]
+    suspended_token_id: Required[str]
+    client_result: Required[StepRunResult]
+    workflow_id: Required[str]
+    conversation_id: Required[str]
+    turn_node_id: Required[str]
+    deps: dict[str, object]
 
 
 def _workflow_probe(deps: Mapping[str, object] | None) -> WorkflowProbe | None:
@@ -264,7 +282,9 @@ class IngestExecutionClient(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
+    def resume_ingest(
+        self, **kwargs: Unpack[ResumeIngestArguments]
+    ) -> IngestRunResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -381,7 +401,9 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             final_state=_state_json(run.final_state),
         )
 
-    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
+    def resume_ingest(
+        self, **kwargs: Unpack[ResumeIngestArguments]
+    ) -> IngestRunResult:
         from .service import build_runtime
 
         raw_deps = kwargs.pop("deps", None)
@@ -565,7 +587,9 @@ class ServerCanonicalKgClient(IngestExecutionClient):
             final_state=_state_json(run.final_state),
         )
 
-    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
+    def resume_ingest(
+        self, **kwargs: Unpack[ResumeIngestArguments]
+    ) -> IngestRunResult:
         raise UnsupportedClientOperation(
             "remote/server-backed runtime resume is not implemented in this repo"
         )
