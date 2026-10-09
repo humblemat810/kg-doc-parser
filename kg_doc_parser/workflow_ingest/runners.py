@@ -13,7 +13,9 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
 from .ocr_pipeline import (
@@ -34,6 +36,9 @@ from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
 from .semantics import HydratedTextPointer, SemanticNode
 from .service import build_default_engines
+
+if TYPE_CHECKING:
+    from ..semantic_document_splitting_layerwise_edits import SemanticNode as LegacySemanticNode
 
 SupportedOCRInput = Literal["image", "pdf"]
 SupportedPageIndexInput = Literal["text", "markdown"]
@@ -65,7 +70,7 @@ class PageIndexWorkflowCommandResult(WorkflowCommandResult):
 
 @dataclass(slots=True)
 class LayerwiseWorkflowCommandResult(WorkflowCommandResult):
-    tree: SemanticNode | None = None
+    tree: LegacySemanticNode | None = None
     source_map: dict[str, dict[str, object]] | None = None
     graph_payload: dict[str, object] | None = None
 
@@ -232,9 +237,9 @@ def run_ocr_source_workflow(
     ocr_runner: OCRRunner | None = None,
     pdf_rasterizer: PDFRasterizer | None = None,
     ocr_candidate_models: Sequence[str] | None = None,
-    workflow_engine: object | None = None,
-    conversation_engine: object | None = None,
-    knowledge_engine: object | None = None,
+    workflow_engine: GraphKnowledgeEngine | None = None,
+    conversation_engine: GraphKnowledgeEngine | None = None,
+    knowledge_engine: GraphKnowledgeEngine | None = None,
     probe: WorkflowProbe | None = None,
     deps: Mapping[str, object] | None = None,
     document_id: str | None = None,
@@ -323,9 +328,9 @@ def run_ocr_batch_workflow(
     ocr_runner: OCRRunner | None = None,
     pdf_rasterizer: PDFRasterizer | None = None,
     ocr_candidate_models: Sequence[str] | None = None,
-    workflow_engine: object | None = None,
-    conversation_engine: object | None = None,
-    knowledge_engine: object | None = None,
+    workflow_engine: GraphKnowledgeEngine | None = None,
+    conversation_engine: GraphKnowledgeEngine | None = None,
+    knowledge_engine: GraphKnowledgeEngine | None = None,
     probe: WorkflowProbe | None = None,
     deps: Mapping[str, object] | None = None,
 ) -> list[OcrWorkflowCommandResult]:
@@ -492,7 +497,9 @@ def run_layerwise_source_workflow(
         semantic_tree_to_kge_payload as legacy_semantic_tree_to_kge_payload,
     )
 
-    raw_doc = {source_path.name: regen_doc(str(source_path), use_raw=True)}
+    raw_doc: dict[str, object] = {
+        source_path.name: regen_doc(str(source_path), use_raw=True)
+    }
     tree, source_map = parse_tree_document(
         doc_id=source_path.name,
         raw_doc_dict=raw_doc,
