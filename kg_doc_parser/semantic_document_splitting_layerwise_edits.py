@@ -962,7 +962,7 @@ def _parser_llm_cache_path(cache_key: str) -> Path:
     return cache_root / cache_key[:2] / f"{cache_key}.joblib"
 
 
-def _load_committed_parser_llm_result(cache_key: str) -> tuple[bool, Any]:
+def _load_committed_parser_llm_result(cache_key: str) -> tuple[bool, object]:
     cache_path = _parser_llm_cache_path(cache_key)
     if not cache_path.is_file():
         return False, None
@@ -978,7 +978,7 @@ def _load_committed_parser_llm_result(cache_key: str) -> tuple[bool, Any]:
         return False, None
 
 
-def _store_committed_parser_llm_result(cache_key: str, value: Any) -> None:
+def _store_committed_parser_llm_result(cache_key: str, value: object) -> None:
     """Atomically publish a result only after the enclosing ingest succeeds."""
 
     cache_path = _parser_llm_cache_path(cache_key)
@@ -1008,16 +1008,16 @@ class ParserLlmCacheTransaction:
     poison a later retry.
     """
 
-    _staged: dict[str, Any]
+    _staged: dict[str, object]
     _promoted: bool = False
 
-    def lookup(self, cache_key: str) -> tuple[str, Any]:
+    def lookup(self, cache_key: str) -> tuple[str, object]:
         if cache_key in self._staged:
             return "staged", self._staged[cache_key]
         found, value = _load_committed_parser_llm_result(cache_key)
         return ("committed", value) if found else ("miss", None)
 
-    def stage(self, cache_key: str, value: Any) -> None:
+    def stage(self, cache_key: str, value: object) -> None:
         self._staged[cache_key] = value
 
     def promote(self) -> int:
@@ -3104,11 +3104,11 @@ def print_tree(node: SemanticNode, indent: str = "") -> None:
 @parser_llm_cache
 def parse_doc(
     doc_id: str,
-    raw_doc_dict,
+    raw_doc_dict: dict[str, object],
     parsing_mode: Literal["snippet", "delimiter"] = "snippet",
     max_depth: int = 10,
     model_names: list[str] | None = None,
-):
+) -> tuple[SemanticNode, dict[str, dict]]:
     
     
     try:
@@ -3216,7 +3216,9 @@ def semantic_tree_to_kge_payload(
             }
             for p in ptrs
         ]
-    def _spans_to_groundings_to_mentions(spans: list[dict]):
+    def _spans_to_groundings_to_mentions(
+        spans: list[dict[str, Any]],
+    ) -> list[dict[str, list[dict[str, Any]]]]:
         groundings = {'spans' : spans}
         mentions = [groundings]
         return mentions
@@ -3237,7 +3239,7 @@ def semantic_tree_to_kge_payload(
                 "source_cluster_id": p.source_cluster_id,
                 "verification": None
             } for p in ptrs]
-    def walk(node: "SemanticNode"):
+    def walk(node: "SemanticNode") -> None:
         ptrs = list(node.total_content_pointers)
         pointers_payload = [p.model_dump(field_mode = 'backend') for p in ptrs]
 
@@ -3304,7 +3306,9 @@ def semantic_tree_to_kge_payload(
 from collections import defaultdict
 
 
-def _extract_pointers_from_mentions(mentions: list[dict[str, list[dict]]]):
+def _extract_pointers_from_mentions(
+    mentions: list[dict[str, list[dict[str, Any]]]],
+) -> list[HydratedTextPointer]:
     if len(mentions) > 1 :
         raise Exception("unsupported multiple mentions")
     mention = mentions[0]
@@ -3331,7 +3335,9 @@ def _extract_pointers_from_mentions(mentions: list[dict[str, list[dict]]]):
             )
         )
     return results
-def _extract_pointers_from_references(refs: list[dict[str, Any]]):
+def _extract_pointers_from_references(
+    refs: list[dict[str, Any]],
+) -> list[HydratedTextPointer]:
     # turn MCP ref → HydratedTextPointer-like
     results = []
     for r in refs or []:
@@ -3433,7 +3439,10 @@ def kge_payload_to_semantic_tree(payload: dict[str, Any]) -> "SemanticNode":
         root_ids = list(all_ids - all_child_ids)
         return sem_nodes[root_ids[0]] if root_ids else list(sem_nodes.values())[0]
     
-def all_child_from_root(root: SemanticNode, results = None):
+def all_child_from_root(
+    root: SemanticNode,
+    results: list[SemanticNode] | None = None,
+) -> list[SemanticNode]:
     if results is None:
         results = []
     results.extend(root.child_nodes)
@@ -3450,7 +3459,7 @@ class IndexingResponse(BaseModel):
     aliases: list[str] = Field(description = "0-5 alternative phrasings")
     provision: str = Field(description = "clauses, terms, sections, and schedules. Example: 'Schedule 3.1', 'Term 5a', 'Clause 3.12.2(a)'")
     @model_validator(mode='after')
-    def _check_consistency(self):
+    def _check_consistency(self) -> Self:
         node_set = available_node_ids.get()
         try:
             node_set.remove(str(self.node_id))
@@ -3466,12 +3475,14 @@ class BatchIndexResponse(BaseModel):
     #     assert (set(str(i.node_id) for i in self.index) == node_set)
     #     return self    
 class IdMapping:
-    def __init__(self):
-        self.forward_map = {}
-        self.backward_map = {}
-    def to_uuid(self, short_id):
+    def __init__(self) -> None:
+        self.forward_map: dict[str, str] = {}
+        self.backward_map: dict[str, str] = {}
+
+    def to_uuid(self, short_id: str) -> str | None:
         return self.backward_map.get(short_id)
-    def to_short_id(self, id, title):
+
+    def to_short_id(self, id: str, title: object) -> str:
         if id not in self.forward_map:
             self.forward_map[id] = f"nid:{len(self.forward_map)}:{title}"
             self.backward_map[self.forward_map[id]] = id
@@ -3489,7 +3500,7 @@ def _default_token_estimate(text: str) -> int:
     return max(1, (len(text) + 3) // 4)
 
 
-def _json_compact(obj: Any) -> str:
+def _json_compact(obj: object) -> str:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
@@ -3513,7 +3524,7 @@ def batch_nodes(
     batch: list[dict[str, Any]] = []
     batch_tokens = base_prompt_tokens
 
-    def flush():
+    def flush() -> Generator[list[dict[str, Any]], None, None]:
         nonlocal batch, batch_tokens
         if batch:
             yield batch
@@ -3654,7 +3665,12 @@ def build_index_terms_for_semantic_node(
     )
 
     @parser_llm_cache
-    def get_minibatch_result(messages, doc_id: str, model_names: list[str], all_ids: tuple[str, ...]):
+    def get_minibatch_result(
+        messages: list[BaseMessage],
+        doc_id: str,
+        model_names: list[str],
+        all_ids: tuple[str, ...],
+    ) -> dict[str, Any]:
         retries = 0
         retry_max = 3
         i_model = 0

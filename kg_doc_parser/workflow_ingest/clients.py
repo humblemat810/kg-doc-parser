@@ -508,7 +508,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
         )
         if not checkpoints:
             return None
-        return max(checkpoints, key=lambda node: int(node.metadata["step_seq"]))
+        return max(checkpoints, key=lambda node: _json_int(node.metadata.get("step_seq")))
 
 
 class ServerCanonicalKgClient(IngestExecutionClient):
