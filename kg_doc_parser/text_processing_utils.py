@@ -1,7 +1,7 @@
 
 from typing import Literal
 
-from .semantic_document_splitting_layerwise_edits import parse_doc
+from .semantic_document_splitting_layerwise_edits import SemanticNode, parse_doc
 
 
 def text_to_ocr_format(text: str, filename: str = "input_text") -> dict[str, object]:
@@ -24,7 +24,12 @@ def text_to_ocr_format(text: str, filename: str = "input_text") -> dict[str, obj
         ]
     }
 
-def parse_doc_text(text: str, doc_id: str = "text_doc", parsing_mode: Literal["snippet", "delimiter"] = "snippet", max_depth: int = 10):
+def parse_doc_text(
+    text: str,
+    doc_id: str = "text_doc",
+    parsing_mode: Literal["snippet", "delimiter"] = "snippet",
+    max_depth: int = 10,
+) -> tuple[SemanticNode, dict[str, dict[str, object]]]:
     """
     Convenience function to parse a raw text string.
     """

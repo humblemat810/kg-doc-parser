@@ -3064,7 +3064,7 @@ def reconstruct_text_from_pointers(pointers: list[HydratedTextPointer], source_m
     return full_text
 
 
-def print_tree(node: SemanticNode, indent=""):
+def print_tree(node: SemanticNode, indent: str = "") -> None:
     """Visualizes the hydrated tree. No longer needs source_map."""
     reconstructed_text = "".join([(p.verbatim_text or "") for p in node.total_content_pointers])
     print(f"{indent} L- {node.title} ({node.node_type}) | Text: '{reconstructed_text[:150].strip()}...'")
