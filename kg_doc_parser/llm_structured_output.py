@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol, TypeAlias, cast
+from typing import Literal, Protocol, TypeAlias, TypedDict, cast
 
 from kogwistar.llm_tasks.providers import (
     StructuredModelLike,
@@ -11,6 +11,11 @@ from kogwistar.llm_tasks.providers import (
 # the single source of truth for provider/schema compatibility.
 StructuredSchema: TypeAlias = StructuredModelLike
 StructuredOutputModel: TypeAlias = SupportsStructuredOutput
+
+
+class _StructuredOutputOptions(TypedDict, total=False):
+    include_raw: bool
+    method: Literal["function_calling", "json_mode", "json_schema"]
 
 
 class StructuredOutputRunnable(Protocol):
@@ -34,7 +39,7 @@ def build_structured_output_runnable(
     prefer_json_schema: bool = True,
 ) -> StructuredOutputRunnable:
     """Build a structured-output runnable with strict-schema-first fallback."""
-    attempts: list[dict[str, object]] = []
+    attempts: list[_StructuredOutputOptions] = []
     if prefer_json_schema:
         attempts.append({"include_raw": include_raw, "method": "json_schema"})
     attempts.append({"include_raw": include_raw, "method": "function_calling"})
