@@ -65,6 +65,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import (
     Annotated,
+    Any,
     ClassVar,
     Literal,
     Protocol,
@@ -311,11 +312,14 @@ class FakeChatModel:
 
     def with_structured_output(
         self,
-        schema: type[TStructuredModel],
+        schema: type[TStructuredModel] | dict[str, Any],
+        *,
         include_raw: bool = True,
-        **kwargs: object,
+        **kwargs: Any,
     ) -> _FakeStructuredResponse:
         _ = kwargs
+        if not isinstance(schema, type):
+            raise TypeError("the fake provider requires a model type schema")
         payload = self.payload_factory(schema)
         return _FakeStructuredResponse(schema, payload)
 

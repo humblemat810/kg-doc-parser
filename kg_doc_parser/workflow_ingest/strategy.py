@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Literal, Protocol, cast
 
 from kogwistar.json_types import JsonValue
+from kogwistar.llm_tasks.providers import StructuredOutputRunnable
 from pydantic import BaseModel, Field, model_validator
 
 from .providers import (
@@ -148,7 +149,10 @@ def build_llm_strategy_triage(
     chat = build_chat_model_for_role("parser", provider_settings)
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    structured = chat.with_structured_output(ParseStrategyTriage, include_raw=True)
+    structured = cast(
+        StructuredOutputRunnable[ParseStrategyTriage],
+        chat.with_structured_output(ParseStrategyTriage, include_raw=True),
+    )
 
     def _triage(context: Mapping[str, JsonValue]) -> ParseStrategyTriage:
         diagnostics: dict[str, object] = {}
