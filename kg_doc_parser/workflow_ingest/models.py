@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Annotated, ClassVar, Literal
 
-from .serialization import JsonValue
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_extension.model_slicing import BackendField, FrontendField
 from pydantic_extension.model_slicing.mixin import (
@@ -13,6 +12,7 @@ from pydantic_extension.model_slicing.mixin import (
 )
 
 from .semantics import HydratedTextPointer
+from .serialization import JsonValue
 
 FailureCategory = Literal[
     "timeout",
@@ -600,6 +600,32 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
     ] = Field(default_factory=dict)
 
 
+class LLMTextPointer(BaseModel):
+    """Provider-facing source span; text is always hydrated locally."""
+
+    # Ignore verbatim_text from older providers without advertising it in the
+    # schema.  Source offsets, not model transcription, define ownership.
+    model_config = ConfigDict(extra="ignore")
+
+    source_cluster_id: str
+    start_char: int
+    end_char: int
+
+
+class LLMSpanConflict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent_node_id: str
+    left_child_id: str
+    right_child_id: str
+    source_cluster_id: str
+    left_span: LLMTextPointer
+    right_span: LLMTextPointer
+    overlap_start: int
+    overlap_end: int
+    conflict_kind: Literal["overlap", "duplicate"] = "overlap"
+
+
 class LLMLayerChildCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -607,7 +633,7 @@ class LLMLayerChildCandidate(BaseModel):
     parent_node_id: str
     title: str
     node_type: str
-    total_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
+    total_content_pointers: list[LLMTextPointer] = Field(default_factory=list)
     expandable: bool = True
 
 
@@ -678,7 +704,7 @@ class LLMCurrentLayerReview(BaseModel):
     coverage_ok: bool | None = None
     satisfied: bool | None = None
     strategy_used: Literal["excerpt_first", "boundary_first"] = "excerpt_first"
-    overlap_conflicts: list[LayerSpanConflict] = Field(default_factory=list)
+    overlap_conflicts: list[LLMSpanConflict] = Field(default_factory=list)
     coverage_gap_notes: list[LayerCoverageGap] = Field(default_factory=list)
     duplicate_child_notes: list[LayerDuplicateChildNote] = Field(default_factory=list)
     review_notes: list[str] = Field(default_factory=list)

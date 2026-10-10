@@ -5,8 +5,9 @@ from collections.abc import Mapping
 from typing import Literal, cast
 
 from kogwistar.id_provider import stable_id
-from .serialization import JsonValue
 from pydantic import BaseModel, Field, model_validator
+
+from .serialization import JsonValue
 
 
 def _normalize_text(text: str) -> str:
@@ -76,9 +77,17 @@ def correct_and_validate_pointer(
         return None
     text = _source_text(source)
     end_exclusive = len(text) if pointer.end_char == -1 else pointer.end_char + 1
+    if 0 <= pointer.start_char < end_exclusive <= len(text):
+        # Character offsets are authoritative.  The model's transcription is
+        # only a hint and may lose markdown escapes or Unicode punctuation.
+        return pointer.model_copy(
+            update={
+                "end_char": end_exclusive - 1,
+                "verbatim_text": text[pointer.start_char:end_exclusive],
+            }
+        )
+
     actual = text[max(pointer.start_char, 0):max(end_exclusive, 0)]
-    if _normalize_text(actual) == _normalize_text(pointer.verbatim_text):
-        return pointer
     if actual and (
         _normalize_text(actual) in _normalize_text(pointer.verbatim_text)
         or _normalize_text(pointer.verbatim_text) in _normalize_text(actual)

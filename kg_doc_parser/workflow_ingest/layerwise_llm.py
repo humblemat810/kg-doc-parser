@@ -8,7 +8,6 @@ from itertools import pairwise
 from typing import Literal, Protocol, TypedDict, TypeVar, cast
 
 from kogwistar.fuzzy_offsets import find_fuzzy_spans, offset_repair_threshold
-from .serialization import JsonValue
 from kogwistar.runtime import (
     RetryAttemptRecord,
     RetryExhaustedError,
@@ -46,7 +45,7 @@ from .providers import (
     provider_call_metrics_snapshot,
 )
 from .semantics import HydratedTextPointer, SemanticNode
-from .serialization import safe_json_dumps
+from .serialization import JsonValue, safe_json_dumps
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 
@@ -205,6 +204,74 @@ def _summarize_for_prompt(
     if isinstance(value, str):
         return _trim_text(value, max_chars=max_string)
     return value
+
+
+def _hydrate_llm_pointer_payload(
+    pointer: object,
+    *,
+    parser_source_map: ParserSourceMap,
+) -> dict[str, object]:
+    """Convert provider offsets into a runtime pointer with source text."""
+
+    payload = _object_dict(_dump_model(pointer))
+    source_cluster_id = str(payload.get("source_cluster_id") or "")
+    start_char = payload.get("start_char")
+    end_char = payload.get("end_char")
+    record = parser_source_map.get(source_cluster_id)
+    text = str((record or {}).get("text") or "") if record is not None else ""
+    if isinstance(start_char, int) and isinstance(end_char, int):
+        resolved_end = len(text) - 1 if end_char == -1 else end_char
+        if 0 <= start_char <= resolved_end < len(text):
+            payload["end_char"] = resolved_end
+            payload["verbatim_text"] = text[start_char : resolved_end + 1]
+            return payload
+    payload["verbatim_text"] = str(payload.get("verbatim_text") or "")
+    return payload
+
+
+def _hydrate_llm_layer_result(
+    result: LLMCurrentLayerResult,
+    *,
+    parser_source_map: ParserSourceMap,
+) -> CurrentLayerResult:
+    payload = _object_dict(result.model_dump())
+    children = []
+    for child in list(payload.get("children") or []):
+        child_payload = _object_dict(child)
+        child_payload["total_content_pointers"] = [
+            _hydrate_llm_pointer_payload(pointer, parser_source_map=parser_source_map)
+            for pointer in list(child_payload.get("total_content_pointers") or [])
+        ]
+        children.append(child_payload)
+    payload["children"] = children
+    return CurrentLayerResult.model_validate(payload)
+
+
+def _hydrate_llm_review(
+    review: LLMCurrentLayerReview,
+    *,
+    parser_source_map: ParserSourceMap,
+) -> CurrentLayerReview:
+    payload = _object_dict(review.model_dump())
+    updated_result = payload.get("updated_result")
+    if isinstance(updated_result, dict):
+        children = []
+        for child in list(updated_result.get("children") or []):
+            child_payload = _object_dict(child)
+            child_payload["total_content_pointers"] = [
+                _hydrate_llm_pointer_payload(pointer, parser_source_map=parser_source_map)
+                for pointer in list(child_payload.get("total_content_pointers") or [])
+            ]
+            children.append(child_payload)
+        updated_result["children"] = children
+    for conflict in list(payload.get("overlap_conflicts") or []):
+        conflict["left_span"] = _hydrate_llm_pointer_payload(
+            conflict.get("left_span"), parser_source_map=parser_source_map
+        )
+        conflict["right_span"] = _hydrate_llm_pointer_payload(
+            conflict.get("right_span"), parser_source_map=parser_source_map
+        )
+    return CurrentLayerReview.model_validate(payload)
 
 
 def _source_map_excerpt(
@@ -1579,7 +1646,7 @@ def _annotate_proposal_result(
     return result.__class__.model_validate(payload)
 
 
-def _structured_invoke(  # noqa: UP047 - PEP 695 syntax would drop PyPy 3.11 support
+def _structured_invoke(
     model: SupportsStructuredOutput,
     schema: type[TStructuredModel],
     messages: Sequence[tuple[str, str]],
@@ -2697,7 +2764,10 @@ def build_layerwise_llm_callbacks(
             )
             return annotated
 
-        runtime_result: CurrentLayerResult = CurrentLayerResult.model_validate(child_parsed.model_dump())
+        runtime_result = _hydrate_llm_layer_result(
+            child_parsed,
+            parser_source_map=parser_source_map,
+        )
         runtime_result = runtime_result.model_copy(
             update={"metadata": {**runtime_result.metadata, "proposal_retry_count": child_result.retry_count}}
         )
@@ -2807,7 +2877,10 @@ def build_layerwise_llm_callbacks(
                 strategy=split_strategy,
             )
             reviewed: LLMCurrentLayerReview = review_result
-            runtime_review: CurrentLayerReview = CurrentLayerReview.model_validate(reviewed.model_dump())
+            runtime_review = _hydrate_llm_review(
+                reviewed,
+                parser_source_map=parser_source_map or {},
+            )
             _emit(
                 "workflow_layered_review_result",
                 review_source="llm",

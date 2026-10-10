@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
@@ -17,12 +18,15 @@ from kg_doc_parser.workflow_ingest.models import (
     LayerChildCandidate,
     LLMBoundaryProposal,
     LLMBoundaryProposalBatch,
+    LLMCurrentLayerReview,
     ParseSessionState,
 )
 from kg_doc_parser.workflow_ingest.parser_core import commit_layer_children
 from kg_doc_parser.workflow_ingest.semantics import (
     HydratedTextPointer,
     SemanticNode,
+    correct_and_validate_pointer,
+    pointer_source_validation_error,
     semantic_tree_to_kge_payload,
 )
 
@@ -486,8 +490,9 @@ def test_workflow_provider_settings_from_env_enables_boundary_mode(monkeypatch: 
 
 
 def test_structured_invoke_returns_typed_pydantic_model():
-    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
     from pydantic import BaseModel
+
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
 
     class _Schema(BaseModel):
         value: int
@@ -503,8 +508,9 @@ def test_structured_invoke_returns_typed_pydantic_model():
 
 
 def test_structured_invoke_classifies_parse_failures_for_observability():
-    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
     from pydantic import BaseModel
+
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
 
     class _Schema(BaseModel):
         value: int
@@ -1640,7 +1646,9 @@ def test_propose_layer_fn_rejects_child_pointer_outside_parent_span(monkeypatch:
     assert "parent span" in result.metadata["proposal_failure_reason"]
 
 
-def test_propose_layer_fn_rejects_child_pointer_verbatim_mismatch(monkeypatch: pytest.MonkeyPatch):
+def test_propose_layer_fn_rehydrates_child_pointer_from_offsets(
+    monkeypatch: pytest.MonkeyPatch,
+):
     fake_model = _FakeChatModel(
         {
             "parsed": {
@@ -1696,5 +1704,45 @@ def test_propose_layer_fn_rejects_child_pointer_verbatim_mismatch(monkeypatch: p
         parse_session=_parse_session(),
     )
 
-    assert result.metadata["proposal_source"] == "fallback"
-    assert "verbatim_text" in result.metadata["proposal_failure_reason"]
+    assert result.metadata["proposal_source"] == "llm"
+    pointers = [pointer for child in result.children for pointer in child.total_content_pointers]
+    assert [pointer.verbatim_text for pointer in pointers] == ["Alpha ", "Beta"]
+
+
+@pytest.mark.parametrize(
+    "model_text",
+    [
+        "Status: SDK\\_UNINITIALIZED | See [the docs] for details.",
+        "Status: SDK\\_UNINITIALIZED | See the docs for details.",
+        "Status: SDK\\_UNINITIALIZED | S'ee \\[the docs\\] for details.",
+    ],
+)
+def test_pointer_offsets_rehydrate_authoritative_source_text(model_text: str):
+    source = "# SDK\n\nStatus: SDK\\_UNINITIALIZED | See \\[the docs\\] for details.\n"
+    target = "Status: SDK\\_UNINITIALIZED | See \\[the docs\\] for details."
+    start = source.index(target)
+    pointer = HydratedTextPointer(
+        source_cluster_id="doc|p1_t0",
+        start_char=start,
+        end_char=start + len(target) - 1,
+        verbatim_text=model_text,
+    )
+
+    repaired = correct_and_validate_pointer(
+        pointer,
+        {"doc|p1_t0": {"text": source}},
+    )
+
+    assert repaired is not None
+    assert repaired.verbatim_text == target
+    assert pointer_source_validation_error(
+        repaired,
+        {"doc|p1_t0": {"text": source}},
+    ) is None
+
+
+def test_llm_layer_pointer_schema_is_offset_only():
+    schema_text = str(LLMCurrentLayerReview.model_json_schema())
+
+    assert "LLMTextPointer" in schema_text
+    assert "verbatim_text" not in schema_text
