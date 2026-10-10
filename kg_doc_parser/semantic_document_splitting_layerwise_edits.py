@@ -85,7 +85,7 @@ from enum import Enum
 from functools import wraps
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, Self, TYPE_CHECKING
 
 try:
     from typing import TypeAlias
@@ -96,19 +96,34 @@ import os
 from collections import deque
 from collections.abc import Callable, Generator, Iterable
 from contextvars import ContextVar
-from typing import ClassVar, ParamSpec, TypeVar, cast
+from typing import ClassVar, ParamSpec, Protocol, TypeVar, cast
 from uuid import UUID
+
+P = ParamSpec("P")
+R = TypeVar("R")
+R_co = TypeVar("R_co", covariant=True)
 
 from kogwistar.id_provider import stable_id
 from kogwistar.llm_tasks.providers import SupportsStructuredOutput
 from kogwistar.utils.cache_backend import (
-    CachedCallable,
     CacheBackend,
     Memory,
     cache_dump,
     cache_hash,
     cache_load,
 )
+
+if TYPE_CHECKING:
+    from kogwistar.utils.cache_backend import CachedCallable
+else:
+    class CachedCallable(Protocol[P, R_co]):
+        """Compatibility protocol for released Core cache backends."""
+
+        def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
+
+        def clear(self, *args: object, **kwargs: object) -> None: ...
+
+        def check_call_in_cache(self, *args: object, **kwargs: object) -> bool: ...
 from pydantic import (
     BaseModel,
     Field,
@@ -178,8 +193,6 @@ cb = DocumentIngestSQLiteCallback(db_path=_DOCUMENT_INGEST_LOG_DB,
         include_traceback = True)
 
 
-P = ParamSpec("P")
-R = TypeVar("R")
 T = TypeVar("T")
 
 def memory_cached(
