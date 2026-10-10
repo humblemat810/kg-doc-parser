@@ -50,7 +50,7 @@ if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
-from typing import Any, Literal, Self
+from typing import Literal, Self, TypeAlias
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_extension.model_slicing import (
     DtoType,
@@ -59,6 +59,8 @@ from pydantic_extension.model_slicing import (
 from pydantic_extension.model_slicing.mixin import DtoField
 
 JsonPrimitive = str | int | float | bool | None
+JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
 #========================= OCR DOC
 
 # pre-validation model
@@ -148,11 +150,11 @@ class SplitPage(OCRClusterResponseBc):
     pdf_page_num: int
     metadata: SplitPageMeta
     refined_version: OCRClusterResponse[DtoField] | None = Field(default = None, description = "refined processed/ grouped/ merged version of ocr text clusters. ")
-    def model_dump(self, *arg: object, **kwarg: object) -> dict[str, Any]:
+    def model_dump(self, *arg: object, **kwarg: object) -> JsonObject:
         return self.to_doc()
-    def dump_raw(self, *arg: object, **kwarg: object) -> dict[str, Any]:
+    def dump_raw(self, *arg: object, **kwarg: object) -> JsonObject:
         return super(SplitPage, self).model_dump(exclude = ["refined_version"], *arg, **kwarg)
-    def dump_supercede_parse(self, *arg: object, **kwarg: object) -> dict[str, Any]:
+    def dump_supercede_parse(self, *arg: object, **kwarg: object) -> JsonObject:
         return super(SplitPage, self).model_dump(exclude = ["refined_version", "metadata"], *arg, **kwarg)
     @model_validator(mode="after")
     def roundtrip_invariant(self, info: ValidationInfo) -> "SplitPage":
@@ -178,7 +180,7 @@ class SplitPage(OCRClusterResponseBc):
             raise ValueError("Roundtrip invariant failed: dump->validate changed the model")
 
         return self
-    def to_doc(self) -> dict[str, Any]:
+    def to_doc(self) -> JsonObject:
         """Model to llm one-way serializer with manual slicing logic, can refactor using sliced view
         with some token saving logic. 
         """
@@ -195,16 +197,16 @@ class SplitPage(OCRClusterResponseBc):
                 c_p = cluster_lookup_by_number.get(i)
                 if c_p is None:
                     raise KeyError(f"{i} does not exist")
-                cluster_dump: dict = c_p.model_dump()
+                cluster_dump: JsonObject = c_p.model_dump()
                 cluster_dump.pop("cluster_number")
                 id_sorted_text_cluster.append(cluster_dump)
             others = (set(cluster_numbers) - set(target.meaningful_ordering))
             for i in others:
-                cluster_dump: dict
+                cluster_dump: JsonObject
                 cluster_dump = cluster_lookup_by_number[i].model_dump()
                 cluster_dump.pop("cluster_number")
                 id_sorted_text_cluster.append(cluster_dump)
-            c_return = {}
+            c_return: JsonObject = {}
             c_return['pdf_page_num'] = self.pdf_page_num
             c_return['printed_page_number'] = self.printed_page_number
             c_return['OCR_text_clusters'] = id_sorted_text_cluster
@@ -263,7 +265,7 @@ class SplitPage(OCRClusterResponseBc):
                 # general case
                 tcd = {x.cluster_number:x   for x in id_sorted_text_cluster}
                 texts = '\n'.join(tcd[i].text for i in self.meaningful_ordering)
-            c_return = {}
+            c_return: JsonObject = {}
             c_return['pdf_page_num'] = self.pdf_page_num
             c_return['printed_page_number'] = self.printed_page_number
             c_return['text'] = texts
