@@ -1,7 +1,10 @@
 
 import pytest
-from kg_doc_parser.text_processing_utils import parse_doc_text
-from kg_doc_parser.semantic_document_splitting_layerwise_edits import HydratedTextPointer, resolve_delimiter_pointer
+from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
+    HydratedTextPointer,
+    resolve_delimiter_pointer,
+)
+
 
 def test_resolve_delimiter_simple():
     # Setup source map

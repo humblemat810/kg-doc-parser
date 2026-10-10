@@ -1,8 +1,10 @@
 
-from typing import Dict, Literal, Any
-from .semantic_document_splitting_layerwise_edits import parse_doc
+from typing import Literal
 
-def text_to_ocr_format(text: str, filename: str = "input_text") -> Dict:
+from .semantic_document_splitting_layerwise_edits import SemanticNode, parse_doc
+
+
+def text_to_ocr_format(text: str, filename: str = "input_text") -> dict[str, object]:
     """
     Wraps a raw string into the expected OCR dictionary format with a single dummy cluster.
     """
@@ -22,7 +24,12 @@ def text_to_ocr_format(text: str, filename: str = "input_text") -> Dict:
         ]
     }
 
-def parse_doc_text(text: str, doc_id: str = "text_doc", parsing_mode: Literal["snippet", "delimiter"] = "snippet", max_depth: int = 10):
+def parse_doc_text(
+    text: str,
+    doc_id: str = "text_doc",
+    parsing_mode: Literal["snippet", "delimiter"] = "snippet",
+    max_depth: int = 10,
+) -> tuple[SemanticNode, dict[str, dict[str, object]]]:
     """
     Convenience function to parse a raw text string.
     """

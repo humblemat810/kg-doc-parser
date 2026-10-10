@@ -61,14 +61,14 @@ import os
 import queue
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import (
     Annotated,
-    Any,
     ClassVar,
     Literal,
     Protocol,
+    TypedDict,
     TypeVar,
     Union,
     cast,
@@ -100,13 +100,66 @@ CodexBridgeChatModel = StructuredBridgeChatModel
 _codex_messages = bridge_messages
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
+TConstructedProvider = TypeVar("TConstructedProvider")
 ChatProviderName = Literal["anthropic", "gemini", "ollama", "openai", "azure", "vertex", "fake", "codex"]
 EmbeddingProviderName = Literal["fake", "openai", "vertex", "ollama"]
 ProposalMode = Literal["children", "boundaries"]
+ParseStrategyName = Literal["layer_excerpt", "layer_boundary", "page_index"]
+ParseStrategyOrder = tuple[ParseStrategyName, ...]
+
+
+def _parse_strategy_order(raw: str) -> ParseStrategyOrder:
+    """Parse and validate the ordered strategy fallback list from the environment."""
+
+    values = tuple(value.strip() for value in raw.split(",") if value.strip())
+    expected: set[str] = {"layer_excerpt", "layer_boundary", "page_index"}
+    if len(values) != len(expected) or set(values) != expected:
+        raise ValueError(
+            "KG_DOC_PARSER_PARSE_STRATEGY_ORDER must contain layer_excerpt, "
+            "layer_boundary, and page_index exactly once"
+        )
+    return cast(ParseStrategyOrder, values)
+
+
+class ProviderDiagnosticsSink(Protocol):
+    """Receive one structured provider-call diagnostic record."""
+
+    def __call__(self, diagnostics: Mapping[str, object], /) -> None: ...
+
+
+class _EmbeddingBackend(Protocol):
+    """Minimal runtime surface shared by optional LangChain embedding adapters."""
+
+    def embed_documents(self, texts: list[str]) -> object: ...
+
+    def embed_query(self, text: str) -> object: ...
+
+
+def _construct_provider(
+    factory: Callable[..., TConstructedProvider],
+    options: Mapping[str, object],
+) -> TConstructedProvider:
+    """Construct an optional provider at the dynamic third-party boundary."""
+
+    return factory(**dict(options))
 
 _PROVIDER_IN_FLIGHT_LOCK = threading.Lock()
 _PROVIDER_IN_FLIGHT = 0
-_PROVIDER_METRICS: dict[str, object] = {
+class ProviderCallMetrics(TypedDict):
+    """Stable process-local provider invocation counters."""
+
+    calls_started: int
+    calls_completed: int
+    calls_succeeded: int
+    calls_failed: int
+    timeouts_observed: int
+    orphaned_calls: int
+    in_flight_rejections: int
+    active_calls: int
+    failure_counts: dict[str, int]
+
+
+_PROVIDER_METRICS: ProviderCallMetrics = {
     "calls_started": 0,
     "calls_completed": 0,
     "calls_succeeded": 0,
@@ -143,7 +196,7 @@ def _record_provider_completion(*, success: bool, failure_type: str | None = Non
         )
 
 
-def provider_call_metrics_snapshot() -> dict[str, object]:
+def provider_call_metrics_snapshot() -> ProviderCallMetrics:
     """Return a stable, process-local snapshot of provider call health.
 
     The counters describe the shared invocation boundary, not a vendor SDK.
@@ -153,11 +206,17 @@ def provider_call_metrics_snapshot() -> dict[str, object]:
     """
 
     with _PROVIDER_IN_FLIGHT_LOCK:
-        snapshot = dict(_PROVIDER_METRICS)
-        failure_counts = _PROVIDER_METRICS.get("failure_counts", {})
-        snapshot["failure_counts"] = dict(failure_counts) if isinstance(failure_counts, dict) else {}
-        snapshot["active_calls"] = _PROVIDER_IN_FLIGHT
-        return snapshot
+        return {
+            "calls_started": _PROVIDER_METRICS["calls_started"],
+            "calls_completed": _PROVIDER_METRICS["calls_completed"],
+            "calls_succeeded": _PROVIDER_METRICS["calls_succeeded"],
+            "calls_failed": _PROVIDER_METRICS["calls_failed"],
+            "timeouts_observed": _PROVIDER_METRICS["timeouts_observed"],
+            "orphaned_calls": _PROVIDER_METRICS["orphaned_calls"],
+            "in_flight_rejections": _PROVIDER_METRICS["in_flight_rejections"],
+            "active_calls": _PROVIDER_IN_FLIGHT,
+            "failure_counts": dict(_PROVIDER_METRICS["failure_counts"]),
+        }
 
 
 _PROVIDER_USAGE_FIELDS: dict[str, tuple[str, ...]] = {
@@ -252,11 +311,14 @@ class FakeChatModel:
 
     def with_structured_output(
         self,
-        schema: type[TStructuredModel],
+        schema: type[TStructuredModel] | Mapping[str, object],
+        *,
         include_raw: bool = True,
         **kwargs: object,
     ) -> _FakeStructuredResponse:
         _ = kwargs
+        if not isinstance(schema, type):
+            raise TypeError("the fake provider requires a model type schema")
         payload = self.payload_factory(schema)
         return _FakeStructuredResponse(schema, payload)
 
@@ -301,7 +363,7 @@ def _default_schema_payload(schema: type[BaseModel]) -> dict[str, object]:
 
 @runtime_checkable
 class ChatModelProvider(Protocol):
-    def build(self, *, callbacks: list[object] | None = None) -> SupportsStructuredOutput: ...
+    def build(self, *, callbacks: Sequence[object] | None = None) -> SupportsStructuredOutput: ...
 
 
 @runtime_checkable
@@ -534,7 +596,7 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
         ExcludeMode("llm"),
     ] = "auto"
     parse_strategy_order: Annotated[
-        tuple[Literal["layer_excerpt", "layer_boundary", "page_index"], ...],
+        ParseStrategyOrder,
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -634,12 +696,8 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 Literal["auto", "layer_excerpt", "layer_boundary", "page_index"],
                 str(_env("KG_DOC_PARSER_PARSE_STRATEGY", "auto")),
             ),
-            parse_strategy_order=tuple(
-                value.strip()
-                for value in str(
-                    _env("KG_DOC_PARSER_PARSE_STRATEGY_ORDER", "layer_excerpt,layer_boundary,page_index")
-                ).split(",")
-                if value.strip()
+            parse_strategy_order=_parse_strategy_order(
+                str(_env("KG_DOC_PARSER_PARSE_STRATEGY_ORDER", "layer_excerpt,layer_boundary,page_index"))
             ),
             triage_enabled=str(_env("KG_DOC_PARSER_TRIAGE_ENABLED", "1")).lower()
             not in {"0", "false", "no", "off"},
@@ -835,7 +893,7 @@ def _embedding_vector(text: str, *, dimension: int) -> list[float]:
 
 
 def _validate_embedding_vectors(
-    value: Any,
+    value: object,
     *,
     dimension: int,
     provider: str,
@@ -896,11 +954,11 @@ def build_embedding_function(
             provider=spec.provider,
         )
 
-    def _build_langchain_embeddings() -> Any:
+    def _build_langchain_embeddings() -> object:
         if spec.provider == "openai":
             from langchain_openai import OpenAIEmbeddings
 
-            kwargs: dict[str, Any] = {
+            kwargs: dict[str, object] = {
                 "model": spec.model,
                 "dimensions": spec.dimension,
             }
@@ -908,7 +966,7 @@ def build_embedding_function(
                 kwargs["base_url"] = spec.base_url
             if spec.api_key_env and os.getenv(spec.api_key_env):
                 kwargs["api_key"] = os.getenv(spec.api_key_env)
-            return OpenAIEmbeddings(**kwargs)
+            return _construct_provider(OpenAIEmbeddings, kwargs)
         if spec.provider == "vertex":
             from langchain_google_vertexai import (  # pyright: ignore[reportMissingImports]
                 VertexAIEmbeddings,
@@ -919,7 +977,7 @@ def build_embedding_function(
                 kwargs["project"] = spec.project
             if spec.location:
                 kwargs["location"] = spec.location
-            return VertexAIEmbeddings(**kwargs)
+            return _construct_provider(VertexAIEmbeddings, kwargs)
         if spec.provider == "ollama":
             from langchain_ollama import (  # pyright: ignore[reportMissingImports]
                 OllamaEmbeddings,
@@ -928,10 +986,10 @@ def build_embedding_function(
             kwargs = {"model": spec.model}
             if spec.base_url:
                 kwargs["base_url"] = spec.base_url
-            return OllamaEmbeddings(**kwargs)
+            return _construct_provider(OllamaEmbeddings, kwargs)
         raise ValueError(f"unsupported embedding provider: {spec.provider}")
 
-    embeddings = _build_langchain_embeddings()
+    embeddings = cast(_EmbeddingBackend, _build_langchain_embeddings())
 
     class _LangChainEmbeddingFunction:
         def name(self) -> str:
@@ -957,7 +1015,7 @@ def build_embedding_function(
 def build_chat_model(
     spec: ProviderEndpointConfig | None = None,
     *,
-    callbacks: list[object] | None = None,
+    callbacks: Sequence[object] | None = None,
 ) -> SupportsStructuredOutput:
     """Build a vendor-specific chat model behind a stable adapter boundary.
 
@@ -966,7 +1024,7 @@ def build_chat_model(
     when selected; optional provider packages need not be installed otherwise.
     """
     spec = spec or ProviderEndpointConfig()
-    callbacks = callbacks or []
+    callback_list = list(callbacks or [])
     if spec.provider == "fake":
         return cast(SupportsStructuredOutput, FakeChatModel())
     if spec.provider == "codex":
@@ -983,17 +1041,17 @@ def build_chat_model(
     if spec.provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
-        kwargs: dict[str, Any] = {
+        kwargs: dict[str, object] = {
             "model": spec.model,
             "temperature": spec.temperature,
-            "callbacks": callbacks,
+            "callbacks": callback_list,
             "max_retries": spec.max_retries,
         }
         if spec.max_output_tokens is not None:
             kwargs["max_output_tokens"] = spec.max_output_tokens
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["google_api_key"] = os.getenv(spec.api_key_env)
-        return cast(SupportsStructuredOutput, ChatGoogleGenerativeAI(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(ChatGoogleGenerativeAI, kwargs))
     if spec.provider == "openai":
         max_output_tokens = (
             spec.max_output_tokens
@@ -1005,7 +1063,7 @@ def build_chat_model(
         kwargs = {
             "model": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
-            "callbacks": callbacks,
+            "callbacks": callback_list,
             "max_retries": spec.max_retries,
         }
         if max_output_tokens is not None:
@@ -1016,7 +1074,7 @@ def build_chat_model(
             kwargs["base_url"] = spec.base_url
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["api_key"] = os.getenv(spec.api_key_env)
-        return cast(SupportsStructuredOutput, ChatOpenAI(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(ChatOpenAI, kwargs))
     if spec.provider == "azure":
         max_output_tokens = (
             spec.max_output_tokens
@@ -1028,7 +1086,7 @@ def build_chat_model(
         kwargs = {
             "azure_deployment": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
-            "callbacks": callbacks,
+            "callbacks": callback_list,
             "max_retries": spec.max_retries,
         }
         if max_output_tokens is not None:
@@ -1045,7 +1103,7 @@ def build_chat_model(
             kwargs["api_version"] = os.getenv("AZURE_OPENAI_API_VERSION")
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["api_key"] = os.getenv(spec.api_key_env)
-        return cast(SupportsStructuredOutput, AzureChatOpenAI(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(AzureChatOpenAI, kwargs))
     if spec.provider == "anthropic":
         try:
             from langchain_anthropic import ChatAnthropic
@@ -1057,7 +1115,7 @@ def build_chat_model(
         kwargs = {
             "model": spec.model,
             "temperature": spec.temperature,
-            "callbacks": callbacks,
+            "callbacks": callback_list,
             "max_retries": spec.max_retries,
         }
         if spec.max_output_tokens is not None:
@@ -1066,20 +1124,20 @@ def build_chat_model(
             kwargs["base_url"] = spec.base_url
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["anthropic_api_key"] = os.getenv(spec.api_key_env)
-        return cast(SupportsStructuredOutput, ChatAnthropic(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(ChatAnthropic, kwargs))
     if spec.provider == "ollama":
         from langchain_ollama import ChatOllama  # pyright: ignore[reportMissingImports]
 
         kwargs = {
             "model": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
-            "callbacks": callbacks,
+            "callbacks": callback_list,
         }
         if spec.max_output_tokens is not None:
             kwargs["num_predict"] = spec.max_output_tokens
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
-        return cast(SupportsStructuredOutput, ChatOllama(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(ChatOllama, kwargs))
     if spec.provider == "vertex":
         from langchain_google_vertexai import (  # pyright: ignore[reportMissingImports]
             ChatVertexAI,
@@ -1088,7 +1146,7 @@ def build_chat_model(
         kwargs = {
             "model": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
-            "callbacks": callbacks,
+            "callbacks": callback_list,
             "max_retries": spec.max_retries,
         }
         if spec.max_output_tokens is not None:
@@ -1097,7 +1155,7 @@ def build_chat_model(
             kwargs["project"] = spec.project
         if spec.location:
             kwargs["location"] = spec.location
-        return cast(SupportsStructuredOutput, ChatVertexAI(**kwargs))
+        return cast(SupportsStructuredOutput, _construct_provider(ChatVertexAI, kwargs))
     raise ValueError(f"unsupported chat provider: {spec.provider}")
 
 
@@ -1105,7 +1163,7 @@ def build_chat_model_for_role(
     role: Literal["ocr", "parser"],
     spec: WorkflowProviderSettings | None = None,
     *,
-    callbacks: list[object] | None = None,
+    callbacks: Sequence[object] | None = None,
 ) -> SupportsStructuredOutput:
     """Build the chat model used for either OCR or parsing.
 

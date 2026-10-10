@@ -41,11 +41,13 @@ import logging
 import shutil
 import sqlite3
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from .serialization import JsonValue
 from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -57,13 +59,22 @@ from .adapters import OCRPageJSON, normalize_ocr_pages
 from .models import WorkflowExportBundle, WorkflowIngestInput
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import (
+    ProviderDiagnosticsSink,
     WorkflowProviderSettings,
     build_chat_model_for_role,
     invoke_with_timeout,
 )
-from .service import run_ingest_workflow
+from .service import _RunCompat, run_ingest_workflow
 
 _LOGGER = logging.getLogger(__name__)
+
+JsonObject = dict[str, JsonValue]
+
+
+def _json_object(value: object) -> JsonObject:
+    if isinstance(value, dict):
+        return cast(JsonObject, value)
+    return {}
 
 
 class OCRImagePayload(BaseModel):
@@ -665,10 +676,14 @@ class OCRWorkflowStateStore:
             input_fingerprint=input_fingerprint,
         )
         rebuilt_any = False
-        progress_payload: dict[str, Any] = {}
+        progress_payload: JsonObject = {}
         if progress_path.exists():
-            progress_payload = json.loads(progress_path.read_text(encoding="utf-8"))
+            progress_payload = _json_object(
+                json.loads(progress_path.read_text(encoding="utf-8"))
+            )
         progress_pages = progress_payload.get("pages", {})
+        if not isinstance(progress_pages, dict):
+            progress_pages = {}
         for page_number, path in _scan_rendered_pages(rendered_dir):
             rebuilt_any = True
             self._upsert_page_state(
@@ -686,7 +701,9 @@ class OCRWorkflowStateStore:
             content_hash = None
             record = progress_pages.get(str(page_number))
             if isinstance(record, dict):
-                content_hash = record.get("image_sha256")
+                candidate_hash = record.get("image_sha256")
+                if isinstance(candidate_hash, str):
+                    content_hash = candidate_hash
             if content_hash is None:
                 content_hash = _find_matching_render_hash(rendered_dir, legacy_dir, page_number)
             rebuilt_any = True
@@ -965,7 +982,7 @@ class OCRWorkflowStateStore:
         self.mark_document_completed(document_id=document_id, is_completed=is_completed)
         return is_completed
 
-    def list_model_attempts(self, *, document_id: str, page_number: int, stage: str = "ocr") -> list[dict[str, Any]]:
+    def list_model_attempts(self, *, document_id: str, page_number: int, stage: str = "ocr") -> list[JsonObject]:
         with self._session() as conn:
             rows = conn.execute(
                 """
@@ -1114,7 +1131,7 @@ def _materialize_image_payloads(image_payloads: Sequence[OCRImagePayload], rende
 
 
 def _compute_input_fingerprint(*, page_sources: Sequence[tuple[int, Path]] | None = None, pdf_path: Path | None = None) -> str:
-    payload: dict[str, Any] = {}
+    payload: JsonObject = {}
     if pdf_path is not None:
         payload["pdf_sha256"] = _sha256_file(pdf_path)
     if page_sources is not None:
@@ -1175,7 +1192,7 @@ def _render_pdf_to_images(pdf_path: Path, rendered_dir: Path) -> list[Path]:
     return output_paths
 
 
-def _coerce_ocr_response(payload: Any) -> OCRClusterResponse:
+def _coerce_ocr_response(payload: object) -> OCRClusterResponse:
     """Coerce a structured-output payload into the OCR model."""
     if isinstance(payload, OCRClusterResponse):
         return payload
@@ -1195,7 +1212,7 @@ def _coerce_ocr_response(payload: Any) -> OCRClusterResponse:
     return OCRClusterResponse.model_validate(payload)
 
 
-def _extract_message_text(raw: Any) -> str:
+def _extract_message_text(raw: object) -> str:
     """Extract plain text from LangChain raw message content."""
     content = getattr(raw, "content", raw)
     if isinstance(content, str):
@@ -1270,7 +1287,7 @@ def _run_live_ocr_page(
     page_number: int,
     provider_settings: WorkflowProviderSettings,
     *,
-    provider_diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+    provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
 ) -> OCRClusterResponse:
     """Run one page image through the configured OCR provider.
 
@@ -1380,7 +1397,7 @@ def _write_summary(
     provider_settings: WorkflowProviderSettings,
     state_store: OCRWorkflowStateStore,
 ) -> None:
-    payload: dict[str, Any] = {
+    payload: dict[str, object] = {
         "document_id": document_id,
         "ocr_provider": provider_settings.ocr.provider,
         "ocr_model": provider_settings.ocr.model,
@@ -1400,7 +1417,7 @@ def _write_summary(
     artifacts.summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _emit_ocr_event(probe: WorkflowProbe | None, kind: str, /, **payload: Any) -> None:
+def _emit_ocr_event(probe: WorkflowProbe | None, kind: str, /, **payload: object) -> None:
     emit_probe_event(probe, kind, **payload)
 
 
@@ -1623,18 +1640,18 @@ def run_ocr_ingest_workflow(
     document_id: str,
     title: str,
     output_dir: str | Path,
-    workflow_engine: Any,
-    conversation_engine: Any,
-    knowledge_engine: Any | None = None,
+    workflow_engine: GraphKnowledgeEngine,
+    conversation_engine: GraphKnowledgeEngine,
+    knowledge_engine: GraphKnowledgeEngine | None = None,
     image_payloads: Sequence[OCRImagePayload] | None = None,
     pdf_path: str | Path | None = None,
     provider_settings: WorkflowProviderSettings | None = None,
     ocr_runner: OCRRunner | None = None,
     pdf_rasterizer: PDFRasterizer | None = None,
     ocr_candidate_models: Sequence[str] | None = None,
-    deps: dict[str, Any] | None = None,
+    deps: dict[str, object] | None = None,
     probe: WorkflowProbe | None = None,
-) -> tuple[Any, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
+) -> tuple[_RunCompat, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
     """Run OCR preparation and then feed the normalized result into workflow ingest.
 
     This is the high-level two-stage orchestration:

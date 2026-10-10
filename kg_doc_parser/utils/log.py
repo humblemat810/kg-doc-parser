@@ -2,11 +2,13 @@
 #### log utils
 
 import logging
+import os
 import sqlite3
 import threading
-import os
 import traceback
 from contextlib import closing
+
+
 def safe_format_exception(exc: Exception, base_path: str | None = None) -> str:
     """Format exception with paths relative to project root."""
     if base_path is None:
@@ -28,7 +30,7 @@ def safe_format_exception(exc: Exception, base_path: str | None = None) -> str:
     
     return ''.join(lines)
 
-def trace_logger_hierarchy(logger):
+def trace_logger_hierarchy(logger: logging.Logger | None) -> None:
     while logger:
         print(f"Logger Name: {logger.name}")
         print(f"  Level: {logging.getLevelName(logger.level)}")
@@ -43,7 +45,7 @@ class SQLiteHandler(logging.Handler):
     including filename and line number information.
     """
 
-    def __init__(self, db_path):
+    def __init__(self, db_path: str | os.PathLike[str]) -> None:
         """
         Initializes the handler with the database path.
         Ensures the log table exists.
@@ -55,7 +57,7 @@ class SQLiteHandler(logging.Handler):
         # Set up a formatter to format the log records
         self.formatter = logging.Formatter('%(asctime)s', '%Y-%m-%d %H:%M:%S')
 
-    def _initialize_database(self):
+    def _initialize_database(self) -> None:
         """
         Creates the logs table if it doesn't already exist.
         """
@@ -74,7 +76,7 @@ class SQLiteHandler(logging.Handler):
                 ''')
             conn.commit()
 
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord) -> None:
         """
         Inserts a new log record into the database.
         """
@@ -95,7 +97,7 @@ class SQLiteHandler(logging.Handler):
                 conn.commit()
         except Exception:
             self.handleError(record)
-    def __del__(self):
+    def __del__(self) -> None:
         """
         Destructor to perform a WAL checkpoint when the handler is destroyed.
         """

@@ -5,32 +5,58 @@ if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     ocr_json_version = "0.1"
-import time
 import base64
+import time
+from collections.abc import Iterable, Iterator, Mapping
+from typing import (
+    Any,
+    Literal,
+    NotRequired,
+    Protocol,
+    Self,
+    TypedDict,
+    cast,
+)
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import Runnable
-from .models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
+
 from .llm_structured_output import build_structured_output_runnable
-from typing import Any, Iterable, cast, Callable, Optional,  Literal, Union, NotRequired, TypedDict, Mapping, Iterator
+from .models import (
+    NonText_box_2d,
+    NonTextCluster,
+    OCRClusterResponse,
+    SplitPage,
+    TextCluster,
+)
+
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover
-    from typing_extensions import TypeAlias
+    from typing import TypeAlias
 import json
-from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, FrontendField, BackendField, LLMField,
-                DtoType,
-                BackendType,
-                FrontendType,
-                LLMType,
-                use_mode)
-from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
-from pydantic import BaseModel, Field, model_validator, field_validator, field_serializer
-from langchain_core.messages import SystemMessage, BaseMessage, HumanMessage
+
 from kogwistar.llm_tasks.providers import SupportsStructuredOutput
-from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from pydantic import (
+    BaseModel,
+    Field,
+    model_validator,
+)
+from pydantic_extension.model_slicing import (
+    DtoType,
+    ModeSlicingMixin,
+)
+from pydantic_extension.model_slicing.mixin import DtoField
+
 from .pdf2png import RawFileLoader
+from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+from .utils.langchain import GeminiCostCallbackHandler, get_gemini_callback_cost
+
 PastCompatibleSplitPage: TypeAlias = SplitPage
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
 
 
 class StructuredOutputPayload(TypedDict):
@@ -49,22 +75,26 @@ def _build_ocr_llm(
     return build_chat_model(spec, callbacks=callbacks)
 
 
-def get_page_json(folder_path: str, page_num: int) -> dict[str, Any]:
+def get_page_json(folder_path: str, page_num: int) -> JsonObject:
     with open(os.path.join(folder_path, 'page_'+str(page_num)+'.json'), 'r') as f:
         file_json_raw = json.load(f)
-    return file_json_raw
-def regen_page(file_json_raw: Mapping[str, Any], use_raw: bool) -> dict[str, Any]:
+    return cast(JsonObject, file_json_raw)
+
+
+def regen_page(file_json_raw: Mapping[str, JsonValue], use_raw: bool) -> JsonObject:
         # add compatible to union if want to compatible with past models
     """regen from json returned by SplitPage.to_doc(), can be view as SplitPage.FromJson(filepath)"""
-    p = PastCompatibleSplitPage(**file_json_raw)
+    p = PastCompatibleSplitPage.model_validate(file_json_raw)
     if use_raw:
-        return p.dump_supercede_parse()
+        return cast(JsonObject, p.dump_supercede_parse())
     try:
         res = p.to_doc()
     except:
         raise
-    return res
-def regen_doc(folder_path: str, use_raw: bool = False) -> list[dict[str, Any]]:
+    return cast(JsonObject, res)
+
+
+def regen_doc(folder_path: str, use_raw: bool = False) -> list[JsonObject]:
     pages_nums = sorted((int(i.rsplit(".json",1)[0].split("page_",1)[1]) for i in os.listdir(folder_path) if i.endswith('.json') and i.startswith("page_")))
     pages = []
     split_pages = []
@@ -72,7 +102,7 @@ def regen_doc(folder_path: str, use_raw: bool = False) -> list[dict[str, Any]]:
         try:
             pages.append(get_page_json(folder_path, pn))
             split_pages.append(regen_page(pages[-1], use_raw = use_raw))
-        except Exception as e:
+        except Exception:
             print(f'error at page {pn}')
             print(f'in file {folder_path}')
             logger.error(f'error at page {pn}')
@@ -94,8 +124,8 @@ class RawOCRResponse(BaseModel):
     boxes_2d : list[box_2d] = Field(description = 'ocr text response, description of x min, y min, xmax and y max. Share id uniqueness with all non-ocr blocs')
     non_text_objects:  DtoType[list[NonText_box_2d]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts in box2d. "
                                                              "For example, if box2d list takes id 1, 2, 4, 5, non_text_objects will take up 3, 6... etc")
-    is_empty_page: DtoType[Optional[bool]] = Field(default = False, description="true if the whole page is empty without recognisable text.")
-    printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
+    is_empty_page: DtoType[bool | None] = Field(default = False, description="true if the whole page is empty without recognisable text.")
+    printed_page_number: DtoType[str | None] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
@@ -119,7 +149,7 @@ class RawOCRResponse(BaseModel):
     #                                                         "Share id uniqueness with OCR text boxes_2d. ")
     
     @model_validator(mode='after')
-    def check_cluster_meaningful_ordering_agreement(self):
+    def check_cluster_meaningful_ordering_agreement(self) -> Self:
         assert bool(self.is_empty_page) ^ (len(self.boxes_2d) > 0), f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters len={len(self.boxes_2d)}"
         overlap_id = set(i.id for i in self.non_text_objects).union(set(i.id for i in self.boxes_2d))
         if not len([i.id for i in (self.non_text_objects + self.boxes_2d)]) == len(set(i.id for i in self.non_text_objects + self.boxes_2d)):
@@ -134,7 +164,7 @@ class RawOCRResponse(BaseModel):
 
 class OCRMetaResponse(BaseModel):
     "meatada of an OCR page"
-    printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
+    printed_page_number: DtoType[str | None] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
@@ -155,7 +185,7 @@ class OCRClusterResponseMetaless(ModeSlicingMixin, BaseModel):
     "response of OCR once meta is quickly skimmed/ determined in separate run"
     OCR_text_clusters: DtoType[list[TextCluster]] = Field(description="the OCR text results.")
     non_text_objects:  DtoType[list[NonText_box_2d]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
-    printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
+    printed_page_number: DtoType[str | None] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
@@ -163,7 +193,7 @@ class OCRClusterResponseMetaless(ModeSlicingMixin, BaseModel):
 class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
     boxes_2d : list[box_2d] = Field(description = 'description of x min, y min, xmax and y max')
     non_text_objects:  DtoType[list[NonText_box_2d]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
-    printed_page_number: DtoType[Optional[str]] = Field("",description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
+    printed_page_number: DtoType[str | None] = Field("",description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
@@ -175,12 +205,20 @@ def _raw_content(value: object) -> object | None:
     return content if content is not None else value
 
 
-def get_first_round_response(draft_responses: dict[str, str], llm: SupportsStructuredOutput, model_name: str, cb: BaseCallbackHandler,
-                             messages: list[BaseMessage], sys_message, img_message, usage_metadata) -> OCRClusterResponse | None:
+def get_first_round_response(
+    draft_responses: dict[str, str],
+    llm: SupportsStructuredOutput,
+    model_name: str,
+    cb: BaseCallbackHandler,
+    messages: list[BaseMessage],
+    sys_message: BaseMessage,
+    img_message: BaseMessage,
+    usage_metadata: list[object],
+) -> OCRClusterResponse | None:
     
                     chain = build_structured_output_runnable(llm, RawOCRResponse, include_raw=True)
-                    before_parse: Runnable = chain.steps[0]
-                    after_parse: Runnable = chain.steps[1]
+                    before_parse = cast(Runnable, chain.steps[0])
+                    after_parse = cast(Runnable, chain.steps[1])
                     raw_response = before_parse.invoke(messages, config={"callbacks": [cb]}
                                             )
                     
@@ -203,7 +241,7 @@ def get_first_round_response(draft_responses: dict[str, str], llm: SupportsStruc
                             temp = json.loads(payload)
                             response1 = RawOCRResponse.model_validate(temp)
                             
-                        except:
+                        except Exception:
                             pass
                     if response1 is not None:
                         response = RawOCRResponse_to_OCRClusterResponse(response1)
@@ -234,7 +272,7 @@ def get_first_round_response(draft_responses: dict[str, str], llm: SupportsStruc
                                 if not isinstance(raw, (str, bytes, bytearray)):
                                     raise TypeError("raw OCR response did not contain JSON text")
                                 raw_ocr_response = RawOCRResponse.model_validate(json.loads(raw))
-                            except:
+                            except Exception:
                                 pass
                         if raw_ocr_response is not None:
                             response = RawOCRResponse_to_OCRClusterResponse(raw_ocr_response)
@@ -273,7 +311,6 @@ def validate_response_mutate_inplace(
                         try:
                             sp.to_doc()
                             response_dict.update(response_dict_local)
-                            ok = True
                         except Exception as e:
                             logger.error(f"Generated json fail to reproduce doc, file name = {image_file_path}, {model_name=}")
                             logger.error(e)
@@ -318,7 +355,6 @@ def final_resort(draft_responses: dict[str, str], messages: list[BaseMessage], p
                         max_v = ""
                         for k, v in draft_responses.items():
                             if len(v) > len(max_v):
-                                max_k = k,
                                 max_v = v
                         earlier_partial_ocr = draft_responses.get("gemini-2.5-pro") or draft_responses.get("gemini-2.5-flash") or max_v
                         llm = _build_ocr_llm("gemini-2.5-pro", callbacks=[cb])
@@ -395,7 +431,6 @@ def final_resort(draft_responses: dict[str, str], messages: list[BaseMessage], p
                                         sp = SplitPage(**response_dict)
                                     try:
                                         sp.to_doc()
-                                        ok = True
                                     except Exception as _e:
                                         raise Exception("Validation error response_dict cannot be validate into SplitPage")
                                 except  Exception as _e:
@@ -420,7 +455,6 @@ def TextBoxResponsePlusMetaResponse_to_OCRClusterResponse(raw_response: TextBoxR
                                                              "bb_x_max" : i['bounding_box'][3],
                                                              "cluster_number" : i['id']}) for i in non_text_blocks]
     return OCRClusterResponse.model_validate(temp)
-from .utils.langchain import GeminiCostCallbackHandler
 def refine_image_response(
     ok2: bool,
     response_dict: dict[str, Any],
@@ -514,10 +548,14 @@ def get_messages(image_file_path: str) -> tuple[SystemMessage, HumanMessage]:
                 ],
             )
             return sys_message, img_message
-def ocr_single_image(gemini_key: str, page_file_name, file_name, 
-                     folder, # out folder
-                     model_retry_priority_list : None | list[str],
-                     exist_behavior: Literal["ok", "skip", "raise", 'rerun']  = 'skip'):
+def ocr_single_image(
+    gemini_key: str,
+    page_file_name: str,
+    file_name: str,
+    folder: str,
+    model_retry_priority_list: None | list[str],
+    exist_behavior: Literal["ok", "skip", "raise", "rerun"] = "skip",
+) -> None:
     ok2 = False # stage 2 ok
     outfile_name = os.path.join(folder,file_name, page_file_name.rsplit('.',1)[0] + '.json')
     if os.path.exists(outfile_name):
@@ -547,7 +585,6 @@ def ocr_single_image(gemini_key: str, page_file_name, file_name,
     ok = False
     i_model = 0
     usage_metadata = []
-    from .utils.langchain import get_gemini_callback_cost
     response_dict: dict = {}
     image_file_path: str = os.path.join(folder, file_name, page_file_name)
     with get_gemini_callback_cost() as cb:
@@ -622,16 +659,16 @@ def refine_table_ocr(
         try:
             
             oc_refined_result: OCRRefineResponse
-            raw: str
+            _raw: str
             parsing_error: Exception
             temp: dict = cast(dict, build_structured_output_runnable(llm, OCRRefineResponse, include_raw=True).invoke(messages, config={"callbacks": [cb]}))
-            (raw, oc_refined_result, parsing_error) = (temp['raw'], temp['parsed'], temp['parsing_error'])
+            (_raw, oc_refined_result, parsing_error) = (temp['raw'], temp['parsed'], temp['parsing_error'])
             if parsing_error:
                 raise parsing_error
             text_before = [i.text for i in sp.OCR_text_clusters]
             text_after = ' '.join([i.text for i in oc_refined_result.OCR_text_clusters])
             from rapidfuzz import fuzz
-            def get_threshold(text_before):
+            def get_threshold(text_before: str) -> int:
                 if len(text_before) < 30:
                     threshold = 100
                 elif len(text_before) < 60:
@@ -719,7 +756,7 @@ def get_legacy_loader_like(
         else:
             # fix for non flat later cases tree structure
             allowed_files = allowed_relative_paths
-        def local_loader():
+        def local_loader() -> Iterator[str]:
             for root, dirs, files  in os.walk(folder):
                 import pathlib
                 if root==folder:
@@ -740,14 +777,29 @@ def get_legacy_loader_like(
                     yield page_file_name
         return local_loader()
 
+
+class OCRImageCallback(Protocol):
+    """Callback contract for one page in the batch OCR adapter."""
+
+    def __call__(
+        self,
+        gemini_key: str,
+        page_file_name: str,
+        *,
+        file_name: str,
+        folder: str,
+        exist_behavior: Literal["ok", "skip", "raise", "rerun"],
+        model_retry_priority_list: list[str] | None,
+    ) -> None: ...
+
 def batch_gemini_ocr_image(
     gemini_key: str,
     folder: str = "split_pages",
     exist_behavior: Literal["ok", "skip", "raise", "rerun"] = "skip",
-    bounded_executor: Optional[BoundedExecutor] = None,
+    bounded_executor: BoundedExecutor | None = None,
     allowed_relative_paths: Iterable[str] | None = None,
     loader: RawFileLoader | None = None,
-    ocr_callback: Callable[..., object] | None = None,
+    ocr_callback: OCRImageCallback | None = None,
 ) -> None:
     # page_file_name = "page_1.png"
     # file_name = "EXL-00-HI-MSA01-2017.PDF"
@@ -788,7 +840,8 @@ def batch_gemini_ocr_image(
                                         page_file_name, 
                                         file_name=pdf_fname, 
                                         folder=pdf_folder, 
-                                        exist_behavior=exist_behavior)
+                                        exist_behavior=exist_behavior,
+                                        model_retry_priority_list=None)
             time.sleep(2)
     if bounded_executor:
         bounded_executor.wait_for_all()

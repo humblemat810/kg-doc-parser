@@ -1,17 +1,38 @@
+import time
+from collections.abc import Mapping
+from contextlib import contextmanager
 from logging import Logger
+from typing import Any, Iterator, TypedDict
+from uuid import UUID
+
 from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.outputs.chat_generation import ChatGeneration
 from langchain_core.outputs.llm_result import LLMResult
-
-from collections.abc import Mapping
-from typing import Any
 
 GEMINI_PRO_INPUT_COST_PER_1K_TOKENS = 0.0001
 GEMINI_PRO_OUTPUT_COST_PER_1K_TOKENS = 0.0004
 
 #per_k
 # storage per hour
-cost_table = {
+class ModelCost(TypedDict):
+    input: float
+    output: float
+    cache: float
+    storage_per_hour: float
+
+
+class UsageHistoryEntry(TypedDict):
+    model_name: str
+    input_tokens: int
+    output_tokens: int
+    cached_tokens: int
+    reasoning_tokens: int
+    cost: float
+    start_time: float | None
+    end_time: float | None
+
+
+cost_table: dict[str, ModelCost] = {
     "gemini-2.0-flash": {"input": 0.0001, "output": 0.0004, "cache" : 0.0, "storage_per_hour": 0.0},
     "gemini-1.5-pro": {"input": 0.001250, "output": 0.005, "cache" : 0.0, "storage_per_hour": 0.0},
     "gemini-2.5-flash-preview-04-17": {"input": 0.000150, "output": 0.0035, "cache" : 0.0000375, "storage_per_hour": 0.0010},
@@ -27,8 +48,8 @@ def _usage_metadata(message: object) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
 
-def _model_name(generation: ChatGeneration) -> str:
-    value = generation.generation_info
+def _model_name(generation: object) -> str:
+    value = getattr(generation, "generation_info", None)
     if isinstance(value, Mapping):
         model = value.get("model_name")
         if isinstance(model, str):
@@ -41,32 +62,54 @@ for k in keys:
     else:
         cost_table['models/' + k] = cost_table[k]
 
-def calculate_gemini_cost(input_tokens, output_tokens, cached_tokens, model_name):
+def calculate_gemini_cost(
+    input_tokens: int,
+    output_tokens: int,
+    cached_tokens: int,
+    model_name: str,
+) -> float:
     """Calculates the cost based on Gemini Pro pricing."""
-    cost = cost_table.get(model_name, {"input": 1.250/1000000, "output": 5.0/1000000, "cache" : 0.0, "storage_per_hour": 0.0}) # prodential to assume high priced model
+    cost = cost_table.get(
+        model_name,
+        {
+            "input": 1.250 / 1000000,
+            "output": 5.0 / 1000000,
+            "cache": 0.0,
+            "storage_per_hour": 0.0,
+        },
+    )
     input_cost = ((input_tokens-cached_tokens) / 1000) * cost['input']
     cache_cost = cached_tokens / 1000 * cost['cache']
     output_cost = (output_tokens / 1000) * cost['output']
     total_cost = input_cost + output_cost + cache_cost
     return total_cost
-import time
 class GeminiCostCallbackHandler(BaseCallbackHandler):
     """A custom callback handler to track Gemini API costs."""
     
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.cache_tokens = 0
         self.reasoning_tokens = 0
         self.total_cost = 0.0
-        self.usage_history = []
-        self.run_start_time = None
-        self.run_end_time = None
-    def on_llm_start(self, serialized, prompts, *, run_id, parent_run_id = None, tags = None, metadata = None, **kwargs):
+        self.usage_history: list[UsageHistoryEntry] = []
+        self.run_start_time: float | None = None
+        self.run_end_time: float | None = None
+    def on_llm_start(
+        self,
+        serialized: dict[str, Any],
+        prompts: list[str],
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: object,
+    ) -> object:
         self.run_start_time = time.time()
         return super().on_llm_start(serialized, prompts, run_id=run_id, parent_run_id=parent_run_id, tags=tags, metadata=metadata, **kwargs)
-    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+    def on_llm_end(self, response: LLMResult, **kwargs: object) -> None:
         """Called at the end of an LLM call."""
         self.run_end_time = time.time()
         for generation in response.generations:
@@ -116,29 +159,27 @@ class GeminiCostCallbackHandler(BaseCallbackHandler):
 
                                 })
 
-    def reset(self):
+    def reset(self) -> None:
         """Resets the counters."""
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_cost = 0.0
         
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
             f"Total Input Tokens: {self.total_input_tokens}\n"
             f"Total Output Tokens: {self.total_output_tokens}\n"
             f"Total Cost: ${self.total_cost:.8f}"
         )
-    def model_dump(self):
+    def model_dump(self) -> dict[str, object]:
         return (
             {"input_tokens": self.total_input_tokens,
             "output_tokens": self.total_output_tokens,
             "total_cost": self.total_cost,
             'usage_history' : self.usage_history}
         )
-from contextlib import contextmanager
-
 @contextmanager
-def get_gemini_callback_cost():
+def get_gemini_callback_cost() -> Iterator[GeminiCostCallbackHandler]:
     """A context manager to track Gemini API costs for a block of code."""
     # Create an instance of the handler
     """_summary_
@@ -175,22 +216,31 @@ def get_gemini_callback_cost():
         pass
 
 class PromptCostTokenLogger(BaseCallbackHandler):
-    def __init__(self, logger: Logger):
+    def __init__(self, logger: Logger) -> None:
         self.cost_token_logger: Logger = logger
         self.total_input_tokens = 0
         self.total_reasoning_tokens = 0
         self.total_cached_tokens = 0
         self.total_output_tokens = 0
         self.total_cost = 0
-    def on_llm_end(self, response, *, run_id, parent_run_id = None, **kwargs):
+    def on_llm_end(
+        self,
+        response: LLMResult,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        **kwargs: object,
+    ) -> object:
         # self.cost_token_logger.info(response.response_metadata)
         for g in response.generations:
             for gg in g:
                 
                 to_log: dict[str, str | None] = {'response_metadata': None, 'usage_metadata': None}
-                if hasattr(gg.message, "response_metadata"):
-                    to_log["response_metadata"] = f"{gg.message.response_metadata}"
-                usage = _usage_metadata(gg.message)
+                message = getattr(gg, "message", None)
+                if message is not None and hasattr(message, "response_metadata"):
+                    to_log["response_metadata"] = f"{message.response_metadata}"
+                usage = _usage_metadata(message) if message is not None else None
                 if usage is not None:
                     to_log["usage_metadata"] = f"{usage}"
                 if to_log:
@@ -201,9 +251,10 @@ class PromptCostTokenLogger(BaseCallbackHandler):
             for gen in generation:
                 # Check if the generation object is a ChatGeneration instance
                 # and has the 'usage_metadata' attribute.
-                if isinstance(gen, ChatGeneration) and _usage_metadata(gen.message) is not None:
+                message = getattr(gen, "message", None)
+                if message is not None and _usage_metadata(message) is not None:
                     
-                    usage_metadata = _usage_metadata(gen.message)
+                    usage_metadata = _usage_metadata(message)
                     if usage_metadata is None:
                         continue
                     
@@ -228,12 +279,36 @@ class PromptCostTokenLogger(BaseCallbackHandler):
                         self.total_output_tokens += output_tokens
                         self.total_reasoning_tokens += reasoning_tokens
                         self.total_cost += cost
-        return super().on_llm_end(response, run_id=run_id, parent_run_id=parent_run_id, **kwargs)
-    def on_llm_error(self, error, *, run_id, parent_run_id = None, **kwargs):
-        
-        return super().on_llm_error(error, run_id=run_id, parent_run_id=parent_run_id, **kwargs)
+        return super().on_llm_end(
+            response,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tags=tags,
+            **kwargs,
+        )
+    def on_llm_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        **kwargs: object,
+    ) -> object:
+        return super().on_llm_error(
+            error,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            tags=tags,
+            **kwargs,
+        )
 class PromptTokenCounter(BaseCallbackHandler):
-    def on_llm_start(self, serialized: dict, prompts: list[str], **kwargs):
+    def on_llm_start(
+        self,
+        serialized: dict[str, Any],
+        prompts: list[str],
+        **kwargs: object,
+    ) -> None:
         for prompt in prompts:
             token_count = self.count_tokens(prompt)
             print(f"Prompt: {prompt}")

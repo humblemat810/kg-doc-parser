@@ -21,14 +21,23 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from types import TracebackType
+from typing import Literal, Protocol
+
+from .serialization import JsonValue
 
 from .cache import WorkflowLLMCallCache
-from .clients import DocumentTreeApiPersistenceClient, ServerCanonicalKgClient
+from .clients import (
+    DocumentTreeApiPersistenceClient,
+    HttpClientLike,
+    ServerCanonicalKgClient,
+)
 from .models import (
+    CurrentLayerContext,
     CurrentLayerResult,
     CurrentLayerReview,
     LayerChildCandidate,
@@ -42,6 +51,12 @@ from .service import StorageBackendFactory, build_default_engines
 
 _DEMO_JWT_SECRET = "kg-doc-parser-demo-test-secret"
 _LOGGER = logging.getLogger(__name__)
+
+
+class DemoHttpClientLike(HttpClientLike, Protocol):
+    """HTTP client surface used by the demo server and persistence helpers."""
+
+    def close(self) -> None: ...
 
 
 @dataclass
@@ -62,7 +77,7 @@ class DemoHarnessConfig:
     probe_filename: str = "probe-events.jsonl"
     summary_filename: str = "demo-summary.json"
     cache_dirname: str = "llm-cache"
-    deps: dict[str, Any] = field(default_factory=dict)
+    deps: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -82,16 +97,28 @@ class DemoHarnessArtifacts:
     kg_authority: str | None = None
 
 
-class _ServerContext(AbstractContextManager):
+class _ServerContext(AbstractContextManager[bool]):
     """Wrapper for server transports so shutdown behavior stays explicit."""
 
-    def __init__(self, *, client: Any, transport: str, base_url: str = "", cleanup=None) -> None:
+    def __init__(
+        self,
+        *,
+        client: DemoHttpClientLike,
+        transport: str,
+        base_url: str = "",
+        cleanup: Callable[..., None] | None = None,
+    ) -> None:
         self.client = client
         self.transport = transport
         self.base_url = base_url
         self._cleanup = cleanup
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         if self._cleanup is not None:
             self._cleanup(exc_type, exc, tb)
         return False
@@ -138,7 +165,11 @@ def _load_isolated_server_app(server_data_dir: Path) -> _ServerContext:
         restore_env()
         raise
 
-    def cleanup(exc_type, exc, tb) -> None:
+    def cleanup(
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         try:
             client.__exit__(exc_type, exc, tb)
         finally:
@@ -244,7 +275,9 @@ def _connect_external_server(base_url: str) -> _ServerContext:
     )
 
 
-def _shutdown_subprocess_server(proc: subprocess.Popen[str], session: Any | None) -> None:
+def _shutdown_subprocess_server(
+    proc: subprocess.Popen[str], session: DemoHttpClientLike | None
+) -> None:
     """Terminate the subprocess server and close its HTTP session."""
     if session is not None:
         session.close()
@@ -257,7 +290,7 @@ def _shutdown_subprocess_server(proc: subprocess.Popen[str], session: Any | None
             proc.wait(timeout=5)
 
 
-def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, Any]:
+def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, object]:
     """Build deterministic proposal/review hooks for the fake layered demo mode."""
     text = inp.collections[0].pages[0].units[0].text or ""
     unit_id = f"{inp.request_id}|p1_t0"
@@ -273,7 +306,9 @@ def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, Any]:
             verbatim_text=fragment,
         )
 
-    def _propose_layer_fn(*, current_layer_context, **kwargs) -> CurrentLayerResult:
+    def _propose_layer_fn(
+        *, current_layer_context: CurrentLayerContext, **kwargs: object
+    ) -> CurrentLayerResult:
         if current_layer_context.depth == 0:
             return CurrentLayerResult(
                 children=[
@@ -309,7 +344,9 @@ def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, Any]:
             ],
         )
 
-    def _review_layer_fn(*, current_layer_result, **kwargs) -> CurrentLayerReview:
+    def _review_layer_fn(
+        *, current_layer_result: CurrentLayerResult, **kwargs: object
+    ) -> CurrentLayerReview:
         return CurrentLayerReview(
             updated_result=current_layer_result.model_copy(update={"satisfied": True}),
             coverage_ok=True,
@@ -341,7 +378,7 @@ def _seed_demo_document(server_ctx: _ServerContext, *, document_id: str, text: s
     The generic tree-upsert route validates span excerpts against stored document
     content, so the demo must seed the raw document first.
     """
-    payload = {
+    payload: dict[str, JsonValue] = {
         "doc_id": document_id,
         "doc_type": "text",
         "insertion_method": "demo_harness",
@@ -370,7 +407,7 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
         engine_dir=output_dir / "engines",
         server_data_dir=output_dir / "server-data",
     )
-    engines: tuple[Any, ...] = ()
+    engines: tuple[object, ...] = ()
     inp = WorkflowIngestInput.from_text(
         document_id=config.document_id,
         text=config.text,

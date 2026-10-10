@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from collections.abc import Mapping
+from typing import Literal, cast
 
 from kogwistar.id_provider import stable_id
+from .serialization import JsonValue
 from pydantic import BaseModel, Field, model_validator
 
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
+
+
+def _source_text(source: Mapping[str, object] | None) -> str:
+    if source is None:
+        return ""
+    value = source.get("text", "")
+    return value if isinstance(value, str) else str(value or "")
 
 
 class HydratedTextPointer(BaseModel):
@@ -30,7 +39,9 @@ class SemanticNode(BaseModel):
     aggregate_content_pointers: list[HydratedTextPointer] = Field(default_factory=list)
     child_nodes: list[SemanticNode] = Field(default_factory=list)
     level_from_root: int = 0
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    # Pydantic's recursive alias expansion is not stable across the supported
+    # runtimes; keep the model field opaque while JSON boundaries stay typed.
+    metadata: dict[str, object] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _ensure_stable_node_id(self) -> SemanticNode:
@@ -58,12 +69,12 @@ SemanticNode.model_rebuild()
 
 def correct_and_validate_pointer(
     pointer: HydratedTextPointer,
-    source_map: dict[str, dict[str, Any]],
+    source_map: Mapping[str, Mapping[str, object]],
 ) -> HydratedTextPointer | None:
     source = source_map.get(pointer.source_cluster_id)
     if source is None:
         return None
-    text = source.get("text", "")
+    text = _source_text(source)
     end_exclusive = len(text) if pointer.end_char == -1 else pointer.end_char + 1
     actual = text[max(pointer.start_char, 0):max(end_exclusive, 0)]
     if _normalize_text(actual) == _normalize_text(pointer.verbatim_text):
@@ -101,7 +112,7 @@ def correct_and_validate_pointer(
 
 def pointer_source_validation_error(
     pointer: HydratedTextPointer,
-    source_map: dict[str, dict[str, Any]],
+    source_map: Mapping[str, Mapping[str, object]],
 ) -> str | None:
     """Return a deterministic error when a pointer is not source-grounded.
 
@@ -114,7 +125,7 @@ def pointer_source_validation_error(
     source = source_map.get(pointer.source_cluster_id)
     if source is None:
         return f"unknown source cluster {pointer.source_cluster_id!r}"
-    text = str(source.get("text", "") or "")
+    text = _source_text(source)
     if pointer.start_char < 0:
         return "pointer start is negative"
     end = len(text) - 1 if pointer.end_char == -1 else pointer.end_char
@@ -130,8 +141,8 @@ def pointer_source_validation_error(
 
 def compute_pointer_coverage(
     root_node: SemanticNode,
-    source_map: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
+    source_map: Mapping[str, Mapping[str, object]],
+) -> dict[str, JsonValue]:
     def _meaningful_length(value: str) -> int:
         return sum(1 for char in value if not char.isspace())
 
@@ -145,7 +156,10 @@ def compute_pointer_coverage(
             for ptr in node.total_content_pointers:
                 end = ptr.end_char
                 if end == -1:
-                    end = max(0, len(source_map.get(ptr.source_cluster_id, {}).get("text", "")) - 1)
+                    end = max(
+                        0,
+                        len(_source_text(source_map.get(ptr.source_cluster_id))) - 1,
+                    )
                 ranges.setdefault(ptr.source_cluster_id, []).append((ptr.start_char, end))
         for child in node.child_nodes:
             walk(child)
@@ -183,13 +197,13 @@ def compute_pointer_coverage(
         total_len += meaningful_total
         total_covered += covered
     overall = total_covered / total_len if total_len else 1.0
-    return {"per_cluster": per_cluster, "overall": overall}
+    return cast(dict[str, JsonValue], {"per_cluster": per_cluster, "overall": overall})
 
 
 def compute_terminal_content_coverage(
     root_node: SemanticNode,
-    source_map: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
+    source_map: Mapping[str, Mapping[str, object]],
+) -> dict[str, JsonValue]:
     """Measure exact ownership by terminal content nodes.
 
     This intentionally does not count document/page wrappers, aggregate
@@ -252,26 +266,31 @@ def compute_terminal_content_coverage(
         if multiply_owned:
             multiply_owned_ranges[cluster_id] = _ranges(multiply_owned)
 
-    return {
-        "total_nonws": total_nonws,
-        "covered_nonws": covered_nonws,
-        "missing_nonws_ranges": missing_ranges,
-        "multiply_owned_nonws_ranges": multiply_owned_ranges,
-        "per_cluster": per_cluster,
-        "overall": covered_nonws / total_nonws if total_nonws else 1.0,
-        "coverage_basis": "terminal_content_owners_exactly_once",
-        "invalid_pointers": invalid_pointers,
-        "valid": not invalid_pointers and not missing_ranges and not multiply_owned_ranges,
-    }
+    return cast(
+        dict[str, JsonValue],
+        {
+            "total_nonws": total_nonws,
+            "covered_nonws": covered_nonws,
+            "missing_nonws_ranges": missing_ranges,
+            "multiply_owned_nonws_ranges": multiply_owned_ranges,
+            "per_cluster": per_cluster,
+            "overall": covered_nonws / total_nonws if total_nonws else 1.0,
+            "coverage_basis": "terminal_content_owners_exactly_once",
+            "invalid_pointers": invalid_pointers,
+            "valid": not invalid_pointers and not missing_ranges and not multiply_owned_ranges,
+        },
+    )
 
 
 def classify_terminal_coverage_status(
     root_node: SemanticNode,
-    coverage: dict[str, Any],
+    coverage: dict[str, JsonValue],
 ) -> Literal["complete", "atomic_valid", "partial_degraded", "failed"]:
     """Convert terminal ownership evidence into a truthful operator status."""
     if not coverage.get("valid", False):
-        return "partial_degraded" if coverage.get("covered_nonws", 0) > 0 else "failed"
+        covered = coverage.get("covered_nonws", 0)
+        has_coverage = isinstance(covered, (int, float)) and not isinstance(covered, bool) and covered > 0
+        return "partial_degraded" if has_coverage else "failed"
     pending = [root_node]
     while pending:
         node = pending.pop()
@@ -281,11 +300,11 @@ def classify_terminal_coverage_status(
     return "complete"
 
 
-def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str, Any]:
-    nodes: list[dict[str, Any]] = []
-    edges: list[dict[str, Any]] = []
+def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str, JsonValue]:
+    nodes: list[dict[str, object]] = []
+    edges: list[dict[str, object]] = []
 
-    def spans(ptrs: list[HydratedTextPointer]) -> list[dict[str, Any]]:
+    def spans(ptrs: list[HydratedTextPointer]) -> list[dict[str, JsonValue]]:
         if not ptrs:
             return [
                 {
@@ -385,4 +404,7 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
             walk(child)
 
     walk(root)
-    return {"doc_id": doc_id, "insertion_method": "workflow_ingest", "nodes": nodes, "edges": edges}
+    return cast(
+        dict[str, JsonValue],
+        {"doc_id": doc_id, "insertion_method": "workflow_ingest", "nodes": nodes, "edges": edges},
+    )

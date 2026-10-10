@@ -16,12 +16,19 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import Any, Literal, Protocol, cast
+from typing import Literal, Protocol, Required, TypedDict, Unpack, cast
 from uuid import uuid4
 
+from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Edge, Node
+from .serialization import JsonValue
+from kogwistar.runtime.models import StepRunResult
 
-from .design import DEFAULT_WORKFLOW_ID, ensure_ingest_workflow_design
+from .design import (
+    DEFAULT_WORKFLOW_ID,
+    WorkflowEngineLike,
+    ensure_ingest_workflow_design,
+)
 from .models import (
     CanonicalGraphWriteResult,
     IngestRunHandle,
@@ -29,7 +36,7 @@ from .models import (
     WorkflowExportBundle,
     WorkflowIngestInput,
 )
-from .probe import emit_probe_event
+from .probe import WorkflowProbe, emit_probe_event
 
 
 class UnsupportedClientOperation(RuntimeError):
@@ -37,6 +44,34 @@ class UnsupportedClientOperation(RuntimeError):
 
 
 IngestStatus = Literal["succeeded", "failed", "failure", "suspended"]
+JsonObject = dict[str, JsonValue]
+
+
+class ResumeIngestArguments(TypedDict, total=False):
+    """Named arguments accepted by checkpoint-resume adapters.
+
+    The fields remain optional because the server-backed adapter deliberately
+    rejects resume before inspecting the payload, while the direct adapter
+    validates the required fields when it actually resumes a run.
+    """
+
+    run_id: Required[str]
+    suspended_node_id: Required[str]
+    suspended_token_id: Required[str]
+    client_result: Required[StepRunResult]
+    workflow_id: Required[str]
+    conversation_id: Required[str]
+    turn_node_id: Required[str]
+    deps: dict[str, object]
+
+
+def _workflow_probe(deps: Mapping[str, object] | None) -> WorkflowProbe | None:
+    value = (deps or {}).get("probe")
+    return value if isinstance(value, WorkflowProbe) else None
+
+
+def _state_json(value: Mapping[str, object]) -> dict[str, JsonValue]:
+    return cast(dict[str, JsonValue], dict(value))
 
 
 class HttpResponseLike(Protocol):
@@ -50,11 +85,18 @@ class HttpResponseLike(Protocol):
 class HttpClientLike(Protocol):
     """HTTP client boundary used by server-backed graph persistence.
 
-    The keyword payload remains opaque because transports such as ``httpx``
-    and ``requests`` expose different concrete request types.
+    The demo and production adapters only send one JSON document.  Keeping
+    that narrow request shape avoids pretending every transport keyword is
+    interchangeable while remaining compatible with ``httpx`` and
+    ``requests`` clients.
     """
 
-    def post(self, endpoint: str, **kwargs: object) -> HttpResponseLike: ...
+    def post(
+        self,
+        url: str,
+        *,
+        json: JsonValue | None = None,
+    ) -> HttpResponseLike: ...
 
 
 def _ingest_status(value: str) -> IngestStatus:
@@ -71,13 +113,14 @@ class CanonicalGraphPersistenceClient(ABC):
         raise NotImplementedError
 
 
-def _jsonable_payload(value: Any) -> Any:
-    if hasattr(value, "model_dump"):
+def _jsonable_payload(value: object) -> object:
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
         try:
-            return value.model_dump(field_mode="backend", dump_format="json")
+            return model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return value.model_dump()
-    if isinstance(value, dict):
+            return model_dump()
+    if isinstance(value, Mapping):
         return {str(k): _jsonable_payload(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_jsonable_payload(item) for item in value]
@@ -86,11 +129,48 @@ def _jsonable_payload(value: Any) -> Any:
     return value
 
 
-def _to_temp_id_graph_payload(graph_payload: dict[str, Any]) -> dict[str, Any]:
+def _record_list(value: object, *, field_name: str) -> list[JsonObject]:
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"graph payload field {field_name!r} must be a list")
+    records: list[JsonObject] = []
+    for item in value:
+        converted = _jsonable_payload(item)
+        if not isinstance(converted, dict):
+            raise TypeError(f"graph payload {field_name!r} items must be objects")
+        records.append(cast(JsonObject, {str(key): payload for key, payload in converted.items()}))
+    return records
+
+
+def _string_list(value: object, *, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"graph payload field {field_name!r} must be a list")
+    return [str(item) for item in value]
+
+
+def _json_int(value: object, default: int = 0) -> int:
+    """Read an integer counter from an untrusted JSON response."""
+
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _to_temp_id_graph_payload(graph_payload: Mapping[str, object]) -> JsonObject:
     """Adapt a canonical export bundle into the server's batch-temp-id contract."""
 
-    nodes = [_jsonable_payload(node) for node in graph_payload.get("nodes", [])]
-    edges = [_jsonable_payload(edge) for edge in graph_payload.get("edges", [])]
+    nodes = _record_list(graph_payload.get("nodes", []), field_name="nodes")
+    edges = _record_list(graph_payload.get("edges", []), field_name="edges")
 
     node_id_map: dict[str, str] = {}
     for idx, node in enumerate(nodes, start=1):
@@ -109,20 +189,28 @@ def _to_temp_id_graph_payload(graph_payload: dict[str, Any]) -> dict[str, Any]:
         edge["id"] = temp_id
 
     for edge in edges:
-        edge["source_ids"] = [node_id_map.get(str(x), str(x)) for x in edge.get("source_ids", [])]
-        edge["target_ids"] = [node_id_map.get(str(x), str(x)) for x in edge.get("target_ids", [])]
+        edge["source_ids"] = [
+            node_id_map.get(value, value)
+            for value in _string_list(edge.get("source_ids"), field_name="source_ids")
+        ]
+        edge["target_ids"] = [
+            node_id_map.get(value, value)
+            for value in _string_list(edge.get("target_ids"), field_name="target_ids")
+        ]
         edge["source_edge_ids"] = [
-            edge_id_map.get(str(x), str(x)) for x in edge.get("source_edge_ids", []) or []
+            edge_id_map.get(value, value)
+            for value in _string_list(edge.get("source_edge_ids"), field_name="source_edge_ids")
         ]
         edge["target_edge_ids"] = [
-            edge_id_map.get(str(x), str(x)) for x in edge.get("target_edge_ids", []) or []
+            edge_id_map.get(value, value)
+            for value in _string_list(edge.get("target_edge_ids"), field_name="target_edge_ids")
         ]
 
     return {
         "doc_id": str(graph_payload.get("doc_id") or "workflow-ingest-doc"),
         "insertion_method": str(graph_payload.get("insertion_method") or "workflow_ingest"),
-        "nodes": nodes,
-        "edges": edges,
+        "nodes": cast(JsonValue, nodes),
+        "edges": cast(JsonValue, edges),
     }
 
 
@@ -145,6 +233,8 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
         self.server_parser_used = server_parser_used
 
     def persist_graph_payload(self, bundle: WorkflowExportBundle) -> CanonicalGraphWriteResult:
+        node_count = len(_record_list(bundle.graph_payload.get("nodes", []), field_name="nodes"))
+        edge_count = len(_record_list(bundle.graph_payload.get("edges", []), field_name="edges"))
         payload = _to_temp_id_graph_payload(bundle.graph_payload)
         endpoint = self.endpoint
         if self.base_url and not endpoint.startswith("http://") and not endpoint.startswith("https://"):
@@ -159,22 +249,22 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
         response_payload = response.json()
         if not isinstance(response_payload, Mapping):
             raise TypeError("canonical server persistence returned a non-object JSON body")
-        response_json: Mapping[str, object] = response_payload
+        response_json = cast(Mapping[str, JsonValue], response_payload)
         raw_engine_result = response_json.get("engine_result")
         engine_result = raw_engine_result if isinstance(raw_engine_result, Mapping) else {}
         return CanonicalGraphWriteResult(
             persistence_mode="server_canonical",
             kg_authority="server",
             canonical_write_confirmed=str(response_json.get("status") or "").lower() == "ok",
-            nodes_written=int(
+            nodes_written=_json_int(
                 engine_result.get("nodes_added")
                 or response_json.get("inserted_nodes")
-                or len(payload["nodes"])
+                or node_count
             ),
-            edges_written=int(
+            edges_written=_json_int(
                 engine_result.get("edges_added")
                 or response_json.get("inserted_edges")
-                or len(payload["edges"])
+                or edge_count
             ),
             transport=self.transport,
             server_parser_used=self.server_parser_used,
@@ -190,14 +280,16 @@ class IngestExecutionClient(ABC):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, Any] | None = None,
+        deps: dict[str, object] | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
         raise NotImplementedError
 
     @abstractmethod
-    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
+    def resume_ingest(
+        self, **kwargs: Unpack[ResumeIngestArguments]
+    ) -> IngestRunResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -219,9 +311,9 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
     def __init__(
         self,
         *,
-        workflow_engine,
-        conversation_engine,
-        knowledge_engine=None,
+        workflow_engine: WorkflowEngineLike,
+        conversation_engine: WorkflowEngineLike,
+        knowledge_engine: WorkflowEngineLike | None = None,
     ) -> None:
         self.workflow_engine = workflow_engine
         self.conversation_engine = conversation_engine
@@ -232,17 +324,17 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, Any] | None = None,
+        deps: dict[str, object] | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
         ensure_ingest_workflow_design(self.workflow_engine, workflow_id=workflow_id)
         from .service import build_runtime
 
-        probe = (deps or {}).get("probe")
+        probe = _workflow_probe(deps)
         runtime = build_runtime(
-            workflow_engine=self.workflow_engine,
-            conversation_engine=self.conversation_engine,
+            workflow_engine=cast(GraphKnowledgeEngine, self.workflow_engine),
+            conversation_engine=cast(GraphKnowledgeEngine, self.conversation_engine),
             deps={
                 "knowledge_engine": self.knowledge_engine,
                 "persistence_mode": "local_debug",
@@ -311,17 +403,20 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             ),
             status=_ingest_status(run.status),
             bundle=bundle,
-            final_state=dict(run.final_state),
+            final_state=_state_json(run.final_state),
         )
 
-    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
+    def resume_ingest(
+        self, **kwargs: Unpack[ResumeIngestArguments]
+    ) -> IngestRunResult:
         from .service import build_runtime
 
-        deps = dict(kwargs.pop("deps", {}) or {})
-        probe = deps.get("probe")
+        raw_deps = kwargs.pop("deps", None)
+        deps = dict(raw_deps) if isinstance(raw_deps, Mapping) else {}
+        probe = _workflow_probe(deps)
         runtime = build_runtime(
-            workflow_engine=self.workflow_engine,
-            conversation_engine=self.conversation_engine,
+            workflow_engine=cast(GraphKnowledgeEngine, self.workflow_engine),
+            conversation_engine=cast(GraphKnowledgeEngine, self.conversation_engine),
             deps={
                 "knowledge_engine": self.knowledge_engine,
                 "persistence_mode": "local_debug",
@@ -336,11 +431,19 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             execution_mode="direct_runtime",
             run_id=kwargs.get("run_id"),
         )
-        resumed = runtime.resume_run(**kwargs)
+        resumed = runtime.resume_run(
+            run_id=str(kwargs["run_id"]),
+            suspended_node_id=str(kwargs["suspended_node_id"]),
+            suspended_token_id=str(kwargs["suspended_token_id"]),
+            client_result=cast(StepRunResult, kwargs["client_result"]),
+            workflow_id=str(kwargs["workflow_id"]),
+            conversation_id=str(kwargs["conversation_id"]),
+            turn_node_id=str(kwargs["turn_node_id"]),
+        )
         bundle = None
         if "export_bundle" in resumed.final_state:
             bundle = WorkflowExportBundle.model_validate(resumed.final_state["export_bundle"])
-        workflow_id = kwargs.get("workflow_id", DEFAULT_WORKFLOW_ID)
+        workflow_id = str(kwargs.get("workflow_id", DEFAULT_WORKFLOW_ID))
         emit_probe_event(
             probe,
             "workflow.resume_finished",
@@ -356,7 +459,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             ),
             status=_ingest_status(resumed.status),
             bundle=bundle,
-            final_state=dict(resumed.final_state),
+            final_state=_state_json(resumed.final_state),
         )
 
     def persist_graph_payload(self, bundle: WorkflowExportBundle) -> CanonicalGraphWriteResult:
@@ -370,12 +473,12 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             )
         nodes_written = 0
         edges_written = 0
-        for node in bundle.graph_payload.get("nodes", []):
+        for node in _record_list(bundle.graph_payload.get("nodes", []), field_name="nodes"):
             node_obj = node if isinstance(node, Node) else Node.model_validate(node)
             if not self.knowledge_engine.persist.exists_node(str(node_obj.safe_get_id())):
                 self.knowledge_engine.write.add_node(node_obj)
                 nodes_written += 1
-        for edge in bundle.graph_payload.get("edges", []):
+        for edge in _record_list(bundle.graph_payload.get("edges", []), field_name="edges"):
             edge_obj = edge if isinstance(edge, Edge) else Edge.model_validate(edge)
             if not self.knowledge_engine.persist.exists_edge(str(edge_obj.safe_get_id())):
                 self.knowledge_engine.write.add_edge(edge_obj)
@@ -405,7 +508,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
         )
         if not checkpoints:
             return None
-        return max(checkpoints, key=lambda node: int(node.metadata["step_seq"]))
+        return max(checkpoints, key=lambda node: _json_int(node.metadata.get("step_seq")))
 
 
 class ServerCanonicalKgClient(IngestExecutionClient):
@@ -414,8 +517,8 @@ class ServerCanonicalKgClient(IngestExecutionClient):
     def __init__(
         self,
         *,
-        workflow_engine,
-        conversation_engine,
+        workflow_engine: WorkflowEngineLike,
+        conversation_engine: WorkflowEngineLike,
         persistence_client: CanonicalGraphPersistenceClient,
     ) -> None:
         self.workflow_engine = workflow_engine
@@ -427,7 +530,7 @@ class ServerCanonicalKgClient(IngestExecutionClient):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, Any] | None = None,
+        deps: dict[str, object] | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
@@ -438,10 +541,10 @@ class ServerCanonicalKgClient(IngestExecutionClient):
         ensure_ingest_workflow_design(self.workflow_engine, workflow_id=workflow_id)
         from .service import build_runtime
 
-        probe = (deps or {}).get("probe")
+        probe = _workflow_probe(deps)
         runtime = build_runtime(
-            workflow_engine=self.workflow_engine,
-            conversation_engine=self.conversation_engine,
+            workflow_engine=cast(GraphKnowledgeEngine, self.workflow_engine),
+            conversation_engine=cast(GraphKnowledgeEngine, self.conversation_engine),
             deps={
                 "knowledge_engine": None,
                 "persistence_mode": "server_canonical",
@@ -486,10 +589,12 @@ class ServerCanonicalKgClient(IngestExecutionClient):
             ),
             status=_ingest_status(run.status),
             bundle=bundle,
-            final_state=dict(run.final_state),
+            final_state=_state_json(run.final_state),
         )
 
-    def resume_ingest(self, **kwargs: object) -> IngestRunResult:
+    def resume_ingest(
+        self, **kwargs: Unpack[ResumeIngestArguments]
+    ) -> IngestRunResult:
         raise UnsupportedClientOperation(
             "remote/server-backed runtime resume is not implemented in this repo"
         )

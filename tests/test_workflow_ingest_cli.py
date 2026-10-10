@@ -8,12 +8,14 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-
-from kg_doc_parser.workflow_ingest import OCRWorkflowArtifacts, ProviderEndpointConfig, WorkflowProviderSettings
+from kg_doc_parser.workflow_ingest import (
+    OCRWorkflowArtifacts,
+    ProviderEndpointConfig,
+    WorkflowProviderSettings,
+    runners,
+)
 from kg_doc_parser.workflow_ingest import cli as workflow_cli
-from kg_doc_parser.workflow_ingest import runners
 from kg_doc_parser.workflow_ingest.cli import _provider_settings_from_args, build_parser
-
 
 pytestmark = [pytest.mark.workflow]
 

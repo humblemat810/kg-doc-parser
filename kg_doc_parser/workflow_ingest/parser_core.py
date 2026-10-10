@@ -5,6 +5,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Literal, Protocol, cast
 
+from .serialization import JsonValue
+
 from .cache import WorkflowLLMCallCache
 from .models import (
     CurrentLayerContext,
@@ -28,6 +30,27 @@ _LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
 SplitStrategy = Literal["excerpt_first", "boundary_first"]
 ParserPayload = dict[str, object]
 ParserSourceMap = dict[str, ParserPayload]
+
+
+def _as_int(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
+def _source_text(record: Mapping[str, object] | None) -> str:
+    if record is None:
+        return ""
+    return str(record.get("text", "") or "")
+
+
+def _optional_bool(value: object) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 class ParseSemanticFn(Protocol):
@@ -92,6 +115,35 @@ class SourceCollectionLike(Protocol):
     @property
     def title(self) -> str: ...
 
+class SourceUnitLike(Protocol):
+    """Minimum source-unit shape needed by deterministic fallback parsing."""
+
+    @property
+    def unit_id(self) -> str | None: ...
+
+    @property
+    def cluster_number(self) -> int | None: ...
+
+    @property
+    def text(self) -> str | None: ...
+
+
+class SourcePageLike(Protocol):
+    """Minimum page shape needed by deterministic fallback parsing."""
+
+    @property
+    def page_number(self) -> int: ...
+
+    @property
+    def units(self) -> Sequence[SourceUnitLike]: ...
+
+
+class SourceCollectionWithPagesLike(SourceCollectionLike, Protocol):
+    """Collection shape required by page-aware deterministic fallback parsing."""
+
+    @property
+    def pages(self) -> Sequence[SourcePageLike]: ...
+
 
 class _NodeWithOptionalId(Protocol):
     @property
@@ -147,7 +199,7 @@ def _legacy_pointer_aliases(parser_source_map: ParserSourceMap) -> dict[str, str
         cluster_number = record.get("cluster_number")
         if page_number is None or cluster_number is None:
             continue
-        alias = f"p{int(page_number)}_c{int(cluster_number)}"
+        alias = f"p{_as_int(page_number)}_c{_as_int(cluster_number)}"
         aliases.setdefault(alias, unit_id)
     return aliases
 
@@ -194,7 +246,7 @@ def _pointer_end(pointer: HydratedTextPointer, source_map: ParserSourceMap | Non
     if pointer.end_char != -1:
         return pointer.end_char
     if source_map is not None:
-        text = source_map.get(pointer.source_cluster_id, {}).get("text", "")
+        text = _source_text(source_map.get(pointer.source_cluster_id))
         if text:
             return max(0, len(text) - 1)
     return pointer.start_char
@@ -459,7 +511,9 @@ def detect_layer_invariants(
                     )
             merged = _merge_intervals(child_intervals)
             cursor = parent_start
-            cluster_text = parser_source_map.get(parent_ptr.source_cluster_id, {}).get("text", "") if parser_source_map else ""
+            cluster_text = _source_text(
+                parser_source_map.get(parent_ptr.source_cluster_id)
+            ) if parser_source_map else ""
             for start, end in merged:
                 if start > cursor:
                     gap_start = cursor
@@ -842,7 +896,7 @@ def review_layer(
     elif isinstance(reviewed, CurrentLayerResult):
         result = CurrentLayerReview(
             updated_result=reviewed,
-            coverage_ok=reviewed.metadata.get("layer_coverage_ok"),
+                coverage_ok=_optional_bool(reviewed.metadata.get("layer_coverage_ok")),
             satisfied=reviewed.satisfied,
         )
     elif isinstance(reviewed, dict):
@@ -852,7 +906,7 @@ def review_layer(
             parsed = CurrentLayerResult.model_validate(reviewed)
             result = CurrentLayerReview(
                 updated_result=parsed,
-                coverage_ok=parsed.metadata.get("layer_coverage_ok"),
+                coverage_ok=_optional_bool(parsed.metadata.get("layer_coverage_ok")),
                 satisfied=parsed.satisfied,
             )
     else:
@@ -1011,7 +1065,8 @@ def check_layer_coverage(
 
     metadata_flag = current_layer_result.metadata.get("layer_coverage_ok")
     if isinstance(metadata_flag, bool):
-        notes = current_layer_result.metadata.get("review_notes") or []
+        raw_notes = current_layer_result.metadata.get("review_notes")
+        notes = raw_notes if isinstance(raw_notes, list) else []
         return metadata_flag, [str(note) for note in notes]
 
     if current_layer_result.metadata.get("atomic_retained"):
@@ -1111,7 +1166,7 @@ def repair_layer_candidates(
         )
     metadata = dict(current_layer_result.metadata)
     if repair_failures:
-        metadata["repair_failures"] = repair_failures[:32]
+        metadata["repair_failures"] = cast(JsonValue, repair_failures[:32])
         metadata["repair_failure_scope"] = "child_replacement"
         metadata["failure_type"] = "repair_failure"
         metadata["rollback"] = "verified_parent_retained"
@@ -1237,8 +1292,8 @@ def validate_layer_commit(
         review_notes=["post-repair pre-commit validation", *notes[:20]],
         metadata={
             "commit_validation": True,
-            "committable_parent_node_ids": valid_parent_ids,
-            "failed_parent_node_ids": failed_parent_ids,
+            "committable_parent_node_ids": cast(JsonValue, valid_parent_ids),
+            "failed_parent_node_ids": cast(JsonValue, failed_parent_ids),
             "partial_commit": partial_commit,
         },
         committable_parent_node_ids=valid_parent_ids,

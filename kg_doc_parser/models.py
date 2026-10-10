@@ -47,25 +47,20 @@ Edges (Relationships):
 """
 if True:
     import logging
-    import os
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
-from typing import List, Literal, Optional, Dict, Any, Type, Union, Annotated, ClassVar, Self
-try:
-    from typing import TypeAlias
-except ImportError:  # pragma: no cover
-    from typing_extensions import TypeAlias
-from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo
+from typing import Literal, Self, TypeAlias
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic_extension.model_slicing import (
+    DtoType,
+    ModeSlicingMixin,
+)
+from pydantic_extension.model_slicing.mixin import DtoField
 
-from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, FrontendField, BackendField, LLMField,
-                DtoType,
-                BackendType,
-                FrontendType,
-                LLMType,
-                use_mode)
-from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
-JsonPrimitive = Union[str, int, float, bool, None]
+JsonPrimitive = str | int | float | bool | None
+JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
 #========================= OCR DOC
 
 # pre-validation model
@@ -102,8 +97,8 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
        the first image box id (cluster numebr) will be '2', the next signature will be '3' """
     OCR_text_clusters: DtoType[list[TextCluster]] = Field(description="the OCR text results. Share cluster number uniqueness with non-OCR objects. Include emoji or unicode text")
     non_text_objects:  DtoType[list[NonTextCluster]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
-    is_empty_page: DtoType[Optional[bool]] = Field(default = False, description="true if the whole page is empty without recognisable text.")
-    printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
+    is_empty_page: DtoType[bool | None] = Field(default = False, description="true if the whole page is empty without recognisable text.")
+    printed_page_number: DtoType[str | None] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
@@ -154,12 +149,12 @@ class SplitPage(OCRClusterResponseBc):
     # model not for LLM response
     pdf_page_num: int
     metadata: SplitPageMeta
-    refined_version: Optional[OCRClusterResponse[DtoField]] = Field(default = None, description = "refined processed/ grouped/ merged version of ocr text clusters. ")
-    def model_dump(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:
+    refined_version: OCRClusterResponse[DtoField] | None = Field(default = None, description = "refined processed/ grouped/ merged version of ocr text clusters. ")
+    def model_dump(self, *arg: object, **kwarg: object) -> JsonObject:
         return self.to_doc()
-    def dump_raw(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:
+    def dump_raw(self, *arg: object, **kwarg: object) -> JsonObject:
         return super(SplitPage, self).model_dump(exclude = ["refined_version"], *arg, **kwarg)
-    def dump_supercede_parse(self, *arg: Any, **kwarg: Any) -> dict[str, Any]:
+    def dump_supercede_parse(self, *arg: object, **kwarg: object) -> JsonObject:
         return super(SplitPage, self).model_dump(exclude = ["refined_version", "metadata"], *arg, **kwarg)
     @model_validator(mode="after")
     def roundtrip_invariant(self, info: ValidationInfo) -> "SplitPage":
@@ -185,7 +180,7 @@ class SplitPage(OCRClusterResponseBc):
             raise ValueError("Roundtrip invariant failed: dump->validate changed the model")
 
         return self
-    def to_doc(self) -> dict[str, Any]:
+    def to_doc(self) -> JsonObject:
         """Model to llm one-way serializer with manual slicing logic, can refactor using sliced view
         with some token saving logic. 
         """
@@ -202,16 +197,16 @@ class SplitPage(OCRClusterResponseBc):
                 c_p = cluster_lookup_by_number.get(i)
                 if c_p is None:
                     raise KeyError(f"{i} does not exist")
-                cluster_dump: dict = c_p.model_dump()
+                cluster_dump: JsonObject = c_p.model_dump()
                 cluster_dump.pop("cluster_number")
                 id_sorted_text_cluster.append(cluster_dump)
             others = (set(cluster_numbers) - set(target.meaningful_ordering))
             for i in others:
-                cluster_dump: dict
+                cluster_dump: JsonObject
                 cluster_dump = cluster_lookup_by_number[i].model_dump()
                 cluster_dump.pop("cluster_number")
                 id_sorted_text_cluster.append(cluster_dump)
-            c_return = {}
+            c_return: JsonObject = {}
             c_return['pdf_page_num'] = self.pdf_page_num
             c_return['printed_page_number'] = self.printed_page_number
             c_return['OCR_text_clusters'] = id_sorted_text_cluster
@@ -270,7 +265,7 @@ class SplitPage(OCRClusterResponseBc):
                 # general case
                 tcd = {x.cluster_number:x   for x in id_sorted_text_cluster}
                 texts = '\n'.join(tcd[i].text for i in self.meaningful_ordering)
-            c_return = {}
+            c_return: JsonObject = {}
             c_return['pdf_page_num'] = self.pdf_page_num
             c_return['printed_page_number'] = self.printed_page_number
             c_return['text'] = texts

@@ -1,5 +1,6 @@
-import pathlib
 import logging
+import pathlib
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -8,20 +9,35 @@ import os
 #import logging.handlers
 #logger.addHandler(logging.handlers.RotatingFileHandler(os.path.join('.', 'logs', __name__)))
 from .log import SQLiteHandler
+
 sqlite_handler = SQLiteHandler(os.path.join('.','logs', 'application_logs.db'))
 sqlite_handler.setLevel(logging.DEBUG)
 logger.addHandler(sqlite_handler)
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
-import uuid
-
 import datetime
 import hashlib
+import uuid
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, BinaryIO, Literal, ParamSpec, Protocol, TypeVar, cast
+
 import dotenv
-from typing import Literal, Optional, List, Dict, Any
 from kogwistar.utils.cache_backend import Memory
-from kg_doc_parser.llm_structured_output import build_structured_output_runnable
+from pydantic import BaseModel, Field, model_validator
+
+from kg_doc_parser.llm_structured_output import (
+    StructuredOutputModel,
+    build_structured_output_runnable,
+)
+
 memory = Memory(location = "./.version_chain")
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def _cache_function(function: Callable[P, R]) -> Callable[P, R]:
+    """Keep the public call signature when applying the shared cache backend."""
+    return cast(Callable[P, R], memory.cache(function))
 
 dotenv.load_dotenv()
 
@@ -30,13 +46,19 @@ import sqlite3
 # ====== optional PDF -> PNG renderers ======
 # we try pdf2image first, but fall back to PyMuPDF if needed
 try:
-    convert_from_path: Any = None
-    from pdf2image import convert_from_path
+    class PDFImageLike(Protocol):
+        def save(self, fp: BinaryIO, *, format: str) -> None: ...
+
+    convert_from_path: Callable[..., Sequence[PDFImageLike]] | None = None
+    from pdf2image import convert_from_path as _pdf2image_convert_from_path
+
+    convert_from_path = cast(
+        Callable[..., Sequence[PDFImageLike]], _pdf2image_convert_from_path
+    )
     _HAS_PDF2IMAGE = True
 except Exception:
     _HAS_PDF2IMAGE = False
 try:
-    import fitz  # type: ignore[import-not-found]  # PyMuPDF is an optional extra
     _HAS_PYMUPDF = True
 except Exception:
     _HAS_PYMUPDF = False
@@ -61,6 +83,8 @@ def pdf_page_hashes_as_png(
     """
     try:
         if _HAS_PDF2IMAGE:
+            if convert_from_path is None:  # pragma: no cover - defensive invariant
+                raise RuntimeError("pdf2image renderer is unavailable")
             print(f"using pdf2image to convert file {file_path}")
             images = convert_from_path(file_path, dpi=dpi)
             out: list[str] = []
@@ -103,8 +127,9 @@ def pdf_page_hashes_as_png(
 # smarter subsequence check: longer -> dict(hash -> [pages])
 # ============================================================
 
-from collections import defaultdict
 from bisect import bisect_right
+from collections import defaultdict
+
 
 def build_pos_index(seq: list[str]) -> dict[str, list[int]]:
     """
@@ -143,12 +168,12 @@ class VersionChainDB:
     Supports CRUD, append, prepend, and insert-between operations.
     """
 
-    def __init__(self, db_path: str = "version_chains.db"):
+    def __init__(self, db_path: str = "version_chains.db") -> None:
         self.db_path = db_path
         self.conn = sqlite3.connect(self.db_path)
         self._create_tables()
 
-    def _create_tables(self):
+    def _create_tables(self) -> None:
         cur = self.conn.cursor()
         cur.execute("""
         CREATE TABLE IF NOT EXISTS chains (
@@ -361,7 +386,7 @@ class VersionChainDB:
         dpi: int = 300,
         render_format: str = "PNG",
         algo: str = "sha256",
-    ):
+    ) -> None:
         """
         Store the ordered page-hash sequence for a node, replacing old ones if any.
         """
@@ -473,7 +498,7 @@ class VersionChainDB:
 
         return results
 
-    def mark_subdocument_duplicate(self, info: dict):
+    def mark_subdocument_duplicate(self, info: dict[str, Any]) -> None:
         """
         info must contain:
             small_file_path, small_file_hash, big_file_path, big_file_hash,
@@ -491,7 +516,7 @@ class VersionChainDB:
 
     # --------------------------
 
-    def create_chain(self, name: Optional[str] = None) -> int:
+    def create_chain(self, name: str | None = None) -> int:
         cur = self.conn.cursor()
         cur.execute("INSERT INTO chains (name) VALUES (?)", (name,))
         if not self.conn.in_transaction:
@@ -500,7 +525,7 @@ class VersionChainDB:
             raise RuntimeError("SQLite did not return an id for the new chain")
         return cur.lastrowid
 
-    def delete_chain(self, chain_id: int):
+    def delete_chain(self, chain_id: int) -> None:
         cur = self.conn.cursor()
         cur.execute("DELETE FROM nodes WHERE chain_id = ?", (chain_id,))
         cur.execute("DELETE FROM chains WHERE id = ?", (chain_id,))
@@ -508,8 +533,8 @@ class VersionChainDB:
             self.conn.commit()
 
     def add_node(self, chain_id: int, file_path: str, file_size: int, file_hash: str,
-                 position: str = "append", ref_node_id: Optional[int] = None,
-                 metadata_json: Optional[str] = None, file_root: str = "") -> int:
+                 position: str = "append", ref_node_id: int | None = None,
+                 metadata_json: str | None = None, file_root: str = "") -> int:
         """
         ref_node_id : between and append is the node before the new addition, preprend is the node id prepended to
         """
@@ -595,10 +620,10 @@ class VersionChainDB:
             
         return node_id
 
-    def list_all_chains(self):
+    def list_all_chains(self) -> list[list[dict[str, Any]]]:
         return [self.get_chain(chain['id']) for chain in self.find_chains()]
 
-    def get_chain(self, chain_id: int) -> List[Dict[str, Any]]:
+    def get_chain(self, chain_id: int) -> list[dict[str, Any]]:
         cur = self.conn.cursor()
         # Find head node
         cur.execute("SELECT id FROM nodes WHERE chain_id = ? AND prev_id IS NULL", (chain_id,))
@@ -626,7 +651,7 @@ class VersionChainDB:
             node_id = row[5]  # next_id
         return chain
 
-    def update_node(self, node_id: int, **fields):
+    def update_node(self, node_id: int, **fields: object) -> None:
         cur = self.conn.cursor()
         allowed = {"file_path", "file_size", "file_hash", "metadata_json"}
         updates = []
@@ -642,7 +667,7 @@ class VersionChainDB:
         if not self.conn.in_transaction:
             self.conn.commit()
 
-    def delete_node(self, node_id: int):
+    def delete_node(self, node_id: int) -> None:
         cur = self.conn.cursor()
         # Relink neighbors
         cur.execute("SELECT prev_id, next_id FROM nodes WHERE id = ?", (node_id,))
@@ -659,12 +684,12 @@ class VersionChainDB:
         if not self.conn.in_transaction:
             self.conn.commit()
 
-    def find_chains(self) -> List[Dict[str, Any]]:
+    def find_chains(self) -> list[dict[str, Any]]:
         cur = self.conn.cursor()
         cur.execute("SELECT id, name FROM chains")
         return [{"id": row[0], "name": row[1]} for row in cur.fetchall()]
 
-    def find_nodes(self, chain_id: int) -> List[Dict[str, Any]]:
+    def find_nodes(self, chain_id: int) -> list[dict[str, Any]]:
         cur = self.conn.cursor()
         cur.execute("SELECT id, file_path, file_size, file_hash, prev_id, next_id, created_at, metadata_json FROM nodes WHERE chain_id = ?", (chain_id,))
         return [
@@ -680,7 +705,7 @@ class VersionChainDB:
             }
             for row in cur.fetchall()
         ]
-    def get_canonical_for_hash(self, file_hash: str):
+    def get_canonical_for_hash(self, file_hash: str | None) -> tuple[Any, ...] | None:
         """
         Return (id, file_path, chain_id) of the earliest node we have for this hash.
         """
@@ -696,7 +721,15 @@ class VersionChainDB:
             (file_hash,),
         )
         return cur.fetchone()
-    def insert_duplicate(self, file_name, file_hash, duplicate_of_file_name, duplicate_of_file_hash, chain_id=None, node_id=None):
+    def insert_duplicate(
+        self,
+        file_name: str,
+        file_hash: str | None,
+        duplicate_of_file_name: str | None,
+        duplicate_of_file_hash: str | None,
+        chain_id: int | None = None,
+        node_id: int | None = None,
+    ) -> None:
         cur = self.conn.cursor()
         created_at = datetime.datetime.now().isoformat()
         cur.execute("""
@@ -706,16 +739,16 @@ class VersionChainDB:
         if not self.conn.in_transaction:
             self.conn.commit()
 
-    def find_duplicate_by_name(self, file_name):
+    def find_duplicate_by_name(self, file_name: str) -> list[tuple[Any, ...]]:
         cur = self.conn.cursor()
         cur.execute("SELECT * FROM duplicates WHERE file_name = ?", (file_name,))
         return cur.fetchall()
 
-    def find_duplicate_by_hash(self, file_hash):
+    def find_duplicate_by_hash(self, file_hash: str) -> list[tuple[Any, ...]]:
         cur = self.conn.cursor()
         cur.execute("SELECT * FROM duplicates WHERE file_hash = ?", (file_hash,))
         return cur.fetchall()
-    def get_canonical_page_statistics(self) -> dict:
+    def get_canonical_page_statistics(self) -> dict[str, Any]:
         """
         Compute statistics on canonical (non-duplicate) documents.
 
@@ -750,7 +783,7 @@ class VersionChainDB:
             "details": [{"file_path": r[0], "page_count": r[1]} for r in rows]
         }
         return stats
-    def name_exists(self, file_name):
+    def name_exists(self, file_name: str) -> bool:
         cur = self.conn.cursor()
         cur.execute("SELECT 1 FROM nodes WHERE file_path = ? LIMIT 1", (file_name,))
         if cur.fetchone():
@@ -762,7 +795,9 @@ class VersionChainDB:
             return True
         return False
 
-    def hash_exists(self, file_hash):
+    def hash_exists(self, file_hash: str | None) -> bool:
+        if file_hash is None:
+            return False
         cur = self.conn.cursor()
         cur.execute("SELECT 1 FROM nodes WHERE file_hash = ? LIMIT 1", (file_hash,))
         if cur.fetchone():
@@ -772,10 +807,10 @@ class VersionChainDB:
             return True
         return False
 
-    def is_duplicate_name_or_hash(self, file_name, file_hash):
+    def is_duplicate_name_or_hash(self, file_name: str, file_hash: str) -> bool:
         return self.name_exists(file_name) or self.hash_exists(file_hash)
 
-    def close(self):
+    def close(self) -> None:
         self.conn.close()
     def is_canonical_by_name(self, file_name: str) -> bool:
         """
@@ -803,7 +838,7 @@ class VersionChainDB:
         """, (file_name,))
         row = cur.fetchone()
         if row:
-            file_hash = row[0]
+            pass
         else:
             # maybe it only lives in duplicates table (rare, but let's check)
             cur.execute("""
@@ -813,9 +848,7 @@ class VersionChainDB:
                 LIMIT 1
             """, (file_name,))
             row = cur.fetchone()
-            if row:
-                file_hash = row[0]
-            else:
+            if not row:
                 # not in nodes, not in duplicates: we don't know it -> treat as canonical/new
                 return True
 
@@ -854,14 +887,20 @@ class FileMetadata(BaseModel):
     file_size: int = Field(..., description = "file size in bytes")
     date_modified : str = Field(..., description = "date modified / copied to the analysis system")
     date_created : str = Field(..., description = "date created")
-    file_hash : Optional[str]  = Field(default = None,  description = "file hash")
-    def __hash__(self):
+    file_hash : str | None  = Field(default = None,  description = "file hash")
+    def __hash__(self) -> int:
         if self.file_hash is None:
             raise ValueError("file_hash must be provided for the model to be hashable")
         return int(self.file_hash, base=16)
 
-@memory.cache
-def get_file_hash(file_path, last_modified, size_bytes, algorithm="sha256", block_size=65536, ):
+@_cache_function
+def get_file_hash(
+    file_path: str,
+    last_modified: float,
+    size_bytes: int,
+    algorithm: str = "sha256",
+    block_size: int = 65536,
+) -> str:
     """Compute a hash for the given file using the specified algorithm."""
     h = hashlib.new(algorithm)
     with open(file_path, "rb") as f:
@@ -869,7 +908,9 @@ def get_file_hash(file_path, last_modified, size_bytes, algorithm="sha256", bloc
             h.update(chunk)
     return h.hexdigest()
 
-def get_folder_metadata(folder_path, hash_algorithm="sha256"):
+def get_folder_metadata(
+    folder_path: str, hash_algorithm: str = "sha256"
+) -> list[FileMetadata]:
     metadata_list = []
     for root, dirs, files in os.walk(folder_path):
         for name in files:
@@ -892,7 +933,7 @@ def get_folder_metadata(folder_path, hash_algorithm="sha256"):
 class FileVersion(BaseModel):
     "representing a file version"
     filename: str = Field(..., description = "the filename of the current version")
-    prev: Optional[str] = Field(..., description = "The file name of the previous version. If it is brandnew not superceding/ overwriting any other, set None/Null. ")
+    prev: str | None = Field(..., description = "The file name of the previous version. If it is brandnew not superceding/ overwriting any other, set None/Null. ")
     supercede_reason : str = Field(..., description = "Why this version fully supercede the previous.")
     supercede_mode : Literal["Duplicate", "FileEdit", "ContractUpdate", "N/A"]  = Field(..., description = """
                                         the mode of superceding, Duplicate means the file is just a duplicated copy. 
@@ -912,10 +953,14 @@ class FileVersionChainingResponse(BaseModel):
     root_agreement : str  = Field(..., description = "The file name of the origin/master agreement that covers everything before any term variations are applied to. ")
     pass
 
-@memory.cache
-def version_chain(metadata_list: list[FileMetadata], model = 'gemini-2.5-pro', attempt = 0):
-    from langchain_google_genai import ChatGoogleGenerativeAI
+@_cache_function
+def version_chain(
+    metadata_list: list[FileMetadata],
+    model: str = "gemini-2.5-pro",
+    attempt: int = 0,
+) -> list[dict[str, Any]]:
     from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_google_genai import ChatGoogleGenerativeAI
 
     messages = [SystemMessage(
         "You need to provide version chain to a list of given file data. You need to sort out which one is superceded by which. "
@@ -934,7 +979,7 @@ def version_chain(metadata_list: list[FileMetadata], model = 'gemini-2.5-pro', a
     ),
     HumanMessage(f"{[i.model_dump(exclude = {'file_hash'}) for i in metadata_list]}")]
 
-    llm = ChatGoogleGenerativeAI(model = model)
+    llm = cast(StructuredOutputModel, ChatGoogleGenerativeAI(model = model))
     cnt = 0
     max_cnt = 4
     chaining_result: Any = None
@@ -960,10 +1005,13 @@ def version_chain(metadata_list: list[FileMetadata], model = 'gemini-2.5-pro', a
         raise RuntimeError("version-chain model returned no result")
     return chaining_result['parsed'].model_dump()['chains']
 
-@memory.cache
-def dedup_llm_pick_newest(meta_list_dumped, model = 'gemini-2.5-flash'):
-    from langchain_google_genai import ChatGoogleGenerativeAI
+@_cache_function
+def dedup_llm_pick_newest(
+    meta_list_dumped: list[dict[str, Any]],
+    model: str = "gemini-2.5-flash",
+) -> str:
     from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_google_genai import ChatGoogleGenerativeAI
 
     representative_file_name = None
     name_list = [i['document_name'] for  i in meta_list_dumped]
@@ -976,10 +1024,13 @@ def dedup_llm_pick_newest(meta_list_dumped, model = 'gemini-2.5-flash'):
     while representative_file_name not in name_list:
         messages = [SystemMessage("You are given a list of files sharing the same file hash and you need to choose one that is the most representative. "),
                     HumanMessage(f"{meta_list_dumped}")]
-        llm = ChatGoogleGenerativeAI(model = model)
+        llm = cast(StructuredOutputModel, ChatGoogleGenerativeAI(model = model))
         res = build_structured_output_runnable(llm, DedupResponse, include_raw=True).invoke(messages)
         if not res.get('parsing_error'):
-            representative_file_name = res['parsed'].representative_file_name
+            parsed = res.get("parsed")
+            if not isinstance(parsed, DedupResponse):
+                raise TypeError("structured output did not return DedupResponse")
+            representative_file_name = parsed.representative_file_name
             if representative_file_name not in name_list:
                 messages.append(SystemMessage("Error, the answer mentioned file name does not exist in any of the file at all. Only choose the exact file name in the list. "))
             else:
@@ -989,9 +1040,11 @@ def dedup_llm_pick_newest(meta_list_dumped, model = 'gemini-2.5-flash'):
         cnt +=1
         if cnt > 5:
             raise Exception("LLM error, retried max reached and cannot choose dedup filename.")
-    pass
+    raise RuntimeError("LLM could not choose a representative duplicate file")
 
-def dedup(list_meta: list[FileMetadata]):
+def dedup(
+    list_meta: list[FileMetadata],
+) -> tuple[dict[str, dict[str, Any]], list[FileVersion]]:
     d: dict[str, list[dict[str, Any]]] = {}
     for meta in list_meta:
         if meta.file_hash is None:
@@ -1014,7 +1067,9 @@ def dedup(list_meta: list[FileMetadata]):
             res[hs] = list(meta_set)[0]
     return res, dup_res
 
-def check_missing_db(db: VersionChainDB, d_hash_to_meta):
+def check_missing_db(
+    db: VersionChainDB, d_hash_to_meta: Mapping[str, FileMetadata]
+) -> set[str]:
     # Get all filenames in DB
     all_db_files = set()
     for chain in db.find_chains():
@@ -1027,8 +1082,8 @@ def check_missing_db(db: VersionChainDB, d_hash_to_meta):
 class FileAddition(FileVersion):
     "file addition"
     filename: str = Field(..., description = 'the file name of the new file')
-    prev: Optional[str]  = Field(None, description = 'the file name its previous version, set Null or None if it belong to new chain')
-    next: Optional[str]  = Field(None, description = 'the file name its next version, use only when this file is inserted to the beginning of an existing file version chain. ') 
+    prev: str | None  = Field(None, description = 'the file name its previous version, set Null or None if it belong to new chain')
+    next: str | None  = Field(None, description = 'the file name its next version, use only when this file is inserted to the beginning of an existing file version chain. ') 
     supercede_reason : str = Field(..., description = "Why this version fully supercede the previous.")
     supercede_mode : Literal["Duplicate", "FileEdit", "ContractUpdate", "N/A"] = Field(..., description = """
                                         the mode of superceding, Duplicate means the file is just a duplicated copy. 
@@ -1036,7 +1091,7 @@ class FileAddition(FileVersion):
                                         Contract update is the update that truely reflect the signed contract with intention to update. 
                                         "N/A" when there is nothing to supercede when it is the first version. """)
     @model_validator(mode = 'after')
-    def only_one_prev_next_none(self):
+    def only_one_prev_next_none(self) -> "FileAddition":
         if (self.prev is None) or (self.next is None):
             return self
         else:
@@ -1047,8 +1102,14 @@ class AddFilesResponse(BaseModel):
     reasoning: str  = Field(..., description = 'reasoning in top level perspective')
     additions : list[FileAddition] = Field(..., description = 'list of file additions')
 
-@memory.cache
-def add_new_file_to_existing_chains(chains, all_d_hash_to_meta: dict[str, FileMetadata], new_file_name, model = 'gemini-2.5-pro', attempt = 0 ) -> AddFilesResponse:
+@_cache_function
+def add_new_file_to_existing_chains(
+    chains: list[dict[str, Any]],
+    all_d_hash_to_meta: dict[str, FileMetadata],
+    new_file_name: str | set[str],
+    model: str = "gemini-2.5-pro",
+    attempt: int = 0,
+) -> AddFilesResponse:
     from langchain_core.messages import HumanMessage, SystemMessage
     messages = [SystemMessage("Given existing file versioning chain and a new file with metadata of all files, you need to decide the position of the new file in the version chain. "
                               "All files have distinct file hash. "
@@ -1066,16 +1127,23 @@ def add_new_file_to_existing_chains(chains, all_d_hash_to_meta: dict[str, FileMe
     max_retry = 3
     n = 0
     while True:
-        llm = ChatGoogleGenerativeAI(model = model)
+        llm = cast(StructuredOutputModel, ChatGoogleGenerativeAI(model = model))
         res = build_structured_output_runnable(llm, AddFilesResponse, include_raw=True).invoke(messages)
         if res.get("parsing_error"):
             n += 1
             if n >= max_retry:
                 raise Exception(f"Max Retry reached {max_retry}")
         else:
-            return res.get('parsed')
+            parsed = res.get("parsed")
+            if isinstance(parsed, AddFilesResponse):
+                return parsed
+            raise TypeError("structured output did not return AddFilesResponse")
 
-def apply_chain_updates_db(db: VersionChainDB, updates, all_meta: dict[str, FileMetadata]):
+def apply_chain_updates_db(
+    db: VersionChainDB,
+    updates: AddFilesResponse,
+    all_meta: dict[str, FileMetadata],
+) -> dict[str, list[int]]:
     additions: list[FileAddition] = updates.additions
     changes_made = {"added_nodes": [], "added_chains": []}
     for addition in additions:
@@ -1149,7 +1217,7 @@ def apply_chain_updates_db(db: VersionChainDB, updates, all_meta: dict[str, File
 # ---------------------------
 # optional: backfill
 # ---------------------------
-def backfill_page_hashes(db: VersionChainDB, file_root, dpi: int = 300):
+def backfill_page_hashes(db: VersionChainDB, file_root: str, dpi: int = 300) -> None:
     """
     Run once on an existing DB to populate page_hashes and page-based duplicates.
     """
@@ -1174,8 +1242,9 @@ def backfill_page_hashes(db: VersionChainDB, file_root, dpi: int = 300):
 
 
 if __name__ == "__main__":
-    from ..pdf2png import RawFileLoader
     import pandas as pd
+
+    from ..pdf2png import RawFileLoader
     in_compare_root = os.path.join('..', 'doc_data', 'raw_documents')
     loader = RawFileLoader(
         env_flist_path=None,
@@ -1222,7 +1291,7 @@ if __name__ == "__main__":
 
         # 2) LLM-driven dedup for the new batch
         d_hash_to_meta, dup = dedup(filtered_meta)
-        df_dup = pd.DataFrame([d.model_dump(exclude=['file_hash']) for d in dup])
+        df_dup = pd.DataFrame([d.model_dump(exclude={"file_hash"}) for d in dup])
         d_hash_to_meta = {k: FileMetadata.model_validate(v) for k, v in d_hash_to_meta.items()}
         df_to_concat = [df_dup]
         attempt = 0

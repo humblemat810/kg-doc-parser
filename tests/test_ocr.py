@@ -1,27 +1,26 @@
-import sys
-import os
-
 import logging
+import os
 import pathlib
+
 if True:
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
 
 from kg_doc_parser.utils.log import SQLiteHandler
+
 if True:
     sqlite_handler = SQLiteHandler(os.path.join('.','logs', 'application_logs.db'))
     sqlite_handler.setLevel(logging.DEBUG)
     logger.addHandler(sqlite_handler)
     logger.debug("test's library loading")
 
-from typing import Optional, cast
+from typing import cast
 
 import pytest
 
 pytestmark = [pytest.mark.manual, pytest.mark.legacy]
 
 def test_batch_ocr_one_by_one(gemini_key):
-    from kg_doc_parser.utils.bounded_threadpool_executor import BoundedExecutor
     bounded_executor = None# BoundedExecutor(max_workers= 6, max_pending= 100)
     try:
         from kg_doc_parser.ocr import batch_gemini_ocr_image
@@ -35,7 +34,6 @@ def test_batch_ocr_one_by_one(gemini_key):
     pass
 def test_batch_ocr_one_by_one_tree(gemini_key):
     from kg_doc_parser.utils.file_loaders import filter_folder
-    from kg_doc_parser.utils.bounded_threadpool_executor import BoundedExecutor
     bounded_executor = None# BoundedExecutor(max_workers= 3, max_pending= 12)
     from kg_doc_parser.utils.file_loaders import RawFileLoader
     def _temp_check(x: str):
@@ -136,6 +134,7 @@ def test_batch_ocr(gemini_key):
 def test_gemini_ocr_pages(gemini_key):
     
     import base64
+
     from langchain_core.messages import HumanMessage, SystemMessage
     # Replace 'image.png' with the path to your image file.
     page_file_name = "page_1.png"
@@ -171,7 +170,7 @@ def test_gemini_ocr_pages(gemini_key):
     class OCRResponse(BaseModel):
         """OCR results"""
         OCR_text: str = Field(description="the OCR text results.")
-        page_number: Optional[str] = Field(description='the page number identified, can be in form of roman numerals such as "i", "ii", Arabic numeral such as 1, 2, 3')
+        page_number: str | None = Field(description='the page number identified, can be in form of roman numerals such as "i", "ii", Arabic numeral such as 1, 2, 3')
     class TextCluster(BaseModel):
         """a text cluster along with spatial information"""
         text: str = Field(description='the text content of the text cluster')

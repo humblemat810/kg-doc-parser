@@ -9,18 +9,29 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Literal
+
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
-from .ocr_pipeline import OCRImagePayload, OCRWorkflowArtifacts, run_ocr_ingest_workflow
+from .ocr_pipeline import (
+    OCRImagePayload,
+    OCRRunner,
+    OCRWorkflowArtifacts,
+    PDFRasterizer,
+    run_ocr_ingest_workflow,
+)
 from .page_index import PageIndexParseResult, PageIndexSourceFormat
 from .parser_core import (
+    ParserPayload,
+    ParserSourceMap,
     ParseSemanticFn,
     SourceCollectionLike,
+    SourceCollectionWithPagesLike,
     default_parse_semantic_fn,
 )
 from .parsing import parse_page_index_document, parse_tree_document
@@ -28,6 +39,9 @@ from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
 from .semantics import HydratedTextPointer, SemanticNode
 from .service import build_default_engines
+
+if TYPE_CHECKING:
+    from ..semantic_document_splitting_layerwise_edits import SemanticNode as LegacySemanticNode
 
 SupportedOCRInput = Literal["image", "pdf"]
 SupportedPageIndexInput = Literal["text", "markdown"]
@@ -44,7 +58,7 @@ class WorkflowCommandResult:
     status: str | None = None
     probe_path: Path | None = None
     summary_path: Path | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -59,16 +73,16 @@ class PageIndexWorkflowCommandResult(WorkflowCommandResult):
 
 @dataclass(slots=True)
 class LayerwiseWorkflowCommandResult(WorkflowCommandResult):
-    tree: Any | None = None
-    source_map: dict[str, Any] | None = None
-    graph_payload: dict[str, Any] | None = None
+    tree: LegacySemanticNode | None = None
+    source_map: dict[str, dict[str, object]] | None = None
+    graph_payload: dict[str, object] | None = None
 
 
 def _fallback_parse_semantic_fn(
     *,
-    collection,
-    parser_input_dict: dict[str, Any],
-    parser_source_map: dict[str, dict[str, Any]],
+    collection: SourceCollectionWithPagesLike,
+    parser_input_dict: ParserPayload,
+    parser_source_map: ParserSourceMap,
 ) -> SemanticNode:
     root = SemanticNode(
         title=collection.title,
@@ -163,8 +177,8 @@ def build_legacy_parse_semantic_fn(
     def _parse_semantic_fn(
         *,
         collection: SourceCollectionLike,
-        parser_input_dict: dict[str, Any],
-        parser_source_map: dict[str, dict[str, Any]],
+        parser_input_dict: dict[str, object],
+        parser_source_map: dict[str, dict[str, object]],
         model_names: list[str] | None = None,
     ) -> object:
         env_overrides = {
@@ -194,7 +208,7 @@ def _ensure_probe(output_dir: Path, probe: WorkflowProbe | None = None) -> Workf
     return WorkflowProbe(output_dir / "workflow-events.jsonl")
 
 
-def _emit(probe: WorkflowProbe | None, kind: str, /, **payload: Any) -> None:
+def _emit(probe: WorkflowProbe | None, kind: str, /, **payload: object) -> None:
     emit_probe_event(probe, kind, **payload)
 
 
@@ -223,14 +237,14 @@ def run_ocr_source_workflow(
     *,
     output_dir: str | Path,
     provider_settings: WorkflowProviderSettings | None = None,
-    ocr_runner=None,
-    pdf_rasterizer=None,
+    ocr_runner: OCRRunner | None = None,
+    pdf_rasterizer: PDFRasterizer | None = None,
     ocr_candidate_models: Sequence[str] | None = None,
-    workflow_engine=None,
-    conversation_engine=None,
-    knowledge_engine=None,
+    workflow_engine: GraphKnowledgeEngine | None = None,
+    conversation_engine: GraphKnowledgeEngine | None = None,
+    knowledge_engine: GraphKnowledgeEngine | None = None,
     probe: WorkflowProbe | None = None,
-    deps: dict[str, Any] | None = None,
+    deps: Mapping[str, object] | None = None,
     document_id: str | None = None,
     title: str | None = None,
 ) -> OcrWorkflowCommandResult:
@@ -314,14 +328,14 @@ def run_ocr_batch_workflow(
     *,
     output_dir: str | Path,
     provider_settings: WorkflowProviderSettings | None = None,
-    ocr_runner=None,
-    pdf_rasterizer=None,
+    ocr_runner: OCRRunner | None = None,
+    pdf_rasterizer: PDFRasterizer | None = None,
     ocr_candidate_models: Sequence[str] | None = None,
-    workflow_engine=None,
-    conversation_engine=None,
-    knowledge_engine=None,
+    workflow_engine: GraphKnowledgeEngine | None = None,
+    conversation_engine: GraphKnowledgeEngine | None = None,
+    knowledge_engine: GraphKnowledgeEngine | None = None,
     probe: WorkflowProbe | None = None,
-    deps: dict[str, Any] | None = None,
+    deps: Mapping[str, object] | None = None,
 ) -> list[OcrWorkflowCommandResult]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -486,7 +500,9 @@ def run_layerwise_source_workflow(
         semantic_tree_to_kge_payload as legacy_semantic_tree_to_kge_payload,
     )
 
-    raw_doc = {source_path.name: regen_doc(str(source_path), use_raw=True)}
+    raw_doc: dict[str, object] = {
+        source_path.name: regen_doc(str(source_path), use_raw=True)
+    }
     tree, source_map = parse_tree_document(
         doc_id=source_path.name,
         raw_doc_dict=raw_doc,

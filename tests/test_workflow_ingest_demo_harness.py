@@ -192,6 +192,20 @@ def test_document_tree_client_adapts_export_ids_to_temp_batch_tokens():
     assert payload["edges"][0]["target_ids"] == ["nn:2"]
 
 
+def test_document_tree_client_rejects_non_list_graph_records():
+    client = _CaptureHttpClient()
+    persistence_client = DocumentTreeApiPersistenceClient(client=client, transport="test")
+
+    with pytest.raises(TypeError, match="graph payload field 'nodes' must be a list"):
+        persistence_client.persist_graph_payload(
+            type(
+                "_Bundle",
+                (),
+                {"graph_payload": {"doc_id": "doc-1", "nodes": {"id": "n1"}, "edges": []}},
+            )()
+        )
+
+
 @pytest.mark.workflow
 @pytest.mark.integration
 def test_demo_harness_writes_probe_summary_and_cache():

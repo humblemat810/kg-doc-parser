@@ -19,7 +19,6 @@ from pathlib import Path
 
 from kg_doc_parser.workflow_ingest.smoke_assets import generate_ocr_smoke_assets
 
-
 DEFAULT_OUTPUT_DIR = Path("tests") / ".tmp_workflow_ingest_ocr" / "generated_smoke_assets"
 
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
-from typing import Callable, TypeVar, ParamSpec, cast
+
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar, cast
+
 from kogwistar.utils.cache_backend import Memory
 
 P = ParamSpec("P")

@@ -1,6 +1,32 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, Self, TypeAlias, TypedDict, cast
+
+from kogwistar.llm_tasks.providers import (
+    SupportsStructuredOutput,
+)
+
+if TYPE_CHECKING:
+    from kogwistar.llm_tasks.providers import StructuredModelLike
+else:
+    class StructuredModelLike(Protocol):
+        """Compatibility fallback for released Core versions."""
+
+        @classmethod
+        def model_validate(cls, payload: object, /) -> Self: ...
+
+        @classmethod
+        def model_json_schema(cls) -> dict[str, object]: ...
+
+# Keep the historical parser names as aliases, but use the core contracts as
+# the single source of truth for provider/schema compatibility.
+StructuredSchema: TypeAlias = StructuredModelLike
+StructuredOutputModel: TypeAlias = SupportsStructuredOutput
+
+
+class _StructuredOutputOptions(TypedDict, total=False):
+    include_raw: bool
+    method: Literal["function_calling", "json_mode", "json_schema"]
 
 
 class StructuredOutputRunnable(Protocol):
@@ -8,28 +34,23 @@ class StructuredOutputRunnable(Protocol):
 
     steps: list[object]
 
-    def invoke(self, *args: object, **kwargs: object) -> object: ...
-
-
-class StructuredOutputModel(Protocol):
-    """Minimum model surface required by the parser's structured-output path."""
-
-    def with_structured_output(
+    def invoke(
         self,
-        schema: object,
+        messages: object,
+        config: object | None = None,
         **kwargs: object,
-    ) -> StructuredOutputRunnable: ...
+    ) -> dict[str, object]: ...
 
 
 def build_structured_output_runnable(
     model: StructuredOutputModel,
-    schema: object,
+    schema: type[StructuredSchema],
     *,
     include_raw: bool = True,
     prefer_json_schema: bool = True,
 ) -> StructuredOutputRunnable:
     """Build a structured-output runnable with strict-schema-first fallback."""
-    attempts: list[dict[str, object]] = []
+    attempts: list[_StructuredOutputOptions] = []
     if prefer_json_schema:
         attempts.append({"include_raw": include_raw, "method": "json_schema"})
     attempts.append({"include_raw": include_raw, "method": "function_calling"})
@@ -38,7 +59,13 @@ def build_structured_output_runnable(
     last_error: Exception | None = None
     for kwargs in attempts:
         try:
-            return model.with_structured_output(schema, **kwargs)
+            # LangChain returns a runnable with ``steps``; the dependency-light
+            # core protocol intentionally does not require that implementation
+            # detail. Keep the cast at this parser-only compatibility boundary.
+            return cast(
+                StructuredOutputRunnable,
+                model.with_structured_output(schema, **kwargs),
+            )
         except (TypeError, ValueError) as exc:
             last_error = exc
     if last_error is not None:

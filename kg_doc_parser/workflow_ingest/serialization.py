@@ -6,11 +6,28 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Protocol, cast
 from uuid import UUID
 
+try:
+    from typing import TypeAliasType
+except ImportError:  # PyPy 3.11 does not expose the Python 3.12 alias API.
+    from typing_extensions import TypeAliasType  # noqa: UP035
 
-def json_safe(value: Any, *, _seen: set[int] | None = None) -> Any:
+JsonScalar = TypeAliasType("JsonScalar", None | bool | int | float | str)  # noqa: UP040
+JsonValue = TypeAliasType(  # noqa: UP040
+    "JsonValue",
+    JsonScalar | list["JsonValue"] | dict[str, "JsonValue"],
+)
+
+
+class ModelDumpLike(Protocol):
+    """Minimal serialization seam for Pydantic-like provider payloads."""
+
+    def model_dump(self, **kwargs: object) -> object: ...
+
+
+def json_safe(value: object, *, _seen: set[int] | None = None) -> JsonValue:
     """Convert structured and third-party values into JSON-safe primitives.
 
     This is intentionally conservative at provider boundaries: unknown objects
@@ -28,11 +45,13 @@ def json_safe(value: Any, *, _seen: set[int] | None = None) -> Any:
         return "<cycle>"
     seen.add(identity)
     try:
-        if hasattr(value, "model_dump"):
+        model_dump = getattr(value, "model_dump", None)
+        if callable(model_dump):
+            dumper = cast(ModelDumpLike, value)
             try:
-                return json_safe(value.model_dump(mode="python"), _seen=seen)
+                return json_safe(dumper.model_dump(mode="python"), _seen=seen)
             except TypeError:
-                return json_safe(value.model_dump(), _seen=seen)
+                return json_safe(dumper.model_dump(), _seen=seen)
         if is_dataclass(value) and not isinstance(value, type):
             return json_safe(asdict(value), _seen=seen)
         if isinstance(value, Mapping):
@@ -49,10 +68,19 @@ def json_safe(value: Any, *, _seen: set[int] | None = None) -> Any:
         seen.discard(identity)
 
 
-def safe_json_dumps(value: Any, **kwargs: Any) -> str:
+def safe_json_dumps(
+    value: object,
+    *,
+    ensure_ascii: bool = True,
+    sort_keys: bool = False,
+) -> str:
     """Serialize a value after applying :func:`json_safe`."""
 
-    return json.dumps(json_safe(value), **kwargs)
+    return json.dumps(
+        json_safe(value),
+        ensure_ascii=ensure_ascii,
+        sort_keys=sort_keys,
+    )
 
 
-__all__ = ["json_safe", "safe_json_dumps"]
+__all__ = ["JsonValue", "json_safe", "safe_json_dumps"]

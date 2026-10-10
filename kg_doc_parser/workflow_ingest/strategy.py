@@ -6,12 +6,15 @@ but it cannot bypass the host's allowed strategies or the provider timeout.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, Literal, Protocol
+from collections.abc import Mapping
+from typing import Literal, Protocol, cast
 
+from .serialization import JsonValue
 from pydantic import BaseModel, Field, model_validator
 
+from ..llm_structured_output import StructuredOutputRunnable
 from .providers import (
+    ProviderDiagnosticsSink,
     WorkflowProviderSettings,
     build_chat_model_for_role,
     invoke_with_timeout,
@@ -72,7 +75,7 @@ class ParseStrategyDecision(BaseModel):
 
 
 class StrategyTriageFn(Protocol):
-    def __call__(self, context: dict[str, Any], /) -> ParseStrategyTriage: ...
+    def __call__(self, context: Mapping[str, JsonValue], /) -> ParseStrategyTriage: ...
 
 
 def hardcoded_strategy(
@@ -85,17 +88,30 @@ def hardcoded_strategy(
     disabled = disabled_strategies or set()
     if set(strategy_order) != set(HARD_CODED_STRATEGY_PRIORITY) or len(strategy_order) != len(HARD_CODED_STRATEGY_PRIORITY):
         raise ValueError("strategy_order must contain each parser strategy exactly once")
-    order = (
-        (requested, *[item for item in strategy_order if item != requested])
-        if requested != "auto"
-        else strategy_order
+    order: tuple[ParseStrategy, ...]
+    if requested == "auto":
+        order = strategy_order
+    else:
+        explicit = cast(ParseStrategy, requested)
+        order = cast(
+            tuple[ParseStrategy, ...],
+            (explicit,)
+            + tuple(
+                cast(ParseStrategy, item)
+                for item in strategy_order
+                if item != explicit
+            ),
+        )
+    available = cast(
+        tuple[ParseStrategy, ...],
+        tuple(item for item in order if item not in disabled),
     )
-    available = tuple(item for item in order if item not in disabled)
     if not available:
         raise ValueError("all parser strategies are disabled for this layer")
     if requested != "auto" and requested not in disabled:
+        explicit = cast(ParseStrategy, requested)
         return ParseStrategyDecision(
-            selected_strategy=requested,
+            selected_strategy=explicit,
             source="config",
             confidence=1.0,
             rationale="explicit parse strategy requested by the caller",
@@ -110,7 +126,7 @@ def hardcoded_strategy(
     )
 
 
-def _triage_prompt(context: dict[str, Any]) -> str:
+def _triage_prompt(context: Mapping[str, JsonValue]) -> str:
     return (
         "Choose one parser strategy for this bounded document summary.\n"
         "Consider the trade-offs explicitly: layer_excerpt preserves verbatim leaf evidence and is the preferred "
@@ -126,16 +142,19 @@ def _triage_prompt(context: dict[str, Any]) -> str:
 def build_llm_strategy_triage(
     provider_settings: WorkflowProviderSettings,
     *,
-    diagnostics_sink: Callable[[dict[str, object]], None] | None = None,
+    diagnostics_sink: ProviderDiagnosticsSink | None = None,
 ) -> StrategyTriageFn:
     """Build a provider-backed triage callable with the parser timeout."""
 
     chat = build_chat_model_for_role("parser", provider_settings)
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    structured = chat.with_structured_output(ParseStrategyTriage, include_raw=True)
+    structured = cast(
+        StructuredOutputRunnable,
+        chat.with_structured_output(ParseStrategyTriage, include_raw=True),
+    )
 
-    def _triage(context: dict[str, Any]) -> ParseStrategyTriage:
+    def _triage(context: Mapping[str, JsonValue]) -> ParseStrategyTriage:
         diagnostics: dict[str, object] = {}
         try:
             response = invoke_with_timeout(
@@ -182,7 +201,7 @@ def build_llm_strategy_triage(
 def select_parse_strategy(
     *,
     requested: ParseStrategyRequest,
-    context: dict[str, Any],
+    context: Mapping[str, JsonValue],
     triage_enabled: bool,
     triage_fn: StrategyTriageFn | None = None,
     strategy_order: tuple[ParseStrategy, ...] = HARD_CODED_STRATEGY_PRIORITY,
