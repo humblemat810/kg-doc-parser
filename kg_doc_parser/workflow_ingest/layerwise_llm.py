@@ -44,7 +44,7 @@ from .providers import (
     invoke_with_timeout,
     provider_call_metrics_snapshot,
 )
-from .semantics import HydratedTextPointer, SemanticNode
+from .semantics import HydratedTextPointer, SemanticNode, hydrate_pointer_from_offsets
 from .serialization import JsonValue, safe_json_dumps
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
@@ -217,13 +217,18 @@ def _hydrate_llm_pointer_payload(
     source_cluster_id = str(payload.get("source_cluster_id") or "")
     start_char = payload.get("start_char")
     end_char = payload.get("end_char")
-    record = parser_source_map.get(source_cluster_id)
-    text = str((record or {}).get("text") or "") if record is not None else ""
     if isinstance(start_char, int) and isinstance(end_char, int):
-        resolved_end = len(text) - 1 if end_char == -1 else end_char
-        if 0 <= start_char <= resolved_end < len(text):
-            payload["end_char"] = resolved_end
-            payload["verbatim_text"] = text[start_char : resolved_end + 1]
+        hydrated = hydrate_pointer_from_offsets(
+            HydratedTextPointer(
+                source_cluster_id=source_cluster_id,
+                start_char=start_char,
+                end_char=end_char,
+                verbatim_text=str(payload.get("verbatim_text") or ""),
+            ),
+            parser_source_map,
+        )
+        if hydrated is not None:
+            payload.update(hydrated.model_dump())
             return payload
     payload["verbatim_text"] = str(payload.get("verbatim_text") or "")
     return payload

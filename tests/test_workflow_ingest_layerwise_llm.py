@@ -26,6 +26,7 @@ from kg_doc_parser.workflow_ingest.semantics import (
     HydratedTextPointer,
     SemanticNode,
     correct_and_validate_pointer,
+    hydrate_pointer_from_offsets,
     pointer_source_validation_error,
     semantic_tree_to_kge_payload,
 )
@@ -1728,17 +1729,45 @@ def test_pointer_offsets_rehydrate_authoritative_source_text(model_text: str):
         verbatim_text=model_text,
     )
 
-    repaired = correct_and_validate_pointer(
+    hydrated = hydrate_pointer_from_offsets(
         pointer,
         {"doc|p1_t0": {"text": source}},
     )
 
-    assert repaired is not None
-    assert repaired.verbatim_text == target
+    assert hydrated is not None
+    assert hydrated.verbatim_text == target
     assert pointer_source_validation_error(
-        repaired,
+        hydrated,
         {"doc|p1_t0": {"text": source}},
     ) is None
+
+
+def test_pointer_repair_rejects_conflicting_valid_offsets():
+    source = "Alpha clause."
+    pointer = HydratedTextPointer(
+        source_cluster_id="doc|p1_t0",
+        start_char=0,
+        end_char=len(source) - 1,
+        verbatim_text="Beta clause.",
+    )
+
+    assert correct_and_validate_pointer(pointer, {"doc|p1_t0": {"text": source}}) is None
+
+
+def test_pointer_repair_accepts_only_unique_exact_relocation():
+    source = "Prefix. Alpha clause. Suffix."
+    pointer = HydratedTextPointer(
+        source_cluster_id="doc|p1_t0",
+        start_char=999,
+        end_char=1000,
+        verbatim_text="Alpha clause.",
+    )
+
+    repaired = correct_and_validate_pointer(pointer, {"doc|p1_t0": {"text": source}})
+
+    assert repaired is not None
+    assert repaired.verbatim_text == "Alpha clause."
+    assert source[repaired.start_char : repaired.end_char + 1] == repaired.verbatim_text
 
 
 def test_llm_layer_pointer_schema_is_offset_only():

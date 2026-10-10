@@ -34,20 +34,20 @@ def test_package_modules_import_cleanly() -> None:
     assert kg_doc_parser.ocr.regen_doc is not None
 
 
-def test_ci_uses_the_released_kogwistar_package_and_pinned_pypy_source_revision() -> None:
+def test_ci_uses_the_pinned_kogwistar_commit_and_pinned_pypy_source_revision() -> None:
     root = Path(__file__).resolve().parents[1]
     metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    declared_version = metadata["tool"]["poetry"]["dependencies"]["kogwistar"]
+    declared_dependency = metadata["tool"]["poetry"]["dependencies"]["kogwistar"]
     lock = tomllib.loads((root / "poetry.lock").read_text(encoding="utf-8"))
     locked_package = next(
         package for package in lock["package"] if package["name"] == "kogwistar"
     )
     workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert declared_version == "0.6.5"
-    assert locked_package["version"] == declared_version
-    assert "source" not in locked_package
-    assert "ref: v0.6.5" in workflow
+    assert declared_dependency["rev"] == "78b88c44d7d61bf1d9b2b7e3fdaf435df4687d09"
+    assert locked_package["version"] == "0.6.6"
+    assert locked_package["source"]["reference"] == declared_dependency["rev"]
+    assert "ref: v0.6.6" in workflow
 
 
 def test_cloud_adapter_extras_are_declared_without_changing_base_install() -> None:

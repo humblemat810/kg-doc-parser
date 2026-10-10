@@ -1511,33 +1511,28 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.5"
+version = "0.6.6"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
-files = [
-    {file = "kogwistar-0.6.5-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:69e44bc20d31fa0849916307d104be6381d1ae6741733d042a503cfbc9ce1181"},
-    {file = "kogwistar-0.6.5-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:b8c9318a0c4b4dedbbb5226f712282c68d78f2c2e231e571254d5c7b49ce94da"},
-    {file = "kogwistar-0.6.5-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:bbf7b798c4542387848263b51d839c0a351edca7f4c63329d59de1ac4ab55f26"},
-    {file = "kogwistar-0.6.5-cp312-abi3-win_amd64.whl", hash = "sha256:f4df4eabecc27e8f750ab316f453d0aeb5e77fc44b838e2101cf02933dd308f4"},
-    {file = "kogwistar-0.6.5.tar.gz", hash = "sha256:cf469dc0b46e97d114dae089113cc0732a91d9b7fb8b017b992fc0ec0cfc5664"},
-]
+files = []
+develop = false
 
 [package.dependencies]
 anyio = ">=4.0"
 diskcache = {version = ">=5.6,<6", markers = "implementation_name == \"pypy\""}
 fastapi = ">=0.111"
 httpx = ">=0.28.1"
-jinja2 = ">=3.1"
+Jinja2 = ">=3.1"
 joblib = {version = ">=1.3", markers = "implementation_name == \"cpython\""}
 mcp = ">=2.2.0,<3"
 pydantic = ">=2.6"
 pydantic-extension = ">=0.0.7"
-pyjwt = ">=2.8"
+PyJWT = ">=2.8"
 python-dotenv = ">=1.0.1"
 python-jose = {version = ">=3.3", extras = ["cryptography"]}
-rapidfuzz = ">=3.13.0"
+RapidFuzz = ">=3.13.0"
 requests = ">=2.32"
 typing-extensions = ">=4.8"
 
@@ -1561,6 +1556,12 @@ server = ["mcp (>=2.2.0,<3)", "uvicorn[standard] (>=0.30)"]
 test = ["numpy (>=1.26)", "pytest (>=8)", "pytest-asyncio (>=1.1.0)", "pytest-dotenv (>=0.5.2)", "pytest-xdist (>=3.8,<4)", "testcontainers (>=4.0)"]
 typecheck = ["mypy (>=1.8)"]
 viz = ["pygraphviz (>=1.14)"]
+
+[package.source]
+type = "git"
+url = "https://github.com/humblemat810/kogwistar.git"
+reference = "78b88c44d7d61bf1d9b2b7e3fdaf435df4687d09"
+resolved_reference = "78b88c44d7d61bf1d9b2b7e3fdaf435df4687d09"
 
 [[package]]
 name = "langchain-core"
@@ -4384,4 +4385,4 @@ vertex = ["langchain-google-vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "fbc546b1db77a27fbcfd086f24ad41daf667718cb6c35d51ce0296623a7f207a"
+content-hash = "105c319d386660320a4667d61f40a8ca1d92e3036b1273e4d88505d816c91d95"

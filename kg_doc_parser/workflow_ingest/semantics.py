@@ -68,36 +68,54 @@ class SemanticNode(BaseModel):
 SemanticNode.model_rebuild()
 
 
+def hydrate_pointer_from_offsets(
+    pointer: HydratedTextPointer,
+    source_map: Mapping[str, Mapping[str, object]],
+) -> HydratedTextPointer | None:
+    """Hydrate a provider pointer from authoritative source offsets.
+
+    This is intentionally separate from repair.  LLM review payloads may carry
+    a lossy transcription, but valid offsets still identify the authoritative
+    source span.
+    """
+
+    source = source_map.get(pointer.source_cluster_id)
+    if source is None:
+        return None
+    text = _source_text(source)
+    end_exclusive = len(text) if pointer.end_char == -1 else pointer.end_char + 1
+    if not 0 <= pointer.start_char < end_exclusive <= len(text):
+        return None
+    return pointer.model_copy(
+        update={
+            "end_char": end_exclusive - 1,
+            "verbatim_text": text[pointer.start_char:end_exclusive],
+        }
+    )
+
+
 def correct_and_validate_pointer(
     pointer: HydratedTextPointer,
     source_map: Mapping[str, Mapping[str, object]],
 ) -> HydratedTextPointer | None:
+    """Repair a pointer only when the final evidence is source-authoritative.
+
+    A valid range with conflicting text is not repaired: accepting that pair
+    would make the offsets and excerpt disagree while appearing successful.
+    Invalid ranges may be relocated only through one exact, unambiguous text
+    occurrence.  All successful results are rehydrated from the source slice.
+    """
+
     source = source_map.get(pointer.source_cluster_id)
     if source is None:
         return None
     text = _source_text(source)
     end_exclusive = len(text) if pointer.end_char == -1 else pointer.end_char + 1
     if 0 <= pointer.start_char < end_exclusive <= len(text):
-        # Character offsets are authoritative.  The model's transcription is
-        # only a hint and may lose markdown escapes or Unicode punctuation.
-        return pointer.model_copy(
-            update={
-                "end_char": end_exclusive - 1,
-                "verbatim_text": text[pointer.start_char:end_exclusive],
-            }
-        )
-
-    actual = text[max(pointer.start_char, 0):max(end_exclusive, 0)]
-    if actual and (
-        _normalize_text(actual) in _normalize_text(pointer.verbatim_text)
-        or _normalize_text(pointer.verbatim_text) in _normalize_text(actual)
-    ):
-        return HydratedTextPointer(
-            source_cluster_id=pointer.source_cluster_id,
-            start_char=max(pointer.start_char, 0),
-            end_char=max(end_exclusive - 1, -1),
-            verbatim_text=actual,
-        )
+        actual = text[pointer.start_char:end_exclusive]
+        if pointer.verbatim_text != actual:
+            return None
+        return pointer.model_copy(update={"verbatim_text": actual})
 
     occurrences = []
     start = 0
@@ -110,7 +128,9 @@ def correct_and_validate_pointer(
         start = idx + max(1, len(needle))
     if not occurrences:
         return None
-    best_start, best_end = min(occurrences, key=lambda item: abs(item[0] - pointer.start_char))
+    if len(occurrences) != 1:
+        return None
+    best_start, best_end = occurrences[0]
     return HydratedTextPointer(
         source_cluster_id=pointer.source_cluster_id,
         start_char=best_start,
