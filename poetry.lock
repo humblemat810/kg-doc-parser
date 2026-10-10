@@ -1511,17 +1511,17 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.4"
+version = "0.6.5"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "kogwistar-0.6.4-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:06cb6aa4148699130e6a182ca24cd532d3f961791a3ca5c4e2bd3616714f0638"},
-    {file = "kogwistar-0.6.4-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:acf7a5dbd6e53cda72cb5c7ddcc7baaed20e34ab2813e55d4158516747e38189"},
-    {file = "kogwistar-0.6.4-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:c65f8f17c5c31b4a16eab0165cd175d2c49b5f442c55af80bfe0ed161dddded8"},
-    {file = "kogwistar-0.6.4-cp312-abi3-win_amd64.whl", hash = "sha256:dc5e76a7a5621b9192db3ce27254b82b91dac6fc476ce62af6e4d174c9fd9a7e"},
-    {file = "kogwistar-0.6.4.tar.gz", hash = "sha256:3ea43a0ad1b9c41ab0a3e58cd5171a58cdda89bdd887278b95de060463159f10"},
+    {file = "kogwistar-0.6.5-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:69e44bc20d31fa0849916307d104be6381d1ae6741733d042a503cfbc9ce1181"},
+    {file = "kogwistar-0.6.5-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:b8c9318a0c4b4dedbbb5226f712282c68d78f2c2e231e571254d5c7b49ce94da"},
+    {file = "kogwistar-0.6.5-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:bbf7b798c4542387848263b51d839c0a351edca7f4c63329d59de1ac4ab55f26"},
+    {file = "kogwistar-0.6.5-cp312-abi3-win_amd64.whl", hash = "sha256:f4df4eabecc27e8f750ab316f453d0aeb5e77fc44b838e2101cf02933dd308f4"},
+    {file = "kogwistar-0.6.5.tar.gz", hash = "sha256:cf469dc0b46e97d114dae089113cc0732a91d9b7fb8b017b992fc0ec0cfc5664"},
 ]
 
 [package.dependencies]
@@ -4384,4 +4384,4 @@ vertex = ["langchain-google-vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "25fbf37c6c7b88f75ec27f521db8c57a5ef7082d70ac911d97d9f0e281c903e2"
+content-hash = "fbc546b1db77a27fbcfd086f24ad41daf667718cb6c35d51ce0296623a7f207a"
