@@ -7,11 +7,12 @@ if True:
     ocr_json_version = "0.1"
 import base64
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import (
     Any,
     Literal,
     NotRequired,
+    Protocol,
     Self,
     TypedDict,
     cast,
@@ -776,6 +777,21 @@ def get_legacy_loader_like(
                     yield page_file_name
         return local_loader()
 
+
+class OCRImageCallback(Protocol):
+    """Callback contract for one page in the batch OCR adapter."""
+
+    def __call__(
+        self,
+        gemini_key: str,
+        page_file_name: str,
+        *,
+        file_name: str,
+        folder: str,
+        exist_behavior: Literal["ok", "skip", "raise", "rerun"],
+        model_retry_priority_list: list[str] | None,
+    ) -> None: ...
+
 def batch_gemini_ocr_image(
     gemini_key: str,
     folder: str = "split_pages",
@@ -783,7 +799,7 @@ def batch_gemini_ocr_image(
     bounded_executor: BoundedExecutor | None = None,
     allowed_relative_paths: Iterable[str] | None = None,
     loader: RawFileLoader | None = None,
-    ocr_callback: Callable[..., object] | None = None,
+    ocr_callback: OCRImageCallback | None = None,
 ) -> None:
     # page_file_name = "page_1.png"
     # file_name = "EXL-00-HI-MSA01-2017.PDF"
