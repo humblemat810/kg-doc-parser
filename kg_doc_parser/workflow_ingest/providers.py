@@ -135,7 +135,7 @@ class _EmbeddingBackend(Protocol):
     def embed_query(self, text: str) -> object: ...
 
 
-def _construct_provider(  # noqa: UP047 - PyPy 3.11 remains supported
+def _construct_provider(  # noqa: UP047
     factory: Callable[..., TConstructedProvider],
     options: Mapping[str, object],
 ) -> TConstructedProvider:
