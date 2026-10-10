@@ -1,11 +1,22 @@
 from __future__ import annotations
 
-from typing import Literal, Protocol, TypeAlias, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, Protocol, Self, TypeAlias, TypedDict, cast
 
 from kogwistar.llm_tasks.providers import (
-    StructuredModelLike,
     SupportsStructuredOutput,
 )
+
+if TYPE_CHECKING:
+    from kogwistar.llm_tasks.providers import StructuredModelLike
+else:
+    class StructuredModelLike(Protocol):
+        """Compatibility fallback for released Core versions."""
+
+        @classmethod
+        def model_validate(cls, payload: object, /) -> Self: ...
+
+        @classmethod
+        def model_json_schema(cls) -> dict[str, object]: ...
 
 # Keep the historical parser names as aliases, but use the core contracts as
 # the single source of truth for provider/schema compatibility.

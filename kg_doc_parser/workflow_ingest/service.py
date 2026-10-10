@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import StorageBackend
@@ -16,29 +16,27 @@ from .handlers import build_ingest_step_resolver
 from .models import IngestRunResult, WorkflowExportBundle, WorkflowIngestInput
 from .providers import WorkflowProviderSettings, build_embedding_function
 
+if TYPE_CHECKING:
+    from kogwistar.runtime.contract import Predicate, WorkflowEdgeInfo
+else:
+    class WorkflowEdgeInfo(Protocol):
+        """Runtime fallback for Core releases without the newer contract export."""
 
-class WorkflowEdgeLike(Protocol):
-    """Minimal persisted edge surface required by transition predicates."""
+        dst: str
 
-    @property
-    def dst(self) -> str: ...
+    class Predicate(Protocol):
+        """Runtime fallback for the Core predicate callback contract."""
+
+        def __call__(
+            self,
+            edge: WorkflowEdgeInfo,
+            state: Mapping[str, object],
+            result: object,
+        ) -> bool: ...
 
 
 WorkflowState = Mapping[str, object]
-
-
-class WorkflowPredicate(Protocol):
-    """Evaluate one persisted workflow transition without provider authority."""
-
-    def __call__(
-        self,
-        edge: WorkflowEdgeLike,
-        state: WorkflowState,
-        result: object,
-    ) -> bool: ...
-
-
-WorkflowPredicates = dict[str, WorkflowPredicate]
+WorkflowPredicates = dict[str, Predicate]
 
 
 def _string_set(value: object) -> set[str]:
@@ -63,7 +61,7 @@ def workflow_predicates() -> WorkflowPredicates:
         value = _context(state).get("metadata")
         return value if isinstance(value, dict) else {}
 
-    def _strategy_name(edge: WorkflowEdgeLike) -> str:
+    def _strategy_name(edge: WorkflowEdgeInfo) -> str:
         target = str(edge.dst).split("|")[-1]
         return {
             "layer_excerpt_method": "layer_excerpt",
@@ -71,34 +69,34 @@ def workflow_predicates() -> WorkflowPredicates:
             "page_index_layer": "page_index",
         }.get(target, "")
 
-    def _selected_strategy(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+    def _selected_strategy(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del result
         return str(_metadata(state).get("parse_strategy")) == _strategy_name(edge)
 
-    def _failed_with_remaining(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+    def _failed_with_remaining(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
         disabled = _string_set(_metadata(state).get("disabled_strategies", []))
         return bool(disabled) and len(disabled) < 3
 
-    def _exhausted(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+    def _exhausted(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
         return len(_string_set(_metadata(state).get("disabled_strategies", []))) >= 3
 
-    def _strategy_selection_failed(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+    def _strategy_selection_failed(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
         return bool(state.get("strategy_selection_error"))
 
-    def _commit_candidates_valid(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+    def _commit_candidates_valid(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
         review = state.get("current_layer_review")
         return isinstance(review, dict) and bool(review.get("metadata", {}).get("commit_validation")) and review.get("satisfied") is True
 
-    def _commit_candidates_invalid(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+    def _commit_candidates_invalid(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
         review = state.get("current_layer_review")
         return isinstance(review, dict) and bool(review.get("metadata", {}).get("commit_validation")) and review.get("satisfied") is False
 
-    def _batch_has_repair_candidates(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+    def _batch_has_repair_candidates(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
         context = _context(state)
         review = state.get("current_layer_review")
@@ -116,7 +114,7 @@ def workflow_predicates() -> WorkflowPredicates:
             for child in children
         )
 
-    def _satisfied(edge: WorkflowEdgeLike, state: WorkflowState, result: object) -> bool:
+    def _satisfied(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
         review = state.get("current_layer_review")
         result = state.get("current_layer_result")

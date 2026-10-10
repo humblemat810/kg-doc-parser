@@ -150,7 +150,7 @@ def build_llm_strategy_triage(
     from langchain_core.messages import HumanMessage, SystemMessage
 
     structured = cast(
-        StructuredOutputRunnable[ParseStrategyTriage],
+        StructuredOutputRunnable,
         chat.with_structured_output(ParseStrategyTriage, include_raw=True),
     )
 
