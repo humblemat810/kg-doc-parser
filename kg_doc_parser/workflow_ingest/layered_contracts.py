@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 
-from kogwistar.json_types import JsonValue
+from .serialization import JsonValue
 from pydantic import BaseModel, ConfigDict, Field
 
 from .models import (

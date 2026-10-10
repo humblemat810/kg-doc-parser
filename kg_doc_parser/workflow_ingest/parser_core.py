@@ -5,7 +5,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Literal, Protocol, cast
 
-from kogwistar.json_types import JsonValue
+from .serialization import JsonValue
 
 from .cache import WorkflowLLMCallCache
 from .models import (

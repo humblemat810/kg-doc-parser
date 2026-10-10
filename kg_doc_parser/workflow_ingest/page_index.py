@@ -42,7 +42,7 @@ from dataclasses import asdict, dataclass
 from typing import Literal, Protocol, cast
 
 from kogwistar.id_provider import stable_id
-from kogwistar.json_types import JsonValue
+from .serialization import JsonValue
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
 from kogwistar.utils.fuzzy_offsets import find_best_fuzzy_span
 from pydantic import BaseModel, Field

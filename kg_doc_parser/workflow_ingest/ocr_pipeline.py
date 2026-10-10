@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.json_types import JsonValue
+from .serialization import JsonValue
 from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image
 from pydantic import BaseModel, Field

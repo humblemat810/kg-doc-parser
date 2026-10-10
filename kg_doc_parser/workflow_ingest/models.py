@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, ClassVar, Literal
 
-from kogwistar.json_types import JsonValue
+from .serialization import JsonValue
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_extension.model_slicing import BackendField, FrontendField
 from pydantic_extension.model_slicing.mixin import (

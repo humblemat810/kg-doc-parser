@@ -9,10 +9,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal, Protocol, cast
 
-from kogwistar.json_types import JsonValue
-from kogwistar.llm_tasks.providers import StructuredOutputRunnable
+from .serialization import JsonValue
 from pydantic import BaseModel, Field, model_validator
 
+from ..llm_structured_output import StructuredOutputRunnable
 from .providers import (
     ProviderDiagnosticsSink,
     WorkflowProviderSettings,

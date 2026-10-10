@@ -4,7 +4,7 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Literal, Protocol, TypedDict, cast
 
-from kogwistar.json_types import JsonValue
+from .serialization import JsonValue
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import (
     RunFailure,

@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Literal, cast
 
 from kogwistar.id_provider import stable_id
-from kogwistar.json_types import JsonValue
+from .serialization import JsonValue
 from pydantic import BaseModel, Field, model_validator
 
 

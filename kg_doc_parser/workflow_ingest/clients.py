@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Edge, Node
-from kogwistar.json_types import JsonValue
+from .serialization import JsonValue
 from kogwistar.runtime.models import StepRunResult
 
 from .design import (

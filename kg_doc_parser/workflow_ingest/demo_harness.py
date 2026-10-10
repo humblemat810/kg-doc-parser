@@ -28,7 +28,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal, Protocol
 
-from kogwistar.json_types import JsonValue
+from .serialization import JsonValue
 
 from .cache import WorkflowLLMCallCache
 from .clients import (

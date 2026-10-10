@@ -8,7 +8,6 @@ from typing import Literal, Protocol
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import StorageBackend
 from kogwistar.runtime.runtime import WorkflowRuntime
-from kogwistar.runtime.contract import Predicate
 from kogwistar.typing_interfaces import EmbeddingFunctionLike
 
 from .clients import DirectRuntimeIngestClient
@@ -39,7 +38,7 @@ class WorkflowPredicate(Protocol):
     ) -> bool: ...
 
 
-WorkflowPredicates = dict[str, Predicate]
+WorkflowPredicates = dict[str, WorkflowPredicate]
 
 
 def _string_set(value: object) -> set[str]:

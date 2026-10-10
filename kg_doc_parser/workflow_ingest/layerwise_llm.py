@@ -8,7 +8,7 @@ from itertools import pairwise
 from typing import Literal, Protocol, TypedDict, TypeVar, cast
 
 from kogwistar.fuzzy_offsets import find_fuzzy_spans, offset_repair_threshold
-from kogwistar.json_types import JsonValue
+from .serialization import JsonValue
 from kogwistar.runtime import (
     RetryAttemptRecord,
     RetryExhaustedError,
