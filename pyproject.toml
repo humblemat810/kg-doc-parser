@@ -55,3 +55,8 @@ workflow-ingest = "kg_doc_parser.workflow_ingest.cli:main"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff.lint]
+# Keep the TypeVar spelling usable on PyPy 3.11; PEP 695 type parameters
+# would raise the minimum syntax level beyond the supported interpreter set.
+ignore = ["UP047"]

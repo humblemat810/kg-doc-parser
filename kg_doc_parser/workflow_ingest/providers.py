@@ -135,7 +135,7 @@ class _EmbeddingBackend(Protocol):
     def embed_query(self, text: str) -> object: ...
 
 
-def _construct_provider(  # noqa: UP047
+def _construct_provider(
     factory: Callable[..., TConstructedProvider],
     options: Mapping[str, object],
 ) -> TConstructedProvider:
