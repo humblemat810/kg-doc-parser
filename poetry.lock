@@ -1516,7 +1516,13 @@ description = "Graph-native substrate for knowledge, conversation, workflow, pro
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
-files = []
+files = [
+    {file = "kogwistar-0.6.6-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:e49d63202bef680bac10803302a6213a0fb7652110bac282af5325dc10a2af86"},
+    {file = "kogwistar-0.6.6-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:ce67d2794b93c691f3a5221b6d90cc81e91897295018ee902df24e8df98a8faa"},
+    {file = "kogwistar-0.6.6-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:03401680a47e8c8775877c1fa0010d3438196c28eb95e1941dc093d492ed7d17"},
+    {file = "kogwistar-0.6.6-cp312-abi3-win_amd64.whl", hash = "sha256:897ed48b120a346f3ccd6ca1d80fd723ea039986fe7ba39a5db110270806f2bd"},
+    {file = "kogwistar-0.6.6.tar.gz", hash = "sha256:86fbaad322b8f49a4a05a0994c1898cdaf1bb386c89aa82a9000e04b7895"},
+]
 develop = false
 
 [package.dependencies]
@@ -1556,12 +1562,6 @@ server = ["mcp (>=2.2.0,<3)", "uvicorn[standard] (>=0.30)"]
 test = ["numpy (>=1.26)", "pytest (>=8)", "pytest-asyncio (>=1.1.0)", "pytest-dotenv (>=0.5.2)", "pytest-xdist (>=3.8,<4)", "testcontainers (>=4.0)"]
 typecheck = ["mypy (>=1.8)"]
 viz = ["pygraphviz (>=1.14)"]
-
-[package.source]
-type = "git"
-url = "https://github.com/humblemat810/kogwistar.git"
-reference = "78b88c44d7d61bf1d9b2b7e3fdaf435df4687d09"
-resolved_reference = "78b88c44d7d61bf1d9b2b7e3fdaf435df4687d09"
 
 [[package]]
 name = "langchain-core"
@@ -4385,4 +4385,4 @@ vertex = ["langchain-google-vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "105c319d386660320a4667d61f40a8ca1d92e3036b1273e4d88505d816c91d95"
+content-hash = "6c89f97eb74b468387c5abb50efc8ce6ca8041b1daae265d648ac804699916a6"

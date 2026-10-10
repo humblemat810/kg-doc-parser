@@ -4,7 +4,7 @@
 
 - Version: `0.2.8`
 - Required Kogwistar release: `0.6.6`
-- Required Kogwistar commit: `78b88c44d7d61bf1d9b2b7e3fdaf435df4687d09`
+- Required Kogwistar package: `kogwistar==0.6.6`
 - Release tag: `v0.2.8`
 
 ## Changes
@@ -15,7 +15,7 @@
 - Make pointer repair source-authoritative: conflicting valid offsets are
   rejected, and relocation requires one unique exact text match.
 - Keep successful repairs source-derived so offsets and `verbatim_text` agree.
-- Align the runtime dependency and lockfile with merged Kogwistar `0.6.6`.
+- Align the runtime dependency and lockfile with published Kogwistar `0.6.6`.
 
 ## Release Gate
 
