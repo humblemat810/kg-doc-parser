@@ -219,6 +219,11 @@ and structured extraction.
   - `KG_DOC_PARSER_PROVIDER=openai`
   - `KG_DOC_PARSER_MODEL=gpt-4.1-mini`
   - `KG_DOC_PARSER_API_KEY_ENV=OPENAI_API_KEY`
+  - `KG_DOC_PARSER_REASONING_EFFORT=medium` (optional)
+- OpenAI-compatible REST endpoint:
+  - `KG_DOC_PARSER_PROVIDER=openai`
+  - `KG_DOC_PARSER_BASE_URL=http://127.0.0.1:8181/v1`
+  - `KG_DOC_PARSER_REASONING_EFFORT=medium` (optional)
 - LangChain Ollama:
   - `KG_DOC_PARSER_PROVIDER=ollama`
   - `KG_DOC_PARSER_MODEL=llama3.1`
@@ -258,6 +263,7 @@ KG_DOC_OCR_MODEL=gemini-2.5-flash
 KG_DOC_PARSER_PROVIDER=openai
 KG_DOC_PARSER_MODEL=gpt-4.1-mini
 KG_DOC_PARSER_API_KEY_ENV=OPENAI_API_KEY
+KG_DOC_PARSER_REASONING_EFFORT=medium
 KG_DOC_EMBED_PROVIDER=fake
 ```
 
