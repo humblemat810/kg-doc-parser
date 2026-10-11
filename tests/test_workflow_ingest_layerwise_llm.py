@@ -8,7 +8,15 @@ from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
 )
-from kg_doc_parser.workflow_ingest.layerwise_llm import build_layerwise_llm_callbacks
+from kg_doc_parser.workflow_ingest.layerwise_llm import (
+    _fallback_layer_result,
+    _make_boundary_summary,
+    _pointer_excerpt,
+    _pointer_text,
+    _proposal_validation_reason,
+    _source_map_excerpt,
+    build_layerwise_llm_callbacks,
+)
 from kg_doc_parser.workflow_ingest.models import (
     BoundaryCutpoint,
     BoundaryReviewBatch,
@@ -159,6 +167,121 @@ def _boundary_cutpoint_payload(
     if confidence is not None:
         payload["confidence"] = confidence
     return payload
+
+
+@pytest.mark.ci
+def test_source_prompt_helpers_fail_closed_for_malformed_records() -> None:
+    source_map = {
+        "missing": None,
+        "non_text": {"text": 123},
+        "valid": {"text": "Authoritative"},
+    }
+    pointer = {
+        "source_cluster_id": "non_text",
+        "start_char": 0,
+        "end_char": -1,
+        "verbatim_text": "provider supplied text",
+    }
+
+    assert _source_map_excerpt(source_map)["missing"]["text"] == ""
+    assert _source_map_excerpt(source_map)["non_text"]["text"] == ""
+    assert _pointer_text(pointer, parser_source_map=source_map) == ""
+    assert _pointer_excerpt(pointer, parser_source_map=source_map)["verbatim_text"] == ""
+    summary = _make_boundary_summary(
+        parent_node_id="root",
+        source_cluster_id="non_text",
+        start_char=0,
+        end_char=4,
+        parser_source_map=source_map,
+        boundary_kind="paragraph",
+    )
+    assert summary.exact_text == ""
+    assert summary.summary_text == ""
+
+
+@pytest.mark.ci
+def test_pointer_prompt_text_resolves_full_source_sentinel_from_authority() -> None:
+    pointer = {
+        "source_cluster_id": "valid",
+        "start_char": 3,
+        "end_char": -1,
+        "verbatim_text": "wrong provider transcription",
+    }
+
+    assert _pointer_text(pointer, parser_source_map={"valid": {"text": ":: Authoritative"}}) == "Authoritative"
+
+
+@pytest.mark.ci
+def test_fallback_layer_skips_malformed_source_records() -> None:
+    result = _fallback_layer_result(
+        current_layer_context=_context(),
+        parser_source_map={
+            "bad-none": None,
+            "bad-value": {"text": 42},
+            "valid": {"text": "# Valid heading\nbody"},
+        },
+    )
+
+    assert len(result.children) == 1
+    assert result.children[0].total_content_pointers[0].source_cluster_id == "valid"
+    assert result.children[0].total_content_pointers[0].verbatim_text == "# Valid heading\nbody"
+
+
+@pytest.mark.ci
+def test_proposal_validation_does_not_stringify_malformed_source_text() -> None:
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["root"],
+        parent_titles=["Root"],
+        parent_content_pointers_by_id={
+            "root": [
+                HydratedTextPointer(
+                    source_cluster_id="bad",
+                    start_char=0,
+                    end_char=2,
+                    verbatim_text="123",
+                )
+            ]
+        },
+    )
+    result = CurrentLayerResult(
+        children=[
+            LayerChildCandidate(
+                node_id="child-a",
+                parent_node_id="root",
+                title="A",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id="bad",
+                        start_char=0,
+                        end_char=0,
+                        verbatim_text="1",
+                    )
+                ],
+            ),
+            LayerChildCandidate(
+                node_id="child-b",
+                parent_node_id="root",
+                title="B",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id="bad",
+                        start_char=1,
+                        end_char=2,
+                        verbatim_text="23",
+                    )
+                ],
+            ),
+        ]
+    )
+
+    assert _proposal_validation_reason(
+        parsed=result,
+        current_layer_context=context,
+        parser_source_map={"bad": {"text": 123}},
+    ) == "proposal pointer used a character span outside the source text"
 
 
 @pytest.mark.ci
@@ -1742,7 +1865,7 @@ def test_pointer_offsets_rehydrate_authoritative_source_text(model_text: str):
     ) is None
 
 
-def test_pointer_repair_rejects_conflicting_valid_offsets():
+def test_pointer_repair_rehydrates_conflicting_valid_offsets():
     source = "Alpha clause."
     pointer = HydratedTextPointer(
         source_cluster_id="doc|p1_t0",
@@ -1751,7 +1874,12 @@ def test_pointer_repair_rejects_conflicting_valid_offsets():
         verbatim_text="Beta clause.",
     )
 
-    assert correct_and_validate_pointer(pointer, {"doc|p1_t0": {"text": source}}) is None
+    repaired = correct_and_validate_pointer(pointer, {"doc|p1_t0": {"text": source}})
+
+    assert repaired is not None
+    assert repaired.start_char == 0
+    assert repaired.end_char == len(source) - 1
+    assert repaired.verbatim_text == source
 
 
 def test_pointer_repair_accepts_only_unique_exact_relocation():

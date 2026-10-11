@@ -42,10 +42,9 @@ from dataclasses import asdict, dataclass
 from typing import Literal, Protocol, cast
 
 from kogwistar.id_provider import stable_id
-from .serialization import JsonValue
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
 from kogwistar.utils.fuzzy_offsets import find_best_fuzzy_span
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..llm_structured_output import build_structured_output_runnable
 from .adapters import (
@@ -73,6 +72,7 @@ from .semantics import (
     compute_pointer_coverage,
     correct_and_validate_pointer,
 )
+from .serialization import JsonValue
 
 
 class PageIndexTraceLogger(Protocol):
@@ -110,7 +110,8 @@ PageIndexSourceRole = Literal["heading", "content"]
 
 def _increment_diagnostic(diagnostics: dict[str, object], key: str, amount: int = 1) -> None:
     current = diagnostics.get(key)
-    diagnostics[key] = (int(current) if isinstance(current, (int, float)) else 0) + amount
+    current_count = current if type(current) is int and current >= 0 else 0
+    diagnostics[key] = current_count + amount
 
 
 def _stable_part(value: object) -> str:
@@ -124,10 +125,8 @@ def _object_list(value: object) -> list[object]:
 
 
 def _object_int(value: object, default: int) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, (int, float)):
-        return int(value)
+    if type(value) is int:
+        return value
     if isinstance(value, str):
         try:
             return int(value)
@@ -165,7 +164,10 @@ def _notify_untracked_provider_call(
 class PageIndexBlockSpec(BaseModel):
     """Recursive structural block emitted by the page-index parser."""
 
+    model_config = ConfigDict(extra="forbid")
+
     title: str = Field(
+        strict=True,
         description="Short label for this block, usually the heading text or a concise paragraph label."
     )
     node_type: PageIndexNodeType = Field(
@@ -175,6 +177,7 @@ class PageIndexBlockSpec(BaseModel):
         )
     )
     excerpt: str = Field(
+        strict=True,
         description="A short verbatim excerpt from the source page that grounds this block. Do not use the whole page text; keep it tight and exact."
     )
     display_excerpt: str | None = Field(
@@ -185,6 +188,7 @@ class PageIndexBlockSpec(BaseModel):
         ),
     )
     summary: str = Field(
+        strict=True,
         default="",
         description="A concise factual summary of this block, grounded only in its excerpt. Leave empty when summaries are disabled.",
     )
@@ -220,38 +224,52 @@ class CandidateBlock:
 
 
 class BlockAssignment(BaseModel):
-    block_id: str = Field(description="Stable candidate block identifier.")
+    model_config = ConfigDict(extra="forbid")
+
+    block_id: str = Field(strict=True, description="Stable candidate block identifier.")
     parent_id: str | None = Field(
+        strict=True,
         default=None,
         description="Parent block identifier or null when the block is a root.",
     )
     node_type: PageIndexNodeType = Field(description="Assigned node type for the block.")
-    title: str = Field(description="Assigned display title for the block.")
+    title: str = Field(strict=True, description="Assigned display title for the block.")
     summary: str = Field(
+        strict=True,
         default="",
         description="A concise factual summary of the block, grounded only in the supplied candidate text.",
     )
 
 
 class BlockAssignmentBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     assignments: list[BlockAssignment] = Field(default_factory=list)
 
 
 class ExcerptRefinementSuggestion(BaseModel):
-    path_id: str = Field(description="Stable tree path identifier for the block to refine.")
-    excerpt: str = Field(description="Refined excerpt proposed for the block.")
+    model_config = ConfigDict(extra="forbid")
+
+    path_id: str = Field(strict=True, description="Stable tree path identifier for the block to refine.")
+    excerpt: str = Field(strict=True, description="Refined excerpt proposed for the block.")
 
 
 class ExcerptRefinementBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     suggestions: list[ExcerptRefinementSuggestion] = Field(default_factory=list)
 
 
 class HierarchicalSummaryAssignment(BaseModel):
-    path_id: str = Field(description="Stable tree path identifier for the block to summarize.")
-    summary: str = Field(description="A concise factual summary grounded in the block excerpt.")
+    model_config = ConfigDict(extra="forbid")
+
+    path_id: str = Field(strict=True, description="Stable tree path identifier for the block to summarize.")
+    summary: str = Field(strict=True, description="A concise factual summary grounded in the block excerpt.")
 
 
 class HierarchicalSummaryBatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     assignments: list[HierarchicalSummaryAssignment] = Field(default_factory=list)
 
 
@@ -2250,41 +2268,36 @@ def _resolve_pointer(
             end_char=exact_start + len(needle) - 1,
             verbatim_text=page_text[exact_start : exact_start + len(needle)],
         )
-    candidate = HydratedTextPointer(
-        source_cluster_id=unit_id,
-        start_char=max(0, start_at),
-        end_char=max(0, start_at + max(len(needle), 1) - 1),
-        verbatim_text=needle,
+    # ``start_at`` is only a search hint here, not a provider-authoritative
+    # offset. Do not pass the guessed range through source validation: a
+    # bounded but unrelated slice would otherwise be accepted as a repair.
+    fuzzy_hit = _page_index_find_best_fuzzy_span(
+        page_text=page_text,
+        excerpt=needle,
+        origin_start=start_at,
     )
-    resolved = correct_and_validate_pointer(candidate, {unit_id: {"text": page_text}})
-    if resolved is None:
-        fuzzy_hit = _page_index_find_best_fuzzy_span(
-            page_text=page_text,
-            excerpt=needle,
-            origin_start=start_at,
-        )
-        if fuzzy_hit is None:
-            if repair_stats is not None:
-                repair_stats["pointer_fuzzy_failures"] = int(repair_stats.get("pointer_fuzzy_failures", 0)) + 1
-            raise ValueError(f"unable to resolve excerpt against page text for {unit_id!r}: {needle!r}")
-        fuzzy_candidate = HydratedTextPointer(
-            source_cluster_id=unit_id,
-            start_char=fuzzy_hit.start,
-            end_char=fuzzy_hit.end - 1,
-            verbatim_text=page_text[fuzzy_hit.start : fuzzy_hit.end],
-        )
-        resolved = correct_and_validate_pointer(fuzzy_candidate, {unit_id: {"text": page_text}})
-        if resolved is None:
-            if repair_stats is not None:
-                repair_stats["pointer_fuzzy_failures"] = int(repair_stats.get("pointer_fuzzy_failures", 0)) + 1
-            raise ValueError(f"unable to resolve excerpt against page text for {unit_id!r}: {needle!r}")
+    if fuzzy_hit is None:
         if repair_stats is not None:
-            repair_stats["pointer_fuzzy_repairs"] = int(repair_stats.get("pointer_fuzzy_repairs", 0)) + 1
-        if trace_log is not None:
-            trace_log(
-                "page_index_pointer_fuzzy_repair "
-                f"unit_id={unit_id} start={fuzzy_hit.start} end={fuzzy_hit.end} score={fuzzy_hit.score:.2f}"
-            )
+            repair_stats["pointer_fuzzy_failures"] = int(repair_stats.get("pointer_fuzzy_failures", 0)) + 1
+        raise ValueError(f"unable to resolve excerpt against page text for {unit_id!r}: {needle!r}")
+    fuzzy_candidate = HydratedTextPointer(
+        source_cluster_id=unit_id,
+        start_char=fuzzy_hit.start,
+        end_char=fuzzy_hit.end - 1,
+        verbatim_text=page_text[fuzzy_hit.start : fuzzy_hit.end],
+    )
+    resolved = correct_and_validate_pointer(fuzzy_candidate, {unit_id: {"text": page_text}})
+    if resolved is None:
+        if repair_stats is not None:
+            repair_stats["pointer_fuzzy_failures"] = int(repair_stats.get("pointer_fuzzy_failures", 0)) + 1
+        raise ValueError(f"unable to resolve excerpt against page text for {unit_id!r}: {needle!r}")
+    if repair_stats is not None:
+        repair_stats["pointer_fuzzy_repairs"] = int(repair_stats.get("pointer_fuzzy_repairs", 0)) + 1
+    if trace_log is not None:
+        trace_log(
+            "page_index_pointer_fuzzy_repair "
+            f"unit_id={unit_id} start={fuzzy_hit.start} end={fuzzy_hit.end} score={fuzzy_hit.score:.2f}"
+        )
     return resolved
 
 
@@ -2454,7 +2467,8 @@ def parse_page_index_layer(
     candidates: list[LayerChildCandidate] = []
     for parent_pointer in parent_pointers:
         source = parser_source_map.get(parent_pointer.source_cluster_id, {})
-        source_text = str(source.get("text", ""))
+        raw_source_text = source.get("text", "") if isinstance(source, dict) else ""
+        source_text = raw_source_text if isinstance(raw_source_text, str) else ""
         if not source_text:
             continue
         source_end = len(source_text) if parent_pointer.end_char == -1 else parent_pointer.end_char + 1

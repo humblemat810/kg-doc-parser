@@ -72,6 +72,7 @@ from .parser_core import (
     prepare_layer_frontier,
     propose_layer_breakdown,
     review_layer,
+    source_map_fingerprint,
 )
 from .parsing import (
     OCRParseRequest,
@@ -221,6 +222,7 @@ __all__ = [
     "propose_layer_breakdown",
     "provider_call_metrics_snapshot",
     "review_layer",
+    "source_map_fingerprint",
     "run_demo_harness",
     "run_demo_harness_workflow",
     "run_ingest_workflow",

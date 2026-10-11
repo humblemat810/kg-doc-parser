@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 
-from .serialization import JsonValue
 from pydantic import BaseModel, ConfigDict, Field
 
 from .models import (
@@ -30,6 +29,7 @@ from .parser_core import (
     propose_layer_breakdown,
 )
 from .semantics import SemanticNode
+from .serialization import JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,20 +45,20 @@ LayeredSourceMap = dict[str, LayeredPayload]
 class LayeredParseLimits(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    max_depth: int = Field(default=10, ge=1)
-    max_frontier_items: int = Field(default=1, ge=1)
-    max_parser_calls: int = Field(default=1, ge=1)
-    token_budget: int | None = Field(default=None, ge=1)
-    wall_time_seconds: float | None = Field(default=None, gt=0)
+    max_depth: int = Field(default=10, strict=True, ge=1)
+    max_frontier_items: int = Field(default=1, strict=True, ge=1)
+    max_parser_calls: int = Field(default=1, strict=True, ge=1)
+    token_budget: int | None = Field(default=None, strict=True, ge=1)
+    wall_time_seconds: float | None = Field(default=None, strict=True, gt=0)
 
 
 class LayeredParseUsage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    parser_calls: int = Field(default=0, ge=0)
-    input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
-    elapsed_ms: int = Field(default=0, ge=0)
+    parser_calls: int = Field(default=0, strict=True, ge=0)
+    input_tokens: int = Field(default=0, strict=True, ge=0)
+    output_tokens: int = Field(default=0, strict=True, ge=0)
+    elapsed_ms: int = Field(default=0, strict=True, ge=0)
 
 
 class LayeredParseSeedRequest(BaseModel):
@@ -144,12 +144,14 @@ def expand_layered_frontier(
     """Expand at most ``max_frontier_items`` items and return JSON-safe state."""
 
     raw_parser_calls = dict(request.session.metadata or {}).get("parser_calls")
-    parser_calls = (
-        int(raw_parser_calls)
-        if isinstance(raw_parser_calls, (int, float, str))
-        and not isinstance(raw_parser_calls, bool)
-        else 0
-    )
+    if raw_parser_calls is None:
+        parser_calls = 0
+    elif type(raw_parser_calls) is int and raw_parser_calls >= 0:
+        parser_calls = raw_parser_calls
+    elif isinstance(raw_parser_calls, str) and raw_parser_calls.isdecimal():
+        parser_calls = int(raw_parser_calls)
+    else:
+        raise ValueError("layered parse parser_calls metadata must be a non-negative integer")
     if parser_calls >= request.limits.max_parser_calls:
         raise ValueError("layered parse parser-call budget is exhausted")
     started = time.monotonic()

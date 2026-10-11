@@ -27,7 +27,8 @@ def batch_split_pdf(
     file_loader: RawFileLoader | None = None,
 ) -> None:
     cnt = 0
-    assert not ((document_folder is None) and (file_loader is None))
+    if document_folder is None and file_loader is None:
+        raise ValueError("document_folder or file_loader is required")
     class old_walker_inplace(RawFileLoader):
         def __init__(
             self,

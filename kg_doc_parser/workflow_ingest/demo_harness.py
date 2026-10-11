@@ -28,8 +28,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal, Protocol
 
-from .serialization import JsonValue
-
 from .cache import WorkflowLLMCallCache
 from .clients import (
     DocumentTreeApiPersistenceClient,
@@ -47,6 +45,7 @@ from .models import (
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
 from .semantics import HydratedTextPointer
+from .serialization import JsonValue
 from .service import StorageBackendFactory, build_default_engines
 
 _DEMO_JWT_SECRET = "kg-doc-parser-demo-test-secret"

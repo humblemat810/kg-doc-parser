@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
 from typing import Literal, Protocol, cast
-
-from .serialization import JsonValue
 
 from .cache import WorkflowLLMCallCache
 from .models import (
@@ -24,6 +24,7 @@ from .semantics import (
     SemanticNode,
     pointer_source_validation_error,
 )
+from .serialization import JsonValue
 
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
@@ -32,10 +33,38 @@ ParserPayload = dict[str, object]
 ParserSourceMap = dict[str, ParserPayload]
 
 
+def source_map_fingerprint(parser_source_map: ParserSourceMap) -> str:
+    """Return a stable identity for the source text addressed by pointers."""
+
+    records = [
+        {
+            "source_cluster_id": source_cluster_id,
+            "text": _source_text(record) if isinstance(record, Mapping) else None,
+        }
+        for source_cluster_id, record in sorted(parser_source_map.items())
+    ]
+    canonical = json.dumps(records, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _assert_source_map_matches_session(
+    *,
+    parse_session: ParseSessionState,
+    parser_source_map: ParserSourceMap,
+) -> None:
+    expected = parse_session.metadata.get("source_map_fingerprint")
+    if expected is None:
+        # Sessions created before source binding remain readable. New sessions
+        # always carry the fingerprint through initialize_parse_session.
+        return
+    if type(expected) is not str or expected != source_map_fingerprint(parser_source_map):
+        raise ValueError("parser source map does not match the parse session source revision")
+
+
 def _as_int(value: object, default: int = 0) -> int:
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, (int, float, str)):
+    if type(value) is int:
+        return value
+    if isinstance(value, str):
         try:
             return int(value)
         except (TypeError, ValueError):
@@ -43,10 +72,11 @@ def _as_int(value: object, default: int = 0) -> int:
     return default
 
 
-def _source_text(record: Mapping[str, object] | None) -> str:
-    if record is None:
+def _source_text(record: object) -> str:
+    if not isinstance(record, Mapping):
         return ""
-    return str(record.get("text", "") or "")
+    value = record.get("text", "")
+    return value if isinstance(value, str) else ""
 
 
 def _optional_bool(value: object) -> bool | None:
@@ -195,6 +225,8 @@ def _root_only(tree: SemanticNode) -> SemanticNode:
 def _legacy_pointer_aliases(parser_source_map: ParserSourceMap) -> dict[str, str]:
     aliases: dict[str, str] = {}
     for unit_id, record in parser_source_map.items():
+        if not isinstance(record, Mapping):
+            continue
         page_number = record.get("page_number")
         cluster_number = record.get("cluster_number")
         if page_number is None or cluster_number is None:
@@ -306,6 +338,31 @@ def detect_layer_invariants(
     duplicate_notes: list[LayerDuplicateChildNote] = []
     review_notes: list[str] = []
     seen_overlap_pairs: set[tuple[str, str, str, str, int, int, str]] = set()
+    seen_child_ids: dict[str, str] = {}
+
+    # A repeated child ID is unsafe even when the spans differ: materializing
+    # the layer indexes children by ID and would otherwise overwrite one
+    # proposal nondeterministically.
+    for child in current_layer_result.children:
+        previous_parent = seen_child_ids.get(child.node_id)
+        if previous_parent is not None:
+            duplicate_notes.append(
+                LayerDuplicateChildNote(
+                    parent_node_id=child.parent_node_id,
+                    child_node_id=child.node_id,
+                    duplicate_of_child_node_id=child.node_id,
+                    reason=(
+                        "duplicate child node id; first occurrence was under "
+                        f"parent {previous_parent}"
+                    ),
+                )
+            )
+            review_notes.append(
+                f"duplicate child node id: {child.node_id} under parents "
+                f"{previous_parent} and {child.parent_node_id}"
+            )
+        else:
+            seen_child_ids[child.node_id] = child.parent_node_id
 
     parent_pointers = current_layer_context.parent_content_pointers_by_id or {}
     for parent_id in current_layer_context.parent_node_ids:
@@ -351,9 +408,8 @@ def detect_layer_invariants(
             else:
                 for parent_ptr in parent_pointers.get(parent_id, []):
                     parent_end = _pointer_end(parent_ptr, parser_source_map)
-                    cluster_text = str(
-                        (parser_source_map or {}).get(parent_ptr.source_cluster_id, {}).get("text", "")
-                        or ""
+                    cluster_text = _source_text(
+                        (parser_source_map or {}).get(parent_ptr.source_cluster_id)
                     )
                     expected_text = cluster_text[parent_ptr.start_char : parent_end + 1]
                     if _has_meaningful_gap_text(expected_text):
@@ -595,6 +651,7 @@ def initialize_parse_session(
             strategy_history=[cast(SplitStrategy, split_strategy)],
             mode="legacy_compat",
             compat_full_tree=full_tree.model_dump(),
+            metadata={"source_map_fingerprint": source_map_fingerprint(parser_source_map)},
         )
         frontier = [LayerFrontierItem(parent_node_id=_required_node_id(root), depth=0, order=0)]
         return session, frontier, root
@@ -610,10 +667,11 @@ def initialize_parse_session(
                 end_char=-1,
                 # The canonical persistence path validates excerpts against the
                 # stored document content, so the root pointers need real text.
-                verbatim_text=str(record.get("text") or ""),
+                verbatim_text=_source_text(record),
             )
             for unit_id, record in sorted(parser_source_map.items())
-            if record.get("participates_in_semantic_text", True)
+            if isinstance(record, Mapping)
+            and record.get("participates_in_semantic_text", True)
         ],
         child_nodes=[],
         level_from_root=0,
@@ -631,6 +689,7 @@ def initialize_parse_session(
         metadata={
             "default_split_strategy": split_strategy,
             "default_fallback_split_strategy": fallback_split_strategy,
+            "source_map_fingerprint": source_map_fingerprint(parser_source_map),
         },
     )
     frontier = [LayerFrontierItem(parent_node_id=_required_node_id(root), depth=0, order=0)]
@@ -744,6 +803,10 @@ def propose_layer_breakdown(
     propose_layer_fn: ProposeLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
 ) -> CurrentLayerResult:
+    _assert_source_map_matches_session(
+        parse_session=parse_session,
+        parser_source_map=parser_source_map,
+    )
     if parse_session.mode == "legacy_compat":
         return legacy_children_for_context(
             parse_session=parse_session,
@@ -794,6 +857,11 @@ def review_layer(
     review_layer_fn: ReviewLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
 ) -> tuple[CurrentLayerReview, ParseSessionState]:
+    if parser_source_map is not None:
+        _assert_source_map_matches_session(
+            parse_session=parse_session,
+            parser_source_map=parser_source_map,
+        )
     if parse_session.mode == "legacy_compat":
         return (
             CurrentLayerReview(
@@ -1123,8 +1191,8 @@ def repair_layer_candidates(
     correct_pointer_fn: PointerCorrector,
 ) -> tuple[CurrentLayerResult, int]:
     def _pointer_context(pointer: HydratedTextPointer) -> str:
-        source = parser_source_map.get(pointer.source_cluster_id, {})
-        text = str(source.get("text", ""))
+        source = parser_source_map.get(pointer.source_cluster_id)
+        text = _source_text(source)
         preview = text.replace("\n", "\\n").replace("\t", "\\t")
         if len(preview) > 120:
             preview = preview[:117] + "..."
@@ -1308,19 +1376,27 @@ def commit_layer_children(
     current_depth: int,
     parent_node_ids: list[str] | None = None,
 ) -> SemanticNode:
+    # This function is also a public primitive; do not rely on callers having
+    # run the workflow's preceding validation step.
+    finalize_semantic_tree(semantic_tree)
     tree = SemanticNode.model_validate(semantic_tree.model_dump())
     retained_parent_ids = {
         str(node_id) for node_id in (parent_node_ids or [])
     }
     children_by_parent: dict[str, dict[str, SemanticNode]] = {}
     for child in current_layer_result.children:
-        children_by_parent.setdefault(child.parent_node_id, {})[child.node_id] = SemanticNode(
-            node_id=child.node_id,
-            parent_id=child.parent_node_id,
-            node_type=child.node_type,
-            title=child.title,
-            total_content_pointers=list(child.total_content_pointers),
-            child_nodes=[
+        parent_children = children_by_parent.setdefault(child.parent_node_id, {})
+        if child.node_id in parent_children:
+            raise ValueError(f"duplicate proposed child node id {child.node_id!r}")
+        materialized_ids: set[str] = set()
+        materialized_children: list[SemanticNode] = []
+        for materialized in child.child_candidates:
+            if materialized.node_id in materialized_ids:
+                raise ValueError(
+                    f"duplicate materialized child node id {materialized.node_id!r}"
+                )
+            materialized_ids.add(materialized.node_id)
+            materialized_children.append(
                 SemanticNode(
                     node_id=materialized.node_id,
                     parent_id=child.node_id,
@@ -1331,8 +1407,14 @@ def commit_layer_children(
                     level_from_root=current_depth + 2,
                     metadata=dict(materialized.metadata),
                 )
-                for materialized in child.child_candidates
-            ],
+            )
+        parent_children[child.node_id] = SemanticNode(
+            node_id=child.node_id,
+            parent_id=child.parent_node_id,
+            node_type=child.node_type,
+            title=child.title,
+            total_content_pointers=list(child.total_content_pointers),
+            child_nodes=materialized_children,
             level_from_root=current_depth + 1,
             metadata=dict(child.metadata),
         )
@@ -1421,13 +1503,25 @@ def enqueue_next_layer_frontier(
 
 
 def find_semantic_node(root: SemanticNode, node_id: str) -> SemanticNode | None:
-    if str(root.node_id) == str(node_id):
-        return root
-    for child in root.child_nodes:
-        found = find_semantic_node(child, node_id)
-        if found is not None:
-            return found
-    return None
+    """Find a node without recursing forever on an unvalidated tree."""
+
+    visiting: set[int] = set()
+
+    def walk(node: SemanticNode) -> SemanticNode | None:
+        marker = id(node)
+        if marker in visiting:
+            return None
+        visiting.add(marker)
+        if str(node.node_id) == str(node_id):
+            return node
+        for child in node.child_nodes:
+            found = walk(child)
+            if found is not None:
+                return found
+        visiting.remove(marker)
+        return None
+
+    return walk(root)
 
 
 def finalize_semantic_tree(

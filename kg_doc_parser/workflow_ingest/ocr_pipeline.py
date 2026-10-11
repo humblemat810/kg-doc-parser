@@ -47,7 +47,6 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from .serialization import JsonValue
 from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image
 from pydantic import BaseModel, Field
@@ -64,6 +63,7 @@ from .providers import (
     build_chat_model_for_role,
     invoke_with_timeout,
 )
+from .serialization import JsonValue
 from .service import _RunCompat, run_ingest_workflow
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,6 +75,23 @@ def _json_object(value: object) -> JsonObject:
     if isinstance(value, dict):
         return cast(JsonObject, value)
     return {}
+
+
+def _read_json_object(path: Path) -> JsonObject:
+    """Read optional resume metadata without making it authoritative."""
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return _json_object(value)
+
+
+def _is_sha256_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in value)
+    )
 
 
 class OCRImagePayload(BaseModel):
@@ -678,9 +695,7 @@ class OCRWorkflowStateStore:
         rebuilt_any = False
         progress_payload: JsonObject = {}
         if progress_path.exists():
-            progress_payload = _json_object(
-                json.loads(progress_path.read_text(encoding="utf-8"))
-            )
+            progress_payload = _read_json_object(progress_path)
         progress_pages = progress_payload.get("pages", {})
         if not isinstance(progress_pages, dict):
             progress_pages = {}
@@ -702,7 +717,7 @@ class OCRWorkflowStateStore:
             record = progress_pages.get(str(page_number))
             if isinstance(record, dict):
                 candidate_hash = record.get("image_sha256")
-                if isinstance(candidate_hash, str):
+                if isinstance(candidate_hash, str) and _is_sha256_digest(candidate_hash):
                     content_hash = candidate_hash
             if content_hash is None:
                 content_hash = _find_matching_render_hash(rendered_dir, legacy_dir, page_number)
@@ -970,15 +985,17 @@ class OCRWorkflowStateStore:
                 (document_id,),
             ).fetchone()
             total_pages = int(row["total_pages"]) if row is not None else 0
-            completed = conn.execute(
+            completed_rows = conn.execute(
                 """
-                SELECT COUNT(*) AS count
+                SELECT page_number
                 FROM page_state
                 WHERE document_id = ? AND stage = 'ocr' AND status = 'completed'
                 """,
                 (document_id,),
-            ).fetchone()
-        is_completed = total_pages > 0 and int(completed["count"]) == total_pages
+            ).fetchall()
+        completed_pages = {int(completed_row["page_number"]) for completed_row in completed_rows}
+        expected_pages = set(range(1, total_pages + 1))
+        is_completed = total_pages > 0 and completed_pages == expected_pages
         self.mark_document_completed(document_id=document_id, is_completed=is_completed)
         return is_completed
 

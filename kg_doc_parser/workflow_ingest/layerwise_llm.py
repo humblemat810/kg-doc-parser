@@ -214,23 +214,29 @@ def _hydrate_llm_pointer_payload(
     """Convert provider offsets into a runtime pointer with source text."""
 
     payload = _object_dict(_dump_model(pointer))
-    source_cluster_id = str(payload.get("source_cluster_id") or "")
+    raw_source_cluster_id = payload.get("source_cluster_id")
+    source_cluster_id = raw_source_cluster_id if isinstance(raw_source_cluster_id, str) else ""
     start_char = payload.get("start_char")
     end_char = payload.get("end_char")
-    if isinstance(start_char, int) and isinstance(end_char, int):
+    if type(start_char) is int and type(end_char) is int:
+        start_offset = cast(int, start_char)
+        end_offset = cast(int, end_char)
+        raw_verbatim_text = payload.get("verbatim_text")
+        verbatim_text = raw_verbatim_text if isinstance(raw_verbatim_text, str) else ""
         hydrated = hydrate_pointer_from_offsets(
             HydratedTextPointer(
                 source_cluster_id=source_cluster_id,
-                start_char=start_char,
-                end_char=end_char,
-                verbatim_text=str(payload.get("verbatim_text") or ""),
+                start_char=start_offset,
+                end_char=end_offset,
+                verbatim_text=verbatim_text,
             ),
             parser_source_map,
         )
         if hydrated is not None:
             payload.update(hydrated.model_dump())
             return payload
-    payload["verbatim_text"] = str(payload.get("verbatim_text") or "")
+    raw_verbatim_text = payload.get("verbatim_text")
+    payload["verbatim_text"] = raw_verbatim_text if isinstance(raw_verbatim_text, str) else ""
     return payload
 
 
@@ -241,11 +247,11 @@ def _hydrate_llm_layer_result(
 ) -> CurrentLayerResult:
     payload = _object_dict(result.model_dump())
     children = []
-    for child in list(payload.get("children") or []):
+    for child in _object_list(payload.get("children")):
         child_payload = _object_dict(child)
         child_payload["total_content_pointers"] = [
             _hydrate_llm_pointer_payload(pointer, parser_source_map=parser_source_map)
-            for pointer in list(child_payload.get("total_content_pointers") or [])
+            for pointer in _object_list(child_payload.get("total_content_pointers"))
         ]
         children.append(child_payload)
     payload["children"] = children
@@ -261,20 +267,21 @@ def _hydrate_llm_review(
     updated_result = payload.get("updated_result")
     if isinstance(updated_result, dict):
         children = []
-        for child in list(updated_result.get("children") or []):
+        for child in _object_list(updated_result.get("children")):
             child_payload = _object_dict(child)
             child_payload["total_content_pointers"] = [
                 _hydrate_llm_pointer_payload(pointer, parser_source_map=parser_source_map)
-                for pointer in list(child_payload.get("total_content_pointers") or [])
+            for pointer in _object_list(child_payload.get("total_content_pointers"))
             ]
             children.append(child_payload)
         updated_result["children"] = children
-    for conflict in list(payload.get("overlap_conflicts") or []):
-        conflict["left_span"] = _hydrate_llm_pointer_payload(
-            conflict.get("left_span"), parser_source_map=parser_source_map
+    for conflict in _object_list(payload.get("overlap_conflicts")):
+        conflict_payload = _object_dict(conflict)
+        conflict_payload["left_span"] = _hydrate_llm_pointer_payload(
+            conflict_payload.get("left_span"), parser_source_map=parser_source_map
         )
-        conflict["right_span"] = _hydrate_llm_pointer_payload(
-            conflict.get("right_span"), parser_source_map=parser_source_map
+        conflict_payload["right_span"] = _hydrate_llm_pointer_payload(
+            conflict_payload.get("right_span"), parser_source_map=parser_source_map
         )
     return CurrentLayerReview.model_validate(payload)
 
@@ -287,13 +294,22 @@ def _source_map_excerpt(
 ) -> dict[str, dict[str, object]]:
     excerpt: dict[str, dict[str, object]] = {}
     for key, record in list(parser_source_map.items())[:max_records]:
-        text = str(record.get("text") or "")
+        text = _record_text(record)
         excerpt[str(key)] = {
-            "page_number": record.get("page_number"),
-            "cluster_number": record.get("cluster_number"),
+            "page_number": record.get("page_number") if isinstance(record, Mapping) else None,
+            "cluster_number": record.get("cluster_number") if isinstance(record, Mapping) else None,
             "text": _trim_text(text, max_chars=max_text_chars),
         }
     return excerpt
+
+
+def _record_text(record: object) -> str:
+    """Read source text without converting malformed records into evidence."""
+
+    if not isinstance(record, Mapping):
+        return ""
+    value = record.get("text", "")
+    return value if isinstance(value, str) else ""
 
 
 def _pointer_field(pointer: object, field_name: str) -> object:
@@ -302,15 +318,16 @@ def _pointer_field(pointer: object, field_name: str) -> object:
     return getattr(pointer, field_name, None)
 
 
+def _pointer_source_cluster_id(pointer: object) -> str:
+    value = _pointer_field(pointer, "source_cluster_id")
+    return value if isinstance(value, str) else ""
+
+
 def _offset_value(value: object, default: int) -> int:
     """Decode a persisted character offset without treating arbitrary objects as ints."""
 
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
+    if type(value) is int:
         return value
-    if isinstance(value, float):
-        return int(value)
     if isinstance(value, str):
         try:
             return int(value)
@@ -329,7 +346,7 @@ def _object_dict(value: object) -> dict[str, object]:
 
 def _pointer_signature(pointer: object, *, parser_source_map: dict[str, dict[str, object]]) -> tuple[str, int, int, str]:
     return (
-        str(_pointer_field(pointer, "source_cluster_id") or ""),
+        _pointer_source_cluster_id(pointer),
         _offset_value(_pointer_field(pointer, "start_char"), 0),
         _offset_value(_pointer_field(pointer, "end_char"), -1),
         _pointer_text(pointer, parser_source_map=parser_source_map).strip(),
@@ -342,11 +359,11 @@ def _pointer_end_inclusive(
     parser_source_map: dict[str, dict[str, object]],
 ) -> int:
     end_char = _pointer_field(pointer, "end_char")
-    if isinstance(end_char, int) and end_char >= 0:
+    if type(end_char) is int and end_char >= 0:
         return end_char
-    source_cluster_id = str(_pointer_field(pointer, "source_cluster_id") or "")
+    source_cluster_id = _pointer_source_cluster_id(pointer)
     record = parser_source_map.get(source_cluster_id) or parser_source_map.get(str(source_cluster_id))
-    text = str(record.get("text") or "") if record is not None else ""
+    text = _record_text(record)
     if text:
         return max(0, len(text) - 1)
     start_char = _pointer_field(pointer, "start_char")
@@ -368,16 +385,17 @@ def _pointer_text(
     *,
     parser_source_map: dict[str, dict[str, object]],
 ) -> str:
-    source_cluster_id = str(_pointer_field(pointer, "source_cluster_id") or "")
+    source_cluster_id = _pointer_source_cluster_id(pointer)
     start_char = _pointer_field(pointer, "start_char")
     end_char = _pointer_field(pointer, "end_char")
-    verbatim_text = str(_pointer_field(pointer, "verbatim_text") or "")
     record = parser_source_map.get(source_cluster_id) or parser_source_map.get(str(source_cluster_id))
-    if record is not None and isinstance(start_char, int) and isinstance(end_char, int):
-        raw_text = str(record.get("text") or "")
-        if 0 <= start_char <= end_char < len(raw_text):
-            return raw_text[start_char : end_char + 1]
-    return verbatim_text
+    raw_text = _record_text(record)
+    if not raw_text or type(start_char) is not int or type(end_char) is not int:
+        return ""
+    resolved_end = len(raw_text) - 1 if end_char == -1 else end_char
+    if 0 <= start_char <= resolved_end < len(raw_text):
+        return raw_text[start_char : resolved_end + 1]
+    return ""
 
 
 def _pointer_span_text(
@@ -387,10 +405,10 @@ def _pointer_span_text(
     start_offset: int | None = None,
     end_offset: int | None = None,
 ) -> str:
-    source_cluster_id = str(_pointer_field(pointer, "source_cluster_id") or "")
+    source_cluster_id = _pointer_source_cluster_id(pointer)
     start_char, end_char_exclusive = _pointer_span_bounds(pointer, parser_source_map=parser_source_map)
     record = parser_source_map.get(source_cluster_id) or parser_source_map.get(str(source_cluster_id))
-    raw_text = str(record.get("text") or "") if record is not None else ""
+    raw_text = _record_text(record)
     if not raw_text:
         return _trim_text(_pointer_text(pointer, parser_source_map=parser_source_map))
     start = max(start_char, 0 if start_offset is None else start_offset)
@@ -552,7 +570,7 @@ def _boundary_candidates_for_pointer(
     max_points: int = 32,
 ) -> list[BoundaryCutpoint]:
     text = _pointer_text(pointer, parser_source_map=parser_source_map)
-    source_cluster_id = str(_pointer_field(pointer, "source_cluster_id") or "")
+    source_cluster_id = _pointer_source_cluster_id(pointer)
     parent_node_id = ""
     candidates = _legal_cutpoints_for_text(text, max_points=max_points)
     if not candidates:
@@ -587,7 +605,7 @@ def _boundary_prompt_candidate_context(
             candidates.append(
                 {
                     "parent_node_id": parent_id,
-                    "source_cluster_id": str(_pointer_field(pointer, "source_cluster_id") or ""),
+                    "source_cluster_id": _pointer_source_cluster_id(pointer),
                     "pointer_excerpt": _trim_multiline_text(text, max_lines=4, max_chars=700),
                     "pointer_span": {
                         "start_char": start_char,
@@ -667,7 +685,7 @@ def _normalize_boundary_cutpoints_from_candidates(
         if candidate is None:
             parent_node_id = str(cutpoint.parent_node_id or "")
             source_cluster_id = str(cutpoint.source_cluster_id or "")
-            cut_offset = cutpoint.cut_offset if isinstance(cutpoint.cut_offset, int) else None
+            cut_offset = cutpoint.cut_offset if type(cutpoint.cut_offset) is int else None
             if parent_node_id and source_cluster_id and cut_offset is not None:
                 for lookup_candidate in candidate_lookup.values():
                     if (
@@ -802,7 +820,7 @@ def _repair_boundary_cutpoint_from_source(
     parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
     pointer = None
     for parent_pointer in list(parent_pointers.get(cutpoint.parent_node_id) or []):
-        if str(_pointer_field(parent_pointer, "source_cluster_id") or "") == cutpoint.source_cluster_id:
+        if _pointer_source_cluster_id(parent_pointer) == cutpoint.source_cluster_id:
             pointer = parent_pointer
             break
     if pointer is None:
@@ -849,7 +867,7 @@ def _make_boundary_summary(
     boundary_kind: str,
 ) -> BoundaryUnitSummary:
     record = parser_source_map.get(source_cluster_id) or parser_source_map.get(str(source_cluster_id))
-    text = str(record.get("text") or "") if record is not None else ""
+    text = _record_text(record)
     exact_text = ""
     if text and 0 <= start_char <= end_char < len(text):
         exact_text = text[start_char : end_char + 1]
@@ -877,21 +895,21 @@ def _make_boundary_summary(
 
 
 def _pointer_excerpt(pointer: object, *, parser_source_map: dict[str, dict[str, object]]) -> dict[str, object]:
-    source_cluster_id = str(_pointer_field(pointer, "source_cluster_id") or "")
+    source_cluster_id = _pointer_source_cluster_id(pointer)
     start_char = _pointer_field(pointer, "start_char")
     end_char = _pointer_field(pointer, "end_char")
-    verbatim_text = _pointer_field(pointer, "verbatim_text")
-    excerpt = str(verbatim_text or "")
+    excerpt = ""
     record = parser_source_map.get(source_cluster_id) or parser_source_map.get(str(source_cluster_id))
-    if record is not None and isinstance(start_char, int) and isinstance(end_char, int):
-        raw_text = str(record.get("text") or "")
-        if 0 <= start_char <= end_char < len(raw_text):
-            excerpt = raw_text[start_char : end_char + 1]
+    if record is not None and type(start_char) is int and type(end_char) is int:
+        raw_text = _record_text(record)
+        resolved_end = len(raw_text) - 1 if end_char == -1 else end_char
+        if raw_text and 0 <= start_char <= resolved_end < len(raw_text):
+            excerpt = raw_text[start_char : resolved_end + 1]
     return {
         "source_cluster_id": source_cluster_id,
         "start_char": start_char,
         "end_char": end_char,
-        "verbatim_text": _trim_text(excerpt or verbatim_text or "", max_chars=400),
+        "verbatim_text": _trim_text(excerpt, max_chars=400),
     }
 
 
@@ -953,7 +971,7 @@ def _proposal_validation_reason(
     children_by_parent: dict[str, list[object]] = {}
     parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
     source_text_by_cluster = {
-        str(source_cluster_id): str((record or {}).get("text") or "")
+        str(source_cluster_id): _record_text(record)
         for source_cluster_id, record in parser_source_map.items()
     }
     for child in children:
@@ -1031,7 +1049,7 @@ def _boundary_validation_reason(
         text_before_cut = str(getattr(cutpoint, "text_before_cut", "") or "")
         text_after_cut = str(getattr(cutpoint, "text_after_cut", "") or "")
         cut_reason = str(getattr(cutpoint, "cut_reason", "") or getattr(cutpoint, "reason", "") or "")
-        current_key = (parent_node_id, source_cluster_id, int(cut_offset) if isinstance(cut_offset, int) else -1)
+        current_key = (parent_node_id, source_cluster_id, cut_offset if type(cut_offset) is int else -1)
         if previous_key is not None and current_key < previous_key:
             return "boundary proposal cutpoints must be sorted by parent, source cluster, then cut offset"
         previous_key = current_key
@@ -1039,7 +1057,7 @@ def _boundary_validation_reason(
             return "boundary proposal referenced parent ids outside the current layer"
         if not source_cluster_id or source_cluster_id not in parser_source_map:
             return "boundary proposal referenced source outside the supplied source map"
-        if not isinstance(cut_offset, int):
+        if type(cut_offset) is not int:
             return "boundary proposal missing integer cut_offset"
         if not text_before_cut.strip() or not text_after_cut.strip():
             return "boundary proposal missing text_before_cut or text_after_cut evidence"
@@ -1048,7 +1066,7 @@ def _boundary_validation_reason(
         pointer_candidates = list(parent_pointers.get(parent_node_id) or [])
         pointer = None
         for parent_pointer in pointer_candidates:
-            if str(_pointer_field(parent_pointer, "source_cluster_id") or "") == source_cluster_id:
+            if _pointer_source_cluster_id(parent_pointer) == source_cluster_id:
                 pointer = parent_pointer
                 break
         if pointer is None:
@@ -1087,7 +1105,7 @@ def _boundary_refinement_prompt_context(
     target_parent_pointers = list(parent_pointers.get(target.parent_node_id) or [])
     target_pointer = None
     for pointer in target_parent_pointers:
-        if str(_pointer_field(pointer, "source_cluster_id") or "") == target.source_cluster_id:
+        if _pointer_source_cluster_id(pointer) == target.source_cluster_id:
             target_pointer = pointer
             break
     target_excerpt = _pointer_text(target_pointer, parser_source_map=parser_source_map) if target_pointer is not None else ""
@@ -1152,7 +1170,7 @@ def _boundary_review_decision(
     parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
     pointer = None
     for parent_pointer in list(parent_pointers.get(cutpoint.parent_node_id) or []):
-        if str(_pointer_field(parent_pointer, "source_cluster_id") or "") == cutpoint.source_cluster_id:
+        if _pointer_source_cluster_id(parent_pointer) == cutpoint.source_cluster_id:
             pointer = parent_pointer
             break
     if pointer is None:
@@ -1372,7 +1390,7 @@ def _assemble_layer_result_from_boundaries(
         )
         pointer_index = 0
         for pointer in parent_pointers:
-            source_cluster_id = str(_pointer_field(pointer, "source_cluster_id") or "")
+            source_cluster_id = _pointer_source_cluster_id(pointer)
             text = _pointer_text(pointer, parser_source_map=parser_source_map)
             start_char, end_char_exclusive = _pointer_span_bounds(pointer, parser_source_map=parser_source_map)
             absolute_offsets = [start_char]
@@ -1565,13 +1583,13 @@ def _boundary_identical_parent_child_ids(
             continue
         child_pointer = child_pointers[0]
         child_key = (
-            str(_pointer_field(child_pointer, "source_cluster_id") or ""),
+            _pointer_source_cluster_id(child_pointer),
             _offset_value(_pointer_field(child_pointer, "start_char"), 0),
             _offset_value(_pointer_field(child_pointer, "end_char"), -1),
         )
         for parent_pointer in parent_pointers_by_id.get(child.parent_node_id, []):
             parent_key = (
-                str(_pointer_field(parent_pointer, "source_cluster_id") or ""),
+                _pointer_source_cluster_id(parent_pointer),
                 _offset_value(_pointer_field(parent_pointer, "start_char"), 0),
                 _offset_value(_pointer_field(parent_pointer, "end_char"), -1),
             )
@@ -1755,7 +1773,7 @@ def _fallback_layer_result(
     parent_id = parent_ids[0] if parent_ids else "root"
     records = list(parser_source_map.items())
     for index, (source_cluster_id, record) in enumerate(records[:8], start=1):
-        text = str(record.get("text") or "").strip()
+        text = _record_text(record).strip()
         if not text:
             continue
         title_match = re.search(r"(?m)^#{1,3}\s+(.+)$", text)

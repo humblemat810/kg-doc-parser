@@ -9,8 +9,10 @@ from _kogwistar_test_helpers import (
     drain_phase1_indexes_until_idle,
     drain_phase1_indexes_with_workers_until_idle,
 )
+
 from kg_doc_parser.workflow_ingest.adapters import (
     build_authoritative_source_map,
+    build_parser_input_dict,
     normalize_ocr_pages,
 )
 from kg_doc_parser.workflow_ingest.clients import (
@@ -19,7 +21,10 @@ from kg_doc_parser.workflow_ingest.clients import (
 )
 from kg_doc_parser.workflow_ingest.design import build_ingest_workflow_design
 from kg_doc_parser.workflow_ingest.models import (
+    BoundingBox,
     GroundedSourceRecord,
+    NormalizedPage,
+    NormalizedSourceCollection,
     SourceUnit,
     WorkflowExportBundle,
     WorkflowIngestInput,
@@ -162,6 +167,45 @@ def test_workflow_input_from_text_and_llm_slicing():
 
 
 @pytest.mark.ci
+def test_normalized_collection_rejects_ambiguous_identity_and_embedding_labels() -> None:
+    page = NormalizedPage(
+        page_number=1,
+        units=[SourceUnit(modality="text", text="Alpha", page_number=1, cluster_number=0)],
+    )
+    with pytest.raises(ValueError, match="collection_id must be non-empty"):
+        NormalizedSourceCollection(
+            collection_id=" ",
+            title="Doc",
+            modality="text",
+            pages=[page],
+        )
+    with pytest.raises(ValueError, match="embedding_spaces must be unique"):
+        NormalizedSourceCollection(
+            collection_id="doc",
+            title="Doc",
+            modality="text",
+            pages=[page],
+            embedding_spaces=["default_text", "default_text"],
+        )
+
+
+@pytest.mark.ci
+def test_workflow_input_rejects_duplicate_collection_ids() -> None:
+    page = NormalizedPage(
+        page_number=1,
+        units=[SourceUnit(modality="text", text="Alpha", page_number=1, cluster_number=0)],
+    )
+    collection = NormalizedSourceCollection(
+        collection_id="doc",
+        title="Doc",
+        modality="text",
+        pages=[page],
+    )
+    with pytest.raises(ValueError, match="collection_id values must be unique"):
+        WorkflowIngestInput(collections=[collection, collection.model_copy(deep=True)])
+
+
+@pytest.mark.ci
 def test_normalize_ocr_and_source_map_contract():
     inp = normalize_ocr_pages(
         document_id="ocr-doc",
@@ -202,6 +246,230 @@ def test_normalize_ocr_and_source_map_contract():
     assert any(record.modality == "image_region" for record in source_map.values())
     assert any(unit_id.endswith("_t0") for unit_id in source_map)
     assert any(unit_id.endswith("_i0") for unit_id in source_map)
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize("page_number", [True, 1.5, 0, -1, "not-a-number"])
+def test_normalize_ocr_rejects_ambiguous_page_numbers(page_number):
+    with pytest.raises(ValueError, match="positive integer"):
+        normalize_ocr_pages(
+            document_id="ocr-invalid-page",
+            title="OCR Invalid Page",
+            pages=[{"pdf_page_num": page_number}],  # type: ignore[list-item]
+        )
+
+
+@pytest.mark.ci
+def test_normalize_ocr_rejects_duplicate_page_numbers():
+    with pytest.raises(ValueError, match="duplicate OCR pdf_page_num"):
+        normalize_ocr_pages(
+            document_id="ocr-duplicate-page",
+            title="OCR Duplicate Page",
+            pages=[
+                {"pdf_page_num": 1},
+                {"pdf_page_num": "1"},  # type: ignore[dict-item]
+            ],
+        )
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize(
+    ("pages", "message"),
+    [
+        ([None], "each OCR page must be an object"),
+        ([{}], "each OCR page requires pdf_page_num"),
+        ([{"pdf_page_num": 1, "OCR_text_clusters": None}], "OCR cluster collections must be lists"),
+        ([{"pdf_page_num": 1, "non_text_objects": {}}], "OCR cluster collections must be lists"),
+        ([{"pdf_page_num": 1, "OCR_text_clusters": [None]}], "each OCR text cluster must be an object"),
+        ([{"pdf_page_num": 1, "non_text_objects": [None]}], "each OCR non-text object must be an object"),
+    ],
+)
+def test_normalize_ocr_rejects_malformed_container_shapes(pages, message: str) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        normalize_ocr_pages(document_id="doc", title="Doc", pages=pages)
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("bb_x_min", float("nan")),
+        ("bb_y_max", float("inf")),
+        ("bb_x_min", True),
+        ("cluster_number", -1),
+        ("cluster_number", 1.5),
+        ("cluster_number", True),
+    ],
+)
+def test_normalize_ocr_rejects_malformed_coordinates_and_clusters(field, value):
+    page = {
+        "pdf_page_num": 1,
+        "OCR_text_clusters": [
+            {
+                "text": "Alpha",
+                "bb_x_min": 0,
+                "bb_x_max": 1,
+                "bb_y_min": 0,
+                "bb_y_max": 1,
+                "cluster_number": 0,
+            }
+        ],
+    }
+    page["OCR_text_clusters"][0][field] = value
+    with pytest.raises((TypeError, ValueError)):
+        normalize_ocr_pages(
+            document_id="ocr-invalid-payload",
+            title="OCR Invalid Payload",
+            pages=[page],  # type: ignore[list-item]
+        )
+
+
+@pytest.mark.ci
+def test_normalize_ocr_rejects_inverted_boxes_and_cluster_collisions():
+    with pytest.raises(ValueError, match="minimums"):
+        normalize_ocr_pages(
+            document_id="ocr-inverted-box",
+            title="OCR Inverted Box",
+            pages=[
+                {
+                    "pdf_page_num": 1,
+                    "OCR_text_clusters": [
+                        {
+                            "text": "Alpha",
+                            "bb_x_min": 2,
+                            "bb_x_max": 1,
+                            "bb_y_min": 0,
+                            "bb_y_max": 1,
+                            "cluster_number": 0,
+                        }
+                    ],
+                }
+            ],
+        )
+    with pytest.raises(ValueError, match="duplicate OCR text cluster_number"):
+        normalize_ocr_pages(
+            document_id="ocr-duplicate-cluster",
+            title="OCR Duplicate Cluster",
+            pages=[
+                {
+                    "pdf_page_num": 1,
+                    "OCR_text_clusters": [
+                        {"text": "Alpha", "cluster_number": 0},
+                        {"text": "Beta", "cluster_number": 0},
+                    ],
+                }
+            ],
+        )
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"x_min": -1, "x_max": 1, "y_min": 0, "y_max": 1},
+        {"x_min": 0, "x_max": 1, "y_min": 2, "y_max": 1},
+        {"x_min": 0, "x_max": float("nan"), "y_min": 0, "y_max": 1},
+        {"x_min": 0, "x_max": 1, "y_min": 0, "y_max": float("inf")},
+        {"x_min": True, "x_max": 1, "y_min": 0, "y_max": 1},
+        {"x_min": "0", "x_max": 1, "y_min": 0, "y_max": 1},
+    ],
+)
+def test_bounding_box_model_rejects_invalid_coordinates(values: dict[str, object]) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        BoundingBox.model_validate(values)
+
+
+@pytest.mark.ci
+def test_bounding_box_model_accepts_zero_area_and_pixel_coordinates() -> None:
+    box = BoundingBox(x_min=0, x_max=1400, y_min=0, y_max=1000)
+    assert box.x_max == 1400
+
+
+@pytest.mark.ci
+def test_source_map_generated_cluster_skips_reserved_explicit_cluster():
+    inp = normalize_ocr_pages(
+        document_id="ocr-reserved-cluster",
+        title="OCR Reserved Cluster",
+        pages=[
+            {
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [
+                    {"text": "Explicit", "cluster_number": 0},
+                    {"text": "Generated"},
+                ],
+            }
+        ],
+    )
+
+    source_map = build_authoritative_source_map(inp)
+    assert set(source_map) == {
+        "ocr-reserved-cluster|p1_t0",
+        "ocr-reserved-cluster|p1_t1",
+    }
+
+
+@pytest.mark.ci
+def test_parser_input_and_source_map_share_reserved_cluster_allocation() -> None:
+    inp = normalize_ocr_pages(
+        document_id="ocr-roundtrip-cluster",
+        title="OCR Roundtrip Cluster",
+        pages=[
+            {
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [
+                    {"text": "Explicit", "cluster_number": 10},
+                    {"text": "Generated"},
+                ],
+            }
+        ],
+    )
+
+    source_map = build_authoritative_source_map(inp)
+    parser_page = build_parser_input_dict(inp.collections[0])["pages"][0]
+    parser_clusters = parser_page["OCR_text_clusters"]
+    assert [cluster["cluster_number"] for cluster in parser_clusters] == [10, 11]
+    assert set(source_map) == {
+        "ocr-roundtrip-cluster|p1_t10",
+        "ocr-roundtrip-cluster|p1_t11",
+    }
+    assert source_map["ocr-roundtrip-cluster|p1_t10"].cluster_number == 10
+    assert source_map["ocr-roundtrip-cluster|p1_t11"].cluster_number == 11
+
+
+@pytest.mark.ci
+def test_normalized_collection_rejects_duplicate_pages_and_non_strict_coordinates():
+    with pytest.raises(ValueError, match="unique page_number"):
+        WorkflowIngestInput(
+            collections=[
+                {
+                    "collection_id": "doc",
+                    "title": "Doc",
+                    "modality": "text",
+                    "pages": [
+                        {"page_number": 1, "units": []},
+                        {"page_number": 1, "units": []},
+                    ],
+                }
+            ]
+        )
+
+    with pytest.raises(ValueError):
+        SourceUnit(modality="text", text="text", page_number=True)
+
+    with pytest.raises(ValueError, match="embedding_space"):
+        SourceUnit(modality="text", text="text", embedding_space="   ")
+
+    with pytest.raises(ValueError, match="unit_id must be non-empty"):
+        SourceUnit(modality="text", text="text", unit_id="   ")
+
+    with pytest.raises(ValueError, match="page_number must match"):
+        NormalizedPage(
+            page_number=2,
+            units=[SourceUnit(modality="text", text="text", page_number=1)],
+        )
+
+    with pytest.raises(ValueError, match="description or source_uri"):
+        SourceUnit(modality="pure_image", source_uri="   ")
 
 
 def test_fake_workflow_run_text_success_and_knowledge_persist(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -37,6 +38,27 @@ class BoundingBox(ModeSlicingMixin, BaseModel):
     y_max: Annotated[float, DtoField(), BackendField(), FrontendField(), LLMField()]
     x_max: Annotated[float, DtoField(), BackendField(), FrontendField(), LLMField()]
 
+    @model_validator(mode="before")
+    @classmethod
+    def _check_coordinate_values(cls, values: object) -> object:
+        if not isinstance(values, dict):
+            return values
+        for field_name in ("y_min", "x_min", "y_max", "x_max"):
+            value = values.get(field_name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{field_name} must be a finite numeric coordinate")
+            if not math.isfinite(float(value)):
+                raise ValueError(f"{field_name} must be a finite numeric coordinate")
+            if value < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+        return values
+
+    @model_validator(mode="after")
+    def _check_coordinate_order(self) -> BoundingBox:
+        if self.x_min > self.x_max or self.y_min > self.y_max:
+            raise ValueError("bounding-box minimum coordinates cannot exceed maximum coordinates")
+        return self
+
 
 class SourceUnit(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
@@ -50,8 +72,21 @@ class SourceUnit(ModeSlicingMixin, BaseModel):
         FrontendField(),
         LLMField(),
     ]
-    page_number: Annotated[int | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
-    cluster_number: Annotated[int | None, DtoField(), BackendField(), FrontendField()] = None
+    page_number: Annotated[
+        int | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+        Field(strict=True, ge=1),
+    ] = None
+    cluster_number: Annotated[
+        int | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        Field(strict=True, ge=0),
+    ] = None
     text: Annotated[str | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
     description: Annotated[str | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
     bbox: Annotated[BoundingBox | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
@@ -75,10 +110,15 @@ class SourceUnit(ModeSlicingMixin, BaseModel):
     ] = Field(default_factory=dict)
     @model_validator(mode="after")
     def _check_content(self) -> SourceUnit:
+        if self.unit_id is not None and not self.unit_id.strip():
+            raise ValueError("unit_id must be non-empty when provided")
+        if not self.embedding_space.strip():
+            raise ValueError("embedding_space must be non-empty")
         if self.modality in {"text", "ocr_text"} and not (self.text and self.text.strip()):
             raise ValueError(f"{self.modality} units require non-empty text")
         if self.modality in {"non_text", "image_region", "pure_image"} and not (
-            (self.description and self.description.strip()) or self.source_uri
+            (self.description and self.description.strip())
+            or (self.source_uri and self.source_uri.strip())
         ):
             raise ValueError(f"{self.modality} units require description or source_uri")
         return self
@@ -98,7 +138,14 @@ class NormalizedPage(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
-    page_number: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
+    page_number: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+        Field(strict=True, ge=1),
+    ]
     units: Annotated[list[SourceUnit], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     metadata: Annotated[
         dict[str, JsonValue],
@@ -107,6 +154,19 @@ class NormalizedPage(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_unit_page_identity(self) -> NormalizedPage:
+        mismatched = [
+            unit.page_number
+            for unit in self.units
+            if unit.page_number is not None and unit.page_number != self.page_number
+        ]
+        if mismatched:
+            raise ValueError(
+                "source unit page_number must match its enclosing page_number"
+            )
+        return self
 
 
 class NormalizedSourceCollection(ModeSlicingMixin, BaseModel):
@@ -134,8 +194,17 @@ class NormalizedSourceCollection(ModeSlicingMixin, BaseModel):
 
     @model_validator(mode="after")
     def _check_pages(self) -> NormalizedSourceCollection:
+        if not self.collection_id.strip():
+            raise ValueError("collection_id must be non-empty")
+        if not self.embedding_spaces or any(not space.strip() for space in self.embedding_spaces):
+            raise ValueError("embedding_spaces must contain non-empty labels")
+        if len(self.embedding_spaces) != len(set(self.embedding_spaces)):
+            raise ValueError("embedding_spaces must be unique")
         if not self.pages:
             raise ValueError("collection must include at least one page")
+        page_numbers = [page.page_number for page in self.pages]
+        if len(page_numbers) != len(set(page_numbers)):
+            raise ValueError("collection pages must have unique page_number values")
         return self
 
 
@@ -194,6 +263,9 @@ class WorkflowIngestInput(ModeSlicingMixin, BaseModel):
     def _check_collections(self) -> WorkflowIngestInput:
         if not self.collections:
             raise ValueError("at least one collection is required")
+        collection_ids = [collection.collection_id for collection in self.collections]
+        if len(collection_ids) != len(set(collection_ids)):
+            raise ValueError("collection_id values must be unique within a request")
         return self
 
     @model_validator(mode="after")
@@ -233,8 +305,21 @@ class GroundedSourceRecord(ModeSlicingMixin, BaseModel):
     unit_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     collection_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     modality: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
-    page_number: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
-    cluster_number: Annotated[int | None, DtoField(), BackendField(), FrontendField()] = None
+    page_number: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+        Field(strict=True, ge=1),
+    ]
+    cluster_number: Annotated[
+        int | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        Field(strict=True, ge=0),
+    ] = None
     text: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     parser_text: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     source_uri: Annotated[str | None, DtoField(), BackendField(), FrontendField()] = None
@@ -285,8 +370,8 @@ class ParseSessionState(ModeSlicingMixin, BaseModel):
 
     collection_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     root_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
-    current_depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
-    max_depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 10
+    current_depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default=0, strict=True, ge=0)
+    max_depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default=10, strict=True, ge=0)
     allow_review: Annotated[bool, DtoField(), BackendField(), FrontendField(), LLMField()] = True
     split_strategy: Annotated[
         Literal["excerpt_first", "boundary_first"],
@@ -309,7 +394,7 @@ class ParseSessionState(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=lambda: ["excerpt_first"])
-    strategy_switch_count: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
+    strategy_switch_count: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default=0, strict=True, ge=0)
     mode: Annotated[
         Literal["workflow_layered", "legacy_compat"],
         DtoField(),
@@ -318,7 +403,7 @@ class ParseSessionState(ModeSlicingMixin, BaseModel):
         LLMField(),
     ] = "workflow_layered"
     layer_attempts: Annotated[
-        dict[str, int],
+        dict[str, Annotated[int, Field(strict=True, ge=0)]],
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -347,14 +432,20 @@ class ParseSessionState(ModeSlicingMixin, BaseModel):
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _validate_depth_budget(self) -> ParseSessionState:
+        if self.current_depth > self.max_depth:
+            raise ValueError("current_depth cannot exceed max_depth")
+        return self
+
 
 class LayerFrontierItem(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
     parent_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
-    depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
-    order: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
+    depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(strict=True, ge=0)
+    order: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default=0, strict=True, ge=0)
 
 
 class LayerSpanConflict(ModeSlicingMixin, BaseModel):
@@ -367,8 +458,22 @@ class LayerSpanConflict(ModeSlicingMixin, BaseModel):
     source_cluster_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     left_span: Annotated[HydratedTextPointer, DtoField(), BackendField(), FrontendField(), LLMField()]
     right_span: Annotated[HydratedTextPointer, DtoField(), BackendField(), FrontendField(), LLMField()]
-    overlap_start: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
-    overlap_end: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
+    overlap_start: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+        Field(strict=True, ge=0),
+    ]
+    overlap_end: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+        Field(strict=True, ge=0),
+    ]
     conflict_kind: Annotated[
         Literal["overlap", "duplicate"],
         DtoField(),
@@ -377,6 +482,12 @@ class LayerSpanConflict(ModeSlicingMixin, BaseModel):
         LLMField(),
     ] = "overlap"
 
+    @model_validator(mode="after")
+    def _check_interval(self) -> LayerSpanConflict:
+        if self.overlap_start > self.overlap_end:
+            raise ValueError("overlap_start cannot exceed overlap_end")
+        return self
+
 
 class LayerCoverageGap(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
@@ -384,9 +495,29 @@ class LayerCoverageGap(ModeSlicingMixin, BaseModel):
 
     parent_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     source_cluster_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
-    gap_start: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
-    gap_end: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
+    gap_start: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+        Field(strict=True, ge=0),
+    ]
+    gap_end: Annotated[
+        int,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+        Field(strict=True, ge=0),
+    ]
     expected_text: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()] = ""
+
+    @model_validator(mode="after")
+    def _check_interval(self) -> LayerCoverageGap:
+        if self.gap_start > self.gap_end:
+            raise ValueError("gap_start cannot exceed gap_end")
+        return self
 
 
 class LayerDuplicateChildNote(ModeSlicingMixin, BaseModel):
@@ -435,12 +566,12 @@ class LayerChildCandidate(ModeSlicingMixin, BaseModel):
 
 
 class BoundaryCutpoint(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     candidate_id: str | None = None
     parent_node_id: str
     source_cluster_id: str
-    cut_offset: int = Field(description="Absolute character offset of the cut inside the parent span.")
+    cut_offset: int = Field(strict=True, ge=0, description="Absolute character offset of the cut inside the parent span.")
     boundary_kind: Literal["section", "paragraph", "list_item", "table_row", "sentence", "word", "semantic"] = Field(
         description="The structural reason this cut is a legal boundary."
     )
@@ -458,35 +589,35 @@ class BoundaryCutpoint(BaseModel):
 
 
 class LLMBoundaryProposal(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     parent_node_id: str
     source_cluster_id: str
     cutpoints: list[BoundaryCutpoint] = Field(default_factory=list)
     satisfied: bool | None = None
     reasoning_history: list[LayerReasoningEntry] = Field(default_factory=list)
-    review_rounds: int = 0
+    review_rounds: int = Field(default=0, strict=True, ge=0)
 
 
 class LLMBoundaryProposalBatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     cutpoints: list[BoundaryCutpoint] = Field(default_factory=list)
     satisfied: bool | None = None
     reasoning_history: list[LayerReasoningEntry] = Field(default_factory=list)
-    review_rounds: int = 0
+    review_rounds: int = Field(default=0, strict=True, ge=0)
 
 
 class BoundaryReviewDecision(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     candidate_id: str | None = None
     parent_node_id: str
     source_cluster_id: str
-    input_cut_offset: int | None = None
-    cut_offset: int
+    input_cut_offset: int | None = Field(default=None, strict=True, ge=0)
+    cut_offset: int = Field(strict=True, ge=0)
     decision: Literal["accept", "shift_left", "shift_right", "reject", "needs_refinement"]
-    resolved_cut_offset: int | None = None
+    resolved_cut_offset: int | None = Field(default=None, strict=True, ge=0)
     boundary_kind: Literal["section", "paragraph", "list_item", "table_row", "sentence", "word", "semantic"] | None = None
     anchor_match_mode: Literal["exact", "fuzzy"] | None = None
     anchor_match_score: float | None = None
@@ -496,7 +627,7 @@ class BoundaryReviewDecision(BaseModel):
 
 
 class BoundaryReviewBatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     decisions: list[BoundaryReviewDecision] = Field(default_factory=list)
     satisfied: bool | None = None
@@ -505,16 +636,22 @@ class BoundaryReviewBatch(BaseModel):
 
 
 class BoundaryUnitSummary(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     parent_node_id: str
     source_cluster_id: str
-    start_char: int
-    end_char: int
+    start_char: int = Field(strict=True, ge=0)
+    end_char: int = Field(strict=True, ge=0)
     boundary_kind: Literal["section", "paragraph", "list_item", "table_row", "sentence", "word", "semantic"] = "semantic"
     summary_text: str = ""
     exact_text: str = ""
     expandable: bool = False
+
+    @model_validator(mode="after")
+    def _check_interval(self) -> BoundaryUnitSummary:
+        if self.start_char > self.end_char:
+            raise ValueError("start_char cannot exceed end_char")
+        return self
 
 
 class LayerReasoningEntry(BaseModel):
@@ -543,9 +680,9 @@ class StrategyExecutionRecord(BaseModel):
     """Auditable, bounded event for one layer-strategy execution."""
 
     strategy: Literal["layer_excerpt", "layer_boundary", "page_index"]
-    depth: int
+    depth: int = Field(strict=True, ge=0)
     parent_node_ids: list[str] = Field(default_factory=list)
-    attempt: int = Field(ge=1)
+    attempt: int = Field(strict=True, ge=1)
     event: Literal["selected", "succeeded", "failed"]
     failure_type: FailureCategory | None = None
     reasons: list[str] = Field(default_factory=list, max_length=12)
@@ -555,7 +692,7 @@ class CurrentLayerContext(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
-    depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()]
+    depth: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(strict=True, ge=0)
     parent_node_ids: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     parent_titles: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     parent_content_pointers_by_id: Annotated[
@@ -572,8 +709,8 @@ class CurrentLayerContext(ModeSlicingMixin, BaseModel):
         FrontendField(),
         LLMField(),
     ] = "excerpt_first"
-    retry_count: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
-    max_retries: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 3
+    retry_count: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default=0, strict=True, ge=0)
+    max_retries: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default=3, strict=True, ge=0)
     metadata: Annotated[
         dict[str, JsonValue],
         DtoField(),
@@ -582,7 +719,6 @@ class CurrentLayerContext(ModeSlicingMixin, BaseModel):
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
 
-
 class CurrentLayerResult(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
@@ -590,7 +726,7 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
     children: Annotated[list[LayerChildCandidate], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     satisfied: Annotated[bool | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
     reasoning_history: Annotated[list[LayerReasoningEntry], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
-    review_rounds: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = 0
+    review_rounds: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default=0, strict=True, ge=0)
     metadata: Annotated[
         dict[str, JsonValue],
         DtoField(),
@@ -605,15 +741,15 @@ class LLMTextPointer(BaseModel):
 
     # Ignore verbatim_text from older providers without advertising it in the
     # schema.  Source offsets, not model transcription, define ownership.
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", strict=True)
 
     source_cluster_id: str
-    start_char: int
-    end_char: int
+    start_char: int = Field(strict=True)
+    end_char: int = Field(strict=True)
 
 
 class LLMSpanConflict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     parent_node_id: str
     left_child_id: str
@@ -627,7 +763,7 @@ class LLMSpanConflict(BaseModel):
 
 
 class LLMLayerChildCandidate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     node_id: str
     parent_node_id: str
@@ -638,12 +774,12 @@ class LLMLayerChildCandidate(BaseModel):
 
 
 class LLMCurrentLayerResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     children: list[LLMLayerChildCandidate] = Field(default_factory=list)
     satisfied: bool | None = None
     reasoning_history: list[LayerReasoningEntry] = Field(default_factory=list)
-    review_rounds: int = 0
+    review_rounds: int = Field(default=0, strict=True, ge=0)
 
 
 class CurrentLayerReview(ModeSlicingMixin, BaseModel):
@@ -698,7 +834,7 @@ class CurrentLayerReview(ModeSlicingMixin, BaseModel):
 
 
 class LLMCurrentLayerReview(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     updated_result: LLMCurrentLayerResult | None = None
     coverage_ok: bool | None = None

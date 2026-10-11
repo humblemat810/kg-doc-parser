@@ -174,7 +174,8 @@ class RawFileLoader():
             filtering_callbacks: that apply to each path, when True, it allows continue, when False, it continue to next file
         """
         
-        assert not ((bucket_blob_connection_str is not None) and (env_flist_path is not None))
+        if bucket_blob_connection_str is not None and env_flist_path is not None:
+            raise ValueError("bucket_blob_connection_str and env_flist_path are mutually exclusive")
         self.allow_startwith_relative_paths = allow_startwith_relative_paths
         self.pattern = pattern
         self.include = include or []
