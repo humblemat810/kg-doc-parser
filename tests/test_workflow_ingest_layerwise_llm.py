@@ -29,7 +29,11 @@ from kg_doc_parser.workflow_ingest.models import (
     LLMCurrentLayerReview,
     ParseSessionState,
 )
-from kg_doc_parser.workflow_ingest.parser_core import commit_layer_children
+from kg_doc_parser.workflow_ingest.parser_core import (
+    commit_layer_children,
+    review_layer,
+    source_map_fingerprint,
+)
 from kg_doc_parser.workflow_ingest.semantics import (
     HydratedTextPointer,
     SemanticNode,
@@ -1164,6 +1168,88 @@ def test_review_layer_fn_emits_start_and_completed_traces(monkeypatch: pytest.Mo
     assert review.satisfied is True
     assert any(event["stage"] == "workflow_layered_review_start" for event in layer_events)
     assert any(event["stage"] == "workflow_layered_review_completed" for event in layer_events)
+
+
+@pytest.mark.ci
+def test_review_layer_hydrates_offset_only_payload_through_core_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "# SDK\n\nStatus: SDK\\_UNINITIALIZED | See \\[the docs\\] for details.\n"
+    source_map = {"cluster-1": {"text": source}}
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "updated_result": {
+                    "children": [
+                        {
+                            "node_id": "doc|root|source",
+                            "parent_node_id": "doc|root",
+                            "title": "Source",
+                            "node_type": "TEXT_FLOW",
+                            "total_content_pointers": [
+                                {
+                                    "source_cluster_id": "cluster-1",
+                                    "start_char": 0,
+                                    "end_char": len(source) - 1,
+                                    "verbatim_text": "model transcription with a dropped \\[ escape",
+                                }
+                            ],
+                            "expandable": False,
+                        }
+                    ],
+                    "satisfied": True,
+                    "reasoning_history": [],
+                    "review_rounds": 0,
+                },
+                "coverage_ok": True,
+                "satisfied": True,
+                "strategy_used": "excerpt_first",
+                "review_notes": ["offset-only review"],
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+    callbacks = build_layerwise_llm_callbacks(_provider_settings())
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_content_pointers_by_id={
+            "doc|root": [
+                HydratedTextPointer(
+                    source_cluster_id="cluster-1",
+                    start_char=0,
+                    end_char=len(source) - 1,
+                    verbatim_text=source,
+                )
+            ]
+        },
+        split_strategy="excerpt_first",
+    )
+    session = ParseSessionState(
+        collection_id="doc",
+        root_node_id="doc|root",
+        mode="workflow_layered",
+        metadata={"source_map_fingerprint": source_map_fingerprint(source_map)},
+    )
+
+    review, _ = review_layer(
+        parse_session=session,
+        current_layer_context=context,
+        current_layer_result=CurrentLayerResult(children=[], satisfied=True),
+        parser_source_map=source_map,
+        review_layer_fn=callbacks["review_layer_fn"],
+    )
+
+    assert review.satisfied is True
+    assert review.coverage_ok is True
+    assert review.updated_result is not None
+    pointer = review.updated_result.children[0].total_content_pointers[0]
+    assert pointer.start_char == 0
+    assert pointer.end_char == len(source) - 1
+    assert pointer.verbatim_text == source
 
 
 def test_propose_layer_fn_retries_child_mode_with_previous_error_context(monkeypatch: pytest.MonkeyPatch):

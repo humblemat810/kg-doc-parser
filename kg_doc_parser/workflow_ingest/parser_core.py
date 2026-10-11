@@ -121,6 +121,7 @@ class ReviewLayerFn(Protocol):
         parse_session: ParseSessionState,
         current_layer_context: CurrentLayerContext,
         current_layer_result: CurrentLayerResult,
+        parser_source_map: ParserSourceMap,
         split_strategy: SplitStrategy,
     ) -> CurrentLayerReview: ...
 
@@ -900,6 +901,7 @@ def review_layer(
                 parse_session=parse_session,
                 current_layer_context=current_layer_context,
                 current_layer_result=current_layer_result,
+                parser_source_map=parser_source_map or {},
                 split_strategy=current_layer_context.split_strategy,
             )
         try:
@@ -910,6 +912,7 @@ def review_layer(
                         "parse_session": parse_session,
                         "current_layer_context": current_layer_context,
                         "current_layer_result": current_layer_result,
+                        "parser_source_map": parser_source_map or {},
                         "split_strategy": current_layer_context.split_strategy,
                     },
                     fn=call,

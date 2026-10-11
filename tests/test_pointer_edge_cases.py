@@ -17,6 +17,8 @@ from kg_doc_parser.workflow_ingest.semantics import (
     pointer_source_validation_error,
 )
 
+pytestmark = pytest.mark.ci
+
 
 def _source(text: str) -> dict[str, dict[str, str]]:
     return {"doc|p1_t0": {"text": text}}
