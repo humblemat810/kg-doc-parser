@@ -358,4 +358,3 @@ def test_legacy_repair_does_not_move_text_to_another_cluster() -> None:
             "doc|p1_t1": {"text": "needle"},
         },
     ) is None
-
