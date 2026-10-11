@@ -49,6 +49,8 @@ The current patch release is documented in the
 [`0.2.7` release note](doc/release_0.2.7.md) remains available for history.
 For cache reuse and provider/runtime isolation rules, see
 [`doc/cache_reuse_and_isolation.md`](doc/cache_reuse_and_isolation.md).
+For provider timeout, in-flight slot, and orphaned-call safety, see
+[`doc/provider_timeout_safety.md`](doc/provider_timeout_safety.md).
 
 For an adoption path that starts with parser-grounded source units and later
 adds LLM-Wiki cross-document maintenance, see
