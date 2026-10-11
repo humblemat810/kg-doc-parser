@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+
 from kg_doc_parser.workflow_ingest import ProviderEndpointConfig
 from kg_doc_parser.workflow_ingest.models import FailureCategory
 from kg_doc_parser.workflow_ingest.providers import (
@@ -64,6 +65,7 @@ def test_openai_adapter_enforces_configured_retry_and_output_caps(
             "temperature": 0.1,
             "callbacks": callbacks,
             "max_retries": 0,
+            "timeout": 120.0,
             "max_tokens": 4096,
             "base_url": "http://127.0.0.1:8181/v1",
         }

@@ -1052,6 +1052,7 @@ def build_chat_model(
             "temperature": spec.temperature,
             "callbacks": callback_list,
             "max_retries": spec.max_retries,
+            "request_timeout": spec.timeout_seconds,
         }
         if spec.max_output_tokens is not None:
             kwargs["max_output_tokens"] = spec.max_output_tokens
@@ -1071,6 +1072,7 @@ def build_chat_model(
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callback_list,
             "max_retries": spec.max_retries,
+            "timeout": spec.timeout_seconds,
         }
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
@@ -1094,6 +1096,7 @@ def build_chat_model(
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callback_list,
             "max_retries": spec.max_retries,
+            "timeout": spec.timeout_seconds,
         }
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
@@ -1123,6 +1126,7 @@ def build_chat_model(
             "temperature": spec.temperature,
             "callbacks": callback_list,
             "max_retries": spec.max_retries,
+            "timeout": spec.timeout_seconds,
         }
         if spec.max_output_tokens is not None:
             kwargs["max_tokens"] = spec.max_output_tokens
@@ -1138,6 +1142,7 @@ def build_chat_model(
             "model": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callback_list,
+            "client_kwargs": {"timeout": spec.timeout_seconds},
         }
         if spec.max_output_tokens is not None:
             kwargs["num_predict"] = spec.max_output_tokens
@@ -1154,6 +1159,7 @@ def build_chat_model(
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callback_list,
             "max_retries": spec.max_retries,
+            "request_timeout": spec.timeout_seconds,
         }
         if spec.max_output_tokens is not None:
             kwargs["max_output_tokens"] = spec.max_output_tokens

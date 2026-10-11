@@ -126,6 +126,13 @@ def test_declared_chat_provider_constructors_have_one_common_contract(
     assert hasattr(chat, "with_structured_output")
     if provider != "fake":
         assert _OfflineChatModel.constructed
+        options = _OfflineChatModel.constructed[-1]
+        if provider in {"openai", "azure"}:
+            assert options["timeout"] == 120.0
+        elif provider == "ollama":
+            assert options["client_kwargs"] == {"timeout": 120.0}
+        else:
+            assert options["request_timeout"] == 120.0
 
 
 @pytest.mark.parametrize(
