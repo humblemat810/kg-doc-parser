@@ -17,6 +17,7 @@ from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowLLMCallCache,
     WorkflowProviderSettings,
+    workflow_cache_namespace,
     build_chat_model,
     build_embedding_function,
     run_demo_harness,
@@ -169,6 +170,48 @@ def test_workflow_llm_call_cache_concurrent_writers_leave_valid_json() -> None:
     assert all(result["answer"] == "stable" for result in results)
     cache_path = cache._cache_path("review", fingerprint)
     assert json.loads(cache_path.read_text(encoding="utf-8"))["answer"] == "stable"
+    assert not list((scratch / "cache").glob("*.tmp"))
+
+
+def test_workflow_cache_namespace_separates_provider_and_runtime_identity() -> None:
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="ollama", model="qwen3:4b")
+    )
+    first = workflow_cache_namespace(settings)
+    second = workflow_cache_namespace(
+        settings.model_copy(update={"parser": settings.parser.model_copy(update={"model": "qwen3:8b"})})
+    )
+
+    assert first["cache_contract_version"] == 2
+    assert first["python_implementation"]
+    assert first["provider_settings"] != second["provider_settings"]
+    assert "api_key" not in json.dumps(first, sort_keys=True).lower()
+
+
+def test_workflow_cache_namespace_changes_the_cache_key() -> None:
+    scratch = _scratch("llm_cache_namespace")
+    calls = {"first": 0, "second": 0}
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="fake", model="fake-v1")
+    )
+    first_cache = WorkflowLLMCallCache(
+        scratch / "cache",
+        namespace=workflow_cache_namespace(settings),
+    )
+    second_cache = WorkflowLLMCallCache(
+        scratch / "cache",
+        namespace=workflow_cache_namespace(
+            settings.model_copy(update={"parser": settings.parser.model_copy(update={"model": "fake-v2"})})
+        ),
+    )
+
+    assert first_cache.cached_call(
+        operation="review", fingerprint={"source": "same"}, fn=lambda: calls.__setitem__("first", 1) or {"v": 1}
+    ) == {"v": 1}
+    assert second_cache.cached_call(
+        operation="review", fingerprint={"source": "same"}, fn=lambda: calls.__setitem__("second", 1) or {"v": 2}
+    ) == {"v": 2}
+    assert calls == {"first": 1, "second": 1}
 
 
 def test_provider_settings_use_pydantic_extension_slicing_for_llm_view():

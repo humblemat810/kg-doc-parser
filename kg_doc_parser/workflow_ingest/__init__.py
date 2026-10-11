@@ -4,7 +4,7 @@ from .adapters import (
     build_parser_source_map,
     normalize_ocr_pages,
 )
-from .cache import WorkflowLLMCallCache
+from .cache import WorkflowLLMCallCache, workflow_cache_namespace
 from .clients import (
     CanonicalGraphPersistenceClient,
     DirectRuntimeIngestClient,
@@ -186,6 +186,7 @@ __all__ = [
     "WorkflowExportBundle",
     "WorkflowIngestInput",
     "WorkflowLLMCallCache",
+    "workflow_cache_namespace",
     "WorkflowPersistenceLike",
     "WorkflowProbe",
     "WorkflowProviderSettings",
