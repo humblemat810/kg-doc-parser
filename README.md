@@ -47,6 +47,8 @@ The deterministic and text-only Bonsai fixture evaluation is recorded in the
 The current patch release is documented in the
 [`0.2.10` release note](doc/release_0.2.10.md); the prior
 [`0.2.7` release note](doc/release_0.2.7.md) remains available for history.
+For cache reuse and provider/runtime isolation rules, see
+[`doc/cache_reuse_and_isolation.md`](doc/cache_reuse_and_isolation.md).
 
 For an adoption path that starts with parser-grounded source units and later
 adds LLM-Wiki cross-document maintenance, see
