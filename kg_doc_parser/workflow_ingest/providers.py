@@ -1030,7 +1030,13 @@ def build_chat_model(
     if spec.provider == "codex":
         if not spec.base_url or not spec.api_key_env or not os.getenv(spec.api_key_env):
             raise ValueError("codex provider requires base_url and a configured api_key_env token")
-        timeout = float(os.getenv("KOGWISTAR_MAINTENANCE_CODEX_TIMEOUT_SECONDS", "300"))
+        # Keep the transport deadline inside the parser's caller deadline.  The
+        # outer timeout cannot stop a daemon thread, so allowing the bridge to
+        # run longer would retain an in-flight slot after the parser gives up.
+        configured_timeout = float(
+            os.getenv("KOGWISTAR_MAINTENANCE_CODEX_TIMEOUT_SECONDS", str(spec.timeout_seconds))
+        )
+        timeout = min(spec.timeout_seconds, configured_timeout)
         return StructuredBridgeChatModel(
             endpoint=spec.base_url,
             token=os.environ[spec.api_key_env],

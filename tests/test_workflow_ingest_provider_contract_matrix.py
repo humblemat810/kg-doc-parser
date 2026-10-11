@@ -5,6 +5,7 @@ from types import ModuleType
 from typing import ClassVar
 
 import pytest
+
 from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
     BlockAssignmentBatch,
@@ -211,3 +212,33 @@ def test_codex_constructor_uses_the_same_structured_provider_contract(
     assert hasattr(chat, "with_structured_output")
     assert captured["endpoint"] == "http://bridge.invalid"
     assert captured["model"] == "gpt-5.6-luna"
+    assert captured["timeout_seconds"] == 120.0
+
+
+def test_codex_transport_timeout_cannot_exceed_parser_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _OfflineBridge:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(providers, "StructuredBridgeChatModel", _OfflineBridge)
+    monkeypatch.setenv("TEST_CODEX_TOKEN", "offline-token")
+    monkeypatch.setenv("KOGWISTAR_MAINTENANCE_CODEX_TIMEOUT_SECONDS", "300")
+
+    build_chat_model_for_role(
+        "parser",
+        WorkflowProviderSettings(
+            parser=ProviderEndpointConfig(
+                provider="codex",
+                model="gpt-5.6-luna",
+                base_url="http://bridge.invalid",
+                api_key_env="TEST_CODEX_TOKEN",
+                timeout_seconds=45.0,
+            )
+        ),
+    )
+
+    assert captured["timeout_seconds"] == 45.0
