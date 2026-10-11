@@ -97,6 +97,8 @@ jobs:
         run: >-
           poetry run pytest -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           tests/test_packaging_imports.py
+          tests/test_parser_state_edge_cases.py
+          tests/test_pointer_edge_cases.py
           tests/test_workflow_ingest_contracts.py
           tests/test_workflow_ingest_conversation_graph.py
           tests/test_workflow_ingest_layerwise_llm.py
@@ -114,6 +116,8 @@ jobs:
         run: >-
           python -m pytest -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           tests/test_packaging_imports.py
+          tests/test_parser_state_edge_cases.py
+          tests/test_pointer_edge_cases.py
           tests/test_workflow_ingest_contracts.py
           tests/test_workflow_ingest_conversation_graph.py
           tests/test_workflow_ingest_layerwise_llm.py
