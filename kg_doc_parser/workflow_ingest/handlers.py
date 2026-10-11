@@ -21,7 +21,7 @@ from .adapters import (
     build_parser_source_map,
     select_primary_collection,
 )
-from .cache import WorkflowLLMCallCache
+from .cache import WorkflowLLMCallCache, workflow_cache_namespace
 from .clients import CanonicalGraphPersistenceClient
 from .models import (
     CanonicalGraphWriteResult,
@@ -767,6 +767,7 @@ def register_layerwise_parser_steps(
             semantic_tree=semantic_tree,
             propose_layer_fn=runtime_deps.get("propose_layer_fn"),
             llm_cache=runtime_deps.get("llm_cache"),
+            cache_namespace=workflow_cache_namespace(runtime_deps.get("provider_settings")),
         )
         with ctx.state_write as st:
             st["current_layer_result"] = result.model_dump(field_mode="backend", dump_format="json")
@@ -784,6 +785,7 @@ def register_layerwise_parser_steps(
             parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
             review_layer_fn=runtime_deps.get("review_layer_fn"),
             llm_cache=runtime_deps.get("llm_cache"),
+            cache_namespace=workflow_cache_namespace(runtime_deps.get("provider_settings")),
         )
         updated_context = current_layer_context.model_copy(
             update={"retry_count": current_layer_context.retry_count + 1}

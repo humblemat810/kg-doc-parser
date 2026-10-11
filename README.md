@@ -45,8 +45,12 @@ to normal strategy selection. See the
 The deterministic and text-only Bonsai fixture evaluation is recorded in the
 [`PageIndex adversarial fixture report`](doc/page_index_adversarial_fixture_report.md).
 The current patch release is documented in the
-[`0.2.10` release note](doc/release_0.2.10.md); the prior
+[`0.2.11` release note](doc/release_0.2.11.md); the prior
 [`0.2.7` release note](doc/release_0.2.7.md) remains available for history.
+For cache reuse and provider/runtime isolation rules, see
+[`doc/cache_reuse_and_isolation.md`](doc/cache_reuse_and_isolation.md).
+For provider timeout, in-flight slot, and orphaned-call safety, see
+[`doc/provider_timeout_safety.md`](doc/provider_timeout_safety.md).
 
 For an adoption path that starts with parser-grounded source units and later
 adds LLM-Wiki cross-document maintenance, see
@@ -215,6 +219,11 @@ and structured extraction.
   - `KG_DOC_PARSER_PROVIDER=openai`
   - `KG_DOC_PARSER_MODEL=gpt-4.1-mini`
   - `KG_DOC_PARSER_API_KEY_ENV=OPENAI_API_KEY`
+  - `KG_DOC_PARSER_REASONING_EFFORT=medium` (optional)
+- OpenAI-compatible REST endpoint:
+  - `KG_DOC_PARSER_PROVIDER=openai`
+  - `KG_DOC_PARSER_BASE_URL=http://127.0.0.1:8181/v1`
+  - `KG_DOC_PARSER_REASONING_EFFORT=medium` (optional)
 - LangChain Ollama:
   - `KG_DOC_PARSER_PROVIDER=ollama`
   - `KG_DOC_PARSER_MODEL=llama3.1`
@@ -254,6 +263,7 @@ KG_DOC_OCR_MODEL=gemini-2.5-flash
 KG_DOC_PARSER_PROVIDER=openai
 KG_DOC_PARSER_MODEL=gpt-4.1-mini
 KG_DOC_PARSER_API_KEY_ENV=OPENAI_API_KEY
+KG_DOC_PARSER_REASONING_EFFORT=medium
 KG_DOC_EMBED_PROVIDER=fake
 ```
 

@@ -803,6 +803,7 @@ def propose_layer_breakdown(
     semantic_tree: SemanticNode,
     propose_layer_fn: ProposeLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
+    cache_namespace: Mapping[str, object] | None = None,
 ) -> CurrentLayerResult:
     _assert_source_map_matches_session(
         parse_session=parse_session,
@@ -829,6 +830,7 @@ def propose_layer_breakdown(
         proposed = llm_cache.cached_call(
             operation="propose_layer_breakdown",
             fingerprint={
+                "cache_namespace": dict(cache_namespace or {}),
                 "collection_id": collection.collection_id,
                 "parse_session": parse_session,
                 "current_layer_context": current_layer_context,
@@ -857,6 +859,7 @@ def review_layer(
     parser_source_map: ParserSourceMap | None = None,
     review_layer_fn: ReviewLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
+    cache_namespace: Mapping[str, object] | None = None,
 ) -> tuple[CurrentLayerReview, ParseSessionState]:
     if parser_source_map is not None:
         _assert_source_map_matches_session(
@@ -909,6 +912,7 @@ def review_layer(
                 reviewed = llm_cache.cached_call(
                     operation=f"review_cud_proposal:{current_layer_context.split_strategy}",
                     fingerprint={
+                        "cache_namespace": dict(cache_namespace or {}),
                         "parse_session": parse_session,
                         "current_layer_context": current_layer_context,
                         "current_layer_result": current_layer_result,

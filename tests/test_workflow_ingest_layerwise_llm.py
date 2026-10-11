@@ -1252,6 +1252,172 @@ def test_review_layer_hydrates_offset_only_payload_through_core_handoff(
     assert pointer.verbatim_text == source
 
 
+@pytest.mark.ci
+def test_recursive_reviews_rehydrate_each_depth_from_the_same_source_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "Section heading\nChild detail\nGrandchild detail"
+    source_map = {"cluster-1": {"text": source}}
+    section_start = source.index("Section heading")
+    grandchild_start = source.index("Grandchild detail")
+    fake_model = _SequencedFakeChatModel(
+        [
+            {
+                "parsed": {
+                    "updated_result": {
+                        "children": [
+                            {
+                                "node_id": "doc|root|section",
+                                "parent_node_id": "doc|root",
+                                "title": "Section",
+                                "node_type": "SECTION",
+                                "total_content_pointers": [
+                                    {
+                                        "source_cluster_id": "cluster-1",
+                                        "start_char": section_start,
+                                        "end_char": len(source) - 1,
+                                        "verbatim_text": "lossy section transcription",
+                                    }
+                                ],
+                                "expandable": True,
+                            }
+                        ],
+                        "satisfied": True,
+                        "reasoning_history": [],
+                    },
+                    "coverage_ok": True,
+                    "satisfied": True,
+                    "strategy_used": "excerpt_first",
+                }
+            },
+            {
+                "parsed": {
+                    "updated_result": {
+                        "children": [
+                            {
+                                "node_id": "doc|root|section|grandchild",
+                                "parent_node_id": "doc|root|section",
+                                "title": "Grandchild",
+                                "node_type": "TEXT_FLOW",
+                                "total_content_pointers": [
+                                    {
+                                        "source_cluster_id": "cluster-1",
+                                        "start_char": grandchild_start,
+                                        "end_char": len(source) - 1,
+                                        "verbatim_text": "another lossy transcription",
+                                    }
+                                ],
+                                "expandable": False,
+                            }
+                        ],
+                        "satisfied": True,
+                        "reasoning_history": [],
+                    },
+                    "coverage_ok": True,
+                    "satisfied": True,
+                    "strategy_used": "excerpt_first",
+                }
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+    callbacks = build_layerwise_llm_callbacks(_provider_settings())
+    session = _parse_session().model_copy(
+        update={"metadata": {"source_map_fingerprint": source_map_fingerprint(source_map)}}
+    )
+
+    first_context = _context()
+    first_review, _ = review_layer(
+        parse_session=session,
+        current_layer_context=first_context,
+        current_layer_result=CurrentLayerResult(children=[], satisfied=True),
+        parser_source_map=source_map,
+        review_layer_fn=callbacks["review_layer_fn"],
+    )
+    second_context = first_context.model_copy(
+        update={
+            "depth": 1,
+            "parent_node_ids": ["doc|root|section"],
+            "parent_content_pointers_by_id": {
+                "doc|root|section": [
+                    HydratedTextPointer(
+                        source_cluster_id="cluster-1",
+                        start_char=section_start,
+                        end_char=len(source) - 1,
+                        verbatim_text=source[section_start:],
+                    )
+                ]
+            },
+        }
+    )
+    second_review, _ = review_layer(
+        parse_session=session,
+        current_layer_context=second_context,
+        current_layer_result=first_review.updated_result or CurrentLayerResult(),
+        parser_source_map=source_map,
+        review_layer_fn=callbacks["review_layer_fn"],
+    )
+
+    assert first_review.updated_result is not None
+    assert second_review.updated_result is not None
+    assert first_review.updated_result.children[0].total_content_pointers[0].verbatim_text == source[section_start:]
+    assert second_review.updated_result.children[0].total_content_pointers[0].verbatim_text == source[grandchild_start:]
+    assert len(fake_model.messages) == 2
+
+
+@pytest.mark.ci
+def test_malformed_structured_review_payload_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_model = _FakeChatModel(
+        {
+            "parsed": {
+                "updated_result": {
+                    "children": [
+                        {
+                            "node_id": "doc|root|bad",
+                            "parent_node_id": "doc|root",
+                            "title": "Bad",
+                            "node_type": "TEXT_FLOW",
+                            "total_content_pointers": [
+                                {
+                                    "source_cluster_id": "cluster-1",
+                                    "start_char": "zero",
+                                    "end_char": 2,
+                                    "verbatim_text": "bad",
+                                }
+                            ],
+                        }
+                    ],
+                    "satisfied": True,
+                },
+                "coverage_ok": True,
+                "satisfied": True,
+                "strategy_used": "excerpt_first",
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.layerwise_llm.build_chat_model_for_role",
+        lambda role, settings: fake_model,
+    )
+    callbacks = build_layerwise_llm_callbacks(_provider_settings())
+    review, _ = review_layer(
+        parse_session=_parse_session(),
+        current_layer_context=_context(),
+        current_layer_result=CurrentLayerResult(children=[], satisfied=True),
+        parser_source_map=_parser_source_map(),
+        review_layer_fn=callbacks["review_layer_fn"],
+    )
+
+    assert review.satisfied is None
+    assert review.coverage_ok is None
+    assert review.metadata["review_failure"] == "provider_failure"
+
+
 def test_propose_layer_fn_retries_child_mode_with_previous_error_context(monkeypatch: pytest.MonkeyPatch):
     parsed = CurrentLayerResult(
         children=[

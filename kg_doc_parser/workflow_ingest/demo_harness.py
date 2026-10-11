@@ -28,7 +28,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Literal, Protocol
 
-from .cache import WorkflowLLMCallCache
+from .cache import WorkflowLLMCallCache, workflow_cache_namespace
 from .clients import (
     DocumentTreeApiPersistenceClient,
     HttpClientLike,
@@ -394,6 +394,7 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
     """Run the ingest demo and persist probe and summary artifacts."""
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    effective_provider_settings = config.provider_settings or WorkflowProviderSettings.from_env()
     probe = WorkflowProbe(output_dir / config.probe_filename)
     if config.enable_sys_monitoring:
         probe.enable_sys_monitoring()
@@ -414,7 +415,12 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
     )
 
     deps = dict(config.deps)
-    deps["llm_cache"] = WorkflowLLMCallCache(artifacts.cache_dir, probe=probe)
+    deps["llm_cache"] = WorkflowLLMCallCache(
+        artifacts.cache_dir,
+        probe=probe,
+        namespace=workflow_cache_namespace(effective_provider_settings),
+    )
+    deps.setdefault("provider_settings", effective_provider_settings)
     if config.parser_mode == "fake_layered":
         deps.update(_fake_layered_deps(inp))
     else:
@@ -457,7 +463,7 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
         workflow_engine, conversation_engine, knowledge_engine = build_default_engines(
             artifacts.engine_dir,
             backend_factory=config.backend_factory,
-            provider_settings=config.provider_settings,
+            provider_settings=effective_provider_settings,
         )
         engines = (workflow_engine, conversation_engine, knowledge_engine)
         persistence_client = DocumentTreeApiPersistenceClient(
@@ -491,7 +497,7 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
             "cache_dir": str(artifacts.cache_dir),
             "engine_dir": str(artifacts.engine_dir),
             "server_data_dir": str(artifacts.server_data_dir),
-            "proposal_mode": config.provider_settings.proposal_mode if config.provider_settings else None,
+            "proposal_mode": effective_provider_settings.proposal_mode,
             "parser_mode": config.parser_mode,
             "server_mode": config.server_mode,
         }

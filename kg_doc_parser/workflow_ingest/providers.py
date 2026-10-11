@@ -1030,7 +1030,13 @@ def build_chat_model(
     if spec.provider == "codex":
         if not spec.base_url or not spec.api_key_env or not os.getenv(spec.api_key_env):
             raise ValueError("codex provider requires base_url and a configured api_key_env token")
-        timeout = float(os.getenv("KOGWISTAR_MAINTENANCE_CODEX_TIMEOUT_SECONDS", "300"))
+        # Keep the transport deadline inside the parser's caller deadline.  The
+        # outer timeout cannot stop a daemon thread, so allowing the bridge to
+        # run longer would retain an in-flight slot after the parser gives up.
+        configured_timeout = float(
+            os.getenv("KOGWISTAR_MAINTENANCE_CODEX_TIMEOUT_SECONDS", str(spec.timeout_seconds))
+        )
+        timeout = min(spec.timeout_seconds, configured_timeout)
         return StructuredBridgeChatModel(
             endpoint=spec.base_url,
             token=os.environ[spec.api_key_env],
@@ -1046,6 +1052,7 @@ def build_chat_model(
             "temperature": spec.temperature,
             "callbacks": callback_list,
             "max_retries": spec.max_retries,
+            "request_timeout": spec.timeout_seconds,
         }
         if spec.max_output_tokens is not None:
             kwargs["max_output_tokens"] = spec.max_output_tokens
@@ -1065,6 +1072,7 @@ def build_chat_model(
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callback_list,
             "max_retries": spec.max_retries,
+            "timeout": spec.timeout_seconds,
         }
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
@@ -1088,6 +1096,7 @@ def build_chat_model(
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callback_list,
             "max_retries": spec.max_retries,
+            "timeout": spec.timeout_seconds,
         }
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
@@ -1117,6 +1126,7 @@ def build_chat_model(
             "temperature": spec.temperature,
             "callbacks": callback_list,
             "max_retries": spec.max_retries,
+            "timeout": spec.timeout_seconds,
         }
         if spec.max_output_tokens is not None:
             kwargs["max_tokens"] = spec.max_output_tokens
@@ -1132,6 +1142,7 @@ def build_chat_model(
             "model": spec.model,
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callback_list,
+            "client_kwargs": {"timeout": spec.timeout_seconds},
         }
         if spec.max_output_tokens is not None:
             kwargs["num_predict"] = spec.max_output_tokens
@@ -1148,6 +1159,7 @@ def build_chat_model(
             "temperature": _chat_temperature_for_model(spec.model, spec.temperature),
             "callbacks": callback_list,
             "max_retries": spec.max_retries,
+            "request_timeout": spec.timeout_seconds,
         }
         if spec.max_output_tokens is not None:
             kwargs["max_output_tokens"] = spec.max_output_tokens

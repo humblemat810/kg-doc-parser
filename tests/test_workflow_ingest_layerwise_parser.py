@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from uuid import uuid4
 
@@ -67,6 +68,24 @@ def test_provider_review_failure_is_persisted_and_fails_closed() -> None:
     )
     assert coverage_ok is False
     assert notes == ["layer review unavailable; quality is unknown"]
+
+
+@pytest.mark.ci
+def test_review_cancellation_is_not_converted_to_success() -> None:
+    def cancelled_review(**_kwargs):
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        review_layer(
+            parse_session=ParseSessionState(collection_id="doc", root_node_id="doc|root"),
+            current_layer_context=CurrentLayerContext(
+                depth=0,
+                parent_node_ids=["doc|root"],
+                split_strategy="excerpt_first",
+            ),
+            current_layer_result=CurrentLayerResult(),
+            review_layer_fn=cancelled_review,
+        )
 
 
 @pytest.mark.ci
