@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+
 from kg_doc_parser.workflow_ingest.models import (
     CurrentLayerContext,
     CurrentLayerResult,
@@ -21,6 +22,7 @@ from kg_doc_parser.workflow_ingest.parser_core import (
     detect_layer_invariants,
     enqueue_next_layer_frontier,
     finalize_semantic_tree,
+    find_semantic_node,
     repair_layer_candidates,
     requeue_failed_frontier_items,
     review_layer,
@@ -126,6 +128,48 @@ def test_detect_layer_invariants_reports_overlap_gap_and_duplicate_notes():
     assert any(gap.expected_text == text[13:16] for gap in coverage_gaps)
     assert any("duplicate child proposal" in note for note in notes)
     assert any("gap in parent" in note for note in notes)
+
+
+def test_detect_layer_invariants_rejects_duplicate_child_ids_even_with_distinct_spans():
+    unit_id = "doc|p1_t0"
+    parent_id = "doc|root"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=[parent_id],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={
+            parent_id: [_pointer(unit_id, "Alpha Beta", 0, len("Alpha Beta") - 1)]
+        },
+    )
+    result = CurrentLayerResult(
+        children=[
+            _child(
+                node_id="same-id",
+                parent_node_id=parent_id,
+                title="Alpha",
+                node_type="TEXT_FLOW",
+                pointer=_pointer(unit_id, "Alpha Beta", 0, 4),
+            ),
+            _child(
+                node_id="same-id",
+                parent_node_id=parent_id,
+                title="Beta",
+                node_type="TEXT_FLOW",
+                pointer=_pointer(unit_id, "Alpha Beta", 6, 9),
+            ),
+        ]
+    )
+
+    coverage_ok, satisfied, _, _, duplicate_notes, notes = detect_layer_invariants(
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map={unit_id: {"text": "Alpha Beta"}},
+    )
+
+    assert coverage_ok is True
+    assert satisfied is False
+    assert any("duplicate child node id" in note.reason for note in duplicate_notes)
+    assert any("duplicate child node id" in note for note in notes)
 
 
 def test_dedupe_and_filter_layer_keeps_grounded_same_title_and_drops_true_duplicate():
@@ -738,6 +782,85 @@ def test_finalize_semantic_tree_rejects_excerpt_that_disagrees_with_source():
 
     with pytest.raises(ValueError, match="excerpt does not match"):
         finalize_semantic_tree(root, parser_source_map={"doc|p1_t0": {"text": "Alpha"}})
+
+
+def test_finalize_semantic_tree_rejects_duplicate_ids_across_siblings():
+    root = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[
+            SemanticNode(node_id="same", parent_id="doc|root", title="A"),
+            SemanticNode(node_id="same", parent_id="doc|root", title="B"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="duplicate node id"):
+        finalize_semantic_tree(root)
+
+
+def test_finalize_semantic_tree_rejects_parent_id_mismatch():
+    root = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[
+            SemanticNode(
+                node_id="child",
+                parent_id="other-parent",
+                title="Child",
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="parent mismatch"):
+        finalize_semantic_tree(root)
+
+
+def test_finalize_semantic_tree_rejects_cycles_without_recursing_forever():
+    root = SemanticNode(node_id="doc|root", title="Doc", node_type="DOCUMENT_ROOT")
+    child = SemanticNode(node_id="child", parent_id="doc|root", title="Child")
+    root.child_nodes.append(child)
+    child.child_nodes.append(root)
+
+    with pytest.raises(ValueError, match="cycle"):
+        finalize_semantic_tree(root)
+
+
+def test_find_semantic_node_fails_closed_on_cycle_without_recursing_forever():
+    root = SemanticNode(node_id="doc|root", title="Doc", node_type="DOCUMENT_ROOT")
+    child = SemanticNode(node_id="child", parent_id="doc|root", title="Child")
+    root.child_nodes.append(child)
+    child.child_nodes.append(root)
+
+    assert find_semantic_node(root, "missing") is None
+
+
+def test_commit_layer_children_rejects_duplicate_proposals_instead_of_overwriting():
+    tree = SemanticNode(node_id="doc|root", title="Doc", node_type="DOCUMENT_ROOT")
+    result = CurrentLayerResult(
+        children=[
+            LayerChildCandidate(
+                node_id="same",
+                parent_node_id="doc|root",
+                title="A",
+                node_type="TEXT_FLOW",
+            ),
+            LayerChildCandidate(
+                node_id="same",
+                parent_node_id="doc|root",
+                title="B",
+                node_type="TEXT_FLOW",
+            ),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="duplicate proposed child node id"):
+        commit_layer_children(
+            semantic_tree=tree,
+            current_layer_result=result,
+            current_depth=0,
+        )
 
 
 def test_check_layer_coverage_emits_conflict_notes_from_review():

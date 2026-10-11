@@ -234,11 +234,8 @@ class HydratedTextPointer(ModeSlicingMixin, BaseModel):
     validation_method: Annotated[str, BackendField(), LLMField(), ExcludeMode("llm")] | None = Field(None, description="The exact text of this fragment. This MUST match the text at the specified pointer location.")
     # backend and llm used, default to dump include, but ExcludeMode("llm") specified must be excluded when dumping to llm mode
     
-    @model_validator(mode="after")
-    def end_char_minus_1_to_ending_index(self) -> Self:
-        if self.end_char == -1 and self.verbatim_text:
-            self.end_char += len(self.verbatim_text)
-        return self
+    # Keep -1 as a reversible "to the end" sentinel. Resolving it by adding
+    # len(verbatim_text) is wrong whenever start_char is non-zero.
     # --------------------------
     # pointer -> ref dict
     # --------------------------
@@ -1192,7 +1189,8 @@ def retried_level_node_llm_parsing(
                         if response.get('parsing_error'):
                             raise response['parsing_error']
                         parsed: LLMLevelResponse[llm] = response['parsed']
-                        assert all(i.parent_node_id in parent_node_id_set for i in parsed.children), "llm generated non existed parent id"
+                        if not all(i.parent_node_id in parent_node_id_set for i in parsed.children):
+                            raise ValueError("llm generated non-existent parent id")
                         return cast(LLMLevelResponse, response["parsed"]).model_dump()
                     except Exception as e:
                         err_msg = str(e)
@@ -1956,19 +1954,58 @@ def correct_and_validate_pointer(
             print(f"🚨 Delimiter Resolution Error: {e}")
             return None # Or propagate error? Returning None causes it to be added to "unresolved" which triggers LLM retry.
     
+    # Offset pointers must remain in their declared source cluster. The older
+    # fallback below could silently move evidence across clusters or accept
+    # fuzzy text; make the authoritative decision before that compatibility
+    # code is reached.
+    source_cluster = source_map.get(proposed_pointer.source_cluster_id)
+    if not source_cluster or not proposed_pointer.verbatim_text:
+        return None
+    source_text = _source_map_entry_text(source_cluster)
+    end_exclusive = (
+        len(source_text)
+        if proposed_pointer.end_char == -1
+        else proposed_pointer.end_char + 1
+    )
+    valid_bounds = (
+        type(proposed_pointer.start_char) is int
+        and type(proposed_pointer.end_char) is int
+        and 0 <= proposed_pointer.start_char < end_exclusive <= len(source_text)
+    )
+    if valid_bounds:
+        actual = source_text[proposed_pointer.start_char:end_exclusive]
+        return proposed_pointer.model_copy(
+            update={
+                "end_char": end_exclusive - 1,
+                "verbatim_text": actual,
+            }
+        )
+
+    first = source_text.find(proposed_pointer.verbatim_text)
+    if first >= 0 and source_text.find(
+        proposed_pointer.verbatim_text, first + len(proposed_pointer.verbatim_text)
+    ) < 0:
+        return proposed_pointer.model_copy(
+            update={
+                "start_char": first,
+                "end_char": first + len(proposed_pointer.verbatim_text) - 1,
+                "verbatim_text": source_text[
+                    first : first + len(proposed_pointer.verbatim_text)
+                ],
+                "start_delimiter": None,
+                "end_delimiter": None,
+                "validation_method": "exact_unique_relocation",
+            }
+        )
+
     # Ensure verbatim_text is present for legacy logic
     if not proposed_pointer.verbatim_text:
         # If no delimiters and no verbatim text, we can't do anything
         print("🚨 REJECTED: Pointer missing both delimiters and verbatim_text.")
         return None
         
-    ids = list(source_map.keys())
-    ids_same_page, id_dif_page = partition(ids, predicate = lambda x: x.split("_")[0] == proposed_pointer.source_cluster_id.split('_')[0])
-    _, ids_same_page_dif_cluster =  partition(ids_same_page, predicate = lambda x: x == proposed_pointer.source_cluster_id)
-    # Try some heuristic possible hallucinated cluster ids
     verification_method = None
-    for _i_source_cluster, source_cluster in enumerate([source_map.get(proposed_pointer.source_cluster_id)] + \
-            [source_map.get(i) for i in ids_same_page_dif_cluster + id_dif_page]):
+    for source_cluster in [source_map.get(proposed_pointer.source_cluster_id)]:
         validation_method = None
         if not source_cluster:
             # print(

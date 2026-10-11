@@ -6,6 +6,8 @@ from uuid import uuid4
 
 import pytest
 from _kogwistar_test_helpers import load_kogwistar_fake_backend
+from pydantic import BaseModel
+
 from kg_doc_parser.workflow_ingest import (
     DemoHarnessConfig,
     DocumentTreeApiPersistenceClient,
@@ -17,8 +19,8 @@ from kg_doc_parser.workflow_ingest import (
     build_embedding_function,
     run_demo_harness,
 )
+from kg_doc_parser.workflow_ingest.clients import _json_int
 from kg_doc_parser.workflow_ingest.demo_harness import _start_subprocess_server
-from pydantic import BaseModel
 
 
 def _scratch(name: str) -> Path:
@@ -95,6 +97,48 @@ def test_workflow_llm_call_cache_hits_on_repeated_fingerprint():
     assert first == {"answer": 42}
     assert second == {"answer": 42}
     assert calls["count"] == 1
+
+
+def test_workflow_llm_call_cache_recomputes_corrupt_json():
+    scratch = _scratch("llm_cache_corrupt")
+    cache = WorkflowLLMCallCache(scratch / "cache")
+    fingerprint = {"prompt": "stable"}
+    cache_path = cache._cache_path("review", fingerprint)
+    cache_path.write_text('{"truncated":', encoding="utf-8")
+
+    calls = {"count": 0}
+
+    def _fn():
+        calls["count"] += 1
+        return {"answer": "recomputed"}
+
+    assert cache.cached_call(operation="review", fingerprint=fingerprint, fn=_fn) == {
+        "answer": "recomputed"
+    }
+    assert calls["count"] == 1
+    assert json.loads(cache_path.read_text(encoding="utf-8")) == {"answer": "recomputed"}
+
+
+def test_workflow_llm_call_cache_recomputes_unreadable_entry(monkeypatch):
+    scratch = _scratch("llm_cache_unreadable")
+    cache = WorkflowLLMCallCache(scratch / "cache")
+    fingerprint = {"prompt": "unreadable"}
+    cache_path = cache._cache_path("review", fingerprint)
+    cache_path.write_text('{"answer": "old"}', encoding="utf-8")
+
+    original_read_text = Path.read_text
+
+    def fail_for_cache_path(self, *args, **kwargs):
+        if self == cache_path:
+            raise OSError("simulated cache read failure")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_for_cache_path)
+    assert cache.cached_call(
+        operation="review",
+        fingerprint=fingerprint,
+        fn=lambda: {"answer": "recomputed"},
+    ) == {"answer": "recomputed"}
 
 
 def test_provider_settings_use_pydantic_extension_slicing_for_llm_view():
@@ -204,6 +248,76 @@ def test_document_tree_client_rejects_non_list_graph_records():
                 {"graph_payload": {"doc_id": "doc-1", "nodes": {"id": "n1"}, "edges": []}},
             )()
         )
+
+
+def test_document_tree_client_rejects_non_string_edge_references():
+    client = _CaptureHttpClient()
+    persistence_client = DocumentTreeApiPersistenceClient(client=client, transport="test")
+
+    with pytest.raises(TypeError, match="source_ids.*items must be strings"):
+        persistence_client.persist_graph_payload(
+            type(
+                "_Bundle",
+                (),
+                {
+                    "graph_payload": {
+                        "doc_id": "doc-1",
+                        "nodes": [{"id": "n1"}],
+                        "edges": [
+                            {
+                                "id": "e1",
+                                "source_ids": [1],
+                                "target_ids": ["n1"],
+                            }
+                        ],
+                    }
+                },
+            )()
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "record", "message"),
+    [
+        ("nodes", {"id": 1}, "nodes.*record id must be a string"),
+        ("edges", {"id": False}, "edges.*record id must be a string"),
+    ],
+)
+def test_document_tree_client_rejects_non_string_record_ids(field, record, message):
+    client = _CaptureHttpClient()
+    persistence_client = DocumentTreeApiPersistenceClient(client=client, transport="test")
+    graph = {"doc_id": "doc-1", "nodes": [{"id": "n1"}], "edges": []}
+    graph[field] = [record]
+
+    with pytest.raises(TypeError, match=message):
+        persistence_client.persist_graph_payload(type("_Bundle", (), {"graph_payload": graph})())
+
+
+@pytest.mark.parametrize(
+    ("field", "records", "message"),
+    [
+        ("nodes", [{"id": "same"}, {"id": "same"}], "duplicate graph payload node id"),
+        ("edges", [{"id": "same"}, {"id": "same"}], "duplicate graph payload edge id"),
+    ],
+)
+def test_document_tree_client_rejects_duplicate_record_ids(field, records, message):
+    client = _CaptureHttpClient()
+    persistence_client = DocumentTreeApiPersistenceClient(client=client, transport="test")
+    graph = {"doc_id": "doc-1", "nodes": [{"id": "n1"}], "edges": []}
+    graph[field] = records
+
+    with pytest.raises(ValueError, match=message):
+        persistence_client.persist_graph_payload(type("_Bundle", (), {"graph_payload": graph})())
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, -1, "-1", "not-an-int", None])
+def test_untrusted_json_counters_fail_closed(value: object) -> None:
+    assert _json_int(value, default=7) == 7
+
+
+@pytest.mark.parametrize("value", [0, 3, "0", "3"])
+def test_untrusted_json_counters_accept_nonnegative_integers(value: object) -> None:
+    assert _json_int(value, default=7) in {0, 3}
 
 
 @pytest.mark.workflow

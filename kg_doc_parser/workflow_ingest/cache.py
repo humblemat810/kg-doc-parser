@@ -47,13 +47,23 @@ class WorkflowLLMCallCache:
     ) -> T:
         path = self._cache_path(operation, fingerprint)
         if path.exists():
-            emit_probe_event(
-                self.probe,
-                "workflow.llm_cache_hit",
-                operation=operation,
-                cache_path=str(path),
-            )
-            return cast(T, json.loads(path.read_text(encoding="utf-8")))
+            try:
+                cached = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                # A cache entry is an optimization, not parser state. A
+                # truncated or unreadable entry must not abort ingestion.
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            else:
+                emit_probe_event(
+                    self.probe,
+                    "workflow.llm_cache_hit",
+                    operation=operation,
+                    cache_path=str(path),
+                )
+                return cast(T, cached)
         result = fn()
         payload = _jsonable(result)
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

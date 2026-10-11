@@ -4,12 +4,12 @@ import json
 import sys
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _jsonable(value: object) -> object:
@@ -50,10 +50,9 @@ class WorkflowProbe:
         if isinstance(normalized_payload, dict):
             event.update({str(key): value for key, value in normalized_payload.items()})
         line = json.dumps(event, ensure_ascii=True)
-        with self._lock:
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(line)
-                fh.write("\n")
+        with self._lock, self.path.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+            fh.write("\n")
 
     def enable_sys_monitoring(
         self,

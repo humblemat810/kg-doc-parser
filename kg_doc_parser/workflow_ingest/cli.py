@@ -19,8 +19,8 @@ from .page_index import PageIndexMode
 from .probe import WorkflowProbe
 from .providers import WorkflowProviderSettings
 from .runners import (
-    _fallback_parse_semantic_fn,
     WorkflowCommandResult,
+    _fallback_parse_semantic_fn,
     build_legacy_parse_semantic_fn,
     run_demo_harness_workflow,
     run_layerwise_batch_workflow,

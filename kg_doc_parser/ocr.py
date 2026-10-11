@@ -150,15 +150,17 @@ class RawOCRResponse(BaseModel):
     
     @model_validator(mode='after')
     def check_cluster_meaningful_ordering_agreement(self) -> Self:
-        assert bool(self.is_empty_page) ^ (len(self.boxes_2d) > 0), f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters len={len(self.boxes_2d)}"
-        overlap_id = set(i.id for i in self.non_text_objects).union(set(i.id for i in self.boxes_2d))
-        if not len([i.id for i in (self.non_text_objects + self.boxes_2d)]) == len(set(i.id for i in self.non_text_objects + self.boxes_2d)):
-            raise ValueError(f"cluster number from non_text_objects block and ocr text blocks must be ALL distinct. overlap ids {overlap_id}")
-        try:
-            if not (len(self.meaningful_ordering) == len(set(self.meaningful_ordering))): # <= len(self.OCR_text_clusters)):
-                raise ValueError("meaningful_order must cover each text cluster at most once")
-        except Exception as e:
-            raise e
+        if bool(self.is_empty_page) == (len(self.boxes_2d) > 0):
+            raise ValueError(
+                f"is_empty_page value {self.is_empty_page} disagree with boxes_2d "
+                f"len={len(self.boxes_2d)}"
+            )
+        text_ids = {item.id for item in self.boxes_2d}
+        all_ids = [item.id for item in self.non_text_objects] + [item.id for item in self.boxes_2d]
+        if len(all_ids) != len(set(all_ids)):
+            raise ValueError(f"cluster number from non_text_objects block and boxes_2d must be ALL distinct. overlap ids {set(all_ids)}")
+        if len(self.meaningful_ordering) != len(text_ids) or set(self.meaningful_ordering) != text_ids:
+            raise ValueError("meaningful_ordering must cover each text cluster exactly once")
         return self
 
 
@@ -567,7 +569,8 @@ def ocr_single_image(
         else:
             raise( PermissionError(f"output file {outfile_name} exists"))
 
-    assert gemini_key.startswith("AIza") # gcp keys
+    if not gemini_key.startswith("AIza"):
+        raise ValueError("gemini_key must be a Google AI API key")
     model_names = model_retry_priority_list or [# "gemini-2.0-flash", "gemini-2.0-flash-lite", 
                    "gemini-3-flash-preview", 
                    "gemini-2.5-flash", 
@@ -614,7 +617,8 @@ def ocr_single_image(
                         final_resort(draft_responses, messages, page_file_name, model_name, image_file_path, cb)
                 finally:
                     time.sleep(5)
-            assert response_dict, Exception("response_dict unbound")
+            if not response_dict:
+                raise RuntimeError("OCR response was not produced")
         
             response_dict['usage_metadata'] = cb.model_dump() # or usage_metadata
             with open(outfile_name, 'w') as f:
@@ -679,7 +683,8 @@ def refine_table_ocr(
             is_preserved = [fuzz.partial_ratio(text_after, i) >= get_threshold(i) for i in text_before]
             lost_text = [i for i, preserved in zip(sp.OCR_text_clusters, is_preserved) if not preserved]
             ok = all(tf or (tc.text.strip() == "") for tf, tc in zip(is_preserved, sp.OCR_text_clusters))
-            assert ok, f"Some text or punctuations are lost through OCR text grouping, lost text = {str(lost_text)}"
+            if not ok:
+                raise ValueError(f"Some text or punctuations are lost through OCR text grouping, lost text = {lost_text}")
             response_dict['refined_version'] = oc_refined_result.model_dump()
             break
         except Exception as e:

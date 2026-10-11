@@ -54,6 +54,7 @@ Both manual matrix variants end in the same normalized workflow-ingest path.
 
 """
 
+import hashlib
 import importlib.util
 import json
 import logging
@@ -62,14 +63,16 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-import kg_doc_parser.workflow_ingest.ocr_pipeline as ocr_pipeline_module
 import pytest
 from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
 )
+from PIL import Image, ImageDraw
+
+import kg_doc_parser.workflow_ingest.ocr_pipeline as ocr_pipeline_module
 from kg_doc_parser.models import OCRClusterResponse, TextCluster
-from kg_doc_parser.ocr import regen_doc
+from kg_doc_parser.ocr import RawOCRResponse, regen_doc
 from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     OCRImagePayload,
@@ -79,11 +82,11 @@ from kg_doc_parser.workflow_ingest import (
     run_ocr_ingest_workflow,
 )
 from kg_doc_parser.workflow_ingest.ocr_pipeline import (
+    OCRWorkflowStateStore,
     _compute_input_fingerprint,
     _resolve_ocr_source_plan,
 )
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
-from PIL import Image, ImageDraw
 
 pytestmark = [pytest.mark.workflow]
 
@@ -151,6 +154,48 @@ def _fake_ocr_response(page_number: int, text: str) -> OCRClusterResponse:
         scan_quality="high",
         contains_table=False,
     )
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"is_empty_page": True},
+        {"meaningful_ordering": []},
+        {"meaningful_ordering": [99]},
+        {"meaningful_ordering": [0, 0]},
+    ],
+)
+def test_ocr_cluster_response_rejects_inconsistent_empty_or_ordering_state(update: dict[str, object]) -> None:
+    payload = _fake_ocr_response(1, "Alpha").model_dump()
+    payload.update(update)
+
+    with pytest.raises(ValueError, match="(is_empty_page|meaningful_ordering)"):
+        OCRClusterResponse.model_validate(payload)
+
+
+@pytest.mark.ci
+def test_raw_ocr_response_rejects_inconsistent_empty_or_ordering_state() -> None:
+    payload = {
+        "boxes_2d": [{"box_2d": [0, 0, 10, 10], "label": "Alpha", "id": 0}],
+        "non_text_objects": [],
+        "is_empty_page": False,
+        "printed_page_number": None,
+        "meaningful_ordering": [],
+        "page_x_min": 0.0,
+        "page_x_max": 10.0,
+        "page_y_min": 0.0,
+        "page_y_max": 10.0,
+        "estimated_rotation_degrees": 0.0,
+        "incomplete_words_on_edge": False,
+        "incomplete_text": False,
+        "data_loss_likelihood": 0.0,
+        "scan_quality": "high",
+        "contains_table": False,
+    }
+
+    with pytest.raises(ValueError, match="meaningful_ordering"):
+        RawOCRResponse.model_validate(payload)
 
 
 def _grounded_semantic_tree(*, collection, parser_input_dict, parser_source_map):
@@ -356,6 +401,99 @@ def test_prepare_ocr_workflow_input_rebuilds_state_db_from_existing_artifacts() 
     assert calls["count"] == 1
     assert second.state_db_path.exists()
     assert second.reused_pages == [1]
+
+
+@pytest.mark.ci
+def test_ocr_state_rebuild_ignores_corrupt_progress_metadata() -> None:
+    scratch = _scratch("ocr_corrupt_progress")
+    rendered_dir = scratch / "rendered"
+    legacy_dir = scratch / "legacy"
+    rendered_dir.mkdir()
+    legacy_dir.mkdir()
+    rendered = rendered_dir / "page_1.png"
+    rendered.write_bytes(b"authoritative rendered page")
+    (legacy_dir / "page_1.json").write_text("{}", encoding="utf-8")
+    progress_path = scratch / "ocr-progress.json"
+    progress_path.write_text("{truncated", encoding="utf-8")
+
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    assert store.rebuild_from_artifacts(
+        document_id="corrupt-progress-doc",
+        title="Corrupt Progress",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+        rendered_dir=rendered_dir,
+        legacy_dir=legacy_dir,
+        progress_path=progress_path,
+    )
+
+    state = store.get_page_state(
+        document_id="corrupt-progress-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None
+    assert state.content_hash == hashlib.sha256(rendered.read_bytes()).hexdigest()
+
+
+@pytest.mark.ci
+def test_ocr_state_rebuild_rejects_non_digest_progress_hash() -> None:
+    scratch = _scratch("ocr_invalid_progress_hash")
+    rendered_dir = scratch / "rendered"
+    legacy_dir = scratch / "legacy"
+    rendered_dir.mkdir()
+    legacy_dir.mkdir()
+    rendered = rendered_dir / "page_1.png"
+    rendered.write_bytes(b"authoritative rendered page")
+    (legacy_dir / "page_1.json").write_text("{}", encoding="utf-8")
+    progress_path = scratch / "ocr-progress.json"
+    progress_path.write_text(
+        json.dumps({"pages": {"1": {"image_sha256": "pretend-hash"}}}),
+        encoding="utf-8",
+    )
+
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.rebuild_from_artifacts(
+        document_id="invalid-progress-hash-doc",
+        title="Invalid Progress Hash",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+        rendered_dir=rendered_dir,
+        legacy_dir=legacy_dir,
+        progress_path=progress_path,
+    )
+
+    state = store.get_page_state(
+        document_id="invalid-progress-hash-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None
+    assert state.content_hash == hashlib.sha256(rendered.read_bytes()).hexdigest()
+
+
+@pytest.mark.ci
+def test_ocr_completion_requires_exact_expected_page_numbers() -> None:
+    scratch = _scratch("ocr_completion_page_set")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="page-set-doc",
+        title="Page Set",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO page_state (
+                document_id, page_number, stage, attempt_count, status,
+                content_hash, artifact_path, last_error, last_model, last_attempted_ts
+            ) VALUES (?, ?, 'ocr', 1, 'completed', ?, NULL, NULL, NULL, ?)
+            """,
+            ("page-set-doc", 999, "hash", 0.0),
+        )
+
+    assert not store.refresh_document_completion(document_id="page-set-doc")
+    assert not store.read_document_completed(document_id="page-set-doc")
 
 
 @pytest.mark.ci
@@ -611,6 +749,109 @@ def test_prepare_ocr_workflow_input_keeps_document_fingerprint_stable_in_state_d
         ).fetchone()
     assert row2 is not None
     assert row2[0] == expected_fingerprint
+
+
+@pytest.mark.ci
+def test_ocr_state_fingerprint_change_discards_stale_page_and_model_state() -> None:
+    scratch = _scratch("ocr_fingerprint_invalidation")
+    artifact = scratch / "page-1.json"
+    artifact.write_text("{}", encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="fingerprint-invalidation-doc",
+        title="Fingerprint Invalidation",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint-a",
+    )
+    attempt = store.record_attempt(
+        document_id="fingerprint-invalidation-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-a",
+        model_name="model-a",
+        artifact_path=artifact,
+    )
+    store.record_page_completed(
+        document_id="fingerprint-invalidation-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-a",
+        artifact_path=artifact,
+        model_name="model-a",
+        attempt_index=attempt,
+    )
+    assert store.get_page_state(
+        document_id="fingerprint-invalidation-doc", page_number=1, stage="ocr"
+    ) is not None
+    assert store.list_model_attempts(
+        document_id="fingerprint-invalidation-doc", page_number=1
+    )
+
+    store.ensure_document(
+        document_id="fingerprint-invalidation-doc",
+        title="Fingerprint Invalidation",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint-b",
+    )
+
+    assert store.get_page_state(
+        document_id="fingerprint-invalidation-doc", page_number=1, stage="ocr"
+    ) is None
+    assert store.list_model_attempts(
+        document_id="fingerprint-invalidation-doc", page_number=1
+    ) == []
+    assert not store.read_document_completed(document_id="fingerprint-invalidation-doc")
+
+
+@pytest.mark.ci
+def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
+    scratch = _scratch("ocr_missing_artifact")
+    artifact = scratch / "page-1.json"
+    artifact.write_text("{}", encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="missing-artifact-doc",
+        title="Missing Artifact",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="missing-artifact-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        model_name="model",
+        artifact_path=artifact,
+    )
+    store.record_page_completed(
+        document_id="missing-artifact-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+        model_name="model",
+        attempt_index=attempt,
+    )
+    assert store.should_skip_page(
+        document_id="missing-artifact-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+    )
+
+    artifact.unlink()
+
+    assert not store.should_skip_page(
+        document_id="missing-artifact-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+    )
 
 
 # Manual examples with explicit parametrized node ids:

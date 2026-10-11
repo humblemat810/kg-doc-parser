@@ -21,7 +21,6 @@ from uuid import uuid4
 
 from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Edge, Node
-from .serialization import JsonValue
 from kogwistar.runtime.models import StepRunResult
 
 from .design import (
@@ -37,6 +36,7 @@ from .models import (
     WorkflowIngestInput,
 )
 from .probe import WorkflowProbe, emit_probe_event
+from .serialization import JsonValue
 
 
 class UnsupportedClientOperation(RuntimeError):
@@ -146,23 +146,33 @@ def _string_list(value: object, *, field_name: str) -> list[str]:
         return []
     if not isinstance(value, (list, tuple)):
         raise TypeError(f"graph payload field {field_name!r} must be a list")
-    return [str(item) for item in value]
+    if any(not isinstance(item, str) for item in value):
+        raise TypeError(f"graph payload field {field_name!r} items must be strings")
+    return list(value)
+
+
+def _optional_record_id(record: Mapping[str, object], *, field_name: str) -> str:
+    value = record.get("id")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise TypeError(f"graph payload {field_name!r} record id must be a string")
+    return value
 
 
 def _json_int(value: object, default: int = 0) -> int:
     """Read an integer counter from an untrusted JSON response."""
 
     if isinstance(value, bool):
-        return int(value)
+        return default
     if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
+        return value if value >= 0 else default
     if isinstance(value, str):
         try:
-            return int(value)
+            parsed = int(value)
         except ValueError:
             return default
+        return parsed if parsed >= 0 else default
     return default
 
 
@@ -174,17 +184,21 @@ def _to_temp_id_graph_payload(graph_payload: Mapping[str, object]) -> JsonObject
 
     node_id_map: dict[str, str] = {}
     for idx, node in enumerate(nodes, start=1):
-        original_id = str(node.get("id") or "")
+        original_id = _optional_record_id(node, field_name="nodes")
         temp_id = f"nn:{idx}"
         if original_id:
+            if original_id in node_id_map:
+                raise ValueError(f"duplicate graph payload node id: {original_id!r}")
             node_id_map[original_id] = temp_id
         node["id"] = temp_id
 
     edge_id_map: dict[str, str] = {}
     for idx, edge in enumerate(edges, start=1):
-        original_id = str(edge.get("id") or "")
+        original_id = _optional_record_id(edge, field_name="edges")
         temp_id = f"ne:{idx}"
         if original_id:
+            if original_id in edge_id_map:
+                raise ValueError(f"duplicate graph payload edge id: {original_id!r}")
             edge_id_map[original_id] = temp_id
         edge["id"] = temp_id
 

@@ -1511,17 +1511,17 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.5"
+version = "0.6.7"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "kogwistar-0.6.5-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:69e44bc20d31fa0849916307d104be6381d1ae6741733d042a503cfbc9ce1181"},
-    {file = "kogwistar-0.6.5-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:b8c9318a0c4b4dedbbb5226f712282c68d78f2c2e231e571254d5c7b49ce94da"},
-    {file = "kogwistar-0.6.5-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:bbf7b798c4542387848263b51d839c0a351edca7f4c63329d59de1ac4ab55f26"},
-    {file = "kogwistar-0.6.5-cp312-abi3-win_amd64.whl", hash = "sha256:f4df4eabecc27e8f750ab316f453d0aeb5e77fc44b838e2101cf02933dd308f4"},
-    {file = "kogwistar-0.6.5.tar.gz", hash = "sha256:cf469dc0b46e97d114dae089113cc0732a91d9b7fb8b017b992fc0ec0cfc5664"},
+    {file = "kogwistar-0.6.7-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:1222b38beee116812482b7ac8c7e67f2d537b9717db804efa112dc4dfbff6ff1"},
+    {file = "kogwistar-0.6.7-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:4a7ddf8080eecca35a1739ab4c0398d227b40bf73192c0c07ac6464ca5de8abf"},
+    {file = "kogwistar-0.6.7-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:f26db76d9256514f10df41d70a899d0281ab0badba2881aa19d5a8a36335b711"},
+    {file = "kogwistar-0.6.7-cp312-abi3-win_amd64.whl", hash = "sha256:3bf66496c8fa99f8cefdfdecfdd0e23a716c2f47f580b98c265b3bfff1b9b0f5"},
+    {file = "kogwistar-0.6.7.tar.gz", hash = "sha256:1b5bf9af6739aa018303dafefa04aba8e44eea1efcb1eec52950e201f16ca255"},
 ]
 
 [package.dependencies]
@@ -4384,4 +4384,4 @@ vertex = ["langchain-google-vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "fbc546b1db77a27fbcfd086f24ad41daf667718cb6c35d51ce0296623a7f207a"
+content-hash = "7da24e0b54538fa24e40a254f343101a7f4c6534477ad51cfe87cb83163900cb"

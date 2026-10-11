@@ -118,15 +118,17 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
 
     @model_validator(mode='after')
     def check_cluster_meaningful_ordering_agreement(self) -> Self:
-        assert bool(self.is_empty_page) ^ (len(self.OCR_text_clusters) > 0), f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters len={len(self.OCR_text_clusters)}"
-        overlap_id = set(i.cluster_number for i in self.OCR_text_clusters).intersection(set(i.cluster_number for i in self.non_text_objects))
+        if bool(self.is_empty_page) == (len(self.OCR_text_clusters) > 0):
+            raise ValueError(
+                f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters "
+                f"len={len(self.OCR_text_clusters)}"
+            )
+        text_ids = {item.cluster_number for item in self.OCR_text_clusters}
+        overlap_id = text_ids.intersection({item.cluster_number for item in self.non_text_objects})
         if overlap_id:
             raise ValueError(f"cluster number from non_text_objects block and ocr text blocks must be ALL distinct. Overlapped ids: {list(overlap_id)}")
-        try:
-            if not (len(self.meaningful_ordering) == len(set(self.meaningful_ordering))): # <= len(self.OCR_text_clusters)):
-                raise ValueError("meaningful_order must cover each text cluster at most once")
-        except Exception as e:
-            raise e
+        if len(self.meaningful_ordering) != len(text_ids) or set(self.meaningful_ordering) != text_ids:
+            raise ValueError("meaningful_ordering must cover each text cluster exactly once")
         return self
 
     
@@ -189,8 +191,9 @@ class SplitPage(OCRClusterResponseBc):
         non_ocr_cluster = target.non_text_objects
         if target.contains_table:
             id_sorted_text_cluster = []
-            cluster_numbers = (i.cluster_number for i in ocr_cluster)
-            assert len(set(cluster_numbers)) == len(ocr_cluster)
+            cluster_numbers = {i.cluster_number for i in ocr_cluster}
+            if len(cluster_numbers) != len(ocr_cluster):
+                raise ValueError("OCR cluster numbers must be unique")
             cluster_lookup_by_number = {i.cluster_number : i for i in (ocr_cluster + non_ocr_cluster#+ target.signature_blocks
                                                                        )}
             for i in target.meaningful_ordering:
@@ -200,7 +203,7 @@ class SplitPage(OCRClusterResponseBc):
                 cluster_dump: JsonObject = c_p.model_dump()
                 cluster_dump.pop("cluster_number")
                 id_sorted_text_cluster.append(cluster_dump)
-            others = (set(cluster_numbers) - set(target.meaningful_ordering))
+            others = cluster_numbers - set(target.meaningful_ordering)
             for i in others:
                 cluster_dump: JsonObject
                 cluster_dump = cluster_lookup_by_number[i].model_dump()
@@ -224,7 +227,8 @@ class SplitPage(OCRClusterResponseBc):
             # expected_next = min(ocr_clus_nums + sig_clus_nums)
             if ocr_clus_nums:
                 start_num = min(ocr_clus_nums + non_clus_nums)
-                assert start_num in [0, 1], "only allow 0-indexed based or 1-indexed based cluster numbers"
+                if start_num not in [0, 1]:
+                    raise ValueError("only allow 0-indexed based or 1-indexed based cluster numbers")
                 expected_next = start_num
                 while expected_next < start_num + (len(ocr_clus_nums) + len(non_clus_nums)):
                     if (i_ocr <len(ocr_cluster)) and expected_next == ocr_cluster[i_ocr].cluster_number:
@@ -239,7 +243,8 @@ class SplitPage(OCRClusterResponseBc):
 
             
             id_sorted_text_cluster = sorted(ocr_cluster, key=lambda x : x.cluster_number )
-            assert len(id_sorted_text_cluster) == len(set(i.cluster_number for i in id_sorted_text_cluster))
+            if len(id_sorted_text_cluster) != len({i.cluster_number for i in id_sorted_text_cluster}):
+                raise ValueError("OCR cluster numbers must be unique")
             is_normal = True
             shift = 0 # try zero indexing sanity
             c : TextCluster #| TextCluster_yolo_bb
@@ -257,7 +262,8 @@ class SplitPage(OCRClusterResponseBc):
                         is_normal = False
                         break
             # sig_num = set([i.cluster_number for i in self.signature_blocks])
-            assert set(self.meaningful_ordering) <= set(i.cluster_number for i in (self.OCR_text_clusters))
+            if not set(self.meaningful_ordering) <= {i.cluster_number for i in self.OCR_text_clusters}:
+                raise ValueError("meaningful_ordering references an unknown OCR cluster")
             if is_normal:
                 # is sorted list where index is order + shift
                 texts = '\n'.join(id_sorted_text_cluster[i+shift].text for i in self.meaningful_ordering)

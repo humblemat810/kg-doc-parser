@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Literal, Protocol, cast
 
-from .serialization import JsonValue
 from pydantic import BaseModel, Field, model_validator
 
 from ..llm_structured_output import StructuredOutputRunnable
@@ -19,6 +18,7 @@ from .providers import (
     build_chat_model_for_role,
     invoke_with_timeout,
 )
+from .serialization import JsonValue
 
 ParseStrategy = Literal["layer_excerpt", "layer_boundary", "page_index"]
 ParseStrategyRequest = Literal["auto", "layer_excerpt", "layer_boundary", "page_index"]

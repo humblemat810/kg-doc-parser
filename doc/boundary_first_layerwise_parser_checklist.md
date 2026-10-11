@@ -28,6 +28,35 @@ backend should be able to derive that result from validated cutpoints:
 - [x] Ensure cutpoints are unique, sorted, and parent-scoped.
 - [x] Allow partial acceptance when some proposed cutpoints are ambiguous.
 - [x] Keep source spans authoritative and summaries advisory.
+- [x] Treat malformed source records and non-string source text as unavailable;
+  never stringify them into prompts, pointer validation, coverage, or persisted
+  evidence.
+- [x] Require OCR page identities to be positive, unambiguous integers and
+  reject duplicate page numbers during normalization.
+- [x] Enforce OCR empty-page, cross-modality identity, and complete ordering
+  invariants with explicit validation rather than `assert`.
+- [x] Keep legacy OCR export and source-preservation gates active under
+  optimized Python; reject malformed input with explicit exceptions.
+- [x] Reject duplicate collection identities within one request and duplicate
+  or blank embedding-space labels within one collection.
+- [x] Reject non-finite, negative, or inverted normalized bounding-box
+  coordinates at the model boundary, not only in the OCR adapter.
+- [x] Reject blank source-unit embedding-space labels and whitespace-only
+  non-text source URIs.
+- [x] Validate diagnostic intervals and review counters with strict integer
+  bounds before they enter workflow state or exported reports.
+- [x] Treat human-readable OCR progress metadata as advisory; malformed JSON
+  or non-SHA-256 page hashes must not override SQLite/artifact evidence.
+- [x] Mark OCR documents complete only when the completed page-number set is
+  exactly the expected `1..total_pages` set, not merely when row counts match.
+- [x] Use the same reserved-cluster allocator when producing parser input and
+  authoritative source-map identities; explicit IDs must not shift implicit
+  IDs during round-trip conversion.
+- [x] Persist the allocated cluster identity in each authoritative source
+  record, including when the input omitted a cluster number.
+- [x] Bind fresh layered parse sessions to a deterministic source-map
+  fingerprint and reject replacement source text on resume; keep legacy
+  sessions readable without claiming the new guard.
 
 ## Non-Goals
 
@@ -110,6 +139,16 @@ reason: str
 - [x] Avoid empty child spans.
 - [x] Preserve parent meaning collectively by covering the parent span or explicitly marking gaps.
 - [x] Add tests proving assembled children have exact source pointers.
+- [x] Document the implicit repair invariant: successful repair must resolve
+  one same-cluster location and persist only the exact source-derived slice.
+- [x] Treat provider/source disagreement as advisory transcription loss, not
+  as two co-authoritative evidence values.
+- [x] Keep locator repair and evidence disagreement as separate outcomes.
+- [x] Reject malformed transport identifiers and counters instead of coercing
+  them into valid-looking parser state.
+- [x] Bind persisted pointers to a source revision or content hash before
+  allowing cross-run repair against replacement source text for fresh layered
+  sessions; legacy sessions without a fingerprint remain compatibility-only.
 
 ## Slice 6: Partial Acceptance And Refinement
 

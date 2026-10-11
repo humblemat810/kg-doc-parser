@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable, Mapping
 from typing import Literal, Protocol, TypedDict, cast
 
-from .serialization import JsonValue
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import (
     RunFailure,
@@ -71,6 +71,7 @@ from .semantics import (
     correct_and_validate_pointer,
     semantic_tree_to_kge_payload,
 )
+from .serialization import JsonValue
 from .strategy import (
     ParseStrategy,
     StrategyTriageFn,
@@ -86,8 +87,8 @@ def _strategy_attempt(state_view: Mapping[str, object], strategy: str) -> int:
     if not isinstance(raw, dict):
         return 1
     value = raw.get(strategy)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return int(value)
+    if type(value) is int and value >= 0:
+        return value
     return 1
 
 
@@ -123,7 +124,7 @@ def _correct_parser_pointer(
     text_source_map: dict[str, dict[str, JsonValue]] = {}
     for cluster_id, payload in parser_source_map.items():
         text = payload.get("text", "")
-        text_source_map[cluster_id] = {"text": text if isinstance(text, str) else str(text)}
+        text_source_map[cluster_id] = {"text": text if isinstance(text, str) else ""}
     return correct_and_validate_pointer(pointer, text_source_map)
 
 
@@ -144,10 +145,8 @@ def _state_list(value: object) -> list[object]:
 def _state_int(value: object, default: int = 0) -> int:
     if isinstance(value, bool):
         return default
-    if isinstance(value, int):
+    if type(value) is int and value >= 0:
         return value
-    if isinstance(value, float):
-        return int(value)
     return default
 
 
@@ -155,7 +154,9 @@ def _state_float(value: object, default: float = 0.0) -> float:
     if isinstance(value, bool):
         return default
     if isinstance(value, (int, float)):
-        return float(value)
+        converted = float(value)
+        if math.isfinite(converted):
+            return converted
     return default
 
 
@@ -301,11 +302,11 @@ def _log_runtime_progress(*, step_name: str, state_view: dict[str, object]) -> N
     parse_session = state_view.get("parse_session")
     if not isinstance(current_layer_context, dict) or not isinstance(parse_session, dict):
         return
-    depth = int(current_layer_context.get("depth", 0))
-    max_depth = int(parse_session.get("max_depth", 10) or 10)
+    depth = _state_int(current_layer_context.get("depth"), 0)
+    max_depth = _state_int(parse_session.get("max_depth"), 10)
     layer_num = depth + 1
-    retry_count = int(current_layer_context.get("retry_count", 0))
-    max_retries = int(current_layer_context.get("max_retries", 3) or 3)
+    retry_count = _state_int(current_layer_context.get("retry_count"), 0)
+    max_retries = _state_int(current_layer_context.get("max_retries"), 3)
     strategy = str(current_layer_context.get("split_strategy", "excerpt_first"))
     fallback_strategy = str(parse_session.get("fallback_split_strategy", "boundary_first"))
     strategy_idx = 2 if strategy == fallback_strategy else 1
@@ -519,7 +520,8 @@ def register_layerwise_parser_steps(
             excerpts = []
             for pointer in pointers[:3]:
                 source = parser_source_map.get(pointer.source_cluster_id, {})
-                source_text = str(source.get("text", ""))
+                raw_source_text = source.get("text") if isinstance(source, dict) else None
+                source_text = raw_source_text if isinstance(raw_source_text, str) else ""
                 end = len(source_text) if pointer.end_char == -1 else pointer.end_char + 1
                 excerpts.append(source_text[max(0, pointer.start_char):end][:500])
             parent_context.append(

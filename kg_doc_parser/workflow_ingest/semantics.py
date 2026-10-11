@@ -5,26 +5,41 @@ from collections.abc import Mapping
 from typing import Literal, cast
 
 from kogwistar.id_provider import stable_id
-from .serialization import JsonValue
 from pydantic import BaseModel, Field, model_validator
+
+from .serialization import JsonValue
 
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", "", text or "")
 
 
-def _source_text(source: Mapping[str, object] | None) -> str:
-    if source is None:
+def _source_text(source: object) -> str:
+    if not isinstance(source, Mapping):
         return ""
     value = source.get("text", "")
-    return value if isinstance(value, str) else str(value or "")
+    return value if isinstance(value, str) else ""
+
+
+def _span_bounds(
+    text: str,
+    start_char: object,
+    end_char: object,
+) -> tuple[int, int] | None:
+    """Return validated inclusive/exclusive bounds without coercing input."""
+    if type(start_char) is not int or type(end_char) is not int:
+        return None
+    end_exclusive = len(text) if end_char == -1 else end_char + 1
+    if not 0 <= start_char < end_exclusive <= len(text):
+        return None
+    return start_char, end_exclusive
 
 
 class HydratedTextPointer(BaseModel):
-    source_cluster_id: str
-    start_char: int
-    end_char: int
-    verbatim_text: str
+    source_cluster_id: str = Field(strict=True)
+    start_char: int = Field(strict=True)
+    end_char: int = Field(strict=True)
+    verbatim_text: str = Field(strict=True)
 
 
 class SemanticNode(BaseModel):
@@ -67,27 +82,58 @@ class SemanticNode(BaseModel):
 SemanticNode.model_rebuild()
 
 
-def correct_and_validate_pointer(
+def hydrate_pointer_from_offsets(
     pointer: HydratedTextPointer,
     source_map: Mapping[str, Mapping[str, object]],
 ) -> HydratedTextPointer | None:
+    """Hydrate a provider pointer from authoritative source offsets.
+
+    This is intentionally separate from repair.  LLM review payloads may carry
+    a lossy transcription, but valid offsets still identify the authoritative
+    source span.
+    """
+
     source = source_map.get(pointer.source_cluster_id)
     if source is None:
         return None
     text = _source_text(source)
-    end_exclusive = len(text) if pointer.end_char == -1 else pointer.end_char + 1
-    actual = text[max(pointer.start_char, 0):max(end_exclusive, 0)]
-    if _normalize_text(actual) == _normalize_text(pointer.verbatim_text):
-        return pointer
-    if actual and (
-        _normalize_text(actual) in _normalize_text(pointer.verbatim_text)
-        or _normalize_text(pointer.verbatim_text) in _normalize_text(actual)
-    ):
-        return HydratedTextPointer(
-            source_cluster_id=pointer.source_cluster_id,
-            start_char=max(pointer.start_char, 0),
-            end_char=max(end_exclusive - 1, -1),
-            verbatim_text=actual,
+    bounds = _span_bounds(text, pointer.start_char, pointer.end_char)
+    if bounds is None:
+        return None
+    start_char, end_exclusive = bounds
+    return pointer.model_copy(
+        update={
+            "end_char": end_exclusive - 1,
+            "verbatim_text": text[start_char:end_exclusive],
+        }
+    )
+
+
+def correct_and_validate_pointer(
+    pointer: HydratedTextPointer,
+    source_map: Mapping[str, Mapping[str, object]],
+) -> HydratedTextPointer | None:
+    """Repair a pointer only when the final evidence is source-authoritative.
+
+    A valid range is authoritative even when the provider's transcription
+    differs: the returned text is rehydrated from that source slice. Invalid
+    ranges may be relocated only through one exact, unambiguous text
+    occurrence. All successful results are rehydrated from the source slice.
+    """
+
+    source = source_map.get(pointer.source_cluster_id)
+    if source is None:
+        return None
+    text = _source_text(source)
+    bounds = _span_bounds(text, pointer.start_char, pointer.end_char)
+    if bounds is not None:
+        start_char, end_exclusive = bounds
+        actual = text[start_char:end_exclusive]
+        return pointer.model_copy(
+            update={
+                "end_char": end_exclusive - 1,
+                "verbatim_text": actual,
+            }
         )
 
     occurrences = []
@@ -101,7 +147,9 @@ def correct_and_validate_pointer(
         start = idx + max(1, len(needle))
     if not occurrences:
         return None
-    best_start, best_end = min(occurrences, key=lambda item: abs(item[0] - pointer.start_char))
+    if len(occurrences) != 1:
+        return None
+    best_start, best_end = occurrences[0]
     return HydratedTextPointer(
         source_cluster_id=pointer.source_cluster_id,
         start_char=best_start,
@@ -126,6 +174,8 @@ def pointer_source_validation_error(
     if source is None:
         return f"unknown source cluster {pointer.source_cluster_id!r}"
     text = _source_text(source)
+    if type(pointer.start_char) is not int or type(pointer.end_char) is not int:
+        return "pointer bounds must be integers"
     if pointer.start_char < 0:
         return "pointer start is negative"
     end = len(text) - 1 if pointer.end_char == -1 else pointer.end_char
@@ -134,7 +184,7 @@ def pointer_source_validation_error(
     if end >= len(text):
         return "pointer exceeds source bounds"
     actual = text[pointer.start_char : end + 1]
-    if _normalize_text(actual) != _normalize_text(pointer.verbatim_text):
+    if actual != pointer.verbatim_text:
         return "pointer excerpt does not match authoritative source slice"
     return None
 
@@ -154,6 +204,8 @@ def compute_pointer_coverage(
     def walk(node: SemanticNode) -> None:
         if node.node_type != "DOCUMENT_ROOT":
             for ptr in node.total_content_pointers:
+                if pointer_source_validation_error(ptr, source_map) is not None:
+                    continue
                 end = ptr.end_char
                 if end == -1:
                     end = max(
@@ -172,7 +224,7 @@ def compute_pointer_coverage(
     # cluster with no pointers.  Otherwise an omitted document unit can make
     # an incomplete tree look fully covered.
     for cluster_id, record in source_map.items():
-        text = str(record.get("text", "") or "")
+        text = _source_text(record)
         meaningful_total = _meaningful_length(text)
         if meaningful_total == 0:
             per_cluster[cluster_id] = 1.0
@@ -235,7 +287,7 @@ def compute_terminal_content_coverage(
                 if error is not None:
                     invalid_pointers.append({"node_id": node_id, "error": error})
                     continue
-                source_text = str(source_map[pointer.source_cluster_id].get("text", "") or "")
+                source_text = _source_text(source_map[pointer.source_cluster_id])
                 end = len(source_text) - 1 if pointer.end_char == -1 else pointer.end_char
                 owners = ownership.setdefault(pointer.source_cluster_id, {})
                 for position in range(pointer.start_char, end + 1):
@@ -252,7 +304,7 @@ def compute_terminal_content_coverage(
     covered_nonws = 0
 
     for cluster_id, record in source_map.items():
-        text = str(record.get("text", "") or "")
+        text = _source_text(record)
         meaningful_positions = [index for index, char in enumerate(text) if not char.isspace()]
         total_nonws += len(meaningful_positions)
         owners = ownership.get(cluster_id, {})
@@ -331,7 +383,11 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
                 "insertion_method": "workflow_ingest",
                 "page_number": 1,
                 "start_char": p.start_char,
-                "end_char": max(p.end_char + 1, p.start_char + max(len(p.verbatim_text), 1)),
+                "end_char": (
+                    p.start_char + len(p.verbatim_text)
+                    if p.end_char == -1
+                    else p.end_char + 1
+                ),
                 "excerpt": p.verbatim_text,
                 "context_before": "",
                 "context_after": "",

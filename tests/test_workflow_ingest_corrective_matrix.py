@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import kg_doc_parser.workflow_ingest.handlers as handlers_module
-import kg_doc_parser.workflow_ingest.page_index as page_index_module
 import pytest
 from _kogwistar_test_helpers import build_workflow_engine_triplet
+
+import kg_doc_parser.workflow_ingest.handlers as handlers_module
+import kg_doc_parser.workflow_ingest.page_index as page_index_module
 from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
     BlockAssignmentBatch,

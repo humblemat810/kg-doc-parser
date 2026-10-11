@@ -3,11 +3,20 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
 )
-from kg_doc_parser.workflow_ingest.layerwise_llm import build_layerwise_llm_callbacks
+from kg_doc_parser.workflow_ingest.layerwise_llm import (
+    _fallback_layer_result,
+    _make_boundary_summary,
+    _pointer_excerpt,
+    _pointer_text,
+    _proposal_validation_reason,
+    _source_map_excerpt,
+    build_layerwise_llm_callbacks,
+)
 from kg_doc_parser.workflow_ingest.models import (
     BoundaryCutpoint,
     BoundaryReviewBatch,
@@ -17,12 +26,16 @@ from kg_doc_parser.workflow_ingest.models import (
     LayerChildCandidate,
     LLMBoundaryProposal,
     LLMBoundaryProposalBatch,
+    LLMCurrentLayerReview,
     ParseSessionState,
 )
 from kg_doc_parser.workflow_ingest.parser_core import commit_layer_children
 from kg_doc_parser.workflow_ingest.semantics import (
     HydratedTextPointer,
     SemanticNode,
+    correct_and_validate_pointer,
+    hydrate_pointer_from_offsets,
+    pointer_source_validation_error,
     semantic_tree_to_kge_payload,
 )
 
@@ -154,6 +167,121 @@ def _boundary_cutpoint_payload(
     if confidence is not None:
         payload["confidence"] = confidence
     return payload
+
+
+@pytest.mark.ci
+def test_source_prompt_helpers_fail_closed_for_malformed_records() -> None:
+    source_map = {
+        "missing": None,
+        "non_text": {"text": 123},
+        "valid": {"text": "Authoritative"},
+    }
+    pointer = {
+        "source_cluster_id": "non_text",
+        "start_char": 0,
+        "end_char": -1,
+        "verbatim_text": "provider supplied text",
+    }
+
+    assert _source_map_excerpt(source_map)["missing"]["text"] == ""
+    assert _source_map_excerpt(source_map)["non_text"]["text"] == ""
+    assert _pointer_text(pointer, parser_source_map=source_map) == ""
+    assert _pointer_excerpt(pointer, parser_source_map=source_map)["verbatim_text"] == ""
+    summary = _make_boundary_summary(
+        parent_node_id="root",
+        source_cluster_id="non_text",
+        start_char=0,
+        end_char=4,
+        parser_source_map=source_map,
+        boundary_kind="paragraph",
+    )
+    assert summary.exact_text == ""
+    assert summary.summary_text == ""
+
+
+@pytest.mark.ci
+def test_pointer_prompt_text_resolves_full_source_sentinel_from_authority() -> None:
+    pointer = {
+        "source_cluster_id": "valid",
+        "start_char": 3,
+        "end_char": -1,
+        "verbatim_text": "wrong provider transcription",
+    }
+
+    assert _pointer_text(pointer, parser_source_map={"valid": {"text": ":: Authoritative"}}) == "Authoritative"
+
+
+@pytest.mark.ci
+def test_fallback_layer_skips_malformed_source_records() -> None:
+    result = _fallback_layer_result(
+        current_layer_context=_context(),
+        parser_source_map={
+            "bad-none": None,
+            "bad-value": {"text": 42},
+            "valid": {"text": "# Valid heading\nbody"},
+        },
+    )
+
+    assert len(result.children) == 1
+    assert result.children[0].total_content_pointers[0].source_cluster_id == "valid"
+    assert result.children[0].total_content_pointers[0].verbatim_text == "# Valid heading\nbody"
+
+
+@pytest.mark.ci
+def test_proposal_validation_does_not_stringify_malformed_source_text() -> None:
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["root"],
+        parent_titles=["Root"],
+        parent_content_pointers_by_id={
+            "root": [
+                HydratedTextPointer(
+                    source_cluster_id="bad",
+                    start_char=0,
+                    end_char=2,
+                    verbatim_text="123",
+                )
+            ]
+        },
+    )
+    result = CurrentLayerResult(
+        children=[
+            LayerChildCandidate(
+                node_id="child-a",
+                parent_node_id="root",
+                title="A",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id="bad",
+                        start_char=0,
+                        end_char=0,
+                        verbatim_text="1",
+                    )
+                ],
+            ),
+            LayerChildCandidate(
+                node_id="child-b",
+                parent_node_id="root",
+                title="B",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id="bad",
+                        start_char=1,
+                        end_char=2,
+                        verbatim_text="23",
+                    )
+                ],
+            ),
+        ]
+    )
+
+    assert _proposal_validation_reason(
+        parsed=result,
+        current_layer_context=context,
+        parser_source_map={"bad": {"text": 123}},
+    ) == "proposal pointer used a character span outside the source text"
 
 
 @pytest.mark.ci
@@ -486,8 +614,9 @@ def test_workflow_provider_settings_from_env_enables_boundary_mode(monkeypatch: 
 
 
 def test_structured_invoke_returns_typed_pydantic_model():
-    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
     from pydantic import BaseModel
+
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
 
     class _Schema(BaseModel):
         value: int
@@ -503,8 +632,9 @@ def test_structured_invoke_returns_typed_pydantic_model():
 
 
 def test_structured_invoke_classifies_parse_failures_for_observability():
-    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
     from pydantic import BaseModel
+
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
 
     class _Schema(BaseModel):
         value: int
@@ -1640,7 +1770,9 @@ def test_propose_layer_fn_rejects_child_pointer_outside_parent_span(monkeypatch:
     assert "parent span" in result.metadata["proposal_failure_reason"]
 
 
-def test_propose_layer_fn_rejects_child_pointer_verbatim_mismatch(monkeypatch: pytest.MonkeyPatch):
+def test_propose_layer_fn_rehydrates_child_pointer_from_offsets(
+    monkeypatch: pytest.MonkeyPatch,
+):
     fake_model = _FakeChatModel(
         {
             "parsed": {
@@ -1696,5 +1828,78 @@ def test_propose_layer_fn_rejects_child_pointer_verbatim_mismatch(monkeypatch: p
         parse_session=_parse_session(),
     )
 
-    assert result.metadata["proposal_source"] == "fallback"
-    assert "verbatim_text" in result.metadata["proposal_failure_reason"]
+    assert result.metadata["proposal_source"] == "llm"
+    pointers = [pointer for child in result.children for pointer in child.total_content_pointers]
+    assert [pointer.verbatim_text for pointer in pointers] == ["Alpha ", "Beta"]
+
+
+@pytest.mark.parametrize(
+    "model_text",
+    [
+        "Status: SDK\\_UNINITIALIZED | See [the docs] for details.",
+        "Status: SDK\\_UNINITIALIZED | See the docs for details.",
+        "Status: SDK\\_UNINITIALIZED | S'ee \\[the docs\\] for details.",
+    ],
+)
+def test_pointer_offsets_rehydrate_authoritative_source_text(model_text: str):
+    source = "# SDK\n\nStatus: SDK\\_UNINITIALIZED | See \\[the docs\\] for details.\n"
+    target = "Status: SDK\\_UNINITIALIZED | See \\[the docs\\] for details."
+    start = source.index(target)
+    pointer = HydratedTextPointer(
+        source_cluster_id="doc|p1_t0",
+        start_char=start,
+        end_char=start + len(target) - 1,
+        verbatim_text=model_text,
+    )
+
+    hydrated = hydrate_pointer_from_offsets(
+        pointer,
+        {"doc|p1_t0": {"text": source}},
+    )
+
+    assert hydrated is not None
+    assert hydrated.verbatim_text == target
+    assert pointer_source_validation_error(
+        hydrated,
+        {"doc|p1_t0": {"text": source}},
+    ) is None
+
+
+def test_pointer_repair_rehydrates_conflicting_valid_offsets():
+    source = "Alpha clause."
+    pointer = HydratedTextPointer(
+        source_cluster_id="doc|p1_t0",
+        start_char=0,
+        end_char=len(source) - 1,
+        verbatim_text="Beta clause.",
+    )
+
+    repaired = correct_and_validate_pointer(pointer, {"doc|p1_t0": {"text": source}})
+
+    assert repaired is not None
+    assert repaired.start_char == 0
+    assert repaired.end_char == len(source) - 1
+    assert repaired.verbatim_text == source
+
+
+def test_pointer_repair_accepts_only_unique_exact_relocation():
+    source = "Prefix. Alpha clause. Suffix."
+    pointer = HydratedTextPointer(
+        source_cluster_id="doc|p1_t0",
+        start_char=999,
+        end_char=1000,
+        verbatim_text="Alpha clause.",
+    )
+
+    repaired = correct_and_validate_pointer(pointer, {"doc|p1_t0": {"text": source}})
+
+    assert repaired is not None
+    assert repaired.verbatim_text == "Alpha clause."
+    assert source[repaired.start_char : repaired.end_char + 1] == repaired.verbatim_text
+
+
+def test_llm_layer_pointer_schema_is_offset_only():
+    schema_text = str(LLMCurrentLayerReview.model_json_schema())
+
+    assert "LLMTextPointer" in schema_text
+    assert "verbatim_text" not in schema_text

@@ -44,10 +44,10 @@ def test_ci_uses_the_released_kogwistar_package_and_pinned_pypy_source_revision(
     )
     workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert declared_version == "0.6.5"
+    assert declared_version == "0.6.7"
     assert locked_package["version"] == declared_version
     assert "source" not in locked_package
-    assert "ref: v0.6.5" in workflow
+    assert "ref: v0.6.7" in workflow
 
 
 def test_cloud_adapter_extras_are_declared_without_changing_base_install() -> None:

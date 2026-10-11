@@ -41,7 +41,9 @@ from .semantics import HydratedTextPointer, SemanticNode
 from .service import build_default_engines
 
 if TYPE_CHECKING:
-    from ..semantic_document_splitting_layerwise_edits import SemanticNode as LegacySemanticNode
+    from ..semantic_document_splitting_layerwise_edits import (
+        SemanticNode as LegacySemanticNode,
+    )
 
 SupportedOCRInput = Literal["image", "pdf"]
 SupportedPageIndexInput = Literal["text", "markdown"]

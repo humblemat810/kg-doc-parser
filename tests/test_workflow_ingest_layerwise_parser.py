@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
-import kg_doc_parser.workflow_ingest.layerwise_llm as layerwise_module
 import pytest
 from _kogwistar_test_helpers import build_workflow_engine_triplet
+
+import kg_doc_parser.workflow_ingest.layerwise_llm as layerwise_module
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
@@ -21,6 +22,7 @@ from kg_doc_parser.workflow_ingest.models import (
     WorkflowIngestInput,
 )
 from kg_doc_parser.workflow_ingest.parser_core import (
+    _canonicalize_legacy_pointer_tree,
     check_layer_coverage,
     initialize_parse_session,
     prepare_layer_frontier,
@@ -284,6 +286,26 @@ def test_initialize_parse_session_seeds_root_frontier_in_workflow_mode():
 
 
 @pytest.mark.ci
+def test_initialize_parse_session_excludes_malformed_source_records() -> None:
+    inp = WorkflowIngestInput.from_text(
+        document_id="malformed-source-doc",
+        text="Alpha clause",
+        title="Malformed Source",
+    )
+
+    session, frontier, root = initialize_parse_session(
+        collection=inp.collections[0],
+        parser_input_dict={"document_filename": "Malformed Source", "pages": []},
+        parser_source_map={"malformed-source-doc|p1_t0": None},  # type: ignore[arg-type]
+        parse_semantic_fn=None,
+    )
+
+    assert session.root_node_id == root.node_id
+    assert frontier[0].parent_node_id == root.node_id
+    assert root.total_content_pointers == []
+
+
+@pytest.mark.ci
 def test_initialize_parse_session_normalizes_legacy_uuid_tree():
     inp = WorkflowIngestInput.from_text(
         document_id="legacy-uuid-doc",
@@ -381,6 +403,37 @@ def test_initialize_parse_session_normalizes_legacy_uuid_tree():
     assert root.child_nodes == []
     assert session.compat_full_tree is not None
     assert session.compat_full_tree["child_nodes"][0]["total_content_pointers"][0]["source_cluster_id"] == "legacy-uuid-doc|p1_t0"
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize("bad_value", [True, 1.5, "not-a-number"])
+def test_legacy_pointer_aliases_do_not_coerce_malformed_source_coordinates(bad_value):
+    tree = SemanticNode(
+        node_id="doc|root",
+        title="Doc",
+        node_type="DOCUMENT_ROOT",
+        total_content_pointers=[
+            HydratedTextPointer(
+                source_cluster_id="p1_c0",
+                start_char=0,
+                end_char=4,
+                verbatim_text="Alpha",
+            )
+        ],
+    )
+
+    normalized = _canonicalize_legacy_pointer_tree(
+        tree,
+        parser_source_map={
+            "unit-1": {
+                "text": "Alpha",
+                "page_number": bad_value,
+                "cluster_number": 0,
+            }
+        },
+    )
+
+    assert normalized.total_content_pointers[0].source_cluster_id == "p1_c0"
 
 
 @pytest.mark.ci
