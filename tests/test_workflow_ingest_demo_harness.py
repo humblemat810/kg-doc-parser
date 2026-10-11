@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import sleep
 from uuid import uuid4
 
 import pytest
@@ -139,6 +141,34 @@ def test_workflow_llm_call_cache_recomputes_unreadable_entry(monkeypatch):
         fingerprint=fingerprint,
         fn=lambda: {"answer": "recomputed"},
     ) == {"answer": "recomputed"}
+
+
+def test_workflow_llm_call_cache_concurrent_writers_leave_valid_json() -> None:
+    scratch = _scratch("llm_cache_concurrent")
+    cache = WorkflowLLMCallCache(scratch / "cache")
+    fingerprint = {"prompt": "same concurrent review"}
+    calls = {"count": 0}
+
+    def _fn() -> dict[str, object]:
+        calls["count"] += 1
+        sleep(0.01)
+        return {"answer": "stable", "call": calls["count"]}
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(
+            pool.map(
+                lambda _index: cache.cached_call(
+                    operation="review",
+                    fingerprint=fingerprint,
+                    fn=_fn,
+                ),
+                range(4),
+            )
+        )
+
+    assert all(result["answer"] == "stable" for result in results)
+    cache_path = cache._cache_path("review", fingerprint)
+    assert json.loads(cache_path.read_text(encoding="utf-8"))["answer"] == "stable"
 
 
 def test_provider_settings_use_pydantic_extension_slicing_for_llm_view():
