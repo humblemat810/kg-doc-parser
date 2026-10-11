@@ -99,6 +99,7 @@ jobs:
           tests/test_packaging_imports.py
           tests/test_workflow_ingest_contracts.py
           tests/test_workflow_ingest_conversation_graph.py
+          tests/test_workflow_ingest_layerwise_llm.py
           tests/test_workflow_ingest_layerwise_parser.py
           tests/test_workflow_ingest_ocr_pipeline.py
           tests/test_workflow_ingest_page_index_pipeline.py
@@ -115,6 +116,7 @@ jobs:
           tests/test_packaging_imports.py
           tests/test_workflow_ingest_contracts.py
           tests/test_workflow_ingest_conversation_graph.py
+          tests/test_workflow_ingest_layerwise_llm.py
           tests/test_workflow_ingest_layerwise_parser.py
           tests/test_workflow_ingest_ocr_pipeline.py
           tests/test_workflow_ingest_page_index_pipeline.py

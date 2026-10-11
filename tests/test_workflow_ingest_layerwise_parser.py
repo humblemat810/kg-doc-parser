@@ -9,6 +9,7 @@ from _kogwistar_test_helpers import build_workflow_engine_triplet
 import kg_doc_parser.workflow_ingest.layerwise_llm as layerwise_module
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
+    WorkflowLLMCallCache,
     WorkflowProviderSettings,
 )
 from kg_doc_parser.workflow_ingest.layerwise_llm import build_layerwise_llm_callbacks
@@ -66,6 +67,74 @@ def test_provider_review_failure_is_persisted_and_fails_closed() -> None:
     )
     assert coverage_ok is False
     assert notes == ["layer review unavailable; quality is unknown"]
+
+
+@pytest.mark.ci
+def test_review_layer_forwards_authoritative_source_map_to_callback() -> None:
+    source_map = {"doc|p1_t0": {"text": "Authoritative source text."}}
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        split_strategy="excerpt_first",
+    )
+    result = CurrentLayerResult(children=[], satisfied=True)
+    received: dict[str, object] = {}
+
+    def review(*, parser_source_map, **_kwargs):
+        received["parser_source_map"] = parser_source_map
+        return CurrentLayerReview(
+            updated_result=result,
+            coverage_ok=True,
+            satisfied=True,
+            strategy_used="excerpt_first",
+        )
+
+    review_layer(
+        parse_session=ParseSessionState(collection_id="doc", root_node_id="doc|root"),
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map=source_map,
+        review_layer_fn=review,
+    )
+
+    assert received["parser_source_map"] == source_map
+
+
+@pytest.mark.ci
+def test_review_cache_isolated_by_authoritative_source_map() -> None:
+    cache_root = Path("tests") / ".tmp_review_cache" / uuid4().hex
+    cache_root.mkdir(parents=True, exist_ok=True)
+    cache = WorkflowLLMCallCache(cache_root / "review-cache")
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        split_strategy="excerpt_first",
+    )
+    result = CurrentLayerResult(children=[], satisfied=True)
+    callback_sources: list[str] = []
+
+    def review(*, parser_source_map, **_kwargs):
+        source = parser_source_map["doc|p1_t0"]["text"]
+        callback_sources.append(source)
+        return CurrentLayerReview(
+            updated_result=result,
+            coverage_ok=True,
+            satisfied=True,
+            strategy_used="excerpt_first",
+            review_notes=[source],
+        )
+
+    for source in ("source revision one", "source revision two"):
+        review_layer(
+            parse_session=ParseSessionState(collection_id="doc", root_node_id="doc|root"),
+            current_layer_context=context,
+            current_layer_result=result,
+            parser_source_map={"doc|p1_t0": {"text": source}},
+            review_layer_fn=review,
+            llm_cache=cache,
+        )
+
+    assert callback_sources == ["source revision one", "source revision two"]
 
 
 @pytest.mark.ci
