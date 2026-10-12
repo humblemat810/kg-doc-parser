@@ -21,6 +21,16 @@ def test_kg_doc_parser_import_surface_is_available() -> None:
     assert hasattr(kg_doc_parser, "workflow_ingest")
 
 
+def test_release_metadata_matches_current_parser_version() -> None:
+    root = Path(__file__).resolve().parents[1]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    release_notes = (root / "doc" / "release_0.2.14.md").read_text(encoding="utf-8")
+
+    assert metadata["tool"]["poetry"]["version"] == "0.2.14"
+    assert "# KG Doc Parser 0.2.14" in release_notes
+    assert "Release tag: `v0.2.14`" in release_notes
+
+
 def test_src_package_is_not_importable() -> None:
     parser_src = (Path(__file__).resolve().parents[1] / "src").resolve()
     assert str(parser_src) not in {str(Path(entry).resolve()) for entry in sys.path if entry}
