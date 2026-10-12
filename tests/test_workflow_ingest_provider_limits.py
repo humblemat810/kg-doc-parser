@@ -300,7 +300,7 @@ def test_workflow_settings_expose_bounded_frontier_and_boundary_limits(
     assert settings.ocr.reasoning_effort == "low"
 
 
-def test_openai_reasoning_effort_is_transmitted_as_request_metadata(
+def test_openai_reasoning_effort_uses_the_first_class_provider_argument(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: list[dict[str, Any]] = []
@@ -312,4 +312,23 @@ def test_openai_reasoning_effort_is_transmitted_as_request_metadata(
             reasoning_effort="none",
         )
     )
-    assert captured[0]["model_kwargs"] == {"reasoning_effort": "none"}
+    assert captured[0]["reasoning_effort"] == "none"
+    assert "model_kwargs" not in captured[0]
+
+
+def test_azure_reasoning_effort_uses_the_first_class_provider_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    _fake_provider_module(monkeypatch, "langchain_openai", "AzureChatOpenAI", captured)
+    build_chat_model(
+        ProviderEndpointConfig(
+            provider="azure",
+            model="local-reasoning-model",
+            reasoning_effort="low",
+            base_url="https://example.invalid",
+            api_version="2024-12-01-preview",
+        )
+    )
+    assert captured[0]["reasoning_effort"] == "low"
+    assert "model_kwargs" not in captured[0]

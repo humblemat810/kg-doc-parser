@@ -1077,7 +1077,7 @@ def build_chat_model(
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
         if spec.reasoning_effort:
-            kwargs["model_kwargs"] = {"reasoning_effort": spec.reasoning_effort}
+            kwargs["reasoning_effort"] = spec.reasoning_effort
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
         if spec.api_key_env and os.getenv(spec.api_key_env):
@@ -1101,7 +1101,7 @@ def build_chat_model(
         if max_output_tokens is not None:
             kwargs["max_tokens"] = max_output_tokens
         if spec.reasoning_effort:
-            kwargs["model_kwargs"] = {"reasoning_effort": spec.reasoning_effort}
+            kwargs["reasoning_effort"] = spec.reasoning_effort
         if spec.base_url:
             kwargs["azure_endpoint"] = spec.base_url
         if spec.api_version:
