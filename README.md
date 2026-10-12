@@ -45,7 +45,7 @@ to normal strategy selection. See the
 The deterministic and text-only Bonsai fixture evaluation is recorded in the
 [`PageIndex adversarial fixture report`](doc/page_index_adversarial_fixture_report.md).
 The current patch release is documented in the
-[`0.2.11` release note](doc/release_0.2.11.md); the prior
+[`0.2.13` release note](doc/release_0.2.13.md); the prior
 [`0.2.7` release note](doc/release_0.2.7.md) remains available for history.
 For cache reuse and provider/runtime isolation rules, see
 [`doc/cache_reuse_and_isolation.md`](doc/cache_reuse_and_isolation.md).
@@ -224,6 +224,12 @@ and structured extraction.
   - `KG_DOC_PARSER_PROVIDER=openai`
   - `KG_DOC_PARSER_BASE_URL=http://127.0.0.1:8181/v1`
   - `KG_DOC_PARSER_REASONING_EFFORT=medium` (optional)
+
+OpenAI-compatible does not by itself guarantee strict structured-output
+support. Some gateways or model servers accept `response_format` but drop or
+translate its nested `json_schema` field. Verify the selected endpoint with a
+real schema before relying on decoder-level enforcement; the parser still
+validates every response locally and rejects unrelated or free-form shapes.
 - LangChain Ollama:
   - `KG_DOC_PARSER_PROVIDER=ollama`
   - `KG_DOC_PARSER_MODEL=llama3.1`

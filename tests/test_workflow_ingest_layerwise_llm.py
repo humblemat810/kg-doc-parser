@@ -656,6 +656,33 @@ def test_structured_invoke_classifies_parse_failures_for_observability():
     assert events[0]["error_type"]
 
 
+def test_structured_invoke_rejects_free_form_boundary_payload() -> None:
+    """A provider's unrelated JSON shape must not bypass schema validation."""
+    from pydantic import ValidationError
+
+    from kg_doc_parser.workflow_ingest.layerwise_llm import _structured_invoke
+
+    events: list[dict[str, object]] = []
+    response = {
+        "parsed": {
+            "semantic_boundaries": {"blocks": []},
+        },
+        "raw": None,
+        "parsing_error": None,
+    }
+
+    with pytest.raises(ValidationError):
+        _structured_invoke(
+            _FakeChatModel(response),
+            LLMBoundaryProposalBatch,
+            [("human", "return boundary proposals")],
+            diagnostics_sink=events.append,
+        )
+
+    assert events[0]["failure_type"] == "structured_output_parse_failure"
+    assert events[0]["error_type"] == "ValidationError"
+
+
 def test_boundary_mode_proposes_cutpoints_and_assembles_children(monkeypatch: pytest.MonkeyPatch):
     fake_model = _FakeChatModel(
         {
