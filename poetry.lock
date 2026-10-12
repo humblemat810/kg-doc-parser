@@ -1511,17 +1511,17 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.7"
+version = "0.6.8"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "kogwistar-0.6.7-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:1222b38beee116812482b7ac8c7e67f2d537b9717db804efa112dc4dfbff6ff1"},
-    {file = "kogwistar-0.6.7-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:4a7ddf8080eecca35a1739ab4c0398d227b40bf73192c0c07ac6464ca5de8abf"},
-    {file = "kogwistar-0.6.7-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:f26db76d9256514f10df41d70a899d0281ab0badba2881aa19d5a8a36335b711"},
-    {file = "kogwistar-0.6.7-cp312-abi3-win_amd64.whl", hash = "sha256:3bf66496c8fa99f8cefdfdecfdd0e23a716c2f47f580b98c265b3bfff1b9b0f5"},
-    {file = "kogwistar-0.6.7.tar.gz", hash = "sha256:1b5bf9af6739aa018303dafefa04aba8e44eea1efcb1eec52950e201f16ca255"},
+    {file = "kogwistar-0.6.8-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:acf6bdac8527e6720b9d094cb2136a0e4c3b046926d9f5cee61c7a815dcb6d03"},
+    {file = "kogwistar-0.6.8-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:18dbb79c1164203dbd8fad39eee56a0ae6b140dc5bfc04081872a6927fda52fd"},
+    {file = "kogwistar-0.6.8-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:04fb800e056a7d464e8b54757ce47785e5b5cc5a083351a18a0e23c7ffbee9b7"},
+    {file = "kogwistar-0.6.8-cp312-abi3-win_amd64.whl", hash = "sha256:5c199a90f7f78aa627a4ffd3398b3ee156e4e64d983a8c9a6ebb54c39b62b2df"},
+    {file = "kogwistar-0.6.8.tar.gz", hash = "sha256:cfa0dbbfa3aa4bec586c8a2606d6e46d9dea46e0576c188b67618a98b3aec3cf"},
 ]
 
 [package.dependencies]
@@ -4384,4 +4384,4 @@ vertex = ["langchain-google-vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "7da24e0b54538fa24e40a254f343101a7f4c6534477ad51cfe87cb83163900cb"
+content-hash = "d3b8ac88b1d952d712422e35325ae141db3913ec2b16ee3634e405f35f6251dc"
