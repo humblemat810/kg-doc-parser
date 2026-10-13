@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from typing import Literal, cast
+from collections.abc import Mapping, Sequence
+from typing import Literal, Protocol, cast
 
 from kogwistar.id_provider import stable_id
 from pydantic import BaseModel, Field, model_validator
@@ -80,6 +80,51 @@ class SemanticNode(BaseModel):
 
 
 SemanticNode.model_rebuild()
+
+
+class SemanticTreeNodeLike(Protocol):
+    """Minimum shape required by the shared tree-branching validator."""
+
+    @property
+    def node_id(self) -> object: ...
+
+    @property
+    def child_nodes(self) -> Sequence[object]: ...
+
+
+def validate_semantic_tree_shape(
+    root: SemanticTreeNodeLike,
+    *,
+    max_depth: int | None = None,
+) -> None:
+    """Reject unary semantic nodes without relying on Python recursion.
+
+    A zero-child node is either a valid leaf or an explicitly retained atomic
+    unit.  A node with one child is never a meaningful refinement.  This
+    helper intentionally accepts the small structural protocol so the legacy
+    parser can use the same invariant without importing the newer node model.
+    """
+
+    pending: list[tuple[SemanticTreeNodeLike, int, bool]] = [(root, 0, False)]
+    active_object_ids: set[int] = set()
+    while pending:
+        node, depth, exiting = pending.pop()
+        object_id = id(node)
+        if exiting:
+            active_object_ids.remove(object_id)
+            continue
+        if object_id in active_object_ids:
+            raise ValueError("semantic tree contains a cycle while checking branching")
+        active_object_ids.add(object_id)
+        node_id = str(getattr(node, "node_id", "<missing>"))
+        children = list(getattr(node, "child_nodes", ()) or ())
+        if len(children) == 1:
+            raise ValueError(f"unary semantic node: {node_id}")
+        if max_depth is not None and depth > max_depth:
+            raise ValueError(f"semantic tree exceeds maximum depth {max_depth}: {node_id}")
+        pending.append((node, depth, True))
+        for child in reversed(children):
+            pending.append((cast(SemanticTreeNodeLike, child), depth + 1, False))
 
 
 def hydrate_pointer_from_offsets(
@@ -353,6 +398,9 @@ def classify_terminal_coverage_status(
 
 
 def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str, JsonValue]:
+    # Graph export is a persistence boundary.  Validate before serializing so
+    # callers cannot bypass the workflow commit gate with a hand-built tree.
+    validate_semantic_tree_shape(root)
     nodes: list[dict[str, object]] = []
     edges: list[dict[str, object]] = []
 

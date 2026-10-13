@@ -854,6 +854,8 @@ def register_layerwise_parser_steps(
             current_layer_review.overlap_conflicts
             or current_layer_review.coverage_gap_notes
             or current_layer_review.duplicate_child_notes
+            or current_layer_review.structural_issues
+            or current_layer_review.validation_diagnostics
         )
         if current_layer_result.satisfied is False or not coverage_ok or has_conflicts:
             # Disable the failed operator for this parent layer. When triage
@@ -869,8 +871,14 @@ def register_layerwise_parser_steps(
                 reasons.append(
                     f"layer has {len(current_layer_review.overlap_conflicts)} overlap conflicts, "
                     f"{len(current_layer_review.coverage_gap_notes)} coverage gaps, "
-                    f"{len(current_layer_review.duplicate_child_notes)} duplicates"
+                    f"{len(current_layer_review.duplicate_child_notes)} duplicates, "
+                    f"{len(current_layer_review.structural_issues)} structural issues, "
+                    f"{len(current_layer_review.validation_diagnostics)} validation diagnostics"
                 )
+            reasons.extend(
+                f"{diagnostic.phase} validation: {diagnostic.message}"
+                for diagnostic in current_layer_review.validation_diagnostics
+            )
             strategy = str(current_layer_context.metadata.get("parse_strategy", "layer_excerpt"))
             raw_disabled = current_layer_context.metadata.get("disabled_strategies")
             disabled = {

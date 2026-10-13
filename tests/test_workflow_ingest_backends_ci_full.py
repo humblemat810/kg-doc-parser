@@ -58,6 +58,15 @@ def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):
                 parent_id=root.node_id,
             )
         )
+    if len(root.child_nodes) == 1:
+        only_child = root.child_nodes[0]
+        root = root.model_copy(
+            update={
+                "total_content_pointers": list(only_child.total_content_pointers),
+                "child_nodes": [],
+                "metadata": {"atomic_retained": True},
+            }
+        )
     return root
 
 

@@ -36,6 +36,7 @@ from .models import (
     LayerDuplicateChildNote,
     LayerFrontierItem,
     LayerSpanConflict,
+    LayerValidationDiagnostic,
     NormalizedPage,
     NormalizedSourceCollection,
     ParseSessionState,
@@ -109,7 +110,7 @@ from .runners import (
     run_page_index_batch_workflow,
     run_page_index_source_workflow,
 )
-from .semantics import HydratedTextPointer, SemanticNode
+from .semantics import HydratedTextPointer, SemanticNode, validate_semantic_tree_shape
 from .service import build_default_engines, build_runtime, run_ingest_workflow
 from .smoke_assets import generate_ocr_smoke_assets
 from .strategy import (
@@ -146,6 +147,7 @@ __all__ = [
     "HierarchicalSummaryAssignment",
     "HierarchicalSummaryBatch",
     "HydratedTextPointer",
+    "validate_semantic_tree_shape",
     "IngestExecutionClient",
     "IngestRunHandle",
     "IngestRunResult",
@@ -154,6 +156,7 @@ __all__ = [
     "LayerDuplicateChildNote",
     "LayerFrontierItem",
     "LayerSpanConflict",
+    "LayerValidationDiagnostic",
     "LayerwiseWorkflowCommandResult",
     "NormalizedPage",
     "NormalizedSourceCollection",

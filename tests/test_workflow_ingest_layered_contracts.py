@@ -66,7 +66,9 @@ def test_seed_and_expand_are_bounded_and_json_serializable() -> None:
             source_map=_seed_request().source_map,
             limits=LayeredParseLimits(max_depth=3, max_frontier_items=1),
         ),
-        propose_layer_fn=lambda **_kwargs: CurrentLayerResult(children=[], satisfied=True),
+        propose_layer_fn=lambda **_kwargs: CurrentLayerResult(
+            children=[], metadata={"atomic_retained": True}, satisfied=True
+        ),
     )
     assert expanded.usage.parser_calls == 1
     assert expanded.consumed_frontier
@@ -106,7 +108,9 @@ def test_expansion_preserves_same_depth_items_outside_batch() -> None:
             source_map=_seed_request().source_map,
             limits=LayeredParseLimits(max_depth=3, max_frontier_items=1),
         ),
-        propose_layer_fn=lambda **_kwargs: CurrentLayerResult(children=[], satisfied=True),
+        propose_layer_fn=lambda **_kwargs: CurrentLayerResult(
+            children=[], metadata={"atomic_retained": True}, satisfied=True
+        ),
     )
     assert len(result.consumed_frontier) == 1
     assert result.remaining_frontier == [second]
@@ -126,4 +130,9 @@ def test_expansion_rejects_malformed_parser_call_metadata() -> None:
     )
 
     with pytest.raises(ValueError, match="parser_calls metadata"):
-        expand_layered_frontier(request, propose_layer_fn=lambda **_kwargs: CurrentLayerResult(children=[]))
+        expand_layered_frontier(
+            request,
+            propose_layer_fn=lambda **_kwargs: CurrentLayerResult(
+                children=[], metadata={"atomic_retained": True}
+            ),
+        )

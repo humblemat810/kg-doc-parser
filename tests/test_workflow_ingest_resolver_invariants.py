@@ -13,6 +13,7 @@ from kg_doc_parser.workflow_ingest.models import (
     LayerDuplicateChildNote,
     LayerFrontierItem,
     LayerSpanConflict,
+    LayerValidationDiagnostic,
     ParseSessionState,
 )
 from kg_doc_parser.workflow_ingest.parser_core import (
@@ -34,6 +35,7 @@ from kg_doc_parser.workflow_ingest.semantics import (
     classify_terminal_coverage_status,
     compute_pointer_coverage,
     compute_terminal_content_coverage,
+    validate_semantic_tree_shape,
 )
 
 pytestmark = [pytest.mark.workflow, pytest.mark.ci]
@@ -387,17 +389,170 @@ def test_repair_layer_candidates_isolates_unrecoverable_pointer(caplog):
     assert any("parent='doc|root'" in record.message for record in caplog.records)
 
 
-def test_commit_and_frontier_enqueue_are_idempotent_on_replay():
-    pointer = _pointer("doc|p1_t0", "Alpha", 0, 4)
-    child = _child(
+def test_repair_validation_error_becomes_retryable_diagnostic(caplog):
+    result = CurrentLayerResult(
+        children=[
+            _child(
+                node_id="child-a",
+                parent_node_id="doc|root",
+                title="Alpha",
+                node_type="TEXT_FLOW",
+                pointer=_pointer("doc|p1_t0", "Alpha", 0, 4),
+            )
+        ],
+        satisfied=True,
+        reasoning_history=[],
+    )
+
+    def _correct(pointer, source_map):
+        raise ValueError("repair payload failed validation")
+
+    caplog.set_level(logging.WARNING)
+    repaired, repaired_count = repair_layer_candidates(
+        current_layer_result=result,
+        parser_source_map={"doc|p1_t0": {"text": "Alpha"}},
+        correct_pointer_fn=_correct,
+    )
+
+    assert repaired_count == 0
+    assert repaired.children == []
+    assert repaired.satisfied is False
+    assert repaired.validation_diagnostics[0].phase == "repair"
+    assert repaired.validation_diagnostics[0].error_type == "ValueError"
+    assert repaired.metadata["retryable"] is True
+    assert any("repair payload failed validation" in record.message for record in caplog.records)
+
+
+def test_review_dropping_one_sibling_is_rejected_after_provider_return() -> None:
+    text = "Alpha Beta"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={
+            "doc|root": [_pointer("doc|p1_t0", text, 0, len(text) - 1)]
+        },
+    )
+    left = _child(
         node_id="child-a",
         parent_node_id="doc|root",
         title="Alpha",
         node_type="TEXT_FLOW",
-        pointer=pointer,
+        pointer=_pointer("doc|p1_t0", text, 0, 4),
+    )
+    right = _child(
+        node_id="child-b",
+        parent_node_id="doc|root",
+        title="Beta",
+        node_type="TEXT_FLOW",
+        pointer=_pointer("doc|p1_t0", text, 6, 9),
+    )
+
+    def review(**_kwargs: object) -> CurrentLayerReview:
+        return CurrentLayerReview(
+            updated_result=CurrentLayerResult(children=[left], satisfied=True),
+            coverage_ok=True,
+            satisfied=True,
+        )
+
+    reviewed, _ = review_layer(
+        parse_session=ParseSessionState(collection_id="doc", root_node_id="doc|root"),
+        current_layer_context=context,
+        current_layer_result=CurrentLayerResult(children=[left, right], satisfied=True),
+        parser_source_map={"doc|p1_t0": {"text": text}},
+        review_layer_fn=review,
+    )
+
+    assert reviewed.satisfied is False
+    assert reviewed.updated_result is not None
+    assert reviewed.updated_result.children == [left]
+    assert any(issue.issue_kind == "unary_refinement" for issue in reviewed.structural_issues)
+
+
+def test_repair_collapsing_two_children_is_rejected_at_commit_gate() -> None:
+    text = "Alpha Beta"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={
+            "doc|root": [_pointer("doc|p1_t0", text, 0, len(text) - 1)]
+        },
+    )
+    left = _child(
+        node_id="child-a",
+        parent_node_id="doc|root",
+        title="Alpha",
+        node_type="TEXT_FLOW",
+        pointer=_pointer("doc|p1_t0", text, 0, 4),
+    )
+    right = _child(
+        node_id="child-b",
+        parent_node_id="doc|root",
+        title="Beta",
+        node_type="TEXT_FLOW",
+        pointer=_pointer("doc|p1_t0", text, 6, 9),
+    )
+    # Model a repair result that accidentally drops one previously valid
+    # sibling. The post-repair gate must reject it before tree mutation.
+    collapsed = CurrentLayerResult(children=[left], satisfied=True)
+
+    review = validate_layer_commit(
+        current_layer_context=context,
+        current_layer_result=collapsed,
+        parser_source_map={"doc|p1_t0": {"text": text}},
+    )
+
+    assert review.satisfied is False
+    assert review.structural_issues[0].issue_kind == "unary_refinement"
+    assert right.node_id not in [child.node_id for child in review.updated_result.children]
+    with pytest.raises(ValueError, match="unary refinement"):
+        commit_layer_children(
+            semantic_tree=SemanticNode(
+                node_id="doc|root",
+                title="Doc",
+                node_type="DOCUMENT_ROOT",
+            ),
+            current_layer_result=collapsed,
+            current_depth=0,
+            parent_node_ids=["doc|root"],
+        )
+
+
+def test_pydantic_rejects_intrinsic_nested_unary_candidates() -> None:
+    child = _child(
+        node_id="child",
+        parent_node_id="doc|root",
+        title="Child",
+        node_type="TEXT_FLOW",
+        pointer=_pointer("doc|p1_t0", "Alpha", 0, 4),
+    )
+    payload = child.model_dump()
+    payload["child_candidates"] = [child.model_dump()]
+
+    with pytest.raises(ValueError, match="materialized child candidates"):
+        LayerChildCandidate.model_validate(payload)
+
+
+def test_commit_and_frontier_enqueue_are_idempotent_on_replay():
+    text = "AlphaBeta"
+    child_a = _child(
+        node_id="child-a",
+        parent_node_id="doc|root",
+        title="Alpha",
+        node_type="TEXT_FLOW",
+        pointer=_pointer("doc|p1_t0", text, 0, 4),
         expandable=True,
     )
-    result = CurrentLayerResult(children=[child], satisfied=True)
+    child_b = _child(
+        node_id="child-b",
+        parent_node_id="doc|root",
+        title="Beta",
+        node_type="TEXT_FLOW",
+        pointer=_pointer("doc|p1_t0", text, 5, 8),
+        expandable=True,
+    )
+    result = CurrentLayerResult(children=[child_a, child_b], satisfied=True)
     tree = SemanticNode(
         node_id="doc|root",
         title="Doc",
@@ -414,7 +569,7 @@ def test_commit_and_frontier_enqueue_are_idempotent_on_replay():
         current_layer_result=result,
         current_depth=0,
     )
-    assert [node.node_id for node in twice.child_nodes] == ["child-a"]
+    assert [node.node_id for node in twice.child_nodes] == ["child-a", "child-b"]
 
     session = ParseSessionState(collection_id="doc", root_node_id="doc|root")
     first_queue = enqueue_next_layer_frontier(
@@ -438,7 +593,8 @@ def test_commit_and_frontier_enqueue_are_idempotent_on_replay():
         parse_session=session,
     )
     assert [(item.parent_node_id, item.depth) for item in second_queue] == [
-        ("child-a", 1)
+        ("child-a", 1),
+        ("child-b", 1),
     ]
 
 
@@ -652,7 +808,7 @@ def test_validate_layer_commit_rejects_changed_candidate_set():
 
 
 def test_validate_layer_commit_preserves_valid_parent_when_batch_sibling_fails():
-    valid_text = "Alpha"
+    valid_text = "Alpha Beta"
     invalid_text = "Beta"
     valid_parent = "doc|section-a"
     invalid_parent = "doc|section-b"
@@ -661,7 +817,7 @@ def test_validate_layer_commit_preserves_valid_parent_when_batch_sibling_fails()
         parent_node_ids=[valid_parent, invalid_parent],
         parent_titles=["A", "B"],
         parent_content_pointers_by_id={
-            valid_parent: [_pointer("doc|p1_t0", valid_text, 0, 4)],
+            valid_parent: [_pointer("doc|p1_t0", valid_text, 0, 9)],
             invalid_parent: [_pointer("doc|p1_t1", invalid_text, 0, 3)],
         },
     )
@@ -673,6 +829,13 @@ def test_validate_layer_commit_preserves_valid_parent_when_batch_sibling_fails()
                 title="Alpha",
                 node_type="TEXT_FLOW",
                 pointer=_pointer("doc|p1_t0", valid_text, 0, 4),
+            ),
+            _child(
+                node_id="child-b",
+                parent_node_id=valid_parent,
+                title="Beta",
+                node_type="TEXT_FLOW",
+                pointer=_pointer("doc|p1_t0", valid_text, 6, 9),
             )
         ],
         satisfied=True,
@@ -682,7 +845,7 @@ def test_validate_layer_commit_preserves_valid_parent_when_batch_sibling_fails()
         current_layer_context=context,
         current_layer_result=result,
         parser_source_map={
-            "doc|p1_t0": {"text": valid_text},
+                "doc|p1_t0": {"text": valid_text},
             "doc|p1_t1": {"text": invalid_text},
         },
     )
@@ -692,7 +855,7 @@ def test_validate_layer_commit_preserves_valid_parent_when_batch_sibling_fails()
     assert review.committable_parent_node_ids == [valid_parent]
     assert review.failed_parent_node_ids == [invalid_parent]
     assert review.metadata["partial_commit"] is True
-    assert [child.node_id for child in review.updated_result.children] == ["child-a"]
+    assert [child.node_id for child in review.updated_result.children] == ["child-a", "child-b"]
 
     tree = SemanticNode(
         node_id="doc|root",
@@ -721,7 +884,10 @@ def test_validate_layer_commit_preserves_valid_parent_when_batch_sibling_fails()
         current_depth=1,
         parent_node_ids=review.committable_parent_node_ids,
     )
-    assert [child.node_id for child in committed.child_nodes[0].child_nodes] == ["child-a"]
+    assert [child.node_id for child in committed.child_nodes[0].child_nodes] == [
+        "child-a",
+        "child-b",
+    ]
     assert committed.child_nodes[1].child_nodes == []
 
 
@@ -915,3 +1081,159 @@ def test_check_layer_coverage_emits_conflict_notes_from_review():
     assert any("overlap conflict:" in note for note in notes)
     assert any("coverage gap:" in note for note in notes)
     assert any("duplicate child:" in note for note in notes)
+
+
+def test_unary_refinement_is_rejected_at_detector_commit_and_frontier():
+    text = "Alpha Beta"
+    parent = "doc|root"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=[parent],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={parent: [_pointer("doc|p1_t0", text, 0, 9)]},
+    )
+    result = CurrentLayerResult(
+        children=[
+            _child(
+                node_id="only-child",
+                parent_node_id=parent,
+                title="Alpha",
+                node_type="TEXT_FLOW",
+                pointer=_pointer("doc|p1_t0", text, 0, 4),
+            )
+        ],
+        satisfied=True,
+    )
+    coverage_ok, satisfied, *_ = detect_layer_invariants(
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map={"doc|p1_t0": {"text": text}},
+    )
+    assert coverage_ok is False
+    assert satisfied is False
+    with pytest.raises(ValueError, match="unary refinement"):
+        commit_layer_children(
+            semantic_tree=SemanticNode(node_id=parent, title="Doc", node_type="DOCUMENT_ROOT"),
+            current_layer_result=result,
+            current_depth=0,
+        )
+    with pytest.raises(ValueError, match="unary refinement"):
+        enqueue_next_layer_frontier(
+            frontier_queue=[],
+            current_layer_context=context,
+            current_layer_result=result,
+            parse_session=ParseSessionState(collection_id="doc", root_node_id=parent),
+        )
+
+
+def test_legacy_review_mode_does_not_bypass_unary_validation():
+    parent = "doc|root"
+    text = "Alpha Beta"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=[parent],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={parent: [_pointer("doc|p1_t0", text, 0, 9)]},
+    )
+    result = CurrentLayerResult(
+        children=[
+            _child(
+                node_id="only-child",
+                parent_node_id=parent,
+                title="Alpha",
+                node_type="TEXT_FLOW",
+                pointer=_pointer("doc|p1_t0", text, 0, 4),
+            )
+        ],
+        satisfied=True,
+    )
+    review, _ = review_layer(
+        parse_session=ParseSessionState(
+            collection_id="doc",
+            root_node_id=parent,
+            mode="legacy_compat",
+        ),
+        current_layer_context=context,
+        current_layer_result=result,
+        parser_source_map={"doc|p1_t0": {"text": text}},
+    )
+    assert review.satisfied is False
+    assert review.structural_issues[0].issue_kind == "unary_refinement"
+
+
+def test_atomic_retention_requires_verified_parent_and_is_not_unary():
+    parent = "doc|root"
+    text = "Alpha"
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=[parent],
+        parent_titles=["Doc"],
+        parent_content_pointers_by_id={parent: [_pointer("doc|p1_t0", text, 0, 4)]},
+    )
+    retained = CurrentLayerResult(children=[], metadata={"atomic_retained": True}, satisfied=True)
+    review = validate_layer_commit(
+        current_layer_context=context,
+        current_layer_result=retained,
+        parser_source_map={"doc|p1_t0": {"text": text}},
+    )
+    assert review.satisfied is True
+    committed = commit_layer_children(
+        semantic_tree=SemanticNode(
+            node_id=parent,
+            title="Doc",
+            node_type="DOCUMENT_ROOT",
+            total_content_pointers=[_pointer("doc|p1_t0", text, 0, 4)],
+        ),
+        current_layer_result=retained,
+        current_depth=0,
+        parent_node_ids=[parent],
+    )
+    assert committed.child_nodes == []
+
+
+def test_commit_rejects_layer_with_validation_diagnostics_before_mutation():
+    diagnostic = LayerValidationDiagnostic(
+        phase="proposal",
+        error_type="ValidationError",
+        message="missing children",
+    )
+    result = CurrentLayerResult(
+        children=[],
+        satisfied=False,
+        validation_diagnostics=[diagnostic],
+        metadata={"atomic_retained": True},
+    )
+    tree = SemanticNode(node_id="doc|root", title="Doc", node_type="DOCUMENT_ROOT")
+
+    with pytest.raises(ValueError, match="validation diagnostics"):
+        commit_layer_children(
+            semantic_tree=tree,
+            current_layer_result=result,
+            current_depth=0,
+            parent_node_ids=["doc|root"],
+        )
+    assert tree.child_nodes == []
+
+
+def test_shared_tree_shape_validator_rejects_a_generated_deep_unary_chain():
+    root = SemanticNode(node_id="root", title="Root", node_type="DOCUMENT_ROOT")
+    current = root
+    for index in range(70):
+        child = SemanticNode(node_id=f"node-{index}", parent_id=current.node_id, title=str(index))
+        current.child_nodes = [child]
+        current = child
+    with pytest.raises(ValueError, match="unary semantic node"):
+        validate_semantic_tree_shape(root)
+
+
+def test_shared_tree_shape_validator_accepts_deep_branching_tree():
+    root = SemanticNode(
+        node_id="root",
+        title="Root",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[
+            SemanticNode(node_id="left", parent_id="root", title="Left"),
+            SemanticNode(node_id="right", parent_id="root", title="Right"),
+        ],
+    )
+    validate_semantic_tree_shape(root)

@@ -62,22 +62,54 @@ def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):
         if not record.get("participates_in_semantic_text", True):
             continue
         text = record["text"]
-        root.child_nodes.append(
-            SemanticNode(
-                title=f"section:{unit_id}",
-                node_type="TEXT_FLOW",
-                total_content_pointers=[
-                    HydratedTextPointer(
-                        source_cluster_id=unit_id,
-                        start_char=0,
-                        end_char=max(0, len(text) - 1),
-                        verbatim_text=text,
+        lines = text.splitlines(keepends=True)
+        if len(lines) > 1:
+            offset = 0
+            for index, line in enumerate(lines):
+                root.child_nodes.append(
+                    SemanticNode(
+                        title=f"section:{unit_id}:{index}",
+                        node_type="TEXT_FLOW",
+                        total_content_pointers=[
+                            HydratedTextPointer(
+                                source_cluster_id=unit_id,
+                                start_char=offset,
+                                end_char=offset + len(line) - 1,
+                                verbatim_text=line,
+                            )
+                        ],
+                        child_nodes=[],
+                        level_from_root=1,
+                        parent_id=root.node_id,
                     )
-                ],
-                child_nodes=[],
-                level_from_root=1,
-                parent_id=root.node_id,
+                )
+                offset += len(line)
+        else:
+            root.child_nodes.append(
+                SemanticNode(
+                    title=f"section:{unit_id}",
+                    node_type="TEXT_FLOW",
+                    total_content_pointers=[
+                        HydratedTextPointer(
+                            source_cluster_id=unit_id,
+                            start_char=0,
+                            end_char=max(0, len(text) - 1),
+                            verbatim_text=text,
+                        )
+                    ],
+                    child_nodes=[],
+                    level_from_root=1,
+                    parent_id=root.node_id,
+                )
             )
+    if len(root.child_nodes) == 1:
+        only_child = root.child_nodes[0]
+        root = root.model_copy(
+            update={
+                "total_content_pointers": list(only_child.total_content_pointers),
+                "child_nodes": [],
+                "metadata": {"atomic_retained": True},
+            }
         )
     return root
 

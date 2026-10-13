@@ -1720,7 +1720,19 @@ def _structured_invoke(
                     else:
                         parsed_dump = getattr(parsed, "model_dump", None)
                         if callable(parsed_dump):
-                            result = schema.model_validate(parsed_dump())
+                            # Internal adapters and test doubles may return a
+                            # richer Pydantic model than the provider DTO.
+                            # Narrow only that trusted model instance to the
+                            # declared schema; mappings from the provider stay
+                            # strict so extra fields cannot bypass validation.
+                            payload = parsed_dump()
+                            if isinstance(payload, dict):
+                                payload = {
+                                    field_name: payload[field_name]
+                                    for field_name in schema.model_fields
+                                    if field_name in payload
+                                }
+                            result = schema.model_validate(payload)
                         else:
                             result = schema.model_validate(parsed)
                 else:
@@ -2337,7 +2349,7 @@ def build_layerwise_llm_callbacks(
                                 target_cut_offset=target.cut_offset,
                                 refined_cutpoint_count=len(refinement_decisions),
                             )
-                    except Exception as refinement_exc:  # noqa: BLE001 - refinement is best effort
+                    except Exception as refinement_exc:
                         refinement_notes.append(
                             f"boundary refinement skipped for {target.parent_node_id}:{target.source_cluster_id}:{target.cut_offset} "
                             f"due to {refinement_exc!r}"

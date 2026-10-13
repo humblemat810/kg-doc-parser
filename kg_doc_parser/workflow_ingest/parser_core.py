@@ -7,6 +7,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Literal, Protocol, cast
 
+from pydantic import ValidationError
+
 from .cache import WorkflowLLMCallCache
 from .models import (
     CurrentLayerContext,
@@ -17,12 +19,15 @@ from .models import (
     LayerDuplicateChildNote,
     LayerFrontierItem,
     LayerSpanConflict,
+    LayerStructuralIssue,
+    LayerValidationDiagnostic,
     ParseSessionState,
 )
 from .semantics import (
     HydratedTextPointer,
     SemanticNode,
     pointer_source_validation_error,
+    validate_semantic_tree_shape,
 )
 from .serialization import JsonValue
 
@@ -83,6 +88,55 @@ def _optional_bool(value: object) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _validation_diagnostics(
+    *,
+    phase: Literal["proposal", "review", "repair", "commit"],
+    error: Exception,
+) -> list[LayerValidationDiagnostic]:
+    """Convert bounded Pydantic or adapter errors into retryable state."""
+
+    details = error.errors(include_context=False) if isinstance(error, ValidationError) else []
+    diagnostics: list[LayerValidationDiagnostic] = []
+    for detail in details[:8]:
+        raw_location = detail.get("loc", ())
+        location = [str(item) for item in raw_location] if isinstance(raw_location, tuple) else []
+        diagnostics.append(
+            LayerValidationDiagnostic(
+                phase=phase,
+                error_type=str(detail.get("type", type(error).__name__)),
+                message=str(detail.get("msg", str(error)))[:500],
+                location=location,
+            )
+        )
+    if not diagnostics:
+        diagnostics.append(
+            LayerValidationDiagnostic(
+                phase=phase,
+                error_type=type(error).__name__,
+                message=str(error)[:500],
+            )
+        )
+    return diagnostics
+
+
+def _invalid_layer_result(
+    *,
+    phase: Literal["proposal", "review", "repair", "commit"],
+    error: Exception,
+) -> CurrentLayerResult:
+    diagnostics = _validation_diagnostics(phase=phase, error=error)
+    return CurrentLayerResult(
+        children=[],
+        satisfied=False,
+        validation_diagnostics=diagnostics,
+        metadata={
+            "validation_failure": phase,
+            "retryable": True,
+            "validation_error": diagnostics[0].message,
+        },
+    )
+
+
 class ParseSemanticFn(Protocol):
     """Provider callback for the legacy whole-document parse path."""
 
@@ -123,7 +177,7 @@ class ReviewLayerFn(Protocol):
         current_layer_result: CurrentLayerResult,
         parser_source_map: ParserSourceMap,
         split_strategy: SplitStrategy,
-    ) -> CurrentLayerReview: ...
+    ) -> CurrentLayerReview | CurrentLayerResult | Mapping[str, object]: ...
 
 
 class PointerCorrector(Protocol):
@@ -301,6 +355,56 @@ def _child_pointer_fingerprint(child: LayerChildCandidate) -> tuple[tuple[str, i
     )
 
 
+def _layer_structural_issues(
+    *,
+    current_layer_context: CurrentLayerContext,
+    current_layer_result: CurrentLayerResult,
+) -> list[LayerStructuralIssue]:
+    """Return typed structural failures without changing the tuple API."""
+
+    issues: list[LayerStructuralIssue] = []
+    for parent_id in current_layer_context.parent_node_ids:
+        children = [
+            child for child in current_layer_result.children if child.parent_node_id == parent_id
+        ]
+        if len(children) == 1:
+            child = children[0]
+            parent_fingerprint = tuple(
+                (
+                    pointer.source_cluster_id,
+                    pointer.start_char,
+                    pointer.end_char,
+                    _normalize_text(pointer.verbatim_text),
+                )
+                for pointer in current_layer_context.parent_content_pointers_by_id.get(parent_id, [])
+            )
+            unchanged = _child_pointer_fingerprint(child) == parent_fingerprint
+            issues.append(
+                LayerStructuralIssue(
+                    issue_kind="unchanged_refinement" if unchanged else "unary_refinement",
+                    parent_node_id=parent_id,
+                    node_id=child.node_id,
+                    message=(
+                        "refinement returned one child with the parent's exact source span"
+                        if unchanged
+                        else "refinement returned one child; a meaningful split requires at least two children"
+                    ),
+                )
+            )
+        for child in children:
+            if len(child.child_candidates) == 1:
+                nested = child.child_candidates[0]
+                issues.append(
+                    LayerStructuralIssue(
+                        issue_kind="nested_unary_refinement",
+                        parent_node_id=child.node_id,
+                        node_id=nested.node_id,
+                        message="materialized child tree contains a unary refinement",
+                    )
+                )
+    return issues
+
+
 def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
     if not intervals:
         return []
@@ -334,6 +438,11 @@ def detect_layer_invariants(
     list[LayerDuplicateChildNote],
     list[str],
 ]:
+    if current_layer_result.metadata.get("atomic_retained") and not current_layer_result.children:
+        # Explicit atomic retention is a valid structural outcome.  The
+        # final tree validator still checks retained pointers and the
+        # post-parse coverage gate still decides source ownership.
+        return True, True, [], [], [], ["atomic_retained"]
     overlap_conflicts: list[LayerSpanConflict] = []
     coverage_gaps: list[LayerCoverageGap] = []
     duplicate_notes: list[LayerDuplicateChildNote] = []
@@ -427,6 +536,31 @@ def detect_layer_invariants(
                     f"parent {parent_id} returned no children without explicit atomic retention"
                 )
             continue
+
+        if len(parent_children) == 1:
+            only_child = parent_children[0]
+            parent_fingerprint = tuple(
+                (
+                    pointer.source_cluster_id,
+                    pointer.start_char,
+                    pointer.end_char,
+                    _normalize_text(pointer.verbatim_text),
+                )
+                for pointer in parent_pointers.get(parent_id, [])
+            )
+            child_fingerprint = _child_pointer_fingerprint(only_child)
+            reason = (
+                "unchanged refinement: the only child has the parent's exact source span"
+                if child_fingerprint == parent_fingerprint
+                else "unary refinement: a meaningful split requires at least two children"
+            )
+            review_notes.append(f"parent {parent_id}: {reason}")
+
+        for child in parent_children:
+            if len(child.child_candidates) == 1:
+                review_notes.append(
+                    f"nested unary refinement under child {child.node_id} of parent {parent_id}"
+                )
 
         seen_signatures: dict[tuple[str, tuple[tuple[str, int, int, str], ...]], str] = {}
         for child in parent_children:
@@ -613,7 +747,14 @@ def detect_layer_invariants(
                 )
 
     coverage_ok = not coverage_gaps
-    satisfied = coverage_ok and not overlap_conflicts and not duplicate_notes
+    branching_ok = all(
+        len(
+            [child for child in current_layer_result.children if child.parent_node_id == parent_id]
+        ) != 1
+        and all(len(child.child_candidates) != 1 for child in current_layer_result.children)
+        for parent_id in current_layer_context.parent_node_ids
+    )
+    satisfied = coverage_ok and not overlap_conflicts and not duplicate_notes and branching_ok
     return coverage_ok, satisfied, overlap_conflicts, coverage_gaps, duplicate_notes, review_notes
 
 
@@ -771,11 +912,24 @@ def legacy_children_for_context(
         raise ValueError("legacy compatibility tree is missing")
     full_tree = SemanticNode.model_validate(parse_session.compat_full_tree)
     children: list[LayerChildCandidate] = []
+    atomic_parent_ids: set[str] = set()
+    atomic_parent_pointers: dict[str, JsonValue] = {}
     for parent_id in current_layer_context.parent_node_ids:
         parent = find_semantic_node(full_tree, parent_id)
         if parent is None:
             continue
-        for child in parent.child_nodes:
+        parent_children = list(parent.child_nodes)
+        # A legacy callback has no separate proposal/review boundary.  Treat
+        # a one-child result as an unsuccessful refinement and retain the
+        # verified parent instead of allowing a unary tree into the workflow.
+        if len(parent_children) == 1:
+            atomic_parent_ids.add(parent_id)
+            atomic_parent_pointers[parent_id] = [
+                pointer.model_dump(mode="json")
+                for pointer in parent_children[0].total_content_pointers
+            ]
+            continue
+        for child in parent_children:
             children.append(
                 LayerChildCandidate(
                     node_id=_required_node_id(child),
@@ -790,7 +944,22 @@ def legacy_children_for_context(
                     metadata={"source": "legacy_compat"},
                 )
             )
-    return CurrentLayerResult(children=children, satisfied=True, reasoning_history=[])
+    return CurrentLayerResult(
+        children=children,
+        satisfied=True,
+        reasoning_history=[],
+        metadata=cast(
+            dict[str, JsonValue],
+            {
+                "source": "legacy_compat",
+                # A legacy parent with no children is already a verified terminal
+                # unit.  Make that disposition explicit for the shared commit gate.
+                "atomic_retained": bool(atomic_parent_ids) or not children,
+                "atomic_parent_ids": sorted(atomic_parent_ids),
+                "atomic_content_pointers_by_parent": atomic_parent_pointers,
+            },
+        ),
+    )
 
 
 def propose_layer_breakdown(
@@ -826,29 +995,32 @@ def propose_layer_breakdown(
             semantic_tree=semantic_tree,
             split_strategy=current_layer_context.split_strategy,
         )
-    if llm_cache is not None:
-        proposed = llm_cache.cached_call(
-            operation="propose_layer_breakdown",
-            fingerprint={
-                "cache_namespace": dict(cache_namespace or {}),
-                "collection_id": collection.collection_id,
-                "parse_session": parse_session,
-                "current_layer_context": current_layer_context,
-                "semantic_tree": semantic_tree,
-                "parser_input_dict": parser_input_dict,
-                "parser_source_map": parser_source_map,
-            },
-            fn=call,
-        )
-    else:
-        proposed = call()
-    if isinstance(proposed, CurrentLayerResult):
-        return proposed
-    if isinstance(proposed, dict):
-        return CurrentLayerResult.model_validate(proposed)
-    if isinstance(proposed, list):
-        return CurrentLayerResult(children=[_coerce_layer_child(child) for child in cast(list[object], proposed)])
-    raise TypeError("unsupported proposed layer result")
+    try:
+        if llm_cache is not None:
+            proposed = llm_cache.cached_call(
+                operation="propose_layer_breakdown",
+                fingerprint={
+                    "cache_namespace": dict(cache_namespace or {}),
+                    "collection_id": collection.collection_id,
+                    "parse_session": parse_session,
+                    "current_layer_context": current_layer_context,
+                    "semantic_tree": semantic_tree,
+                    "parser_input_dict": parser_input_dict,
+                    "parser_source_map": parser_source_map,
+                },
+                fn=call,
+            )
+        else:
+            proposed = call()
+        if isinstance(proposed, CurrentLayerResult):
+            return proposed
+        if isinstance(proposed, dict):
+            return CurrentLayerResult.model_validate(proposed)
+        if isinstance(proposed, list):
+            return CurrentLayerResult(children=[_coerce_layer_child(child) for child in cast(list[object], proposed)])
+        raise TypeError("unsupported proposed layer result")
+    except (ValidationError, TypeError, ValueError) as exc:
+        return _invalid_layer_result(phase="proposal", error=exc)
 
 
 def review_layer(
@@ -867,12 +1039,35 @@ def review_layer(
             parser_source_map=parser_source_map,
         )
     if parse_session.mode == "legacy_compat":
+        (
+            coverage_ok,
+            invariant_satisfied,
+            overlap_conflicts,
+            coverage_gaps,
+            duplicate_notes,
+            invariant_notes,
+        ) = detect_layer_invariants(
+            current_layer_context=current_layer_context,
+            current_layer_result=current_layer_result,
+            parser_source_map=parser_source_map,
+        )
+        structural_issues = _layer_structural_issues(
+            current_layer_context=current_layer_context,
+            current_layer_result=current_layer_result,
+        )
+        invariant_satisfied = invariant_satisfied and not structural_issues
         return (
             CurrentLayerReview(
-                updated_result=current_layer_result.model_copy(update={"satisfied": True}),
-                coverage_ok=True,
-                satisfied=True,
+                updated_result=current_layer_result.model_copy(update={"satisfied": invariant_satisfied}),
+                coverage_ok=coverage_ok,
+                satisfied=invariant_satisfied,
                 strategy_used=current_layer_context.split_strategy,
+                overlap_conflicts=overlap_conflicts,
+                coverage_gap_notes=coverage_gaps,
+                duplicate_child_notes=duplicate_notes,
+                structural_issues=structural_issues,
+                review_notes=["semantic review skipped for legacy compatibility", *invariant_notes[:20]],
+                metadata={"review_skipped": True, "legacy_compat": True, "deterministic_validation": True},
             ),
             parse_session,
         )
@@ -891,6 +1086,10 @@ def review_layer(
                 overlap_conflicts=overlap_conflicts,
                 coverage_gap_notes=coverage_gaps,
                 duplicate_child_notes=duplicate_notes,
+                structural_issues=_layer_structural_issues(
+                    current_layer_context=current_layer_context,
+                    current_layer_result=current_layer_result,
+                ),
                 review_notes=["semantic review disabled", *invariant_notes[:20]],
                 metadata={"review_skipped": True, "deterministic_validation": True},
             ),
@@ -899,7 +1098,7 @@ def review_layer(
     if review_layer_fn is None:
         reviewed = current_layer_result
     else:
-        def call() -> CurrentLayerReview:
+        def call() -> CurrentLayerReview | CurrentLayerResult | Mapping[str, object]:
             return review_layer_fn(
                 parse_session=parse_session,
                 current_layer_context=current_layer_context,
@@ -941,6 +1140,10 @@ def review_layer(
                 overlap_conflicts=overlap_conflicts,
                 coverage_gap_notes=coverage_gaps,
                 duplicate_child_notes=duplicate_notes,
+                structural_issues=_layer_structural_issues(
+                    current_layer_context=current_layer_context,
+                    current_layer_result=current_layer_result,
+                ),
                 review_notes=[
                     "quality_unknown: semantic layer review timed out",
                     "deterministic invariants authorized the layer" if invariant_satisfied else "deterministic invariants rejected the layer",
@@ -951,7 +1154,7 @@ def review_layer(
                     "review_timeout_reason": repr(exc)[:500],
                 },
             )
-        except Exception as exc:  # noqa: BLE001 - provider failures become review-unknown state
+        except Exception as exc:
             reviewed = CurrentLayerReview(
                 updated_result=current_layer_result,
                 coverage_ok=None,
@@ -966,26 +1169,42 @@ def review_layer(
                     "review_failure_reason": repr(exc)[:500],
                 },
             )
-    if isinstance(reviewed, CurrentLayerReview):
-        result = reviewed
-    elif isinstance(reviewed, CurrentLayerResult):
-        result = CurrentLayerReview(
-            updated_result=reviewed,
-                coverage_ok=_optional_bool(reviewed.metadata.get("layer_coverage_ok")),
-            satisfied=reviewed.satisfied,
-        )
-    elif isinstance(reviewed, dict):
-        if "updated_result" in reviewed or "coverage_ok" in reviewed or "review_notes" in reviewed:
-            result = CurrentLayerReview.model_validate(reviewed)
-        else:
-            parsed = CurrentLayerResult.model_validate(reviewed)
+    try:
+        if isinstance(reviewed, CurrentLayerReview):
+            result = reviewed
+        elif isinstance(reviewed, CurrentLayerResult):
             result = CurrentLayerReview(
-                updated_result=parsed,
-                coverage_ok=_optional_bool(parsed.metadata.get("layer_coverage_ok")),
-                satisfied=parsed.satisfied,
+                updated_result=reviewed,
+                coverage_ok=_optional_bool(reviewed.metadata.get("layer_coverage_ok")),
+                satisfied=reviewed.satisfied,
+                validation_diagnostics=list(reviewed.validation_diagnostics),
             )
-    else:
-        raise TypeError("unsupported reviewed layer result")
+        elif isinstance(reviewed, dict):
+            if "updated_result" in reviewed or "coverage_ok" in reviewed or "review_notes" in reviewed:
+                result = CurrentLayerReview.model_validate(reviewed)
+            else:
+                parsed = CurrentLayerResult.model_validate(reviewed)
+                result = CurrentLayerReview(
+                    updated_result=parsed,
+                    coverage_ok=_optional_bool(parsed.metadata.get("layer_coverage_ok")),
+                    satisfied=parsed.satisfied,
+                    validation_diagnostics=list(parsed.validation_diagnostics),
+                )
+        else:
+            raise TypeError("unsupported reviewed layer result")
+    except (ValidationError, TypeError, ValueError) as exc:
+        invalid_result = _invalid_layer_result(phase="review", error=exc)
+        result = CurrentLayerReview(
+            updated_result=invalid_result,
+            coverage_ok=None,
+            satisfied=None,
+            validation_diagnostics=list(invalid_result.validation_diagnostics),
+            review_notes=["quality_unknown: semantic layer review payload failed validation"],
+            metadata={
+                "review_failure": "structured_validation",
+                "retryable": True,
+            },
+        )
     coverage_ok, invariant_satisfied, overlap_conflicts, coverage_gaps, duplicate_notes, invariant_notes = detect_layer_invariants(
         current_layer_context=current_layer_context,
         current_layer_result=result.updated_result or current_layer_result,
@@ -996,16 +1215,34 @@ def review_layer(
         if note not in merged_notes:
             merged_notes.append(note)
     provider_failure = bool(result.metadata.get("review_failure"))
+    structural_issues = _layer_structural_issues(
+        current_layer_context=current_layer_context,
+        current_layer_result=result.updated_result or current_layer_result,
+    )
+    for issue in structural_issues:
+        if issue.message not in merged_notes:
+            merged_notes.append(issue.message)
+    validation_diagnostics = list(result.validation_diagnostics)
+    for diagnostic in (result.updated_result or current_layer_result).validation_diagnostics:
+        if diagnostic not in validation_diagnostics:
+            validation_diagnostics.append(diagnostic)
     base_satisfied = result.satisfied if result.satisfied is not None else invariant_satisfied
     satisfied = (
         None
         if provider_failure
-        else bool(base_satisfied and not (overlap_conflicts or coverage_gaps or duplicate_notes))
+        else bool(
+            base_satisfied
+            and not (overlap_conflicts or coverage_gaps or duplicate_notes or structural_issues)
+            and not validation_diagnostics
+        )
     )
     effective_coverage_ok = None if provider_failure else coverage_ok
     updated_result = (result.updated_result or current_layer_result).model_copy(
         update={
-            "satisfied": satisfied,
+            # A malformed provider payload is quality-unknown at the review
+            # layer, but its persisted result must still be explicitly
+            # unsatisfied so routing cannot treat it as a usable result.
+            "satisfied": False if validation_diagnostics else satisfied,
             "metadata": {
                 **(result.updated_result or current_layer_result).metadata,
                 **result.metadata,
@@ -1019,6 +1256,14 @@ def review_layer(
                 "duplicate_child_notes": [
                     item.model_dump(field_mode="backend", dump_format="json") for item in duplicate_notes
                 ],
+                "structural_issues": [
+                    item.model_dump(field_mode="backend", dump_format="json")
+                    for item in structural_issues
+                ],
+                "validation_diagnostics": [
+                    item.model_dump(field_mode="backend", dump_format="json")
+                    for item in validation_diagnostics
+                ],
             },
         }
     )
@@ -1031,6 +1276,8 @@ def review_layer(
             "overlap_conflicts": overlap_conflicts,
             "coverage_gap_notes": coverage_gaps,
             "duplicate_child_notes": duplicate_notes,
+            "structural_issues": structural_issues,
+            "validation_diagnostics": validation_diagnostics,
             "review_notes": merged_notes,
         }
     )
@@ -1058,6 +1305,14 @@ def review_layer(
         "duplicate_child_notes": [
             item.model_dump(field_mode="backend", dump_format="json")
             for item in result.duplicate_child_notes
+        ],
+        "structural_issues": [
+            item.model_dump(field_mode="backend", dump_format="json")
+            for item in result.structural_issues
+        ],
+        "validation_diagnostics": [
+            item.model_dump(field_mode="backend", dump_format="json")
+            for item in result.validation_diagnostics
         ],
         "metadata": dict(result.metadata),
     }
@@ -1093,6 +1348,16 @@ def apply_cud_update(
         metadata["duplicate_child_notes"] = [
             item.model_dump(field_mode="backend", dump_format="json")
             for item in current_layer_review.duplicate_child_notes
+        ]
+    if current_layer_review.structural_issues:
+        metadata["structural_issues"] = [
+            item.model_dump(field_mode="backend", dump_format="json")
+            for item in current_layer_review.structural_issues
+        ]
+    if current_layer_review.validation_diagnostics:
+        metadata["validation_diagnostics"] = [
+            item.model_dump(field_mode="backend", dump_format="json")
+            for item in current_layer_review.validation_diagnostics
         ]
     satisfied = (
         current_layer_review.satisfied
@@ -1212,12 +1477,25 @@ def repair_layer_candidates(
 
     repaired_children: list[LayerChildCandidate] = []
     repair_failures: list[str] = []
+    repair_diagnostics: list[LayerValidationDiagnostic] = []
     repaired_count = 0
     for child in current_layer_result.children:
         repaired_ptrs = []
         child_failed = False
         for pointer in child.total_content_pointers:
-            fixed = correct_pointer_fn(pointer, parser_source_map)
+            try:
+                fixed = correct_pointer_fn(pointer, parser_source_map)
+            except (ValidationError, TypeError, ValueError) as exc:
+                repair_diagnostics.extend(_validation_diagnostics(phase="repair", error=exc))
+                message = (
+                    f"pointer repair validation failed for child {child.title!r} "
+                    f"(parent={child.parent_node_id!r}, node_id={child.node_id!r}); "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                _LOGGER.warning("repair_layer_candidates failed: %s", message)
+                repair_failures.append(message)
+                child_failed = True
+                break
             if fixed is None:
                 message = (
                     f"unrecoverable pointer for child {child.title!r} "
@@ -1245,8 +1523,18 @@ def repair_layer_candidates(
         metadata["repair_failure_scope"] = "child_replacement"
         metadata["failure_type"] = "repair_failure"
         metadata["rollback"] = "verified_parent_retained"
+        metadata["retryable"] = True
+    validation_diagnostics = list(current_layer_result.validation_diagnostics)
+    for diagnostic in repair_diagnostics:
+        if diagnostic not in validation_diagnostics:
+            validation_diagnostics.append(diagnostic)
     return current_layer_result.model_copy(
-        update={"children": repaired_children, "metadata": metadata}
+        update={
+            "children": repaired_children,
+            "metadata": metadata,
+            "validation_diagnostics": validation_diagnostics,
+            "satisfied": False if validation_diagnostics else current_layer_result.satisfied,
+        }
     ), repaired_count
 
 
@@ -1288,6 +1576,7 @@ def validate_layer_commit(
     """
 
     parent_ids = list(current_layer_context.parent_node_ids)
+    validation_diagnostics = list(current_layer_result.validation_diagnostics)
     if not parent_ids:
         coverage_ok, satisfied, overlap_conflicts, coverage_gaps, duplicate_notes, notes = (
             detect_layer_invariants(
@@ -1296,16 +1585,30 @@ def validate_layer_commit(
                 parser_source_map=parser_source_map,
             )
         )
+        satisfied = satisfied and not validation_diagnostics
         return CurrentLayerReview(
-            updated_result=current_layer_result.model_copy(update={"satisfied": satisfied}),
+            updated_result=current_layer_result.model_copy(
+                update={"satisfied": satisfied}
+            ),
             coverage_ok=coverage_ok,
             satisfied=satisfied,
             strategy_used=current_layer_context.split_strategy,
             overlap_conflicts=overlap_conflicts,
             coverage_gap_notes=coverage_gaps,
             duplicate_child_notes=duplicate_notes,
+            structural_issues=_layer_structural_issues(
+                current_layer_context=current_layer_context,
+                current_layer_result=current_layer_result,
+            ),
+            validation_diagnostics=validation_diagnostics,
             review_notes=["post-repair pre-commit validation", *notes[:20]],
-            metadata={"commit_validation": True},
+            metadata={
+                "commit_validation": True,
+                "validation_diagnostics": [
+                    item.model_dump(field_mode="backend", dump_format="json")
+                    for item in validation_diagnostics
+                ],
+            },
             committable_parent_node_ids=parent_ids if satisfied else [],
             failed_parent_node_ids=[] if satisfied else parent_ids,
         )
@@ -1317,6 +1620,7 @@ def validate_layer_commit(
     overlap_conflicts: list[LayerSpanConflict] = []
     coverage_gaps: list[LayerCoverageGap] = []
     duplicate_notes: list[LayerDuplicateChildNote] = []
+    structural_issues: list[LayerStructuralIssue] = []
     notes: list[str] = []
     for parent_id in parent_ids:
         local_context = current_layer_context.model_copy(
@@ -1335,6 +1639,12 @@ def validate_layer_commit(
                 ]
             }
         )
+        if local_result.metadata.get("atomic_retained") and not local_result.children:
+            # An explicit atomic disposition is a successful terminal result,
+            # not a missing-parent failure.  The commit gate records the
+            # disposition on the existing parent without adding a child.
+            valid_parent_ids.append(parent_id)
+            continue
         local_coverage_ok, local_satisfied, local_overlaps, local_gaps, local_duplicates, local_notes = (
             detect_layer_invariants(
                 current_layer_context=local_context,
@@ -1345,8 +1655,14 @@ def validate_layer_commit(
         overlap_conflicts.extend(local_overlaps)
         coverage_gaps.extend(local_gaps)
         duplicate_notes.extend(local_duplicates)
+        structural_issues.extend(
+            _layer_structural_issues(
+                current_layer_context=local_context,
+                current_layer_result=local_result,
+            )
+        )
         notes.extend(f"parent {parent_id}: {note}" for note in local_notes[:12])
-        if local_coverage_ok and local_satisfied:
+        if not validation_diagnostics and local_coverage_ok and local_satisfied:
             valid_parent_ids.append(parent_id)
             valid_children.extend(local_result.children)
         else:
@@ -1364,12 +1680,18 @@ def validate_layer_commit(
         overlap_conflicts=overlap_conflicts,
         coverage_gap_notes=coverage_gaps,
         duplicate_child_notes=duplicate_notes,
+        structural_issues=structural_issues,
+        validation_diagnostics=validation_diagnostics,
         review_notes=["post-repair pre-commit validation", *notes[:20]],
         metadata={
             "commit_validation": True,
             "committable_parent_node_ids": cast(JsonValue, valid_parent_ids),
             "failed_parent_node_ids": cast(JsonValue, failed_parent_ids),
             "partial_commit": partial_commit,
+            "validation_diagnostics": [
+                item.model_dump(field_mode="backend", dump_format="json")
+                for item in validation_diagnostics
+            ],
         },
         committable_parent_node_ids=valid_parent_ids,
         failed_parent_node_ids=failed_parent_ids,
@@ -1386,10 +1708,39 @@ def commit_layer_children(
     # This function is also a public primitive; do not rely on callers having
     # run the workflow's preceding validation step.
     finalize_semantic_tree(semantic_tree)
+    if current_layer_result.validation_diagnostics:
+        raise ValueError("layer contains validation diagnostics and cannot be committed")
+    grouped_counts: dict[str, int] = {}
+    for child in current_layer_result.children:
+        grouped_counts[child.parent_node_id] = grouped_counts.get(child.parent_node_id, 0) + 1
+        if len(child.child_candidates) == 1:
+            raise ValueError(
+                f"nested unary refinement under proposed child {child.node_id!r}"
+            )
+    if current_layer_result.children:
+        if any(count == 1 for count in grouped_counts.values()):
+            raise ValueError("unary refinement cannot be committed")
+    elif parent_node_ids and not current_layer_result.metadata.get("atomic_retained"):
+        raise ValueError("empty layer requires explicit atomic retention")
+    if parent_node_ids and not current_layer_result.metadata.get("atomic_retained"):
+        missing_parent_ids = [
+            parent_id for parent_id in parent_node_ids if grouped_counts.get(parent_id, 0) == 0
+        ]
+        if missing_parent_ids:
+            raise ValueError(
+                "layer omitted parents without atomic retention: "
+                + ", ".join(missing_parent_ids)
+            )
     tree = SemanticNode.model_validate(semantic_tree.model_dump())
     retained_parent_ids = {
         str(node_id) for node_id in (parent_node_ids or [])
     }
+    raw_atomic_pointers = current_layer_result.metadata.get(
+        "atomic_content_pointers_by_parent", {}
+    )
+    atomic_pointers_by_parent = (
+        raw_atomic_pointers if isinstance(raw_atomic_pointers, dict) else {}
+    )
     children_by_parent: dict[str, dict[str, SemanticNode]] = {}
     for child in current_layer_result.children:
         parent_children = children_by_parent.setdefault(child.parent_node_id, {})
@@ -1447,9 +1798,23 @@ def commit_layer_children(
             metadata = dict(payload.get("metadata") or {})
             metadata["atomic_retained"] = True
             payload["metadata"] = metadata
+            # If the caller did not provide a replacement pointer payload,
+            # retain the already verified parent's authoritative pointers.
+            # An absent mapping is different from an explicit empty mapping.
+            if str(node.node_id) in atomic_pointers_by_parent:
+                raw_pointers = atomic_pointers_by_parent[str(node.node_id)]
+            else:
+                raw_pointers = None
+            if isinstance(raw_pointers, list):
+                payload["total_content_pointers"] = [
+                    HydratedTextPointer.model_validate(pointer).model_dump()
+                    for pointer in raw_pointers
+                    if isinstance(pointer, dict)
+                ]
         return SemanticNode.model_validate(payload)
 
-    return walk(tree)
+    committed = walk(tree)
+    return finalize_semantic_tree(committed)
 
 
 def requeue_failed_frontier_items(
@@ -1494,6 +1859,23 @@ def enqueue_next_layer_frontier(
         (item.parent_node_id, item.depth)
         for item in queued
     }
+    children_by_parent: dict[str, list[LayerChildCandidate]] = {}
+    for child in current_layer_result.children:
+        children_by_parent.setdefault(child.parent_node_id, []).append(child)
+    for parent_id, children in children_by_parent.items():
+        if len(children) == 1:
+            raise ValueError(f"unary refinement cannot enter the frontier for {parent_id!r}")
+        parent_fingerprint = tuple(
+            (
+                pointer.source_cluster_id,
+                pointer.start_char,
+                pointer.end_char,
+                _normalize_text(pointer.verbatim_text),
+            )
+            for pointer in current_layer_context.parent_content_pointers_by_id.get(parent_id, [])
+        )
+        if any(_child_pointer_fingerprint(child) == parent_fingerprint for child in children):
+            raise ValueError(f"unchanged refinement cannot enter the frontier for {parent_id!r}")
     for child in current_layer_result.children:
         frontier_key = (child.node_id, next_depth)
         if child.expandable and frontier_key not in existing_frontier:
@@ -1539,9 +1921,13 @@ def finalize_semantic_tree(
     """Validate the replayed tree before it reaches export or persistence."""
     seen_ids: set[str] = set()
     visiting: set[str] = set()
-
-    def walk(node: SemanticNode, expected_parent_id: str | None) -> None:
+    pending: list[tuple[SemanticNode, str | None, bool]] = [(semantic_tree, None, False)]
+    while pending:
+        node, expected_parent_id, exiting = pending.pop()
         node_id = _required_node_id(node)
+        if exiting:
+            visiting.remove(node_id)
+            continue
         if node_id in visiting:
             raise ValueError(f"semantic tree contains a cycle at {node_id!r}")
         if node_id in seen_ids:
@@ -1562,11 +1948,13 @@ def finalize_semantic_tree(
                 pointer_error = pointer_source_validation_error(pointer, parser_source_map)
                 if pointer_error is not None:
                     raise ValueError(f"node {node_id!r}: {pointer_error}")
-        for child in node.child_nodes:
-            walk(child, node_id)
-        visiting.remove(node_id)
-
-    walk(semantic_tree, None)
+        pending.append((node, expected_parent_id, True))
+        for child in reversed(node.child_nodes):
+            pending.append((child, node_id, False))
+    # Run the shared structural check after identity/cycle checks so callers
+    # receive the more actionable cycle/duplicate diagnostic for malformed
+    # graphs that also happen to contain a unary branch.
+    validate_semantic_tree_shape(semantic_tree)
     return semantic_tree
 
 

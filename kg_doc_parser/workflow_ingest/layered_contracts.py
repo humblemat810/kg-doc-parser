@@ -22,11 +22,13 @@ from .models import (
 )
 from .parser_core import (
     ProposeLayerFn,
+    commit_layer_children,
     enqueue_next_layer_frontier,
     initialize_parse_session,
     legacy_children_for_context,
     prepare_layer_frontier,
     propose_layer_breakdown,
+    validate_layer_commit,
 )
 from .semantics import SemanticNode
 from .serialization import JsonValue
@@ -199,13 +201,27 @@ def expand_layered_frontier(
             semantic_tree=semantic_tree,
             propose_layer_fn=propose_layer_fn,
         )
+    commit_review = validate_layer_commit(
+        current_layer_context=context,
+        current_layer_result=layer_result,
+        parser_source_map=_parser_source_map(request.source_map),
+    )
+    if not commit_review.satisfied:
+        reasons = "; ".join(commit_review.review_notes[:4])
+        raise ValueError(f"layered parse refinement failed structural validation: {reasons}")
+    committed_result = commit_review.updated_result or layer_result
+    updated_tree = commit_layer_children(
+        semantic_tree=semantic_tree,
+        current_layer_result=committed_result,
+        current_depth=context.depth,
+        parent_node_ids=commit_review.committable_parent_node_ids,
+    )
     next_frontier = enqueue_next_layer_frontier(
         frontier_queue=remaining,
         current_layer_context=context,
-        current_layer_result=layer_result,
+        current_layer_result=committed_result,
         parse_session=session,
     )
-    updated_tree = _attach_children(semantic_tree, layer_result)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     if (
         request.limits.wall_time_seconds is not None
@@ -228,13 +244,13 @@ def expand_layered_frontier(
         session=updated_session,
         consumed_frontier=selected,
         remaining_frontier=next_frontier,
-        children=list(layer_result.children),
+        children=list(committed_result.children),
         semantic_tree=updated_tree,
         stable=stable,
         diagnostics={
             "phase": "parsed_graph_persisted" if stable else "parse_expanding",
             "frontier_batch_size": len(selected),
-            "child_count": len(layer_result.children),
+            "child_count": len(committed_result.children),
         },
         usage=LayeredParseUsage(
             parser_calls=0 if session.mode == "legacy_compat" else 1,

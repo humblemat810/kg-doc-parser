@@ -26,6 +26,7 @@ FailureCategory = Literal[
     "fallback",
     "rollback",
     "in_flight_limit",
+    "unary_refinement",
 ]
 
 
@@ -530,6 +531,44 @@ class LayerDuplicateChildNote(ModeSlicingMixin, BaseModel):
     reason: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
 
 
+class LayerStructuralIssue(ModeSlicingMixin, BaseModel):
+    """A structural violation found after provider output was decoded."""
+
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    issue_kind: Annotated[
+        Literal["unary_refinement", "unchanged_refinement", "nested_unary_refinement"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ]
+    parent_node_id: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    node_id: Annotated[str | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
+    message: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+
+
+class LayerValidationDiagnostic(ModeSlicingMixin, BaseModel):
+    """Bounded model-construction feedback that can be sent to retry logic."""
+
+    default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
+
+    phase: Annotated[
+        Literal["proposal", "review", "repair", "commit"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ]
+    error_type: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    message: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
+    location: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
+        default_factory=list
+    )
+
+
 class LayerChildCandidate(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
@@ -563,6 +602,17 @@ class LayerChildCandidate(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_materialized_child_shape(self) -> LayerChildCandidate:
+        # This is an intrinsic check: unlike a layer-level unary refinement,
+        # a materialized child tree carries its complete local shape here.
+        # Contextual parent cardinality remains enforced by the layer gates.
+        if len(self.child_candidates) == 1:
+            raise ValueError(
+                "materialized child candidates must be empty or contain at least two children"
+            )
+        return self
 
 
 class BoundaryCutpoint(BaseModel):
@@ -727,6 +777,13 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
     satisfied: Annotated[bool | None, DtoField(), BackendField(), FrontendField(), LLMField()] = None
     reasoning_history: Annotated[list[LayerReasoningEntry], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
     review_rounds: Annotated[int, DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default=0, strict=True, ge=0)
+    validation_diagnostics: Annotated[
+        list[LayerValidationDiagnostic],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = Field(default_factory=list)
     metadata: Annotated[
         dict[str, JsonValue],
         DtoField(),
@@ -815,6 +872,20 @@ class CurrentLayerReview(ModeSlicingMixin, BaseModel):
         FrontendField(),
         LLMField(),
     ] = Field(default_factory=list)
+    structural_issues: Annotated[
+        list[LayerStructuralIssue],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = Field(default_factory=list)
+    validation_diagnostics: Annotated[
+        list[LayerValidationDiagnostic],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        LLMField(),
+    ] = Field(default_factory=list)
     review_notes: Annotated[list[str], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(
         default_factory=list
     )
@@ -843,6 +914,7 @@ class LLMCurrentLayerReview(BaseModel):
     overlap_conflicts: list[LLMSpanConflict] = Field(default_factory=list)
     coverage_gap_notes: list[LayerCoverageGap] = Field(default_factory=list)
     duplicate_child_notes: list[LayerDuplicateChildNote] = Field(default_factory=list)
+    structural_issues: list[LayerStructuralIssue] = Field(default_factory=list)
     review_notes: list[str] = Field(default_factory=list)
 
 
