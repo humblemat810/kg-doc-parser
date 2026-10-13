@@ -127,6 +127,8 @@ def workflow_predicates() -> WorkflowPredicates:
             and not review.get("overlap_conflicts")
             and not review.get("coverage_gap_notes")
             and not review.get("duplicate_child_notes")
+            and not review.get("structural_issues")
+            and not review.get("validation_diagnostics")
         )
 
     return {

@@ -60,6 +60,7 @@ from .models import (
     SourceUnit,
     WorkflowIngestInput,
 )
+from .parser_core import finalize_semantic_tree
 from .providers import (
     ProviderDiagnosticsSink,
     WorkflowProviderSettings,
@@ -2430,11 +2431,121 @@ def _materialize_block_tree(
                     verbatim_text=page_text[pointer.start_char : aggregate_end + 1],
                 )
             ]
-        if heading_leaf is not None:
+        if heading_leaf is not None and child_nodes:
+            # A heading container with its own text plus child sections is a
+            # meaningful branch. A heading-only block is instead a grounded
+            # leaf; retaining a synthetic text child would create a unary
+            # semantic refinement.
             node.child_nodes.append(heading_leaf)
+        elif heading_leaf is not None:
+            node.total_content_pointers = [pointer]
+            node.metadata = {
+                **dict(node.metadata),
+                "page_index_role": "heading_leaf",
+                "atomic_retained": True,
+            }
         node.child_nodes.extend(child_nodes)
         nodes.append(node)
     return nodes, cursor
+
+
+def _rebase_page_index_subtree(
+    children: list[SemanticNode],
+    *,
+    parent_id: str | None,
+    level_from_root: int,
+) -> list[SemanticNode]:
+    """Rebase every descendant after removing a structural wrapper."""
+
+    pending: list[tuple[SemanticNode, str | None, int, bool]] = [
+        (child, parent_id, level_from_root, False) for child in reversed(children)
+    ]
+    rebased: dict[int, SemanticNode] = {}
+    while pending:
+        current, expected_parent_id, current_level, exiting = pending.pop()
+        marker = id(current)
+        if exiting:
+            rebased[marker] = current.model_copy(
+                update={
+                    "parent_id": expected_parent_id,
+                    "level_from_root": current_level,
+                    "child_nodes": [rebased[id(child)] for child in current.child_nodes],
+                }
+            )
+            continue
+        pending.append((current, expected_parent_id, current_level, True))
+        child_parent_id = current.node_id
+        for child in reversed(current.child_nodes):
+            pending.append((child, child_parent_id, current_level + 1, False))
+    return [rebased[id(child)] for child in children]
+
+
+def _normalize_page_index_unary_nodes(node: SemanticNode) -> SemanticNode:
+    """Normalize known page-index wrappers without inventing children.
+
+    A wrapper can be flattened only when its child already represents a real
+    branching section. Other unary semantic nodes are retained as atomic
+    evidence-bearing nodes and diagnosed in metadata.
+    """
+
+    pending: list[tuple[SemanticNode, bool]] = [(node, False)]
+    normalized: dict[int, SemanticNode] = {}
+    while pending:
+        current, exiting = pending.pop()
+        marker = id(current)
+        if exiting:
+            normalized_children = [normalized[id(child)] for child in current.child_nodes]
+            current = current.model_copy(update={"child_nodes": normalized_children})
+            if len(normalized_children) != 1:
+                normalized[marker] = current
+                continue
+            child = normalized_children[0]
+            role = str(current.metadata.get("page_index_role", ""))
+            child_role = str(child.metadata.get("page_index_role", ""))
+            is_document_wrapper = (
+                role == "DOCUMENT_ROOT"
+                or (role == "" and current.node_type == "DOCUMENT_ROOT")
+            ) and child_role == "page"
+            is_section_wrapper = role in {"page", "heading_container"}
+            if (is_document_wrapper or is_section_wrapper) and len(child.child_nodes) >= 2:
+                normalized[marker] = current.model_copy(
+                    update={
+                        "child_nodes": _rebase_page_index_subtree(
+                            list(child.child_nodes),
+                            parent_id=current.node_id,
+                            level_from_root=current.level_from_root + 1,
+                        )
+                    }
+                )
+                continue
+
+            metadata = dict(current.metadata)
+            metadata["atomic_retained"] = True
+            metadata["unary_normalization"] = "atomic_retained"
+            total_pointers = list(current.total_content_pointers)
+            if not total_pointers:
+                total_pointers = list(current.aggregate_content_pointers)
+            if not total_pointers:
+                total_pointers = list(child.total_content_pointers)
+            if not total_pointers:
+                total_pointers = list(child.aggregate_content_pointers)
+            metadata["atomic_retained_child"] = {
+                "node_id": child.node_id,
+                "title": child.title,
+                "node_type": child.node_type,
+            }
+            normalized[marker] = current.model_copy(
+                update={
+                    "total_content_pointers": total_pointers,
+                    "child_nodes": [],
+                    "metadata": metadata,
+                }
+            )
+            continue
+        pending.append((current, True))
+        for child in reversed(current.child_nodes):
+            pending.append((child, False))
+    return normalized[id(node)]
 
 
 def parse_page_index_layer(
@@ -2624,6 +2735,7 @@ def parse_page_index_document(
     refine_excerpts: bool = False,
     summary_enabled: bool = True,
     hierarchical_summary_enabled: bool | None = None,
+    max_depth: int = 10,
 ) -> PageIndexParseResult:
     """Parse a plain text or Markdown document into a page-index semantic tree."""
 
@@ -2768,6 +2880,7 @@ def parse_page_index_document(
                     verbatim_text=page_text,
                 )
             ],
+            metadata={"page_index_role": "page", "semantic_kind": "page"},
         )
         child_nodes, _ = _materialize_block_tree(
             block_specs=block_specs,
@@ -2788,6 +2901,12 @@ def parse_page_index_document(
             )
 
     semantic_tree = root_node.model_copy(update={"child_nodes": page_nodes})
+    semantic_tree = _normalize_page_index_unary_nodes(semantic_tree)
+    semantic_tree = finalize_semantic_tree(
+        semantic_tree,
+        parser_source_map=parser_source_map,
+        max_depth=max_depth,
+    )
     coverage = compute_pointer_coverage(
         semantic_tree,
         cast(dict[str, dict[str, JsonValue]], parser_source_map),

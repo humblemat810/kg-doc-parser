@@ -511,7 +511,11 @@ def run_layerwise_source_workflow(
         parsing_mode=parsing_mode,  # type: ignore[arg-type]
         max_depth=max_depth,
     )
-    graph_payload = legacy_semantic_tree_to_kge_payload(tree, doc_id=source_path.name)
+    graph_payload = legacy_semantic_tree_to_kge_payload(
+        tree,
+        doc_id=source_path.name,
+        parser_source_map=source_map,
+    )
     graph_path = output_dir / "layerwise-graph.json"
     graph_path.write_text(json.dumps(graph_payload, indent=2), encoding="utf-8")
     summary = {

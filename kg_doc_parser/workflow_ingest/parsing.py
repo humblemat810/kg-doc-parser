@@ -79,6 +79,7 @@ class PageIndexParseKwargs(TypedDict):
     refine_excerpts: NotRequired[bool]
     summary_enabled: NotRequired[bool]
     hierarchical_summary_enabled: NotRequired[bool | None]
+    max_depth: NotRequired[int]
 
 
 class TreeParseKwargs(TypedDict):
@@ -123,6 +124,7 @@ class PageIndexParseRequest:
     refine_excerpts: bool = False
     summary_enabled: bool = True
     hierarchical_summary_enabled: bool | None = None
+    max_depth: int = 10
 
 
 @dataclass(slots=True)
@@ -231,6 +233,7 @@ def parse_page_index_document(
     refine_excerpts: bool = False,
     summary_enabled: bool = True,
     hierarchical_summary_enabled: bool | None = None,
+    max_depth: int = 10,
 ) -> PageIndexParseResult:
     """Parse a text / Markdown page-index document into a semantic tree."""
 
@@ -252,6 +255,7 @@ def parse_page_index_document(
         refine_excerpts=refine_excerpts,
         summary_enabled=summary_enabled,
         hierarchical_summary_enabled=hierarchical_summary_enabled,
+        max_depth=max_depth,
     )
 
 
@@ -335,6 +339,7 @@ def parse_document(*, mode: ParseMode, **kwargs: object) -> ParseDocumentResult:
             refine_excerpts=request.refine_excerpts,
             summary_enabled=request.summary_enabled,
             hierarchical_summary_enabled=request.hierarchical_summary_enabled,
+            max_depth=request.max_depth,
         )
     if mode == "tree":
         request = TreeParseRequest(**cast(TreeParseKwargs, kwargs))

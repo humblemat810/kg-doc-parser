@@ -181,7 +181,7 @@ def test_cloud_provider_branches_run_offline_page_index_semantic_path(
         hierarchical_summary_enabled=False,
     )
 
-    assert result.semantic_tree.child_nodes
+    assert result.semantic_tree.child_nodes or result.semantic_tree.metadata.get("atomic_retained") is True
     assert result.diagnostics["page_diagnostics"][0]["assignment_mode"] == "llm_flat_assignment"
     assert result.diagnostics["assignment_mode"] == "llm_flat_assignment"
     assert _OfflineSemanticChatModel.constructed

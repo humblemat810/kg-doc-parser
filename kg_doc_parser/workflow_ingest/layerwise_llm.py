@@ -1507,11 +1507,11 @@ def _assemble_layer_result_from_boundaries(
         return CurrentLayerResult(
             children=[],
             satisfied=True,
+            atomic_retained=True,
             reasoning_history=[LayerReasoningEntry(source="boundary_first_deterministic_empty")],
             metadata={
                 "fallback": "boundary_empty",
                 "allow_empty_layer": True,
-                "atomic_retained": True,
             },
         ), [], []
 
@@ -1720,7 +1720,19 @@ def _structured_invoke(
                     else:
                         parsed_dump = getattr(parsed, "model_dump", None)
                         if callable(parsed_dump):
-                            result = schema.model_validate(parsed_dump())
+                            # Internal adapters and test doubles may return a
+                            # richer Pydantic model than the provider DTO.
+                            # Narrow only that trusted model instance to the
+                            # declared schema; mappings from the provider stay
+                            # strict so extra fields cannot bypass validation.
+                            payload = parsed_dump()
+                            if isinstance(payload, dict):
+                                payload = {
+                                    field_name: payload[field_name]
+                                    for field_name in schema.model_fields
+                                    if field_name in payload
+                                }
+                            result = schema.model_validate(payload)
                         else:
                             result = schema.model_validate(parsed)
                 else:
@@ -1762,11 +1774,11 @@ def _fallback_layer_result(
         return CurrentLayerResult(
             children=[],
             satisfied=True,
+            atomic_retained=True,
             reasoning_history=[LayerReasoningEntry(source="deterministic_depth_stop")],
             metadata={
                 "fallback": "depth_stop",
                 "allow_empty_layer": True,
-                "atomic_retained": True,
             },
         )
     parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
@@ -2337,7 +2349,7 @@ def build_layerwise_llm_callbacks(
                                 target_cut_offset=target.cut_offset,
                                 refined_cutpoint_count=len(refinement_decisions),
                             )
-                    except Exception as refinement_exc:  # noqa: BLE001 - refinement is best effort
+                    except Exception as refinement_exc:
                         refinement_notes.append(
                             f"boundary refinement skipped for {target.parent_node_id}:{target.source_cluster_id}:{target.cut_offset} "
                             f"due to {refinement_exc!r}"
@@ -2471,13 +2483,13 @@ def build_layerwise_llm_callbacks(
                     fallback = CurrentLayerResult(
                         children=[],
                         satisfied=True,
+                        atomic_retained=True,
                         reasoning_history=list(fallback.reasoning_history),
                         metadata=cast(
                             dict[str, JsonValue],
                             {
                                 **dict(fallback.metadata),
                                 "allow_empty_layer": True,
-                                "atomic_retained": True,
                                 "boundary_rejected_child_ids": fallback_identical_ids,
                             },
                         ),

@@ -90,6 +90,15 @@ def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):
                 parent_id=root.node_id,
             )
         )
+    if len(root.child_nodes) == 1:
+        only_child = root.child_nodes[0]
+        root = root.model_copy(
+            update={
+                "total_content_pointers": list(only_child.total_content_pointers),
+                "child_nodes": [],
+                "metadata": {"atomic_retained": True},
+            }
+        )
     return root
 
 
@@ -114,6 +123,25 @@ def _partial_semantic_tree(*, collection, parser_input_dict, parser_source_map):
                     start_char=0,
                     end_char=partial_end,
                     verbatim_text=text[: partial_end + 1],
+                )
+            ],
+            child_nodes=[],
+            level_from_root=1,
+            parent_id=root.node_id,
+        )
+    )
+    # Keep this fixture structurally valid so the test reaches the intended
+    # coverage gate instead of being rejected as a unary refinement.
+    root.child_nodes.append(
+        SemanticNode(
+            title="partial-tail",
+            node_type="TEXT_FLOW",
+            total_content_pointers=[
+                HydratedTextPointer(
+                    source_cluster_id=first_id,
+                    start_char=partial_end + 1,
+                    end_char=partial_end + 1,
+                    verbatim_text=text[partial_end + 1 : partial_end + 2],
                 )
             ],
             child_nodes=[],
@@ -779,6 +807,7 @@ def test_pointer_correction_is_applied_before_validation(workflow_backend_kind):
     def _misaligned_tree(*, collection, parser_input_dict, parser_source_map):
         unit_id, record = next(iter(parser_source_map.items()))
         text = record["text"]
+        split_at = text.index(" ") + 1
         return SemanticNode(
             title=collection.title,
             node_type="DOCUMENT_ROOT",
@@ -791,13 +820,27 @@ def test_pointer_correction_is_applied_before_validation(workflow_backend_kind):
                         HydratedTextPointer(
                             source_cluster_id=unit_id,
                             start_char=0,
-                            end_char=len(text) - 1,
-                            verbatim_text=text + " trailing noise",
+                            end_char=split_at - 1,
+                            verbatim_text=text[:split_at] + " trailing noise",
                         )
                     ],
                     child_nodes=[],
                     level_from_root=1,
-                )
+                ),
+                SemanticNode(
+                    title="remaining",
+                    node_type="TEXT_FLOW",
+                    total_content_pointers=[
+                        HydratedTextPointer(
+                            source_cluster_id=unit_id,
+                            start_char=split_at,
+                            end_char=len(text) - 1,
+                            verbatim_text=text[split_at:],
+                        )
+                    ],
+                    child_nodes=[],
+                    level_from_root=1,
+                ),
             ],
             level_from_root=0,
         )

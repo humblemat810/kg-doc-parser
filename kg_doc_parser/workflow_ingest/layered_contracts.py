@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .models import (
     CurrentLayerResult,
@@ -22,13 +22,16 @@ from .models import (
 )
 from .parser_core import (
     ProposeLayerFn,
+    commit_layer_children,
     enqueue_next_layer_frontier,
     initialize_parse_session,
     legacy_children_for_context,
     prepare_layer_frontier,
     propose_layer_breakdown,
+    requeue_failed_frontier_items,
+    validate_layer_commit,
 )
-from .semantics import SemanticNode
+from .semantics import SemanticNode, validate_semantic_tree_integrity
 from .serialization import JsonValue
 
 
@@ -79,6 +82,11 @@ class LayeredParseSeedResult(BaseModel):
     diagnostics: LayeredPayload = Field(default_factory=dict)
     usage: LayeredParseUsage = Field(default_factory=LayeredParseUsage)
 
+    @model_validator(mode="after")
+    def _validate_root(self) -> "LayeredParseSeedResult":
+        validate_semantic_tree_integrity(self.root, max_depth=self.session.max_depth)
+        return self
+
 
 class LayeredParseExpandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -90,6 +98,15 @@ class LayeredParseExpandRequest(BaseModel):
     parser_input: LayeredPayload
     source_map: LayeredSourceMap
     limits: LayeredParseLimits = Field(default_factory=LayeredParseLimits)
+
+    @model_validator(mode="after")
+    def _validate_input_tree(self) -> "LayeredParseExpandRequest":
+        validate_semantic_tree_integrity(
+            SemanticNode.model_validate(self.semantic_tree),
+            parser_source_map=cast(dict[str, dict[str, object]], self.source_map),
+            max_depth=min(self.limits.max_depth, self.session.max_depth),
+        )
+        return self
 
 
 class LayeredParseExpandResult(BaseModel):
@@ -103,6 +120,11 @@ class LayeredParseExpandResult(BaseModel):
     stable: bool
     diagnostics: LayeredPayload = Field(default_factory=dict)
     usage: LayeredParseUsage = Field(default_factory=LayeredParseUsage)
+
+    @model_validator(mode="after")
+    def _validate_result_tree(self) -> "LayeredParseExpandResult":
+        validate_semantic_tree_integrity(self.semantic_tree, max_depth=self.session.max_depth)
+        return self
 
 
 def initialize_layered_parse(request: LayeredParseSeedRequest) -> LayeredParseSeedResult:
@@ -199,13 +221,34 @@ def expand_layered_frontier(
             semantic_tree=semantic_tree,
             propose_layer_fn=propose_layer_fn,
         )
+    commit_review = validate_layer_commit(
+        current_layer_context=context,
+        current_layer_result=layer_result,
+        parser_source_map=_parser_source_map(request.source_map),
+    )
+    if not commit_review.satisfied:
+        reasons = "; ".join(commit_review.review_notes[:4])
+        raise ValueError(f"layered parse refinement failed structural validation: {reasons}")
+    committed_result = commit_review.updated_result or layer_result
+    updated_tree = commit_layer_children(
+        semantic_tree=semantic_tree,
+        current_layer_result=committed_result,
+        current_depth=context.depth,
+        parent_node_ids=commit_review.committable_parent_node_ids,
+        parser_source_map=_parser_source_map(request.source_map),
+        max_depth=request.limits.max_depth,
+    )
     next_frontier = enqueue_next_layer_frontier(
         frontier_queue=remaining,
         current_layer_context=context,
-        current_layer_result=layer_result,
+        current_layer_result=committed_result,
         parse_session=session,
     )
-    updated_tree = _attach_children(semantic_tree, layer_result)
+    next_frontier = requeue_failed_frontier_items(
+        frontier_queue=next_frontier,
+        parent_node_ids=commit_review.failed_parent_node_ids,
+        depth=context.depth,
+    )
     elapsed_ms = int((time.monotonic() - started) * 1000)
     if (
         request.limits.wall_time_seconds is not None
@@ -228,13 +271,13 @@ def expand_layered_frontier(
         session=updated_session,
         consumed_frontier=selected,
         remaining_frontier=next_frontier,
-        children=list(layer_result.children),
+        children=list(committed_result.children),
         semantic_tree=updated_tree,
         stable=stable,
         diagnostics={
             "phase": "parsed_graph_persisted" if stable else "parse_expanding",
             "frontier_batch_size": len(selected),
-            "child_count": len(layer_result.children),
+            "child_count": len(committed_result.children),
         },
         usage=LayeredParseUsage(
             parser_calls=0 if session.mode == "legacy_compat" else 1,
@@ -292,12 +335,19 @@ def _attach_children(tree: SemanticNode, result: CurrentLayerResult) -> Semantic
             )
         )
 
-    def walk(node: SemanticNode) -> SemanticNode:
-        updated_children = [walk(existing) for existing in node.child_nodes]
+    rebuilt: dict[int, SemanticNode] = {}
+    pending: list[tuple[SemanticNode, bool]] = [(tree, False)]
+    while pending:
+        node, exiting = pending.pop()
+        if not exiting:
+            pending.append((node, True))
+            pending.extend((child, False) for child in reversed(node.child_nodes))
+            continue
+        updated_children = [rebuilt[id(child)] for child in node.child_nodes]
         updated_children.extend(children_by_parent.get(str(node.node_id), []))
-        return node.model_copy(update={"child_nodes": updated_children})
+        rebuilt[id(node)] = node.model_copy(update={"child_nodes": updated_children})
 
-    return walk(tree)
+    return rebuilt[id(tree)]
 
 
 __all__ = [

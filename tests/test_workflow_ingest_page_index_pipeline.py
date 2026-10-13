@@ -40,6 +40,17 @@ def _fixture_text(name: str) -> str:
     return (Path(__file__).parent / "fixtures" / "page_index" / name).read_text(encoding="utf-8")
 
 
+def _find_nodes(root: SemanticNode, title: str) -> list[SemanticNode]:
+    found: list[SemanticNode] = []
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        if node.title == title:
+            found.append(node)
+        pending.extend(reversed(node.child_nodes))
+    return found
+
+
 def _scratch(name: str) -> Path:
     root = Path("tests") / ".tmp_workflow_ingest_page_index"
     path = root / f"{name}_{uuid4().hex}"
@@ -53,6 +64,86 @@ def _manual_ollama_case_cache_dir(*, fixture_name: str, parser_model: str) -> Pa
     path = Path("tests") / ".tmp_workflow_ingest_page_index" / "manual_ollama_cache" / safe_model / safe_fixture
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def test_page_index_wrapper_rebase_updates_all_descendant_levels() -> None:
+    left = SemanticNode(
+        node_id="left",
+        parent_id="page",
+        title="Left",
+        level_from_root=2,
+        child_nodes=[
+            SemanticNode(node_id="left-a", parent_id="left", title="A", level_from_root=3),
+            SemanticNode(node_id="left-b", parent_id="left", title="B", level_from_root=3),
+        ],
+    )
+    right = SemanticNode(
+        node_id="right",
+        parent_id="page",
+        title="Right",
+        level_from_root=2,
+        child_nodes=[
+            SemanticNode(node_id="right-a", parent_id="right", title="A", level_from_root=3),
+            SemanticNode(node_id="right-b", parent_id="right", title="B", level_from_root=3),
+        ],
+    )
+    page = SemanticNode(
+        node_id="page",
+        parent_id="root",
+        title="Page",
+        level_from_root=1,
+        metadata={"page_index_role": "page"},
+        child_nodes=[left, right],
+    )
+    root = SemanticNode(
+        node_id="root",
+        title="Root",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[page],
+    )
+
+    normalized = page_index_module._normalize_page_index_unary_nodes(root)
+
+    assert [node.node_id for node in normalized.child_nodes] == ["left", "right"]
+    assert all(node.level_from_root == 1 for node in normalized.child_nodes)
+    assert all(
+        grandchild.level_from_root == 2
+        for node in normalized.child_nodes
+        for grandchild in node.child_nodes
+    )
+
+
+def test_page_index_atomic_fallback_preserves_child_evidence_metadata() -> None:
+    child = SemanticNode(
+        node_id="child",
+        parent_id="parent",
+        title="Meaningful child",
+        node_type="SECTION",
+        total_content_pointers=[
+            HydratedTextPointer(
+                source_cluster_id="unit",
+                start_char=0,
+                end_char=4,
+                verbatim_text="Alpha",
+            )
+        ],
+    )
+    parent = SemanticNode(
+        node_id="parent",
+        title="Wrapper",
+        node_type="TEXT_FLOW",
+        child_nodes=[child],
+    )
+
+    normalized = page_index_module._normalize_page_index_unary_nodes(parent)
+
+    assert normalized.child_nodes == []
+    assert normalized.total_content_pointers[0].verbatim_text == "Alpha"
+    assert normalized.metadata["atomic_retained_child"] == {
+        "node_id": "child",
+        "title": "Meaningful child",
+        "node_type": "SECTION",
+    }
 
 
 def _ollama_parser_model_params() -> list[object]:
@@ -276,7 +367,8 @@ def test_all_declared_page_index_modes_share_semantic_path_with_fake_provider(
         provider_diagnostics_sink=diagnostics.append,
     )
 
-    assert result.semantic_tree.child_nodes
+    assert result.semantic_tree.child_nodes == []
+    assert result.semantic_tree.metadata["atomic_retained"] is True
     assert diagnostics
     assert {record["operation"] for record in diagnostics} == {"page_index_assignment"}
     assert all(record["strategy"] == "page_index" for record in diagnostics)
@@ -523,12 +615,34 @@ def test_page_index_materialized_title_leaf_survives_layer_commit() -> None:
                 node_type="HEADING_TEXT",
                 total_content_pointers=[pointer],
                 expandable=False,
+            ),
+            LayerChildCandidate(
+                node_id="heading-body",
+                parent_node_id="heading",
+                title="Body",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[pointer],
+                expandable=False,
+            ),
+        ],
+    )
+    sibling = LayerChildCandidate(
+        node_id="heading-sibling",
+        parent_node_id="root",
+        title="Other",
+        node_type="TEXT_FLOW",
+        total_content_pointers=[
+            HydratedTextPointer(
+                source_cluster_id="unit-1",
+                start_char=5,
+                end_char=9,
+                verbatim_text="Other",
             )
         ],
     )
     committed = commit_layer_children(
         semantic_tree=SemanticNode(node_id="root", parent_id=None, title="Root", node_type="ROOT"),
-        current_layer_result=CurrentLayerResult(children=[heading], satisfied=True),
+        current_layer_result=CurrentLayerResult(children=[heading, sibling], satisfied=True),
         current_depth=0,
     )
     assert committed.child_nodes[0].title == "Title"
@@ -573,7 +687,11 @@ def test_page_index_heuristic_parses_text_and_markdown(fixture_name: str, source
     assert "TERM" in node_types
     assert _max_depth(result.semantic_tree) >= 6
 
-    payload = semantic_tree_to_kge_payload(result.semantic_tree, doc_id=result.workflow_input.request_id)
+    payload = semantic_tree_to_kge_payload(
+        result.semantic_tree,
+        doc_id=result.workflow_input.request_id,
+        parser_source_map=result.parser_source_map,
+    )
     assert len(payload["nodes"]) >= 8
     assert len(payload["edges"]) >= 4
 
@@ -704,12 +822,11 @@ def test_manual_plain_text_short_title_with_full_page_table_stays_grounded() -> 
         mode="heuristic",
         summary_enabled=True,
     )
-    page = result.semantic_tree.child_nodes[0]
-    assert [node.node_type for node in page.child_nodes] == ["HEADING"]
+    page = result.semantic_tree
+    assert [node.node_type for node in page.child_nodes] == ["HEADING_TEXT", "PARAGRAPH"]
     heading = page.child_nodes[0]
     assert heading.title == "AI Chip Revenue"
-    assert [node.node_type for node in heading.child_nodes] == ["HEADING_TEXT", "PARAGRAPH"]
-    table_node = heading.child_nodes[1]
+    table_node = page.child_nodes[1]
     assert table_node.total_content_pointers
     assert table_node.total_content_pointers[0].verbatim_text.startswith(
         "Metric 2023 2024 2025 2026"
@@ -741,7 +858,7 @@ def test_manual_irregular_table_pages_keep_page_boundaries_and_one_layer_contrac
     )
 
     first_page = result.semantic_tree.child_nodes[0]
-    table_parent = first_page.child_nodes[0].child_nodes[1]
+    table_parent = first_page.child_nodes[1]
     candidates = parse_page_index_layer(
         parent_id=table_parent.node_id,
         parent_title=table_parent.title,
@@ -1321,12 +1438,12 @@ def test_page_index_ollama_flat_assignment_parses_and_assembles(monkeypatch: pyt
 
     assert result.diagnostics["assignment_mode"] == "ollama_flat_assignment"
     assert result.diagnostics["fallback_reason"] is None
-    root = result.semantic_tree.child_nodes[0].child_nodes[0]
-    assert root.title == "Root"
-    heading_leaf = root.child_nodes[0]
+    root = next(node for node in result.semantic_tree.child_nodes if node.title == "Root")
+    assert root.node_type == "HEADING_TEXT"
+    heading_leaf = root
     assert heading_leaf.node_type == "HEADING_TEXT"
     assert heading_leaf.total_content_pointers[0].verbatim_text == "# Root"
-    child = next(node for node in root.child_nodes if node.title == "Child")
+    child = next(node for node in result.semantic_tree.child_nodes if node.title == "Child")
     assert child.child_nodes[-1].title == "Term item"
 
 
@@ -1357,7 +1474,7 @@ def test_page_index_ollama_malformed_payload_falls_back(monkeypatch: pytest.Monk
 
     assert result.diagnostics["assignment_mode"] == "deterministic_fallback"
     assert result.diagnostics["fallback_reason"] == "llm_unavailable_or_invalid"
-    assert result.semantic_tree.child_nodes[0].child_nodes[0].title == "Root"
+    assert result.semantic_tree.child_nodes[0].title == "Root"
 
 
 def test_page_index_ollama_invalid_assignments_fall_back(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1399,7 +1516,7 @@ def test_page_index_ollama_invalid_assignments_fall_back(monkeypatch: pytest.Mon
 
     assert result.diagnostics["assignment_mode"] == "deterministic_fallback"
     assert result.diagnostics["validation_errors"]
-    assert result.semantic_tree.child_nodes[0].child_nodes[0].title == "Root"
+    assert result.semantic_tree.child_nodes[0].title == "Root"
 
 
 def test_page_index_ollama_salvages_valid_branches_after_local_assignment_failure(
@@ -1449,9 +1566,9 @@ def test_page_index_ollama_salvages_valid_branches_after_local_assignment_failur
 
     assert result.diagnostics["assignment_mode"] == "ollama_branch_local_salvage", result.diagnostics
     assert result.diagnostics["branch_local_salvage"][0]["invalid_block_ids"] == ["p0001-b004"]
-    root = result.semantic_tree.child_nodes[0].child_nodes[0]
-    assert root.title == "Provider Root"
-    child = next(node for node in root.child_nodes if node.title == "Provider child")
+    root = next(node for node in result.semantic_tree.child_nodes if node.title == "Provider Root")
+    assert root.node_type == "HEADING_TEXT"
+    child = next(node for node in result.semantic_tree.child_nodes if node.title == "Provider child")
     term = next(node for node in child.child_nodes if node.title == "Term item")
     assert term.total_content_pointers[0].verbatim_text == "- Term item"
 
@@ -1579,8 +1696,8 @@ def test_page_index_refinement_rejects_non_substring_and_keeps_original(monkeypa
         provider_settings=provider_settings,
     )
 
-    root = result.semantic_tree.child_nodes[0].child_nodes[0]
-    baseline_root = baseline_result.semantic_tree.child_nodes[0].child_nodes[0]
+    root = result.semantic_tree
+    baseline_root = baseline_result.semantic_tree
     assert root.child_nodes[0].total_content_pointers[0].verbatim_text == baseline_root.child_nodes[0].total_content_pointers[0].verbatim_text
     assert result.diagnostics["refine_excerpts_enabled"] is True
     assert result.diagnostics["refine_excerpts_accepted"] == 0
@@ -1627,10 +1744,10 @@ def test_page_index_refinement_rejects_whole_page_and_duplicate_excerpts(monkeyp
         provider_settings=provider_settings,
     )
 
-    root = result.semantic_tree.child_nodes[0].child_nodes[0]
-    baseline_root = baseline_result.semantic_tree.child_nodes[0].child_nodes[0]
-    assert root.total_content_pointers == []
-    assert baseline_root.total_content_pointers == []
+    root = result.semantic_tree
+    baseline_root = baseline_result.semantic_tree
+    assert root.total_content_pointers
+    assert baseline_root.total_content_pointers
     root_heading = root.child_nodes[0]
     baseline_heading = baseline_root.child_nodes[0]
     assert root_heading.node_type == "HEADING_TEXT"
@@ -1680,8 +1797,8 @@ def test_page_index_refinement_transport_failure_keeps_original_excerpts(monkeyp
         provider_settings=provider_settings,
     )
 
-    root = result.semantic_tree.child_nodes[0].child_nodes[0]
-    baseline_root = baseline_result.semantic_tree.child_nodes[0].child_nodes[0]
+    root = result.semantic_tree
+    baseline_root = baseline_result.semantic_tree
     assert root.child_nodes[0].total_content_pointers[0].verbatim_text == baseline_root.child_nodes[0].total_content_pointers[0].verbatim_text
     assert result.diagnostics["refine_excerpts_enabled"] is True
     assert result.diagnostics["refine_excerpts_fallback"] is True
@@ -1778,7 +1895,7 @@ def test_page_index_ollama_flat_but_shallow_assignment_falls_back(monkeypatch: p
 
     assert result.diagnostics["assignment_mode"] == "deterministic_fallback"
     assert any("heading structure was flattened" in error for error in result.diagnostics["validation_errors"])
-    assert result.semantic_tree.child_nodes[0].child_nodes[0].title == "Root"
+    assert result.semantic_tree.child_nodes[0].title == "Root"
 
 # Manual examples with explicit parametrized node ids:
 #
@@ -1830,16 +1947,8 @@ def test_page_index_heading_container_projects_source_text_to_leaf() -> None:
         mode="heuristic",
     )
 
-    page = result.semantic_tree.child_nodes[0]
-    results = page.child_nodes[0]
-    assert results.node_type == "HEADING"
-    assert results.total_content_pointers == []
-    assert results.summary == ""
-    assert results.metadata["summary_unavailable"] is True
-    assert results.aggregate_content_pointers[0].verbatim_text == "# Results\n\nIntro.\n\n## Measurements\n\nBody."
-    assert results.metadata["page_index_role"] == "heading_container"
-    assert results.metadata["semantic_kind"] == "heading"
-    heading = results.child_nodes[0]
+    page = result.semantic_tree
+    heading = page.child_nodes[0]
     assert heading.node_type == "HEADING_TEXT"
     assert heading.title == "Results"
     assert heading.metadata["page_index_role"] == "heading_text"
@@ -1847,7 +1956,7 @@ def test_page_index_heading_container_projects_source_text_to_leaf() -> None:
     assert heading.summary == ""
     assert heading.metadata["summary_unavailable"] is True
 
-    measurements = next(node for node in results.child_nodes if node.title == "Measurements")
+    measurements = next(node for node in page.child_nodes if node.title == "Measurements")
     assert measurements.node_type == "HEADING"
     assert measurements.total_content_pointers == []
     assert measurements.aggregate_content_pointers[0].verbatim_text == "## Measurements\n\nBody."
@@ -1866,7 +1975,7 @@ def test_page_index_repeated_heading_titles_have_distinct_stable_ids() -> None:
         mode="heuristic",
     )
 
-    page = result.semantic_tree.child_nodes[0]
+    page = result.semantic_tree
     repeated = [
         node
         for node in page.child_nodes
@@ -1901,8 +2010,9 @@ def test_page_index_heading_ids_ignore_title_edits_at_same_source_occurrence() -
     edited = materialize("Edited title")
 
     assert original.node_id == edited.node_id
-    assert original.child_nodes[0].node_id == edited.child_nodes[0].node_id
-    assert original.total_content_pointers == edited.total_content_pointers == []
+    assert original.metadata["page_index_role"] == "heading_leaf"
+    assert original.total_content_pointers == edited.total_content_pointers
+    assert original.total_content_pointers == edited.total_content_pointers
 
 @pytest.mark.ci
 def test_page_index_summary_can_be_disabled_without_changing_grounding() -> None:
@@ -1914,18 +2024,18 @@ def test_page_index_summary_can_be_disabled_without_changing_grounding() -> None
         mode="heuristic",
         summary_enabled=False,
     )
-    results = result.semantic_tree.child_nodes[0].child_nodes[0]
+    results = result.semantic_tree
     assert results.summary == ""
-    assert results.aggregate_content_pointers[0].verbatim_text == "# Results\n\nIntro."
     assert results.child_nodes[0].total_content_pointers[0].verbatim_text == "# Results"
 
     payload = semantic_tree_to_kge_payload(
         result.semantic_tree,
         doc_id=result.workflow_input.request_id,
+        parser_source_map=result.parser_source_map,
     )
     persisted = next(node for node in payload["nodes"] if node["id"] == results.node_id)
     assert persisted["summary"] == ""
-    assert persisted["metadata"]["summary_unavailable"] is False
+    assert persisted["metadata"]["summary_unavailable"] is True
 
 
 @pytest.mark.manual

@@ -1202,6 +1202,7 @@ def test_review_layer_hydrates_offset_only_payload_through_core_handoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = "# SDK\n\nStatus: SDK\\_UNINITIALIZED | See \\[the docs\\] for details.\n"
+    split_at = source.index("Status")
     source_map = {"cluster-1": {"text": source}}
     fake_model = _FakeChatModel(
         {
@@ -1217,12 +1218,27 @@ def test_review_layer_hydrates_offset_only_payload_through_core_handoff(
                                 {
                                     "source_cluster_id": "cluster-1",
                                     "start_char": 0,
-                                    "end_char": len(source) - 1,
+                                    "end_char": split_at - 1,
                                     "verbatim_text": "model transcription with a dropped \\[ escape",
                                 }
                             ],
                             "expandable": False,
-                        }
+                        },
+                        {
+                            "node_id": "doc|root|details",
+                            "parent_node_id": "doc|root",
+                            "title": "Details",
+                            "node_type": "TEXT_FLOW",
+                            "total_content_pointers": [
+                                {
+                                    "source_cluster_id": "cluster-1",
+                                    "start_char": split_at,
+                                    "end_char": len(source) - 1,
+                                    "verbatim_text": "another model transcription",
+                                }
+                            ],
+                            "expandable": False,
+                        },
                     ],
                     "satisfied": True,
                     "reasoning_history": [],
@@ -1275,8 +1291,8 @@ def test_review_layer_hydrates_offset_only_payload_through_core_handoff(
     assert review.updated_result is not None
     pointer = review.updated_result.children[0].total_content_pointers[0]
     assert pointer.start_char == 0
-    assert pointer.end_char == len(source) - 1
-    assert pointer.verbatim_text == source
+    assert pointer.end_char == split_at - 1
+    assert pointer.verbatim_text == source[:split_at]
 
 
 @pytest.mark.ci
@@ -1700,7 +1716,27 @@ def test_boundary_summaries_survive_tree_commit_and_prompt_summary():
                     "summary_text": "Alpha clause.",
                     "exact_text": "Alpha clause.",
                 },
-            )
+            ),
+            LayerChildCandidate(
+                node_id="doc|root|beta",
+                parent_node_id="doc|root",
+                title="Beta clause.",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id="cluster-1",
+                        start_char=14,
+                        end_char=25,
+                        verbatim_text="Beta clause.",
+                    )
+                ],
+                expandable=False,
+                metadata={
+                    "source": "boundary_first",
+                    "summary_text": "Beta clause.",
+                    "exact_text": "Beta clause.",
+                },
+            ),
         ],
         satisfied=True,
         reasoning_history=[],
@@ -1711,7 +1747,11 @@ def test_boundary_summaries_survive_tree_commit_and_prompt_summary():
         current_layer_result=result,
         current_depth=0,
     )
-    payload = semantic_tree_to_kge_payload(committed, doc_id="doc")
+    payload = semantic_tree_to_kge_payload(
+        committed,
+        doc_id="doc",
+        parser_source_map={"cluster-1": {"text": "Alpha clause. Beta clause."}},
+    )
     node_payload = next(node for node in payload["nodes"] if node["id"] == "doc|root|alpha")
 
     assert committed.child_nodes[0].metadata["summary_text"] == "Alpha clause."

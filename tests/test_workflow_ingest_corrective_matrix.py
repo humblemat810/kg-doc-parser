@@ -88,17 +88,6 @@ def test_corrective_long_table_page_index_matrix(
     assert not any("too broad" in error for error in result.diagnostics.get("validation_errors", []))
 
 
-def _full_source_pointer(inp: WorkflowIngestInput) -> HydratedTextPointer:
-    unit = inp.collections[0].pages[0].units[0]
-    text = unit.text or ""
-    return HydratedTextPointer(
-        source_cluster_id=f"{inp.request_id}|p1_t0",
-        start_char=0,
-        end_char=max(0, len(text) - 1),
-        verbatim_text=text,
-    )
-
-
 @pytest.mark.parametrize("strategy", ["excerpt_first", "boundary_first", "page_index"])
 @pytest.mark.parametrize("coverage_ratio", [0.95, 0.99])
 def test_partial_non_whitespace_grounding_is_rejected_for_each_route(
@@ -156,7 +145,10 @@ def test_partial_non_whitespace_grounding_is_rejected_for_each_route(
 
 
 @pytest.mark.parametrize("strategy", ["excerpt_first", "boundary_first", "page_index"])
-def test_corrective_long_table_workflow_strategy_matrix(strategy: str) -> None:
+def test_corrective_long_table_workflow_strategy_matrix(
+    strategy: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
         Path("tests") / ".tmp_corrective_matrix" / strategy,
         "in_memory",
@@ -175,20 +167,55 @@ def test_corrective_long_table_workflow_strategy_matrix(strategy: str) -> None:
             ],
         }
     )
+    source_text = inp.collections[0].pages[0].units[0].text or ""
+    table_start = source_text.index("| ID")
+    source_cluster_id = f"{inp.request_id}|p1_t0"
+
+    def valid_table_children(parent_id: str) -> list[LayerChildCandidate]:
+        return [
+            LayerChildCandidate(
+                node_id=f"{parent_id}|preamble",
+                parent_node_id=parent_id,
+                title="Document preamble",
+                node_type="TEXT_FLOW",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id=source_cluster_id,
+                        start_char=0,
+                        end_char=table_start - 1,
+                        verbatim_text=source_text[:table_start],
+                    )
+                ],
+                expandable=False,
+            ),
+            LayerChildCandidate(
+                node_id=f"{parent_id}|table",
+                parent_node_id=parent_id,
+                title="ID Description Value",
+                node_type="TABLE",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id=source_cluster_id,
+                        start_char=table_start,
+                        end_char=len(source_text) - 1,
+                        verbatim_text=source_text[table_start:],
+                    )
+                ],
+                expandable=False,
+            ),
+        ]
+
+    if strategy == "page_index":
+        monkeypatch.setattr(
+            handlers_module,
+            "parse_page_index_layer",
+            lambda *, parent_id, **_kwargs: valid_table_children(parent_id),
+        )
 
     def propose_layer(*, current_layer_context, **_kwargs) -> CurrentLayerResult:
         parent_id = current_layer_context.parent_node_ids[0]
         return CurrentLayerResult(
-            children=[
-                LayerChildCandidate(
-                    node_id=f"{parent_id}|table",
-                    parent_node_id=parent_id,
-                    title="ID Description Value",
-                    node_type="TABLE",
-                    total_content_pointers=[_full_source_pointer(inp)],
-                    expandable=False,
-                )
-            ],
+            children=valid_table_children(parent_id),
             satisfied=True,
         )
 
@@ -217,7 +244,22 @@ def test_corrective_long_table_workflow_strategy_matrix(strategy: str) -> None:
         deps=dependencies,
     )
 
-    assert run.status == "succeeded", run.final_state.get("workflow_errors")
+    assert run.status == "succeeded", (
+        run.final_state.get("workflow_errors")
+        or run.final_state.get("workflow_failure")
+        or {
+            key: run.final_state.get(key)
+            for key in (
+                "current_layer_context",
+                "current_layer_result",
+                "current_layer_review",
+                "parse_session",
+                "layer_frontier_queue",
+                "strategy_execution_history",
+                "validation_report",
+            )
+        }
+    )
     assert bundle is not None
     expected_strategy = {
         "excerpt_first": "layer_excerpt",
@@ -281,6 +323,23 @@ def test_durable_batch_commits_valid_parent_and_requeues_failed_parent(
             expandable=False,
         )
 
+    def children_for(parent_node_id: str, start: int, end: int) -> list[LayerChildCandidate]:
+        split = start + (end - start) // 2
+        return [
+            child(
+                node_id=f"{parent_node_id}|leaf",
+                parent_node_id=parent_node_id,
+                start=start,
+                end=split,
+            ),
+            child(
+                node_id=f"{parent_node_id}|leaf2",
+                parent_node_id=parent_node_id,
+                start=split + 1,
+                end=end,
+            ),
+        ]
+
     def propose_layer(*, current_layer_context, **_kwargs) -> CurrentLayerResult:
         parent_ids = tuple(current_layer_context.parent_node_ids)
         calls.append(parent_ids)
@@ -308,12 +367,12 @@ def test_durable_batch_commits_valid_parent_and_requeues_failed_parent(
             )
         if set(parent_ids) == {alpha_id, beta_id}:
             return CurrentLayerResult(
-                children=[child(node_id=f"{alpha_id}|leaf", parent_node_id=alpha_id, start=alpha_start, end=alpha_end)],
+                children=children_for(alpha_id, alpha_start, alpha_end),
                 satisfied=True,
             )
         assert parent_ids == (beta_id,)
         return CurrentLayerResult(
-            children=[child(node_id=f"{beta_id}|leaf", parent_node_id=beta_id, start=beta_start, end=beta_end)],
+            children=children_for(beta_id, beta_start, beta_end),
             satisfied=True,
         )
 
@@ -344,9 +403,9 @@ def test_durable_batch_commits_valid_parent_and_requeues_failed_parent(
             if parent_id == beta_id and page_index_calls[parent_id] == 1:
                 return []
             if parent_id == alpha_id:
-                return [child(node_id=f"{alpha_id}|leaf", parent_node_id=alpha_id, start=alpha_start, end=alpha_end)]
+                return children_for(alpha_id, alpha_start, alpha_end)
             assert parent_id == beta_id
-            return [child(node_id=f"{beta_id}|leaf", parent_node_id=beta_id, start=beta_start, end=beta_end)]
+            return children_for(beta_id, beta_start, beta_end)
 
         monkeypatch.setattr(handlers_module, "parse_page_index_layer", page_index_layer)
 
@@ -374,7 +433,22 @@ def test_durable_batch_commits_valid_parent_and_requeues_failed_parent(
         },
     )
 
-    assert run.status == "succeeded", run.final_state.get("workflow_errors")
+    assert run.status == "succeeded", (
+        run.final_state.get("workflow_errors")
+        or run.final_state.get("workflow_failure")
+        or {
+            key: run.final_state.get(key)
+            for key in (
+                "current_layer_context",
+                "current_layer_result",
+                "current_layer_review",
+                "parse_session",
+                "layer_frontier_queue",
+                "strategy_execution_history",
+                "validation_report",
+            )
+        }
+    )
     assert bundle is not None
     if strategy == "page_index":
         assert page_index_calls[beta_id] == 2
@@ -382,7 +456,12 @@ def test_durable_batch_commits_valid_parent_and_requeues_failed_parent(
         assert any(set(call) == {alpha_id, beta_id} for call in calls)
         assert (beta_id,) in calls
     node_ids = {node["id"] for node in bundle.graph_payload["nodes"]}
-    assert {f"{alpha_id}|leaf", f"{beta_id}|leaf"} <= node_ids
+    assert {
+        f"{alpha_id}|leaf",
+        f"{alpha_id}|leaf2",
+        f"{beta_id}|leaf",
+        f"{beta_id}|leaf2",
+    } <= node_ids
     assert run.final_state["layer_frontier_queue"] == []
     assert run.final_state["validation_report"]["terminal_coverage_status"] == "complete"
 

@@ -28,6 +28,7 @@ from kg_doc_parser.workflow_ingest.parser_core import (
     check_layer_coverage,
     initialize_parse_session,
     prepare_layer_frontier,
+    propose_layer_breakdown,
     review_layer,
     switch_split_strategy,
 )
@@ -68,6 +69,76 @@ def test_provider_review_failure_is_persisted_and_fails_closed() -> None:
     )
     assert coverage_ok is False
     assert notes == ["layer review unavailable; quality is unknown"]
+
+
+@pytest.mark.ci
+def test_malformed_proposal_model_error_becomes_retryable_diagnostic() -> None:
+    inp = WorkflowIngestInput.from_text(
+        document_id="invalid-proposal-doc",
+        text="Alpha clause\nBeta clause",
+        title="Invalid Proposal",
+    )
+    parser_source_map = {
+        "invalid-proposal-doc|p1_t0": {
+            "id": "invalid-proposal-doc|p1_t0",
+            "text": "Alpha clause\nBeta clause",
+            "participates_in_semantic_text": True,
+        }
+    }
+    session, frontier, root = initialize_parse_session(
+        collection=inp.collections[0],
+        parser_input_dict={"document_filename": "Invalid Proposal", "pages": []},
+        parser_source_map=parser_source_map,
+    )
+    context, _, _ = prepare_layer_frontier(
+        parse_session=session,
+        frontier_queue=frontier,
+        semantic_tree=root,
+    )
+
+    def malformed_proposal(**_kwargs: object) -> dict[str, object]:
+        return {"children": [{"node_id": "missing-fields"}]}
+
+    result = propose_layer_breakdown(
+        collection=inp.collections[0],
+        parser_input_dict={"document_filename": "Invalid Proposal", "pages": []},
+        parser_source_map=parser_source_map,
+        parse_session=session,
+        current_layer_context=context,
+        semantic_tree=root,
+        propose_layer_fn=malformed_proposal,
+    )
+
+    assert result.satisfied is False
+    assert result.metadata["validation_failure"] == "proposal"
+    assert result.validation_diagnostics[0].phase == "proposal"
+    assert result.validation_diagnostics[0].location
+
+
+@pytest.mark.ci
+def test_malformed_review_model_error_becomes_retryable_diagnostic() -> None:
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=["doc|root"],
+        split_strategy="excerpt_first",
+    )
+
+    def malformed_review(**_kwargs: object) -> dict[str, object]:
+        return {"updated_result": {"children": [{"node_id": "missing-fields"}]}}
+
+    review, _ = review_layer(
+        parse_session=ParseSessionState(collection_id="doc", root_node_id="doc|root"),
+        current_layer_context=context,
+        current_layer_result=CurrentLayerResult(children=[], satisfied=False),
+        review_layer_fn=malformed_review,
+    )
+
+    assert review.metadata["review_failure"] == "structured_validation"
+    assert review.metadata["retryable"] is True
+    assert review.satisfied is None
+    assert review.validation_diagnostics[0].phase == "review"
+    assert review.updated_result is not None
+    assert review.updated_result.satisfied is False
 
 
 @pytest.mark.ci
@@ -1234,7 +1305,15 @@ def test_layerwise_workflow_retries_when_cud_coverage_check_fails(workflow_backe
                         parent_node_id=current_layer_context.parent_node_ids[0],
                         title="Section A",
                         node_type="TEXT_FLOW",
-                        total_content_pointers=[_segment_pointer(unit_id, text, "Alpha clause")],
+                        total_content_pointers=[_segment_pointer(unit_id, text, "Alpha")],
+                        expandable=False,
+                    ),
+                    LayerChildCandidate(
+                        node_id="node-section-b",
+                        parent_node_id=current_layer_context.parent_node_ids[0],
+                        title="Section B",
+                        node_type="TEXT_FLOW",
+                        total_content_pointers=[_segment_pointer(unit_id, text, "clause")],
                         expandable=False,
                     ),
                 ],
@@ -1249,10 +1328,18 @@ def test_layerwise_workflow_retries_when_cud_coverage_check_fails(workflow_backe
                     title="Section A",
                     node_type="TEXT_FLOW",
                     total_content_pointers=[
-                        _segment_pointer(unit_id, text, "Alpha clause\nBeta clause")
+                        _segment_pointer(unit_id, text, "Alpha clause\n")
                     ],
                     expandable=False,
-                )
+                ),
+                LayerChildCandidate(
+                    node_id="node-section-b",
+                    parent_node_id=current_layer_context.parent_node_ids[0],
+                    title="Section B",
+                    node_type="TEXT_FLOW",
+                    total_content_pointers=[_segment_pointer(unit_id, text, "Beta clause")],
+                    expandable=False,
+                ),
             ],
             satisfied=True,
             reasoning_history=[],

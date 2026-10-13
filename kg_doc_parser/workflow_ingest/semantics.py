@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from typing import Literal, cast
+from collections.abc import Mapping, Sequence
+from typing import Literal, Protocol, cast
 
 from kogwistar.id_provider import stable_id
 from pydantic import BaseModel, Field, model_validator
@@ -40,6 +40,20 @@ class HydratedTextPointer(BaseModel):
     start_char: int = Field(strict=True)
     end_char: int = Field(strict=True)
     verbatim_text: str = Field(strict=True)
+
+
+class TextPointerLike(Protocol):
+    @property
+    def source_cluster_id(self) -> str: ...
+
+    @property
+    def start_char(self) -> int: ...
+
+    @property
+    def end_char(self) -> int: ...
+
+    @property
+    def verbatim_text(self) -> str | None: ...
 
 
 class SemanticNode(BaseModel):
@@ -80,6 +94,78 @@ class SemanticNode(BaseModel):
 
 
 SemanticNode.model_rebuild()
+
+
+class SemanticTreeNodeLike(Protocol):
+    """Minimum shape required by the shared tree-branching validator."""
+
+    @property
+    def node_id(self) -> object: ...
+
+    @property
+    def child_nodes(self) -> Sequence[object]: ...
+
+
+class SemanticIntegrityNodeLike(Protocol):
+    """Fields shared by current and legacy semantic-node models."""
+
+    @property
+    def node_id(self) -> object: ...
+
+    @property
+    def parent_id(self) -> object: ...
+
+    @property
+    def child_nodes(self) -> Sequence[object]: ...
+
+    @property
+    def total_content_pointers(self) -> Sequence[TextPointerLike]: ...
+
+
+def validate_semantic_tree_shape(
+    root: SemanticTreeNodeLike,
+    *,
+    max_depth: int | None = None,
+) -> None:
+    """Reject unary semantic nodes without relying on Python recursion.
+
+    A zero-child node is either a valid leaf or an explicitly retained atomic
+    unit.  A node with one child is never a meaningful refinement.  This
+    helper intentionally accepts the small structural protocol so the legacy
+    parser can use the same invariant without importing the newer node model.
+    """
+
+    pending: list[tuple[SemanticTreeNodeLike, int, bool]] = [(root, 0, False)]
+    active_object_ids: set[int] = set()
+    while pending:
+        node, depth, exiting = pending.pop()
+        object_id = id(node)
+        if exiting:
+            active_object_ids.remove(object_id)
+            continue
+        if object_id in active_object_ids:
+            raise ValueError("semantic tree contains a cycle while checking branching")
+        active_object_ids.add(object_id)
+        node_id = str(getattr(node, "node_id", "<missing>"))
+        children = list(getattr(node, "child_nodes", ()) or ())
+        if len(children) == 1:
+            raise ValueError(f"unary semantic node: {node_id}")
+        if max_depth is not None and depth > max_depth:
+            raise ValueError(f"semantic tree exceeds maximum depth {max_depth}: {node_id}")
+        metadata = getattr(node, "metadata", {})
+        total_pointers = getattr(node, "total_content_pointers", ())
+        aggregate_pointers = getattr(node, "aggregate_content_pointers", ())
+        if (
+            isinstance(metadata, Mapping)
+            and metadata.get("atomic_retained") is True
+            and not (total_pointers or aggregate_pointers)
+        ):
+            raise ValueError(
+                f"atomic semantic node {node_id!r} has no verified source pointer"
+            )
+        pending.append((node, depth, True))
+        for child in reversed(children):
+            pending.append((cast(SemanticTreeNodeLike, child), depth + 1, False))
 
 
 def hydrate_pointer_from_offsets(
@@ -159,7 +245,7 @@ def correct_and_validate_pointer(
 
 
 def pointer_source_validation_error(
-    pointer: HydratedTextPointer,
+    pointer: TextPointerLike,
     source_map: Mapping[str, Mapping[str, object]],
 ) -> str | None:
     """Return a deterministic error when a pointer is not source-grounded.
@@ -184,9 +270,66 @@ def pointer_source_validation_error(
     if end >= len(text):
         return "pointer exceeds source bounds"
     actual = text[pointer.start_char : end + 1]
-    if actual != pointer.verbatim_text:
+    if actual != (pointer.verbatim_text or ""):
         return "pointer excerpt does not match authoritative source slice"
     return None
+
+
+def validate_semantic_tree_integrity(
+    root: SemanticIntegrityNodeLike,
+    *,
+    parser_source_map: Mapping[str, Mapping[str, object]] | None = None,
+    max_depth: int | None = None,
+) -> None:
+    """Validate identity, ancestry, grounding, and branching in one pass.
+
+    ``SemanticNode`` is intentionally constructible while a workflow is being
+    assembled.  This validator is the finalized-tree boundary used before
+    export, persistence, or a stable DTO result is returned.
+    """
+
+    pending: list[tuple[SemanticIntegrityNodeLike, str | None, int, bool]] = [
+        (root, None, 0, False)
+    ]
+    seen_ids: set[str] = set()
+    active_ids: set[str] = set()
+    while pending:
+        node, expected_parent_id, depth, exiting = pending.pop()
+        node_id = str(node.node_id or "")
+        if not node_id:
+            raise ValueError("semantic tree contains a node without an id")
+        if exiting:
+            active_ids.remove(node_id)
+            continue
+        if node_id in active_ids:
+            raise ValueError(f"semantic tree contains a cycle at {node_id!r}")
+        if node_id in seen_ids:
+            raise ValueError(f"semantic tree contains duplicate node id {node_id!r}")
+        actual_parent_id = None if node.parent_id is None else str(node.parent_id)
+        if actual_parent_id != expected_parent_id:
+            raise ValueError(
+                f"semantic tree parent mismatch for {node_id!r}: "
+                f"expected {expected_parent_id!r}, got {actual_parent_id!r}"
+            )
+        if max_depth is not None and depth > max_depth:
+            raise ValueError(f"semantic tree exceeds maximum depth {max_depth}: {node_id}")
+        aggregate_pointers = getattr(node, "aggregate_content_pointers", ())
+        pointers = [*node.total_content_pointers, *aggregate_pointers]
+        for pointer in pointers:
+            if pointer.start_char < 0 or pointer.end_char < -1:
+                raise ValueError(f"invalid pointer bounds for node {node_id!r}")
+            if pointer.end_char != -1 and pointer.end_char < pointer.start_char:
+                raise ValueError(f"reversed pointer bounds for node {node_id!r}")
+            if parser_source_map is not None:
+                pointer_error = pointer_source_validation_error(pointer, parser_source_map)
+                if pointer_error is not None:
+                    raise ValueError(f"node {node_id!r}: {pointer_error}")
+        seen_ids.add(node_id)
+        active_ids.add(node_id)
+        pending.append((node, expected_parent_id, depth, True))
+        for child in reversed(node.child_nodes):
+            pending.append((cast(SemanticIntegrityNodeLike, child), node_id, depth + 1, False))
+    validate_semantic_tree_shape(root, max_depth=max_depth)
 
 
 def compute_pointer_coverage(
@@ -201,7 +344,9 @@ def compute_pointer_coverage(
 
     ranges: dict[str, list[tuple[int, int]]] = {}
 
-    def walk(node: SemanticNode) -> None:
+    pending = [root_node]
+    while pending:
+        node = pending.pop()
         if node.node_type != "DOCUMENT_ROOT":
             for ptr in node.total_content_pointers:
                 if pointer_source_validation_error(ptr, source_map) is not None:
@@ -213,10 +358,7 @@ def compute_pointer_coverage(
                         len(_source_text(source_map.get(ptr.source_cluster_id))) - 1,
                     )
                 ranges.setdefault(ptr.source_cluster_id, []).append((ptr.start_char, end))
-        for child in node.child_nodes:
-            walk(child)
-
-    walk(root_node)
+        pending.extend(reversed(node.child_nodes))
     per_cluster: dict[str, float] = {}
     total_len = 0
     total_covered = 0
@@ -279,7 +421,9 @@ def compute_terminal_content_coverage(
     ownership: dict[str, dict[int, list[str]]] = {}
     invalid_pointers: list[dict[str, str]] = []
 
-    def walk(node: SemanticNode) -> None:
+    pending = [root_node]
+    while pending:
+        node = pending.pop()
         if not node.child_nodes:
             node_id = str(node.node_id or "<missing-node-id>")
             for pointer in node.total_content_pointers:
@@ -293,10 +437,7 @@ def compute_terminal_content_coverage(
                 for position in range(pointer.start_char, end + 1):
                     if not source_text[position].isspace():
                         owners.setdefault(position, []).append(node_id)
-        for child in node.child_nodes:
-            walk(child)
-
-    walk(root_node)
+        pending.extend(reversed(node.child_nodes))
     per_cluster: dict[str, float] = {}
     missing_ranges: dict[str, list[dict[str, int]]] = {}
     multiply_owned_ranges: dict[str, list[dict[str, int]]] = {}
@@ -346,13 +487,31 @@ def classify_terminal_coverage_status(
     pending = [root_node]
     while pending:
         node = pending.pop()
-        if node.metadata.get("atomic_retained"):
+        if node.metadata.get("atomic_retained") is True:
             return "atomic_valid"
         pending.extend(node.child_nodes)
     return "complete"
 
 
-def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str, JsonValue]:
+def semantic_tree_to_kge_payload(
+    root: SemanticNode,
+    *,
+    doc_id: str,
+    parser_source_map: Mapping[str, Mapping[str, object]] | None = None,
+) -> dict[str, JsonValue]:
+    # Graph export is a persistence boundary.  Validate before serializing so
+    # callers cannot bypass the workflow commit gate with a hand-built tree.
+    pending_nodes = [root]
+    has_source_pointers = False
+    while pending_nodes:
+        node = pending_nodes.pop()
+        if node.total_content_pointers or node.aggregate_content_pointers:
+            has_source_pointers = True
+            break
+        pending_nodes.extend(node.child_nodes)
+    if parser_source_map is None and has_source_pointers:
+        raise ValueError("source-grounded graph export requires parser_source_map")
+    validate_semantic_tree_integrity(root, parser_source_map=parser_source_map)
     nodes: list[dict[str, object]] = []
     edges: list[dict[str, object]] = []
 
@@ -397,7 +556,9 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
             for p in ptrs
         ]
 
-    def walk(node: SemanticNode) -> None:
+    pending = [root]
+    while pending:
+        node = pending.pop()
         aggregate_spans = spans(node.aggregate_content_pointers)
         # A structural page-index container is grounded by its aggregate span;
         # ordinary legacy structural nodes retain the existing synthetic fallback.
@@ -457,9 +618,7 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
                     "metadata": {"doc_id": doc_id, "insertion_method": "workflow_ingest"},
                 }
             )
-            walk(child)
-
-    walk(root)
+        pending.extend(reversed(node.child_nodes))
     return cast(
         dict[str, JsonValue],
         {"doc_id": doc_id, "insertion_method": "workflow_ingest", "nodes": nodes, "edges": edges},
