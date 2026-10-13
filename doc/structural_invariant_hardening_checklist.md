@@ -47,5 +47,5 @@ evidence for it.
 - [x] Full structural hardening suite with cache provider disabled
 - [ ] CPython 3.12, 3.13, and 3.14
 - [ ] PyPy 3.11
-- [ ] Feature branch pushed
+- [x] Feature branch pushed
 - [ ] GitHub CI monitored to completion
