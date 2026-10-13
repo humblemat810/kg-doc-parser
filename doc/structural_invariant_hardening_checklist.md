@@ -72,10 +72,10 @@ evidence for it.
 - [x] `git diff --check`
 - [x] Lock verification and package/import checks
 - [x] Full structural hardening suite with cache provider disabled
-- [x] CPython 3.12, 3.13, and 3.14 (GitHub Parser CI run 38421568523)
-- [x] PyPy 3.11 (GitHub Parser CI run 38421568523)
+- [x] CPython 3.12, 3.13, and 3.14 (GitHub Parser CI run 38461434518)
+- [x] PyPy 3.11 (GitHub Parser CI run 38461434518)
 - [x] Feature branch pushed
-- [x] GitHub CI monitored to completion (run 38421568523 succeeded)
+- [x] GitHub CI monitored to completion (run 38461434518 succeeded)
 
 ## Review Follow-Up Verification
 
@@ -84,5 +84,5 @@ evidence for it.
 - [x] Configured Ruff selection on changed workflow modules and tests
 - [x] `git diff --check`
 - [x] Exact deterministic CI test selection on local CPython 3.14.6: 258 passed, 118 deselected
-- [ ] Full GitHub CI and supported-interpreter matrix rerun after review follow-up changes
-- [ ] Push and monitor the updated feature-branch CI
+- [x] Full GitHub CI and supported-interpreter matrix rerun after review follow-up changes
+- [x] Push and monitor the updated feature-branch CI
