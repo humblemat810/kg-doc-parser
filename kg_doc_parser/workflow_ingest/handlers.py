@@ -227,7 +227,11 @@ def _build_export_bundle(
     normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
     collection = select_primary_collection(normalized)
     tree = SemanticNode.model_validate(ctx.state_view["semantic_tree"])
-    graph_payload = semantic_tree_to_kge_payload(tree, doc_id=collection.collection_id)
+    graph_payload = semantic_tree_to_kge_payload(
+        tree,
+        doc_id=collection.collection_id,
+        parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
+    )
     deps = runtime_deps or {}
     persistence_mode = str(ctx.state_view.get("persistence_mode", deps.get("persistence_mode", "local_debug")))
     kg_authority = str(ctx.state_view.get("kg_authority", deps.get("kg_authority", "local")))
@@ -688,11 +692,11 @@ def register_layerwise_parser_steps(
         result = CurrentLayerResult(
             children=candidates,
             satisfied=bool(candidates),
+            atomic_retained=not bool(candidates),
             metadata={
                 "parse_strategy": "page_index",
                 "page_index_layer_only": True,
                 "allow_empty_layer": not bool(candidates),
-                "atomic_retained": not bool(candidates),
             },
         )
         with ctx.state_write as st:

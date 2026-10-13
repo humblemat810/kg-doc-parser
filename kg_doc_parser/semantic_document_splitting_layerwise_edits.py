@@ -12,7 +12,7 @@ Usage
 >>> document_tree, source_map = parse_doc(doc_id="my_doc", raw_doc_dict=doc_data)
 >>> # Convert to KGE Payload
 >>> from kg_doc_parser.semantic_document_splitting_layerwise_edits import semantic_tree_to_kge_payload
->>> graph_payload = semantic_tree_to_kge_payload(document_tree)
+>>> graph_payload = semantic_tree_to_kge_payload(document_tree, parser_source_map=source_map)
 
 Pipeline Flow
 -------------
@@ -194,7 +194,7 @@ cb = DocumentIngestSQLiteCallback(db_path=_DOCUMENT_INGEST_LOG_DB,
         include_traceback = True)
 
 
-T = TypeVar("T")
+TPartitionItem = TypeVar("TPartitionItem")
 
 def memory_cached(
     memory: Memory, *arg: object, **kwarg: object
@@ -205,8 +205,9 @@ def memory_cached(
 
 
 def partition(
-    iterable: Iterable[T], predicate: Callable[[T], bool]
-) -> tuple[list[T], list[T]]:
+    iterable: Iterable[TPartitionItem],
+    predicate: Callable[[TPartitionItem], bool],
+) -> tuple[list[TPartitionItem], list[TPartitionItem]]:
     t1 = []
     t2 = []
     for x in iterable:
@@ -2134,19 +2135,19 @@ class ChildrenCorrectionResult(NamedTuple):
 # ============================================================================
 from typing import Any, Protocol, TypeVar
 
-T = TypeVar("T", bound=BaseModel)
+TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 
 class StructuredLLMCaller(Protocol):
     def __call__(
         self, 
         prompt: str, 
         model_names: list[str], 
-        schema: type[T], 
+        schema: type[TStructuredModel],
         doc_id: str,
         model_json_schema: dict, 
         event_name: str,
         i_attempt: int
-    ) -> T:
+    ) -> TStructuredModel:
         ...
 
 # Cache completed provider calls, not the correction orchestrator. Joblib does
@@ -2154,8 +2155,14 @@ class StructuredLLMCaller(Protocol):
 # successful structured response can be replayed without another LLM call.
 @parser_llm_cache
 def _default_call_llm_structured(
-    prompt: str, model_names: list[str], schema: type[T] ,doc_id: str, model_json_schema : dict, event_name: str, i_attempt: int
-) -> T:
+    prompt: str,
+    model_names: list[str],
+    schema: type[TStructuredModel],
+    doc_id: str,
+    model_json_schema: dict,
+    event_name: str,
+    i_attempt: int,
+) -> TStructuredModel:
     """Default implementation using LangChain Google Generative AI stack.
     Swap this out if you prefer OpenAI or another provider.
     """
@@ -2196,8 +2203,7 @@ def _default_call_llm_structured(
 # ============================================================================
 # Iterative level correction orchestrator
 # ============================================================================
-T2 = TypeVar("T2", bound=BaseModel)
-from typing import Any, TypeVar
+from typing import Any
 
 
 def iterative_correct_children_for_level(
@@ -3148,10 +3154,17 @@ def reconstruct_text_from_pointers(pointers: list[HydratedTextPointer], source_m
 
 def print_tree(node: SemanticNode, indent: str = "") -> None:
     """Visualizes the hydrated tree. No longer needs source_map."""
-    reconstructed_text = "".join([(p.verbatim_text or "") for p in node.total_content_pointers])
-    print(f"{indent} L- {node.title} ({node.node_type}) | Text: '{reconstructed_text[:150].strip()}...'")
-    for child in node.child_nodes:
-        print_tree(child, indent + "  ")
+    pending: list[tuple[SemanticNode, str]] = [(node, indent)]
+    while pending:
+        current, current_indent = pending.pop()
+        reconstructed_text = "".join(
+            pointer.verbatim_text or "" for pointer in current.total_content_pointers
+        )
+        print(
+            f"{current_indent} L- {current.title} ({current.node_type}) | "
+            f"Text: '{reconstructed_text[:150].strip()}...'"
+        )
+        pending.extend((child, current_indent + "  ") for child in reversed(current.child_nodes))
 @parser_llm_cache
 def parse_doc(
     doc_id: str,
@@ -3190,7 +3203,11 @@ def parse_doc(
             model_names=model_names,
         )
         _emit_layerwise_trace("parse_doc.build_document_tree.done", doc_id=doc_id)
-        validate_semantic_tree_integrity(document_tree, parser_source_map=source_map)
+        validate_semantic_tree_integrity(
+            document_tree,
+            parser_source_map=source_map,
+            max_depth=max_depth,
+        )
         cov: CoverageResponse = compute_pointer_coverage(document_tree, source_map)
         print("Overall coverage:", cov.overall)
         for cid, r in cov.per_cluster.items():
@@ -3237,12 +3254,23 @@ def parse_doc(
 def semantic_tree_to_kge_payload(
     root: "SemanticNode",
     *,
+    parser_source_map: dict[str, dict[str, object]] | None = None,
     doc_id: str | None = None,
     insertion_method: str = "semantic_document_parser_v1",
 ) -> dict[str, Any]:
     # Legacy export is a persistence boundary: historical unary trees fail
     # closed rather than being silently rewritten into a different graph.
-    validate_semantic_tree_integrity(root)
+    pending_nodes = [root]
+    has_source_pointers = False
+    while pending_nodes:
+        node = pending_nodes.pop()
+        if node.total_content_pointers or getattr(node, "aggregate_content_pointers", []):
+            has_source_pointers = True
+            break
+        pending_nodes.extend(node.child_nodes)
+    if parser_source_map is None and has_source_pointers:
+        raise ValueError("source-grounded graph export requires parser_source_map")
+    validate_semantic_tree_integrity(root, parser_source_map=parser_source_map)
     if doc_id is None:
         doc_id = str(
             stable_id(
@@ -3294,7 +3322,10 @@ def semantic_tree_to_kge_payload(
                 "source_cluster_id": p.source_cluster_id,
                 "verification": None
             } for p in ptrs]
-    def walk(node: "SemanticNode") -> None:
+    pending: list[tuple[SemanticNode, int]] = [(root, 0)]
+    while pending:
+        node, depth = pending.pop()
+        node.level_from_root = depth
         ptrs = list(node.total_content_pointers)
         pointers_payload = [p.model_dump(field_mode = 'backend') for p in ptrs]
 
@@ -3318,7 +3349,6 @@ def semantic_tree_to_kge_payload(
         nodes.append(node_dict)
 
         for child in node.child_nodes:
-            child.level_from_root = node.level_from_root + 1
             edge_ptr_refs = _pointers_to_references(ptrs)  # parent’s pointers as provenance
             edge_ptr_mentions= _spans_to_groundings_to_mentions(_pointers_to_spans(ptrs))
             edge_dict = {
@@ -3348,9 +3378,7 @@ def semantic_tree_to_kge_payload(
             }
             edges.append(edge_dict)
             
-            walk(child)
-    root.level_from_root = 0
-    walk(root)
+        pending.extend((child, depth + 1) for child in reversed(node.child_nodes))
     nodes[0].update({"properties": {"kind": "document_root"}}) # document root
     return {
         "doc_id": doc_id,
@@ -3502,9 +3530,11 @@ def all_child_from_root(
 ) -> list[SemanticNode]:
     if results is None:
         results = []
-    results.extend(root.child_nodes)
-    for node in root.child_nodes:
-        all_child_from_root(node, results)
+    pending = list(reversed(root.child_nodes))
+    while pending:
+        node = pending.pop()
+        results.append(node)
+        pending.extend(reversed(node.child_nodes))
     return results
 
 available_node_ids = ContextVar("indexing_nodes", default=set())

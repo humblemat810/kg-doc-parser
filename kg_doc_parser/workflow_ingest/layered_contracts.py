@@ -335,12 +335,19 @@ def _attach_children(tree: SemanticNode, result: CurrentLayerResult) -> Semantic
             )
         )
 
-    def walk(node: SemanticNode) -> SemanticNode:
-        updated_children = [walk(existing) for existing in node.child_nodes]
+    rebuilt: dict[int, SemanticNode] = {}
+    pending: list[tuple[SemanticNode, bool]] = [(tree, False)]
+    while pending:
+        node, exiting = pending.pop()
+        if not exiting:
+            pending.append((node, True))
+            pending.extend((child, False) for child in reversed(node.child_nodes))
+            continue
+        updated_children = [rebuilt[id(child)] for child in node.child_nodes]
         updated_children.extend(children_by_parent.get(str(node.node_id), []))
-        return node.model_copy(update={"child_nodes": updated_children})
+        rebuilt[id(node)] = node.model_copy(update={"child_nodes": updated_children})
 
-    return walk(tree)
+    return rebuilt[id(tree)]
 
 
 __all__ = [

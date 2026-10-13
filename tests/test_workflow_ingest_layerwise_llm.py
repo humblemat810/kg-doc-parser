@@ -1747,7 +1747,11 @@ def test_boundary_summaries_survive_tree_commit_and_prompt_summary():
         current_layer_result=result,
         current_depth=0,
     )
-    payload = semantic_tree_to_kge_payload(committed, doc_id="doc")
+    payload = semantic_tree_to_kge_payload(
+        committed,
+        doc_id="doc",
+        parser_source_map={"cluster-1": {"text": "Alpha clause. Beta clause."}},
+    )
     node_payload = next(node for node in payload["nodes"] if node["id"] == "doc|root|alpha")
 
     assert committed.child_nodes[0].metadata["summary_text"] == "Alpha clause."

@@ -702,7 +702,9 @@ def _run_post_ocr_semantic_smoke_case(
 
             started = _step(steps[2])
             cached_semantic_tree_to_kge_payload = cached(memory, semantic_tree_to_kge_payload)
-            graph_to_persist = cached_semantic_tree_to_kge_payload(document_tree)
+            graph_to_persist = cached_semantic_tree_to_kge_payload(
+                document_tree, parser_source_map=source_map
+            )
             _step_done(steps[2], started, nodes=len(graph_to_persist.get("nodes", [])), edges=len(graph_to_persist.get("edges", [])))
 
             started = _step(steps[3])
@@ -881,7 +883,9 @@ def test_semantic_document_splitting(gemini_key, monkeypatch, parser_provider, m
 
         progress.substage("serialize tree to graph payload")
         cached_semantic_tree_to_kge_payload = cached(memory, semantic_tree_to_kge_payload)
-        graph_to_persist = cached_semantic_tree_to_kge_payload(document_tree)
+        graph_to_persist = cached_semantic_tree_to_kge_payload(
+            document_tree, parser_source_map=source_map
+        )
 
         progress.substage("round-trip graph payload back to semantic tree")
         reconstrcted_root = kge_payload_to_semantic_tree(graph_to_persist)
@@ -1086,7 +1090,9 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
         doc = regen_doc(str(pdf_page_root / f_name), use_raw=True)
         document_tree, source_map = parse_doc(doc_id=f_name, raw_doc_dict=doc, model_names=model_names)
         cached_semantic_tree_to_kge_payload = memory.cache(semantic_tree_to_kge_payload)
-        graph_to_persist = cached_semantic_tree_to_kge_payload(document_tree)
+        graph_to_persist = cached_semantic_tree_to_kge_payload(
+            document_tree, parser_source_map=source_map
+        )
         reconstrcted_root = kge_payload_to_semantic_tree(graph_to_persist)
         assert reconstrcted_root.model_dump() == document_tree.model_dump()
         import requests
@@ -1205,7 +1211,9 @@ def test_semantic_document_splitting_doc_group(gemini_key, monkeypatch, parser_p
         doc_group = regen_doc_group(os.path.join(loader.compare_root, f), use_raw=True)
         document_tree, source_map = parse_doc(f_name, doc_group, model_names=model_names)
         cached_semantic_tree_to_kge_payload = memory.cache(semantic_tree_to_kge_payload)
-        graph_to_persist = cached_semantic_tree_to_kge_payload(document_tree)
+        graph_to_persist = cached_semantic_tree_to_kge_payload(
+            document_tree, parser_source_map=source_map
+        )
         reconstrcted_root = kge_payload_to_semantic_tree(graph_to_persist)
         assert reconstrcted_root.model_dump() == document_tree.model_dump()
         base_url = _wait_for_local_server()

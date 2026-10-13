@@ -687,7 +687,11 @@ def test_page_index_heuristic_parses_text_and_markdown(fixture_name: str, source
     assert "TERM" in node_types
     assert _max_depth(result.semantic_tree) >= 6
 
-    payload = semantic_tree_to_kge_payload(result.semantic_tree, doc_id=result.workflow_input.request_id)
+    payload = semantic_tree_to_kge_payload(
+        result.semantic_tree,
+        doc_id=result.workflow_input.request_id,
+        parser_source_map=result.parser_source_map,
+    )
     assert len(payload["nodes"]) >= 8
     assert len(payload["edges"]) >= 4
 
@@ -2027,6 +2031,7 @@ def test_page_index_summary_can_be_disabled_without_changing_grounding() -> None
     payload = semantic_tree_to_kge_payload(
         result.semantic_tree,
         doc_id=result.workflow_input.request_id,
+        parser_source_map=result.parser_source_map,
     )
     persisted = next(node for node in payload["nodes"] if node["id"] == results.node_id)
     assert persisted["summary"] == ""

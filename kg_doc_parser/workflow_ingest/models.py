@@ -784,6 +784,15 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
         FrontendField(),
         LLMField(),
     ] = Field(default_factory=list)
+    atomic_retained: Annotated[bool, DtoField(), BackendField(), FrontendField()] = Field(
+        default=False, strict=True
+    )
+    atomic_parent_ids: Annotated[list[str], DtoField(), BackendField(), FrontendField()] = Field(
+        default_factory=list
+    )
+    atomic_content_pointers_by_parent: Annotated[
+        dict[str, list[HydratedTextPointer]], DtoField(), BackendField(), FrontendField()
+    ] = Field(default_factory=dict)
     metadata: Annotated[
         dict[str, JsonValue],
         DtoField(),
@@ -791,6 +800,49 @@ class CurrentLayerResult(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _promote_legacy_atomic_metadata(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            return payload
+        # Read old serialized results, but validate the legacy values with the
+        # same strict typed fields as newly constructed results.
+        for field_name in (
+            "atomic_retained",
+            "atomic_parent_ids",
+            "atomic_content_pointers_by_parent",
+        ):
+            if field_name in metadata:
+                legacy_value = metadata[field_name]
+                if field_name == "atomic_retained" and type(legacy_value) is not bool:
+                    raise ValueError("metadata.atomic_retained must be a boolean")
+                if field_name in payload and payload[field_name] != legacy_value:
+                    raise ValueError(f"{field_name} conflicts with its legacy metadata value")
+                payload.setdefault(field_name, legacy_value)
+        if "atomic_parent_ids" not in payload and isinstance(
+            payload.get("atomic_content_pointers_by_parent"), dict
+        ):
+            payload["atomic_parent_ids"] = list(
+                payload["atomic_content_pointers_by_parent"]
+            )
+        return payload
+
+    @model_validator(mode="after")
+    def _validate_atomic_retention(self) -> CurrentLayerResult:
+        if self.atomic_parent_ids and not self.atomic_retained:
+            raise ValueError("atomic_parent_ids require atomic_retained=True")
+        if self.atomic_content_pointers_by_parent and not self.atomic_retained:
+            raise ValueError("atomic pointer overrides require atomic_retained=True")
+        if len(self.atomic_parent_ids) != len(set(self.atomic_parent_ids)):
+            raise ValueError("atomic_parent_ids must be unique")
+        if set(self.atomic_content_pointers_by_parent) - set(self.atomic_parent_ids):
+            raise ValueError("atomic pointer overrides require a declared atomic parent")
+        return self
 
 
 class LLMTextPointer(BaseModel):

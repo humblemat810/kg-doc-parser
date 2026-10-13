@@ -1120,6 +1120,17 @@ def test_find_semantic_node_fails_closed_on_cycle_without_recursing_forever():
     assert find_semantic_node(root, "missing") is None
 
 
+def test_find_semantic_node_handles_a_tree_deeper_than_python_recursion_limit():
+    root = SemanticNode(node_id="root", title="Root", node_type="DOCUMENT_ROOT")
+    current = root
+    for index in range(1200):
+        child = SemanticNode(node_id=f"node-{index}", parent_id=str(current.node_id), title="Deep")
+        current.child_nodes.append(child)
+        current = child
+
+    assert find_semantic_node(root, "node-1199") is current
+
+
 def test_commit_layer_children_rejects_duplicate_proposals_instead_of_overwriting():
     tree = SemanticNode(node_id="doc|root", title="Doc", node_type="DOCUMENT_ROOT")
     result = CurrentLayerResult(
@@ -1411,18 +1422,17 @@ def test_atomic_retention_rejects_an_invalid_pointer_override_before_commit():
         current_layer_context=context,
         current_layer_result=CurrentLayerResult(
             children=[],
-            metadata={
-                "atomic_retained": True,
-                "atomic_content_pointers_by_parent": {
-                    parent: [
-                        {
-                            "source_cluster_id": "doc|p1_t0",
-                            "start_char": 0,
-                            "end_char": 99,
-                            "verbatim_text": "not authoritative",
-                        }
-                    ]
-                },
+            atomic_retained=True,
+            atomic_parent_ids=[parent],
+            atomic_content_pointers_by_parent={
+                parent: [
+                    HydratedTextPointer(
+                        source_cluster_id="doc|p1_t0",
+                        start_char=0,
+                        end_char=99,
+                        verbatim_text="not authoritative",
+                    )
+                ]
             },
             satisfied=True,
         ),
@@ -1486,9 +1496,140 @@ def test_atomic_retention_never_narrows_a_verified_parent_pointer():
         current_layer_context=context,
     )
 
-    assert context_result.metadata["atomic_content_pointers_by_parent"] == {
-        parent: [full_pointer.model_dump(mode="json")]
-    }
+    assert context_result.atomic_parent_ids == [parent]
+    assert context_result.atomic_content_pointers_by_parent == {parent: [full_pointer]}
+
+
+def test_legacy_batch_retains_terminal_parent_while_committing_branching_sibling():
+    terminal_pointer = _pointer("terminal-source", "T", 0, 0)
+    branch_pointer = _pointer("branch-source", "XY", 0, 1)
+    root = SemanticNode(
+        node_id="root",
+        title="Root",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[
+            SemanticNode(
+                node_id="terminal",
+                parent_id="root",
+                title="Terminal",
+                total_content_pointers=[terminal_pointer],
+            ),
+            SemanticNode(
+                node_id="branch",
+                parent_id="root",
+                title="Branch",
+                total_content_pointers=[branch_pointer],
+                child_nodes=[
+                    SemanticNode(
+                        node_id="left",
+                        parent_id="branch",
+                        title="Left",
+                        total_content_pointers=[_pointer("branch-source", "X", 0, 0)],
+                    ),
+                    SemanticNode(
+                        node_id="right",
+                        parent_id="branch",
+                        title="Right",
+                        total_content_pointers=[_pointer("branch-source", "XY", 1, 1)],
+                    ),
+                ],
+            ),
+        ],
+    )
+    context = CurrentLayerContext(
+        depth=1,
+        parent_node_ids=["terminal", "branch"],
+        parent_content_pointers_by_id={
+            "terminal": [terminal_pointer],
+            "branch": [branch_pointer],
+        },
+    )
+    session = ParseSessionState(
+        collection_id="doc",
+        root_node_id="root",
+        mode="legacy_compat",
+        compat_full_tree=root.model_dump(),
+    )
+
+    result = legacy_children_for_context(
+        parse_session=session,
+        current_layer_context=context,
+    )
+    assert result.atomic_retained is True
+    assert result.atomic_parent_ids == ["terminal"]
+    assert {child.parent_node_id for child in result.children} == {"branch"}
+
+    source_map = {"terminal-source": {"text": "T"}, "branch-source": {"text": "XY"}}
+    committed = commit_layer_children(
+        semantic_tree=root,
+        current_layer_result=result,
+        current_depth=1,
+        parent_node_ids=context.parent_node_ids,
+        parser_source_map=source_map,
+    )
+    assert find_semantic_node(committed, "terminal").metadata["atomic_retained"] is True
+    assert len(find_semantic_node(committed, "branch").child_nodes) == 2
+
+
+def test_legacy_adapter_fails_closed_when_frontier_parent_is_missing():
+    session = ParseSessionState(
+        collection_id="doc",
+        root_node_id="root",
+        mode="legacy_compat",
+        compat_full_tree=SemanticNode(
+            node_id="root", title="Root", node_type="DOCUMENT_ROOT"
+        ).model_dump(),
+    )
+
+    with pytest.raises(ValueError, match="missing frontier parent"):
+        legacy_children_for_context(
+            parse_session=session,
+            current_layer_context=CurrentLayerContext(
+                depth=1, parent_node_ids=["missing"]
+            ),
+        )
+
+
+def test_atomic_result_rejects_truthy_non_boolean_metadata():
+    with pytest.raises(ValueError, match="metadata.atomic_retained"):
+        CurrentLayerResult(metadata={"atomic_retained": "false"})
+
+
+def test_atomic_result_promotes_legacy_pointer_metadata_to_typed_fields():
+    pointer = _pointer("unit", "text", 0, 3)
+    result = CurrentLayerResult(
+        children=[],
+        metadata={
+            "atomic_retained": True,
+            "atomic_content_pointers_by_parent": {
+                "parent": [pointer.model_dump(mode="json")]
+            },
+        },
+    )
+
+    assert result.atomic_retained is True
+    assert result.atomic_parent_ids == ["parent"]
+    assert result.atomic_content_pointers_by_parent == {"parent": [pointer]}
+
+
+def test_modern_export_and_coverage_handle_deep_valid_branching_tree():
+    root = SemanticNode(node_id="root", title="Root", node_type="DOCUMENT_ROOT")
+    current = root
+    for index in range(1100):
+        continuing = SemanticNode(
+            node_id=f"branch-{index}", parent_id=str(current.node_id), title="Branch"
+        )
+        leaf = SemanticNode(
+            node_id=f"leaf-{index}", parent_id=str(current.node_id), title="Leaf"
+        )
+        current.child_nodes.extend([continuing, leaf])
+        current = continuing
+
+    validate_semantic_tree_shape(root)
+    coverage = compute_terminal_content_coverage(root, {})
+    assert coverage["valid"] is True
+    payload = semantic_tree_to_kge_payload(root, doc_id="deep", parser_source_map={})
+    assert len(payload["nodes"]) == 2201
 
 
 def test_atomic_retention_rejects_a_mixed_batch_with_an_unverified_omitted_parent():
@@ -1551,7 +1692,36 @@ def test_modern_export_rejects_a_parent_id_mismatch():
     )
 
     with pytest.raises(ValueError, match="parent mismatch"):
-        semantic_tree_to_kge_payload(root, doc_id="doc")
+        semantic_tree_to_kge_payload(root, doc_id="doc", parser_source_map={})
+
+
+def test_modern_export_rejects_a_pointer_excerpt_that_disagrees_with_source():
+    root = SemanticNode(
+        node_id="root",
+        title="Root",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[
+            SemanticNode(
+                node_id="left",
+                parent_id="root",
+                title="Left",
+                total_content_pointers=[_pointer("unit", "Bad", 0, 2)],
+            ),
+            SemanticNode(
+                node_id="right",
+                parent_id="root",
+                title="Right",
+                total_content_pointers=[_pointer("unit", "Good", 0, 3)],
+            ),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="authoritative source slice"):
+        semantic_tree_to_kge_payload(
+            root,
+            doc_id="doc",
+            parser_source_map={"unit": {"text": "Good"}},
+        )
 
 
 def test_commit_rejects_layer_with_validation_diagnostics_before_mutation():
@@ -1619,3 +1789,37 @@ def test_final_tree_rejects_a_branch_beyond_the_configured_depth():
 
     with pytest.raises(ValueError, match="maximum depth 1"):
         finalize_semantic_tree(root, max_depth=1)
+
+
+def test_legacy_parse_doc_enforces_max_depth_at_its_return_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import kg_doc_parser.semantic_document_splitting_layerwise_edits as legacy_parser
+
+    root = SemanticNode(node_id="root", title="Root", node_type="DOCUMENT_ROOT")
+    branch = SemanticNode(node_id="branch", parent_id="root", title="Branch")
+    root.child_nodes = [
+        branch,
+        SemanticNode(node_id="sibling", parent_id="root", title="Sibling"),
+    ]
+    branch.child_nodes = [
+        SemanticNode(node_id="left", parent_id="branch", title="Left"),
+        SemanticNode(node_id="right", parent_id="branch", title="Right"),
+    ]
+    monkeypatch.setattr(
+        legacy_parser,
+        "prepare_document_for_llm",
+        lambda _raw: ({}, {"unit": {"text": "source"}}),
+    )
+    monkeypatch.setattr(
+        legacy_parser,
+        "build_document_tree",
+        lambda *_args, **_kwargs: root,
+    )
+
+    with pytest.raises(ValueError, match="maximum depth 1"):
+        legacy_parser.parse_doc(
+            doc_id="over-depth-test",
+            raw_doc_dict={},
+            max_depth=1,
+        )

@@ -475,7 +475,11 @@ def detect_layer_invariants(
             child for child in current_layer_result.children if child.parent_node_id == parent_id
         ]
         if not parent_children:
-            if current_layer_result.metadata.get("atomic_retained"):
+            explicitly_atomic = current_layer_result.atomic_retained and (
+                not current_layer_result.atomic_parent_ids
+                or parent_id in current_layer_result.atomic_parent_ids
+            )
+            if explicitly_atomic:
                 parent_pointers_for_atomic = parent_pointers.get(parent_id, [])
                 if not parent_pointers_for_atomic:
                     coverage_gaps.append(
@@ -921,25 +925,25 @@ def legacy_children_for_context(
     full_tree = SemanticNode.model_validate(parse_session.compat_full_tree)
     children: list[LayerChildCandidate] = []
     atomic_parent_ids: set[str] = set()
-    atomic_parent_pointers: dict[str, JsonValue] = {}
+    atomic_parent_pointers: dict[str, list[HydratedTextPointer]] = {}
     for parent_id in current_layer_context.parent_node_ids:
         parent = find_semantic_node(full_tree, parent_id)
         if parent is None:
-            continue
+            raise ValueError(
+                f"legacy compatibility tree is missing frontier parent {parent_id!r}"
+            )
         parent_children = list(parent.child_nodes)
         # A legacy callback has no separate proposal/review boundary.  Treat
         # a one-child result as an unsuccessful refinement and retain the
         # verified parent instead of allowing a unary tree into the workflow.
-        if len(parent_children) == 1:
+        if len(parent_children) < 2:
             atomic_parent_ids.add(parent_id)
             # The rejected refinement must retain the already verified parent
             # ownership, never a potentially narrower child transcription.
             parent_pointers = list(
                 parent.total_content_pointers or parent.aggregate_content_pointers
             )
-            atomic_parent_pointers[parent_id] = [
-                pointer.model_dump(mode="json") for pointer in parent_pointers
-            ]
+            atomic_parent_pointers[parent_id] = parent_pointers
             continue
         for child in parent_children:
             children.append(
@@ -960,17 +964,10 @@ def legacy_children_for_context(
         children=children,
         satisfied=True,
         reasoning_history=[],
-        metadata=cast(
-            dict[str, JsonValue],
-            {
-                "source": "legacy_compat",
-                # A legacy parent with no children is already a verified terminal
-                # unit.  Make that disposition explicit for the shared commit gate.
-                "atomic_retained": bool(atomic_parent_ids) or not children,
-                "atomic_parent_ids": sorted(atomic_parent_ids),
-                "atomic_content_pointers_by_parent": atomic_parent_pointers,
-            },
-        ),
+        atomic_retained=bool(atomic_parent_ids),
+        atomic_parent_ids=sorted(atomic_parent_ids),
+        atomic_content_pointers_by_parent=atomic_parent_pointers,
+        metadata={"source": "legacy_compat"},
     )
 
 
@@ -1421,7 +1418,7 @@ def check_layer_coverage(
         notes = raw_notes if isinstance(raw_notes, list) else []
         return metadata_flag, [str(note) for note in notes]
 
-    if current_layer_result.metadata.get("atomic_retained"):
+    if current_layer_result.atomic_retained:
         return True, []
 
     parent_ids = set(current_layer_context.parent_node_ids)
@@ -1600,22 +1597,16 @@ def _atomic_pointer_override_errors(
 ) -> list[str]:
     """Validate optional atomic pointers before a review can authorize them."""
 
-    raw_overrides = current_layer_result.metadata.get("atomic_content_pointers_by_parent")
-    if not isinstance(raw_overrides, dict) or parent_id not in raw_overrides:
+    raw_pointers = current_layer_result.atomic_content_pointers_by_parent.get(parent_id)
+    if raw_pointers is None:
         return []
-    raw_pointers = raw_overrides[parent_id]
-    if not isinstance(raw_pointers, list) or not raw_pointers:
+    if not raw_pointers:
         return [f"parent {parent_id}: atomic pointer override must be a non-empty list"]
     if parser_source_map is None:
         return [f"parent {parent_id}: atomic pointer override requires an authoritative source map"]
 
     errors: list[str] = []
-    for index, raw_pointer in enumerate(raw_pointers):
-        try:
-            pointer = HydratedTextPointer.model_validate(raw_pointer)
-        except (TypeError, ValueError, ValidationError) as error:
-            errors.append(f"parent {parent_id}: invalid atomic pointer override {index}: {error}")
-            continue
+    for index, pointer in enumerate(raw_pointers):
         error = pointer_source_validation_error(pointer, parser_source_map)
         if error is not None:
             errors.append(f"parent {parent_id}: atomic pointer override {index}: {error}")
@@ -1855,16 +1846,16 @@ def commit_layer_children(
     if current_layer_result.children:
         if any(count == 1 for count in grouped_counts.values()):
             raise ValueError("unary refinement cannot be committed")
-    elif not current_layer_result.metadata.get("atomic_retained"):
+    elif not current_layer_result.atomic_retained:
         raise ValueError("empty layer requires explicit atomic retention")
     if (
         parent_node_ids
         and not current_layer_result.children
-        and current_layer_result.metadata.get("atomic_retained")
+        and current_layer_result.atomic_retained
         and parser_source_map is None
     ):
         raise ValueError("atomic retention requires an authoritative source map")
-    atomic_retained = bool(current_layer_result.metadata.get("atomic_retained"))
+    atomic_retained = current_layer_result.atomic_retained
     if parent_node_ids and atomic_retained:
         atomic_override_errors = [
             error
@@ -1881,6 +1872,18 @@ def commit_layer_children(
         omitted_parent_ids = [
             parent_id for parent_id in parent_node_ids if grouped_counts.get(parent_id, 0) == 0
         ]
+        undeclared_omissions = [
+            parent_id
+            for parent_id in omitted_parent_ids
+            if atomic_retained
+            and current_layer_result.atomic_parent_ids
+            and parent_id not in current_layer_result.atomic_parent_ids
+        ]
+        if undeclared_omissions:
+            raise ValueError(
+                "layer omitted parents without an explicit atomic disposition: "
+                + ", ".join(undeclared_omissions)
+            )
         if omitted_parent_ids and not atomic_retained:
             raise ValueError(
                 "layer omitted parents without atomic retention: "
@@ -1927,12 +1930,7 @@ def commit_layer_children(
     retained_parent_ids = {
         str(node_id) for node_id in (parent_node_ids or [])
     }
-    raw_atomic_pointers = current_layer_result.metadata.get(
-        "atomic_content_pointers_by_parent", {}
-    )
-    atomic_pointers_by_parent = (
-        raw_atomic_pointers if isinstance(raw_atomic_pointers, dict) else {}
-    )
+    atomic_pointers_by_parent = current_layer_result.atomic_content_pointers_by_parent
     children_by_parent: dict[str, dict[str, SemanticNode]] = {}
     for child in current_layer_result.children:
         parent_children = children_by_parent.setdefault(child.parent_node_id, {})
@@ -1969,8 +1967,15 @@ def commit_layer_children(
             metadata=dict(child.metadata),
         )
 
-    def walk(node: SemanticNode) -> SemanticNode:
-        updated_children = [walk(existing) for existing in node.child_nodes]
+    rebuilt: dict[int, SemanticNode] = {}
+    pending: list[tuple[SemanticNode, bool]] = [(tree, False)]
+    while pending:
+        node, exiting = pending.pop()
+        if not exiting:
+            pending.append((node, True))
+            pending.extend((child, False) for child in reversed(node.child_nodes))
+            continue
+        updated_children = [rebuilt[id(child)] for child in node.child_nodes]
         proposed_by_id = children_by_parent.get(str(node.node_id), {})
         if proposed_by_id:
             existing_by_id = {str(child.node_id): child for child in updated_children}
@@ -1982,30 +1987,17 @@ def commit_layer_children(
             updated_children = list(existing_by_id.values())
         payload = node.model_dump()
         payload["child_nodes"] = [child.model_dump() for child in updated_children]
-        if (
-            atomic_retained
-            and grouped_counts.get(str(node.node_id), 0) == 0
-            and str(node.node_id) in retained_parent_ids
-        ):
+        node_id = str(node.node_id)
+        if atomic_retained and not grouped_counts.get(node_id, 0) and node_id in retained_parent_ids:
             metadata = dict(payload.get("metadata") or {})
             metadata["atomic_retained"] = True
             payload["metadata"] = metadata
-            # If the caller did not provide a replacement pointer payload,
-            # retain the already verified parent's authoritative pointers.
-            # An absent mapping is different from an explicit empty mapping.
-            if str(node.node_id) in atomic_pointers_by_parent:
-                raw_pointers = atomic_pointers_by_parent[str(node.node_id)]
-            else:
-                raw_pointers = None
-            if isinstance(raw_pointers, list):
-                payload["total_content_pointers"] = [
-                    HydratedTextPointer.model_validate(pointer).model_dump()
-                    for pointer in raw_pointers
-                    if isinstance(pointer, dict)
-                ]
-        return SemanticNode.model_validate(payload)
+            raw_pointers = atomic_pointers_by_parent.get(node_id)
+            if raw_pointers is not None:
+                payload["total_content_pointers"] = [pointer.model_dump() for pointer in raw_pointers]
+        rebuilt[id(node)] = SemanticNode.model_validate(payload)
 
-    committed = walk(tree)
+    committed = rebuilt[id(tree)]
     return finalize_semantic_tree(
         committed,
         parser_source_map=parser_source_map,
@@ -2089,24 +2081,18 @@ def enqueue_next_layer_frontier(
 
 def find_semantic_node(root: SemanticNode, node_id: str) -> SemanticNode | None:
     """Find a node without recursing forever on an unvalidated tree."""
-
-    visiting: set[int] = set()
-
-    def walk(node: SemanticNode) -> SemanticNode | None:
+    pending = [root]
+    seen: set[int] = set()
+    while pending:
+        node = pending.pop()
         marker = id(node)
-        if marker in visiting:
-            return None
-        visiting.add(marker)
+        if marker in seen:
+            continue
+        seen.add(marker)
         if str(node.node_id) == str(node_id):
             return node
-        for child in node.child_nodes:
-            found = walk(child)
-            if found is not None:
-                return found
-        visiting.remove(marker)
-        return None
-
-    return walk(root)
+        pending.extend(reversed(node.child_nodes))
+    return None
 
 
 def finalize_semantic_tree(

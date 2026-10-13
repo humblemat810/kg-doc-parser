@@ -24,6 +24,12 @@ evidence for it.
 - [x] PageIndex wrapper promotion rebases all descendant ancestry and levels iteratively
 - [x] Legacy parser conversion and export fail closed for unary trees
 - [x] Legacy and workflow exports reject duplicate IDs and parent mismatches
+- [x] Both graph export APIs require and validate the authoritative source map for source-bearing trees
+- [x] Legacy mixed batches retain terminal parents per parent while committing valid branching siblings
+- [x] Legacy compatibility adapter reports a missing frontier parent as a failure instead of retaining it atomically
+- [x] Legacy `parse_doc` forwards its configured depth limit to final validation
+- [x] Atomic retention fields validate at Pydantic construction and reject truthy non-boolean legacy metadata
+- [x] Lookup, commit rebuilding, coverage, printing, and export traversals support valid trees beyond Python's recursion limit
 - [x] Pydantic model-validation failures become typed retry diagnostics
 - [x] Pydantic rejects intrinsically unary materialized child trees; contextual unary layers remain gate-validated
 
@@ -50,6 +56,12 @@ evidence for it.
 - [x] PageIndex descendant-level rebase and atomic child provenance
 - [x] PageIndex heading-only and one-page normalization
 - [x] Legacy import/export rejection
+- [x] Legacy mixed terminal/branching frontier batch
+- [x] Missing legacy frontier parent fails closed
+- [x] Direct modern and legacy export reject bad source excerpts and offsets
+- [x] Deep valid tree passes export and coverage paths
+- [x] Typed atomic metadata rejects malformed and conflicting dispositions
+- [x] Legacy parse entry point rejects a mocked result beyond `max_depth`
 - [x] All excerpt, boundary, and PageIndex pathways
 - [x] Malformed model construction cannot bypass retry routing
 
@@ -64,3 +76,13 @@ evidence for it.
 - [x] PyPy 3.11 (GitHub Parser CI run 38421568523)
 - [x] Feature branch pushed
 - [x] GitHub CI monitored to completion (run 38421568523 succeeded)
+
+## Review Follow-Up Verification
+
+- [x] Focused structural regression matrix: 161 passed, 8 skipped (Ollama unavailable)
+- [x] Pyright on changed production modules: 0 errors
+- [x] Configured Ruff selection on changed workflow modules and tests
+- [x] `git diff --check`
+- [x] Exact deterministic CI test selection on local CPython 3.14.6: 258 passed, 118 deselected
+- [ ] Full GitHub CI and supported-interpreter matrix rerun after review follow-up changes
+- [ ] Push and monitor the updated feature-branch CI

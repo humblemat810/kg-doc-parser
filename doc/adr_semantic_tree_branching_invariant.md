@@ -35,7 +35,8 @@ meaningful split.
 | Layered DTO adapter | Validate request/source grounding at the core expansion boundary; validate result DTO identity, shape, and depth at construction, use the same commit gate, and requeue failed parents instead of dropping them. |
 | PageIndex | Normalize heading/page wrappers deterministically, rebase descendant parent IDs and levels when promoting a wrapper, retain unresolved branches atomically, then run final validation. |
 | Legacy import/export | Validate before conversion and serialization, including IDs and parent ancestry. Persisted unary trees fail closed and are not silently rewritten. |
-| Final result | Run the iterative identity, parent, pointer, cycle, duplicate-ID, depth, and branching checks. |
+| Graph export | Require the authoritative source map whenever a tree carries pointers; validate every span against that map before serialization. |
+| Final result | Run iterative identity, parent, pointer, cycle, duplicate-ID, depth, and branching checks. Tree traversals used after validation must also be iterative so valid deep branches remain usable. |
 
 ## Wrapper Normalization
 
@@ -73,7 +74,10 @@ or unstructured runtime failure.
 The contextual layer shape is not enforced by a Pydantic model validator on an
 individual result: whether one child is unary depends on the parent context,
 and atomic retention requires verified source pointers, including any explicit
-atomic pointer override. The intrinsic materialized-child shape is enforced
+atomic pointer override. `CurrentLayerResult` carries atomic disposition,
+parent IDs, and pointer overrides as typed fields. Legacy metadata is accepted
+only through strict promotion into those fields; truthy strings and conflicting
+legacy values fail during model construction. The intrinsic materialized-child shape is enforced
 immediately by `LayerChildCandidate`, which rejects exactly one nested child.
 The shared structural validator therefore remains the authority at proposal,
 review/repair, commit, frontier, and finalization boundaries. Model diagnostics
@@ -88,7 +92,11 @@ before mutation; they cannot be allowed to overwrite or alias one another.
 
 The finalized-tree validator is iterative and checks identity, ancestry,
 cycles, duplicate IDs, source-pointer ownership when a source map is
-available, configured depth, and the zero-or-two-plus branching rule. Layered
+available, configured depth, and the zero-or-two-plus branching rule. Public
+graph export requires that source map whenever source pointers are present.
+Legacy frontier adaptation retains terminal parents independently in mixed
+batches and fails closed when a requested parent is absent from its stored
+compatibility tree. Layered
 request models and core expansion validate source grounding at the boundary;
 seed and result DTOs validate identity, shape, and depth at construction
 because those DTOs do not carry the source map. The mutation primitive runs
@@ -103,4 +111,5 @@ model errors separate from post-mutation integrity failures.
   and export boundaries. An explicit audit/repair operation is required before
   they can be exported again.
 - Valid deep branching trees remain supported; validation is iterative so deep
-  input cannot exhaust Python recursion merely while checking shape.
+  input cannot exhaust Python recursion in validation, lookup, commit, coverage,
+  or graph export.

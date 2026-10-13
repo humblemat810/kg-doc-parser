@@ -1507,11 +1507,11 @@ def _assemble_layer_result_from_boundaries(
         return CurrentLayerResult(
             children=[],
             satisfied=True,
+            atomic_retained=True,
             reasoning_history=[LayerReasoningEntry(source="boundary_first_deterministic_empty")],
             metadata={
                 "fallback": "boundary_empty",
                 "allow_empty_layer": True,
-                "atomic_retained": True,
             },
         ), [], []
 
@@ -1774,11 +1774,11 @@ def _fallback_layer_result(
         return CurrentLayerResult(
             children=[],
             satisfied=True,
+            atomic_retained=True,
             reasoning_history=[LayerReasoningEntry(source="deterministic_depth_stop")],
             metadata={
                 "fallback": "depth_stop",
                 "allow_empty_layer": True,
-                "atomic_retained": True,
             },
         )
     parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
@@ -2483,13 +2483,13 @@ def build_layerwise_llm_callbacks(
                     fallback = CurrentLayerResult(
                         children=[],
                         satisfied=True,
+                        atomic_retained=True,
                         reasoning_history=list(fallback.reasoning_history),
                         metadata=cast(
                             dict[str, JsonValue],
                             {
                                 **dict(fallback.metadata),
                                 "allow_empty_layer": True,
-                                "atomic_retained": True,
                                 "boundary_rejected_child_ids": fallback_identical_ids,
                             },
                         ),

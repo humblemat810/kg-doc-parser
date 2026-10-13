@@ -42,6 +42,20 @@ class HydratedTextPointer(BaseModel):
     verbatim_text: str = Field(strict=True)
 
 
+class TextPointerLike(Protocol):
+    @property
+    def source_cluster_id(self) -> str: ...
+
+    @property
+    def start_char(self) -> int: ...
+
+    @property
+    def end_char(self) -> int: ...
+
+    @property
+    def verbatim_text(self) -> str | None: ...
+
+
 class SemanticNode(BaseModel):
     node_id: str | None = None
     parent_id: str | None = None
@@ -92,6 +106,22 @@ class SemanticTreeNodeLike(Protocol):
     def child_nodes(self) -> Sequence[object]: ...
 
 
+class SemanticIntegrityNodeLike(Protocol):
+    """Fields shared by current and legacy semantic-node models."""
+
+    @property
+    def node_id(self) -> object: ...
+
+    @property
+    def parent_id(self) -> object: ...
+
+    @property
+    def child_nodes(self) -> Sequence[object]: ...
+
+    @property
+    def total_content_pointers(self) -> Sequence[TextPointerLike]: ...
+
+
 def validate_semantic_tree_shape(
     root: SemanticTreeNodeLike,
     *,
@@ -127,7 +157,7 @@ def validate_semantic_tree_shape(
         aggregate_pointers = getattr(node, "aggregate_content_pointers", ())
         if (
             isinstance(metadata, Mapping)
-            and metadata.get("atomic_retained")
+            and metadata.get("atomic_retained") is True
             and not (total_pointers or aggregate_pointers)
         ):
             raise ValueError(
@@ -215,7 +245,7 @@ def correct_and_validate_pointer(
 
 
 def pointer_source_validation_error(
-    pointer: HydratedTextPointer,
+    pointer: TextPointerLike,
     source_map: Mapping[str, Mapping[str, object]],
 ) -> str | None:
     """Return a deterministic error when a pointer is not source-grounded.
@@ -240,13 +270,13 @@ def pointer_source_validation_error(
     if end >= len(text):
         return "pointer exceeds source bounds"
     actual = text[pointer.start_char : end + 1]
-    if actual != pointer.verbatim_text:
+    if actual != (pointer.verbatim_text or ""):
         return "pointer excerpt does not match authoritative source slice"
     return None
 
 
 def validate_semantic_tree_integrity(
-    root: SemanticNode,
+    root: SemanticIntegrityNodeLike,
     *,
     parser_source_map: Mapping[str, Mapping[str, object]] | None = None,
     max_depth: int | None = None,
@@ -258,7 +288,9 @@ def validate_semantic_tree_integrity(
     export, persistence, or a stable DTO result is returned.
     """
 
-    pending: list[tuple[SemanticNode, str | None, int, bool]] = [(root, None, 0, False)]
+    pending: list[tuple[SemanticIntegrityNodeLike, str | None, int, bool]] = [
+        (root, None, 0, False)
+    ]
     seen_ids: set[str] = set()
     active_ids: set[str] = set()
     while pending:
@@ -281,10 +313,8 @@ def validate_semantic_tree_integrity(
             )
         if max_depth is not None and depth > max_depth:
             raise ValueError(f"semantic tree exceeds maximum depth {max_depth}: {node_id}")
-        pointers = [
-            *getattr(node, "total_content_pointers", []),
-            *getattr(node, "aggregate_content_pointers", []),
-        ]
+        aggregate_pointers = getattr(node, "aggregate_content_pointers", ())
+        pointers = [*node.total_content_pointers, *aggregate_pointers]
         for pointer in pointers:
             if pointer.start_char < 0 or pointer.end_char < -1:
                 raise ValueError(f"invalid pointer bounds for node {node_id!r}")
@@ -298,7 +328,7 @@ def validate_semantic_tree_integrity(
         active_ids.add(node_id)
         pending.append((node, expected_parent_id, depth, True))
         for child in reversed(node.child_nodes):
-            pending.append((child, node_id, depth + 1, False))
+            pending.append((cast(SemanticIntegrityNodeLike, child), node_id, depth + 1, False))
     validate_semantic_tree_shape(root, max_depth=max_depth)
 
 
@@ -314,7 +344,9 @@ def compute_pointer_coverage(
 
     ranges: dict[str, list[tuple[int, int]]] = {}
 
-    def walk(node: SemanticNode) -> None:
+    pending = [root_node]
+    while pending:
+        node = pending.pop()
         if node.node_type != "DOCUMENT_ROOT":
             for ptr in node.total_content_pointers:
                 if pointer_source_validation_error(ptr, source_map) is not None:
@@ -326,10 +358,7 @@ def compute_pointer_coverage(
                         len(_source_text(source_map.get(ptr.source_cluster_id))) - 1,
                     )
                 ranges.setdefault(ptr.source_cluster_id, []).append((ptr.start_char, end))
-        for child in node.child_nodes:
-            walk(child)
-
-    walk(root_node)
+        pending.extend(reversed(node.child_nodes))
     per_cluster: dict[str, float] = {}
     total_len = 0
     total_covered = 0
@@ -392,7 +421,9 @@ def compute_terminal_content_coverage(
     ownership: dict[str, dict[int, list[str]]] = {}
     invalid_pointers: list[dict[str, str]] = []
 
-    def walk(node: SemanticNode) -> None:
+    pending = [root_node]
+    while pending:
+        node = pending.pop()
         if not node.child_nodes:
             node_id = str(node.node_id or "<missing-node-id>")
             for pointer in node.total_content_pointers:
@@ -406,10 +437,7 @@ def compute_terminal_content_coverage(
                 for position in range(pointer.start_char, end + 1):
                     if not source_text[position].isspace():
                         owners.setdefault(position, []).append(node_id)
-        for child in node.child_nodes:
-            walk(child)
-
-    walk(root_node)
+        pending.extend(reversed(node.child_nodes))
     per_cluster: dict[str, float] = {}
     missing_ranges: dict[str, list[dict[str, int]]] = {}
     multiply_owned_ranges: dict[str, list[dict[str, int]]] = {}
@@ -459,16 +487,31 @@ def classify_terminal_coverage_status(
     pending = [root_node]
     while pending:
         node = pending.pop()
-        if node.metadata.get("atomic_retained"):
+        if node.metadata.get("atomic_retained") is True:
             return "atomic_valid"
         pending.extend(node.child_nodes)
     return "complete"
 
 
-def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str, JsonValue]:
+def semantic_tree_to_kge_payload(
+    root: SemanticNode,
+    *,
+    doc_id: str,
+    parser_source_map: Mapping[str, Mapping[str, object]] | None = None,
+) -> dict[str, JsonValue]:
     # Graph export is a persistence boundary.  Validate before serializing so
     # callers cannot bypass the workflow commit gate with a hand-built tree.
-    validate_semantic_tree_integrity(root)
+    pending_nodes = [root]
+    has_source_pointers = False
+    while pending_nodes:
+        node = pending_nodes.pop()
+        if node.total_content_pointers or node.aggregate_content_pointers:
+            has_source_pointers = True
+            break
+        pending_nodes.extend(node.child_nodes)
+    if parser_source_map is None and has_source_pointers:
+        raise ValueError("source-grounded graph export requires parser_source_map")
+    validate_semantic_tree_integrity(root, parser_source_map=parser_source_map)
     nodes: list[dict[str, object]] = []
     edges: list[dict[str, object]] = []
 
@@ -513,7 +556,9 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
             for p in ptrs
         ]
 
-    def walk(node: SemanticNode) -> None:
+    pending = [root]
+    while pending:
+        node = pending.pop()
         aggregate_spans = spans(node.aggregate_content_pointers)
         # A structural page-index container is grounded by its aggregate span;
         # ordinary legacy structural nodes retain the existing synthetic fallback.
@@ -573,9 +618,7 @@ def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str
                     "metadata": {"doc_id": doc_id, "insertion_method": "workflow_ingest"},
                 }
             )
-            walk(child)
-
-    walk(root)
+        pending.extend(reversed(node.child_nodes))
     return cast(
         dict[str, JsonValue],
         {"doc_id": doc_id, "insertion_method": "workflow_ingest", "nodes": nodes, "edges": edges},
