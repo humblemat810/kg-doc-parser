@@ -60,7 +60,7 @@ evidence for it.
 - [x] `git diff --check`
 - [x] Lock verification and package/import checks
 - [x] Full structural hardening suite with cache provider disabled
-- [ ] CPython 3.12, 3.13, and 3.14
-- [ ] PyPy 3.11
+- [x] CPython 3.12, 3.13, and 3.14 (GitHub Parser CI run 38421568523)
+- [x] PyPy 3.11 (GitHub Parser CI run 38421568523)
 - [x] Feature branch pushed
-- [ ] GitHub CI monitored to completion
+- [x] GitHub CI monitored to completion (run 38421568523 succeeded)
