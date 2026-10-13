@@ -857,6 +857,32 @@ def register_layerwise_parser_steps(
             or current_layer_review.structural_issues
             or current_layer_review.validation_diagnostics
         )
+        # A mixed batch may contain valid refinements for some parents and a
+        # rejected refinement for others.  Do not discard the valid subset or
+        # let the provider's aggregate verdict hide the failed parents.  Run
+        # the deterministic commit gate here so the next steps can commit the
+        # validated subset and requeue only the failed parents.
+        if (
+            not current_layer_review.metadata.get("review_failure")
+            and (current_layer_result.satisfied is False or not coverage_ok or has_conflicts)
+        ):
+            partial_review = validate_layer_commit(
+                current_layer_context=current_layer_context,
+                current_layer_result=current_layer_result,
+                parser_source_map=_parser_source_map(ctx.state_view.get("parser_source_map")),
+            )
+            if (
+                partial_review.committable_parent_node_ids
+                and partial_review.failed_parent_node_ids
+            ):
+                with ctx.state_write as st:
+                    st["current_layer_result"] = (
+                        partial_review.updated_result or current_layer_result
+                    ).model_dump(field_mode="backend", dump_format="json")
+                    st["current_layer_review"] = partial_review.model_dump(
+                        field_mode="backend", dump_format="json"
+                    )
+                return _success("repair_layer_pointers")
         if current_layer_result.satisfied is False or not coverage_ok or has_conflicts:
             # Disable the failed operator for this parent layer. When triage
             # is enabled, even PageIndex may be retried through the remaining
@@ -1004,11 +1030,14 @@ def register_layerwise_parser_steps(
         current_layer_context = CurrentLayerContext.model_validate(ctx.state_view["current_layer_context"])
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         current_layer_review = CurrentLayerReview.model_validate(ctx.state_view["current_layer_review"])
+        parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
         updated_tree = commit_layer_children(
             semantic_tree=semantic_tree,
             current_layer_result=current_layer_result,
             current_depth=current_layer_context.depth,
-            parent_node_ids=current_layer_context.parent_node_ids,
+            parent_node_ids=current_layer_review.committable_parent_node_ids,
+            parser_source_map=_parser_source_map(ctx.state_view.get("parser_source_map")),
+            max_depth=parse_session.max_depth,
         )
         with ctx.state_write as st:
             st["semantic_tree"] = updated_tree.model_dump()
@@ -1061,9 +1090,11 @@ def register_layerwise_parser_steps(
 
     @_register_step(resolver, step_name="finalize_semantic_tree", runtime_deps=runtime_deps)
     def _finalize_semantic_tree(ctx: StepContext) -> StepRunResult:
+        parse_session = ParseSessionState.model_validate(ctx.state_view["parse_session"])
         tree = finalize_semantic_tree(
             SemanticNode.model_validate(ctx.state_view["semantic_tree"]),
             parser_source_map=_parser_source_map(ctx.state_view.get("parser_source_map")),
+            max_depth=parse_session.max_depth,
         )
         with ctx.state_write as st:
             st["semantic_tree"] = tree.model_dump()

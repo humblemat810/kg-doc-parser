@@ -66,6 +66,86 @@ def _manual_ollama_case_cache_dir(*, fixture_name: str, parser_model: str) -> Pa
     return path
 
 
+def test_page_index_wrapper_rebase_updates_all_descendant_levels() -> None:
+    left = SemanticNode(
+        node_id="left",
+        parent_id="page",
+        title="Left",
+        level_from_root=2,
+        child_nodes=[
+            SemanticNode(node_id="left-a", parent_id="left", title="A", level_from_root=3),
+            SemanticNode(node_id="left-b", parent_id="left", title="B", level_from_root=3),
+        ],
+    )
+    right = SemanticNode(
+        node_id="right",
+        parent_id="page",
+        title="Right",
+        level_from_root=2,
+        child_nodes=[
+            SemanticNode(node_id="right-a", parent_id="right", title="A", level_from_root=3),
+            SemanticNode(node_id="right-b", parent_id="right", title="B", level_from_root=3),
+        ],
+    )
+    page = SemanticNode(
+        node_id="page",
+        parent_id="root",
+        title="Page",
+        level_from_root=1,
+        metadata={"page_index_role": "page"},
+        child_nodes=[left, right],
+    )
+    root = SemanticNode(
+        node_id="root",
+        title="Root",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=[page],
+    )
+
+    normalized = page_index_module._normalize_page_index_unary_nodes(root)
+
+    assert [node.node_id for node in normalized.child_nodes] == ["left", "right"]
+    assert all(node.level_from_root == 1 for node in normalized.child_nodes)
+    assert all(
+        grandchild.level_from_root == 2
+        for node in normalized.child_nodes
+        for grandchild in node.child_nodes
+    )
+
+
+def test_page_index_atomic_fallback_preserves_child_evidence_metadata() -> None:
+    child = SemanticNode(
+        node_id="child",
+        parent_id="parent",
+        title="Meaningful child",
+        node_type="SECTION",
+        total_content_pointers=[
+            HydratedTextPointer(
+                source_cluster_id="unit",
+                start_char=0,
+                end_char=4,
+                verbatim_text="Alpha",
+            )
+        ],
+    )
+    parent = SemanticNode(
+        node_id="parent",
+        title="Wrapper",
+        node_type="TEXT_FLOW",
+        child_nodes=[child],
+    )
+
+    normalized = page_index_module._normalize_page_index_unary_nodes(parent)
+
+    assert normalized.child_nodes == []
+    assert normalized.total_content_pointers[0].verbatim_text == "Alpha"
+    assert normalized.metadata["atomic_retained_child"] == {
+        "node_id": "child",
+        "title": "Meaningful child",
+        "node_type": "SECTION",
+    }
+
+
 def _ollama_parser_model_params() -> list[object]:
     configured = os.getenv("KG_DOC_PARSER_OLLAMA_MODELS")
     models = [

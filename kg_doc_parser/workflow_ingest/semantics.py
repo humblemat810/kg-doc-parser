@@ -122,6 +122,17 @@ def validate_semantic_tree_shape(
             raise ValueError(f"unary semantic node: {node_id}")
         if max_depth is not None and depth > max_depth:
             raise ValueError(f"semantic tree exceeds maximum depth {max_depth}: {node_id}")
+        metadata = getattr(node, "metadata", {})
+        total_pointers = getattr(node, "total_content_pointers", ())
+        aggregate_pointers = getattr(node, "aggregate_content_pointers", ())
+        if (
+            isinstance(metadata, Mapping)
+            and metadata.get("atomic_retained")
+            and not (total_pointers or aggregate_pointers)
+        ):
+            raise ValueError(
+                f"atomic semantic node {node_id!r} has no verified source pointer"
+            )
         pending.append((node, depth, True))
         for child in reversed(children):
             pending.append((cast(SemanticTreeNodeLike, child), depth + 1, False))
@@ -232,6 +243,63 @@ def pointer_source_validation_error(
     if actual != pointer.verbatim_text:
         return "pointer excerpt does not match authoritative source slice"
     return None
+
+
+def validate_semantic_tree_integrity(
+    root: SemanticNode,
+    *,
+    parser_source_map: Mapping[str, Mapping[str, object]] | None = None,
+    max_depth: int | None = None,
+) -> None:
+    """Validate identity, ancestry, grounding, and branching in one pass.
+
+    ``SemanticNode`` is intentionally constructible while a workflow is being
+    assembled.  This validator is the finalized-tree boundary used before
+    export, persistence, or a stable DTO result is returned.
+    """
+
+    pending: list[tuple[SemanticNode, str | None, int, bool]] = [(root, None, 0, False)]
+    seen_ids: set[str] = set()
+    active_ids: set[str] = set()
+    while pending:
+        node, expected_parent_id, depth, exiting = pending.pop()
+        node_id = str(node.node_id or "")
+        if not node_id:
+            raise ValueError("semantic tree contains a node without an id")
+        if exiting:
+            active_ids.remove(node_id)
+            continue
+        if node_id in active_ids:
+            raise ValueError(f"semantic tree contains a cycle at {node_id!r}")
+        if node_id in seen_ids:
+            raise ValueError(f"semantic tree contains duplicate node id {node_id!r}")
+        actual_parent_id = None if node.parent_id is None else str(node.parent_id)
+        if actual_parent_id != expected_parent_id:
+            raise ValueError(
+                f"semantic tree parent mismatch for {node_id!r}: "
+                f"expected {expected_parent_id!r}, got {actual_parent_id!r}"
+            )
+        if max_depth is not None and depth > max_depth:
+            raise ValueError(f"semantic tree exceeds maximum depth {max_depth}: {node_id}")
+        pointers = [
+            *getattr(node, "total_content_pointers", []),
+            *getattr(node, "aggregate_content_pointers", []),
+        ]
+        for pointer in pointers:
+            if pointer.start_char < 0 or pointer.end_char < -1:
+                raise ValueError(f"invalid pointer bounds for node {node_id!r}")
+            if pointer.end_char != -1 and pointer.end_char < pointer.start_char:
+                raise ValueError(f"reversed pointer bounds for node {node_id!r}")
+            if parser_source_map is not None:
+                pointer_error = pointer_source_validation_error(pointer, parser_source_map)
+                if pointer_error is not None:
+                    raise ValueError(f"node {node_id!r}: {pointer_error}")
+        seen_ids.add(node_id)
+        active_ids.add(node_id)
+        pending.append((node, expected_parent_id, depth, True))
+        for child in reversed(node.child_nodes):
+            pending.append((child, node_id, depth + 1, False))
+    validate_semantic_tree_shape(root, max_depth=max_depth)
 
 
 def compute_pointer_coverage(
@@ -400,7 +468,7 @@ def classify_terminal_coverage_status(
 def semantic_tree_to_kge_payload(root: SemanticNode, *, doc_id: str) -> dict[str, JsonValue]:
     # Graph export is a persistence boundary.  Validate before serializing so
     # callers cannot bypass the workflow commit gate with a hand-built tree.
-    validate_semantic_tree_shape(root)
+    validate_semantic_tree_integrity(root)
     nodes: list[dict[str, object]] = []
     edges: list[dict[str, object]] = []
 

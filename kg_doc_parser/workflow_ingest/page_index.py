@@ -2449,6 +2449,37 @@ def _materialize_block_tree(
     return nodes, cursor
 
 
+def _rebase_page_index_subtree(
+    children: list[SemanticNode],
+    *,
+    parent_id: str | None,
+    level_from_root: int,
+) -> list[SemanticNode]:
+    """Rebase every descendant after removing a structural wrapper."""
+
+    pending: list[tuple[SemanticNode, str | None, int, bool]] = [
+        (child, parent_id, level_from_root, False) for child in reversed(children)
+    ]
+    rebased: dict[int, SemanticNode] = {}
+    while pending:
+        current, expected_parent_id, current_level, exiting = pending.pop()
+        marker = id(current)
+        if exiting:
+            rebased[marker] = current.model_copy(
+                update={
+                    "parent_id": expected_parent_id,
+                    "level_from_root": current_level,
+                    "child_nodes": [rebased[id(child)] for child in current.child_nodes],
+                }
+            )
+            continue
+        pending.append((current, expected_parent_id, current_level, True))
+        child_parent_id = current.node_id
+        for child in reversed(current.child_nodes):
+            pending.append((child, child_parent_id, current_level + 1, False))
+    return [rebased[id(child)] for child in children]
+
+
 def _normalize_page_index_unary_nodes(node: SemanticNode) -> SemanticNode:
     """Normalize known page-index wrappers without inventing children.
 
@@ -2457,53 +2488,64 @@ def _normalize_page_index_unary_nodes(node: SemanticNode) -> SemanticNode:
     evidence-bearing nodes and diagnosed in metadata.
     """
 
-    normalized_children = [
-        _normalize_page_index_unary_nodes(child) for child in node.child_nodes
-    ]
-    node = node.model_copy(update={"child_nodes": normalized_children})
-    if len(normalized_children) != 1:
-        return node
-    child = normalized_children[0]
-    role = str(node.metadata.get("page_index_role", ""))
-    child_role = str(child.metadata.get("page_index_role", ""))
-    if (
-        role == "DOCUMENT_ROOT"
-        or (role == "" and node.node_type == "DOCUMENT_ROOT")
-    ) and child_role == "page" and len(child.child_nodes) >= 2:
-        promoted = [
-            descendant.model_copy(
+    pending: list[tuple[SemanticNode, bool]] = [(node, False)]
+    normalized: dict[int, SemanticNode] = {}
+    while pending:
+        current, exiting = pending.pop()
+        marker = id(current)
+        if exiting:
+            normalized_children = [normalized[id(child)] for child in current.child_nodes]
+            current = current.model_copy(update={"child_nodes": normalized_children})
+            if len(normalized_children) != 1:
+                normalized[marker] = current
+                continue
+            child = normalized_children[0]
+            role = str(current.metadata.get("page_index_role", ""))
+            child_role = str(child.metadata.get("page_index_role", ""))
+            is_document_wrapper = (
+                role == "DOCUMENT_ROOT"
+                or (role == "" and current.node_type == "DOCUMENT_ROOT")
+            ) and child_role == "page"
+            is_section_wrapper = role in {"page", "heading_container"}
+            if (is_document_wrapper or is_section_wrapper) and len(child.child_nodes) >= 2:
+                normalized[marker] = current.model_copy(
+                    update={
+                        "child_nodes": _rebase_page_index_subtree(
+                            list(child.child_nodes),
+                            parent_id=current.node_id,
+                            level_from_root=current.level_from_root + 1,
+                        )
+                    }
+                )
+                continue
+
+            metadata = dict(current.metadata)
+            metadata["atomic_retained"] = True
+            metadata["unary_normalization"] = "atomic_retained"
+            total_pointers = list(current.total_content_pointers)
+            if not total_pointers:
+                total_pointers = list(current.aggregate_content_pointers)
+            if not total_pointers:
+                total_pointers = list(child.total_content_pointers)
+            if not total_pointers:
+                total_pointers = list(child.aggregate_content_pointers)
+            metadata["atomic_retained_child"] = {
+                "node_id": child.node_id,
+                "title": child.title,
+                "node_type": child.node_type,
+            }
+            normalized[marker] = current.model_copy(
                 update={
-                    "parent_id": node.node_id,
-                    "level_from_root": node.level_from_root + 1,
+                    "total_content_pointers": total_pointers,
+                    "child_nodes": [],
+                    "metadata": metadata,
                 }
             )
-            for descendant in child.child_nodes
-        ]
-        return node.model_copy(update={"child_nodes": promoted})
-    if role in {"page", "heading_container"} and len(child.child_nodes) >= 2:
-        promoted = [
-            descendant.model_copy(
-                update={
-                    "parent_id": node.node_id,
-                    "level_from_root": node.level_from_root + 1,
-                }
-            )
-            for descendant in child.child_nodes
-        ]
-        return node.model_copy(update={"child_nodes": promoted})
-    metadata = dict(node.metadata)
-    metadata["atomic_retained"] = True
-    metadata["unary_normalization"] = "atomic_retained"
-    total_pointers = list(node.total_content_pointers)
-    if not total_pointers:
-        total_pointers = list(node.aggregate_content_pointers)
-    return node.model_copy(
-        update={
-            "total_content_pointers": total_pointers,
-            "child_nodes": [],
-            "metadata": metadata,
-        }
-    )
+            continue
+        pending.append((current, True))
+        for child in reversed(current.child_nodes):
+            pending.append((child, False))
+    return normalized[id(node)]
 
 
 def parse_page_index_layer(
@@ -2693,6 +2735,7 @@ def parse_page_index_document(
     refine_excerpts: bool = False,
     summary_enabled: bool = True,
     hierarchical_summary_enabled: bool | None = None,
+    max_depth: int = 10,
 ) -> PageIndexParseResult:
     """Parse a plain text or Markdown document into a page-index semantic tree."""
 
@@ -2862,6 +2905,7 @@ def parse_page_index_document(
     semantic_tree = finalize_semantic_tree(
         semantic_tree,
         parser_source_map=parser_source_map,
+        max_depth=max_depth,
     )
     coverage = compute_pointer_coverage(
         semantic_tree,

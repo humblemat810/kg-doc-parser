@@ -118,27 +118,45 @@ def _partial_semantic_tree(*, collection, parser_input_dict, parser_source_map):
     first_id = next(iter(parser_source_map))
     text = parser_source_map[first_id]["text"]
     partial_end = max(0, (len(text) // 2) - 1)
+    first_child = SemanticNode(
+        title="partial-a",
+        node_type="TEXT_FLOW",
+        total_content_pointers=[
+            HydratedTextPointer(
+                source_cluster_id=first_id,
+                start_char=0,
+                end_char=partial_end,
+                verbatim_text=text[: partial_end + 1],
+            )
+        ],
+        child_nodes=[],
+        level_from_root=1,
+    )
+    second_start = min(len(text) - 1, partial_end + 1)
     return SemanticNode(
         title=collection.title,
         node_type="DOCUMENT_ROOT",
         total_content_pointers=[],
         child_nodes=[
+            first_child.model_copy(update={"parent_id": "pending-root"}),
             SemanticNode(
-                title="partial",
+                title="partial-b",
                 node_type="TEXT_FLOW",
                 total_content_pointers=[
                     HydratedTextPointer(
                         source_cluster_id=first_id,
-                        start_char=0,
-                        end_char=partial_end,
-                        verbatim_text=text[: partial_end + 1],
+                        start_char=second_start,
+                        end_char=second_start,
+                        verbatim_text=text[second_start],
                     )
                 ],
                 child_nodes=[],
                 level_from_root=1,
+                parent_id="pending-root",
             )
         ],
         level_from_root=0,
+        node_id="pending-root",
     )
 
 

@@ -32,9 +32,9 @@ meaningful split.
 | Review and repair | Rehydrate pointers from the authoritative source map and run deterministic checks again after repair. |
 | Commit | Validate immediately before mutation and again after mutation. Reject unary children and invalid atomic retention. |
 | Frontier | Never enqueue a unary, unchanged, or rejected refinement. |
-| Layered DTO adapter | Use the same commit gate; it must not attach children directly. |
-| PageIndex | Normalize heading/page wrappers deterministically, retain unresolved branches atomically, then run final validation. |
-| Legacy import/export | Validate before conversion and serialization. Persisted unary trees fail closed and are not silently rewritten. |
+| Layered DTO adapter | Validate request/source grounding at the core expansion boundary; validate result DTO identity, shape, and depth at construction, use the same commit gate, and requeue failed parents instead of dropping them. |
+| PageIndex | Normalize heading/page wrappers deterministically, rebase descendant parent IDs and levels when promoting a wrapper, retain unresolved branches atomically, then run final validation. |
+| Legacy import/export | Validate before conversion and serialization, including IDs and parent ancestry. Persisted unary trees fail closed and are not silently rewritten. |
 | Final result | Run the iterative identity, parent, pointer, cycle, duplicate-ID, depth, and branching checks. |
 
 ## Wrapper Normalization
@@ -42,8 +42,9 @@ meaningful split.
 Known structural wrappers may be removed when doing so preserves source
 ownership and produces a meaningful branch. Heading-only blocks become grounded
 heading leaves. A page or root wrapper with no meaningful decomposition becomes
-an atomic evidence-bearing node. No arbitrary semantic node is flattened just
-because it has one child.
+an atomic evidence-bearing node. Wrapper promotion rebases every promoted
+descendant, not just its direct children. No arbitrary semantic node is
+flattened just because it has one child.
 
 ## Diagnostics
 
@@ -71,12 +72,28 @@ or unstructured runtime failure.
 
 The contextual layer shape is not enforced by a Pydantic model validator on an
 individual result: whether one child is unary depends on the parent context,
-and atomic retention requires verified source pointers. The intrinsic
-materialized-child shape is enforced immediately by `LayerChildCandidate`,
-which rejects exactly one nested child. The shared structural validator
-therefore remains the authority at proposal, review/repair, commit, frontier,
-and finalization boundaries. Model diagnostics complement that validator; they
-do not replace it.
+and atomic retention requires verified source pointers, including any explicit
+atomic pointer override. The intrinsic materialized-child shape is enforced
+immediately by `LayerChildCandidate`, which rejects exactly one nested child.
+The shared structural validator therefore remains the authority at proposal,
+review/repair, commit, frontier, and finalization boundaries. Model diagnostics
+complement that validator; they do not replace it.
+
+Layer batches are evaluated per parent for partial commit. A diagnostic with a
+parent or child location blocks only the affected parent, so an independently
+verified sibling can be committed while the failed parent is requeued. A
+location-free diagnostic is global and blocks the complete batch. Child IDs
+shared across parent groups are converted into parent-scoped commit diagnostics
+before mutation; they cannot be allowed to overwrite or alias one another.
+
+The finalized-tree validator is iterative and checks identity, ancestry,
+cycles, duplicate IDs, source-pointer ownership when a source map is
+available, configured depth, and the zero-or-two-plus branching rule. Layered
+request models and core expansion validate source grounding at the boundary;
+seed and result DTOs validate identity, shape, and depth at construction
+because those DTOs do not carry the source map. The mutation primitive runs
+the full validator both before and after attachment. This keeps retryable
+model errors separate from post-mutation integrity failures.
 
 ## Consequences
 

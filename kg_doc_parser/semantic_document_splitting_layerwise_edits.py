@@ -138,7 +138,7 @@ from kg_doc_parser.llm_structured_output import build_structured_output_runnable
 
 from .document_ingest_log_config import configured_document_ingest_log_db
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
-from .workflow_ingest.semantics import validate_semantic_tree_shape
+from .workflow_ingest.semantics import validate_semantic_tree_integrity
 
 _LAYERWISE_TRACE_ENV = "KG_DOC_LAYERWISE_TRACE_FILE"
 
@@ -3190,7 +3190,7 @@ def parse_doc(
             model_names=model_names,
         )
         _emit_layerwise_trace("parse_doc.build_document_tree.done", doc_id=doc_id)
-        validate_semantic_tree_shape(document_tree)
+        validate_semantic_tree_integrity(document_tree, parser_source_map=source_map)
         cov: CoverageResponse = compute_pointer_coverage(document_tree, source_map)
         print("Overall coverage:", cov.overall)
         for cid, r in cov.per_cluster.items():
@@ -3242,7 +3242,7 @@ def semantic_tree_to_kge_payload(
 ) -> dict[str, Any]:
     # Legacy export is a persistence boundary: historical unary trees fail
     # closed rather than being silently rewritten into a different graph.
-    validate_semantic_tree_shape(root)
+    validate_semantic_tree_integrity(root)
     if doc_id is None:
         doc_id = str(
             stable_id(
@@ -3493,7 +3493,7 @@ def kge_payload_to_semantic_tree(payload: dict[str, Any]) -> "SemanticNode":
         all_ids = set(sem_nodes.keys())
         root_ids = list(all_ids - all_child_ids)
         root = sem_nodes[root_ids[0]] if root_ids else list(sem_nodes.values())[0]
-    validate_semantic_tree_shape(root)
+    validate_semantic_tree_integrity(root)
     return root
     
 def all_child_from_root(

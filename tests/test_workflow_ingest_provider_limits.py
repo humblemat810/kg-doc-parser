@@ -229,6 +229,7 @@ def test_failure_category_vocabulary_covers_provider_and_workflow_outcomes() -> 
         "fallback",
         "rollback",
         "in_flight_limit",
+        "unary_refinement",
     }
 
 

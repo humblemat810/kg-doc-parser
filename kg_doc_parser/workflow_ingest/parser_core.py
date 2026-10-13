@@ -27,7 +27,7 @@ from .semantics import (
     HydratedTextPointer,
     SemanticNode,
     pointer_source_validation_error,
-    validate_semantic_tree_shape,
+    validate_semantic_tree_integrity,
 )
 from .serialization import JsonValue
 
@@ -438,11 +438,6 @@ def detect_layer_invariants(
     list[LayerDuplicateChildNote],
     list[str],
 ]:
-    if current_layer_result.metadata.get("atomic_retained") and not current_layer_result.children:
-        # Explicit atomic retention is a valid structural outcome.  The
-        # final tree validator still checks retained pointers and the
-        # post-parse coverage gate still decides source ownership.
-        return True, True, [], [], [], ["atomic_retained"]
     overlap_conflicts: list[LayerSpanConflict] = []
     coverage_gaps: list[LayerCoverageGap] = []
     duplicate_notes: list[LayerDuplicateChildNote] = []
@@ -511,6 +506,19 @@ def detect_layer_invariants(
                             review_notes.append(
                                 f"atomic parent pointer for {parent_id} is invalid: {pointer_error}"
                             )
+                else:
+                    coverage_gaps.append(
+                        LayerCoverageGap(
+                            parent_node_id=parent_id,
+                            source_cluster_id="<missing-source-map>",
+                            gap_start=0,
+                            gap_end=0,
+                            expected_text="atomic retention requires an authoritative source map",
+                        )
+                    )
+                    review_notes.append(
+                        f"parent {parent_id} cannot be atomically retained without a source map"
+                    )
                 if not coverage_gaps or not any(
                     gap.parent_node_id == parent_id for gap in coverage_gaps
                 ):
@@ -924,9 +932,13 @@ def legacy_children_for_context(
         # verified parent instead of allowing a unary tree into the workflow.
         if len(parent_children) == 1:
             atomic_parent_ids.add(parent_id)
+            # The rejected refinement must retain the already verified parent
+            # ownership, never a potentially narrower child transcription.
+            parent_pointers = list(
+                parent.total_content_pointers or parent.aggregate_content_pointers
+            )
             atomic_parent_pointers[parent_id] = [
-                pointer.model_dump(mode="json")
-                for pointer in parent_children[0].total_content_pointers
+                pointer.model_dump(mode="json") for pointer in parent_pointers
             ]
             continue
         for child in parent_children:
@@ -1546,8 +1558,20 @@ def dedupe_and_filter_layer(
     parent_ids = set(current_layer_context.parent_node_ids)
     seen: set[tuple[str, str, str, tuple[tuple[str, int, int, str], ...]]] = set()
     filtered: list[LayerChildCandidate] = []
+    validation_diagnostics = list(current_layer_result.validation_diagnostics)
     for child in current_layer_result.children:
         if child.parent_node_id not in parent_ids:
+            diagnostic = LayerValidationDiagnostic(
+                phase="commit",
+                error_type="foreign_parent",
+                message=(
+                    f"child {child.node_id!r} references parent "
+                    f"{child.parent_node_id!r} outside the current layer"
+                ),
+                location=[child.node_id, child.parent_node_id],
+            )
+            if diagnostic not in validation_diagnostics:
+                validation_diagnostics.append(diagnostic)
             continue
         key = (
             child.parent_node_id,
@@ -1559,7 +1583,63 @@ def dedupe_and_filter_layer(
             continue
         seen.add(key)
         filtered.append(child)
-    return current_layer_result.model_copy(update={"children": filtered})
+    return current_layer_result.model_copy(
+        update={
+            "children": filtered,
+            "validation_diagnostics": validation_diagnostics,
+            "satisfied": current_layer_result.satisfied and not validation_diagnostics,
+        }
+    )
+
+
+def _atomic_pointer_override_errors(
+    *,
+    parent_id: str,
+    current_layer_result: CurrentLayerResult,
+    parser_source_map: ParserSourceMap | None,
+) -> list[str]:
+    """Validate optional atomic pointers before a review can authorize them."""
+
+    raw_overrides = current_layer_result.metadata.get("atomic_content_pointers_by_parent")
+    if not isinstance(raw_overrides, dict) or parent_id not in raw_overrides:
+        return []
+    raw_pointers = raw_overrides[parent_id]
+    if not isinstance(raw_pointers, list) or not raw_pointers:
+        return [f"parent {parent_id}: atomic pointer override must be a non-empty list"]
+    if parser_source_map is None:
+        return [f"parent {parent_id}: atomic pointer override requires an authoritative source map"]
+
+    errors: list[str] = []
+    for index, raw_pointer in enumerate(raw_pointers):
+        try:
+            pointer = HydratedTextPointer.model_validate(raw_pointer)
+        except (TypeError, ValueError, ValidationError) as error:
+            errors.append(f"parent {parent_id}: invalid atomic pointer override {index}: {error}")
+            continue
+        error = pointer_source_validation_error(pointer, parser_source_map)
+        if error is not None:
+            errors.append(f"parent {parent_id}: atomic pointer override {index}: {error}")
+    return errors
+
+
+def _diagnostic_applies_to_parent(
+    diagnostic: LayerValidationDiagnostic,
+    *,
+    parent_id: str,
+    children: Sequence[LayerChildCandidate],
+) -> bool:
+    """Keep parent-local diagnostics from poisoning unrelated valid work."""
+
+    if not diagnostic.location:
+        return True
+    if parent_id in diagnostic.location:
+        return True
+    child_ids = {
+        child.node_id
+        for child in children
+        if child.parent_node_id == parent_id
+    }
+    return any(item in child_ids for item in diagnostic.location)
 
 
 def validate_layer_commit(
@@ -1622,7 +1702,32 @@ def validate_layer_commit(
     duplicate_notes: list[LayerDuplicateChildNote] = []
     structural_issues: list[LayerStructuralIssue] = []
     notes: list[str] = []
+    child_parents: dict[str, set[str]] = {}
+    for child in current_layer_result.children:
+        child_parents.setdefault(child.node_id, set()).add(child.parent_node_id)
+    for child_id, child_parent_ids in child_parents.items():
+        if len(child_parent_ids) > 1:
+            diagnostic = LayerValidationDiagnostic(
+                phase="commit",
+                error_type="duplicate_child_id",
+                message=(
+                    f"child node id {child_id!r} is proposed under multiple parents: "
+                    + ", ".join(sorted(child_parent_ids))
+                ),
+                location=[child_id, *sorted(child_parent_ids)],
+            )
+            if diagnostic not in validation_diagnostics:
+                validation_diagnostics.append(diagnostic)
     for parent_id in parent_ids:
+        local_diagnostics = [
+            diagnostic
+            for diagnostic in validation_diagnostics
+            if _diagnostic_applies_to_parent(
+                diagnostic,
+                parent_id=parent_id,
+                children=current_layer_result.children,
+            )
+        ]
         local_context = current_layer_context.model_copy(
             update={
                 "parent_node_ids": [parent_id],
@@ -1636,15 +1741,10 @@ def validate_layer_commit(
             update={
                 "children": [
                     child for child in current_layer_result.children if child.parent_node_id == parent_id
-                ]
+                ],
+                "validation_diagnostics": local_diagnostics,
             }
         )
-        if local_result.metadata.get("atomic_retained") and not local_result.children:
-            # An explicit atomic disposition is a successful terminal result,
-            # not a missing-parent failure.  The commit gate records the
-            # disposition on the existing parent without adding a child.
-            valid_parent_ids.append(parent_id)
-            continue
         local_coverage_ok, local_satisfied, local_overlaps, local_gaps, local_duplicates, local_notes = (
             detect_layer_invariants(
                 current_layer_context=local_context,
@@ -1652,6 +1752,15 @@ def validate_layer_commit(
                 parser_source_map=parser_source_map,
             )
         )
+        atomic_override_errors = _atomic_pointer_override_errors(
+            parent_id=parent_id,
+            current_layer_result=local_result,
+            parser_source_map=parser_source_map,
+        )
+        if atomic_override_errors:
+            local_coverage_ok = False
+            local_satisfied = False
+            local_notes.extend(atomic_override_errors)
         overlap_conflicts.extend(local_overlaps)
         coverage_gaps.extend(local_gaps)
         duplicate_notes.extend(local_duplicates)
@@ -1662,7 +1771,7 @@ def validate_layer_commit(
             )
         )
         notes.extend(f"parent {parent_id}: {note}" for note in local_notes[:12])
-        if not validation_diagnostics and local_coverage_ok and local_satisfied:
+        if not local_diagnostics and local_coverage_ok and local_satisfied:
             valid_parent_ids.append(parent_id)
             valid_children.extend(local_result.children)
         else:
@@ -1670,7 +1779,17 @@ def validate_layer_commit(
 
     partial_commit = bool(valid_parent_ids and failed_parent_ids)
     updated_result = current_layer_result.model_copy(
-        update={"children": valid_children, "satisfied": bool(valid_parent_ids)}
+        update={
+            "children": valid_children,
+            "satisfied": bool(valid_parent_ids),
+            # A partially committable result must be safe to pass to the
+            # mutation primitive. Failed-parent diagnostics remain on the
+            # review object and drive requeue, but must not block verified
+            # parents from being committed.
+            "validation_diagnostics": (
+                [] if valid_parent_ids else validation_diagnostics
+            ),
+        }
     )
     return CurrentLayerReview(
         updated_result=updated_result,
@@ -1704,10 +1823,26 @@ def commit_layer_children(
     current_layer_result: CurrentLayerResult,
     current_depth: int,
     parent_node_ids: list[str] | None = None,
+    parser_source_map: ParserSourceMap | None = None,
+    max_depth: int | None = None,
 ) -> SemanticNode:
     # This function is also a public primitive; do not rely on callers having
     # run the workflow's preceding validation step.
-    finalize_semantic_tree(semantic_tree)
+    finalize_semantic_tree(
+        semantic_tree,
+        parser_source_map=parser_source_map,
+        max_depth=max_depth,
+    )
+    tree = SemanticNode.model_validate(semantic_tree.model_dump())
+    existing_nodes: dict[str, SemanticNode] = {}
+    pending_nodes = [tree]
+    while pending_nodes:
+        node = pending_nodes.pop()
+        node_id = str(node.node_id)
+        if node_id in existing_nodes:
+            raise ValueError(f"duplicate node id {node_id!r}")
+        existing_nodes[node_id] = node
+        pending_nodes.extend(node.child_nodes)
     if current_layer_result.validation_diagnostics:
         raise ValueError("layer contains validation diagnostics and cannot be committed")
     grouped_counts: dict[str, int] = {}
@@ -1720,18 +1855,75 @@ def commit_layer_children(
     if current_layer_result.children:
         if any(count == 1 for count in grouped_counts.values()):
             raise ValueError("unary refinement cannot be committed")
-    elif parent_node_ids and not current_layer_result.metadata.get("atomic_retained"):
+    elif not current_layer_result.metadata.get("atomic_retained"):
         raise ValueError("empty layer requires explicit atomic retention")
-    if parent_node_ids and not current_layer_result.metadata.get("atomic_retained"):
-        missing_parent_ids = [
+    if (
+        parent_node_ids
+        and not current_layer_result.children
+        and current_layer_result.metadata.get("atomic_retained")
+        and parser_source_map is None
+    ):
+        raise ValueError("atomic retention requires an authoritative source map")
+    atomic_retained = bool(current_layer_result.metadata.get("atomic_retained"))
+    if parent_node_ids and atomic_retained:
+        atomic_override_errors = [
+            error
+            for parent_id in parent_node_ids
+            for error in _atomic_pointer_override_errors(
+                parent_id=parent_id,
+                current_layer_result=current_layer_result,
+                parser_source_map=parser_source_map,
+            )
+        ]
+        if atomic_override_errors:
+            raise ValueError("; ".join(atomic_override_errors[:8]))
+    if parent_node_ids:
+        omitted_parent_ids = [
             parent_id for parent_id in parent_node_ids if grouped_counts.get(parent_id, 0) == 0
         ]
-        if missing_parent_ids:
+        if omitted_parent_ids and not atomic_retained:
             raise ValueError(
                 "layer omitted parents without atomic retention: "
-                + ", ".join(missing_parent_ids)
+                + ", ".join(omitted_parent_ids)
             )
-    tree = SemanticNode.model_validate(semantic_tree.model_dump())
+        if omitted_parent_ids:
+            if parser_source_map is None:
+                raise ValueError("atomic retention requires an authoritative source map")
+            for parent_id in omitted_parent_ids:
+                parent = existing_nodes.get(parent_id)
+                if parent is None:
+                    raise ValueError(f"atomic parent does not exist: {parent_id}")
+                parent_pointers = list(
+                    parent.total_content_pointers or parent.aggregate_content_pointers
+                )
+                if not parent_pointers:
+                    raise ValueError(
+                        f"atomic parent {parent_id!r} has no verified source pointer"
+                    )
+                pointer_errors = [
+                    pointer_source_validation_error(pointer, parser_source_map)
+                    for pointer in parent_pointers
+                ]
+                invalid_pointer_errors = [error for error in pointer_errors if error is not None]
+                if invalid_pointer_errors:
+                    raise ValueError(
+                        f"atomic parent {parent_id!r} has invalid source pointer: "
+                        + "; ".join(invalid_pointer_errors[:4])
+                    )
+    proposed_parent_ids = set(grouped_counts)
+    missing_parent_ids = sorted(proposed_parent_ids - set(existing_nodes))
+    if missing_parent_ids:
+        raise ValueError(
+            "proposed child parent does not exist: " + ", ".join(missing_parent_ids)
+        )
+    if parent_node_ids is not None:
+        allowed_parent_ids = set(parent_node_ids)
+        out_of_scope_parent_ids = sorted(proposed_parent_ids - allowed_parent_ids)
+        if out_of_scope_parent_ids:
+            raise ValueError(
+                "proposed child parent is outside current layer: "
+                + ", ".join(out_of_scope_parent_ids)
+            )
     retained_parent_ids = {
         str(node_id) for node_id in (parent_node_ids or [])
     }
@@ -1791,8 +1983,8 @@ def commit_layer_children(
         payload = node.model_dump()
         payload["child_nodes"] = [child.model_dump() for child in updated_children]
         if (
-            current_layer_result.metadata.get("atomic_retained")
-            and not current_layer_result.children
+            atomic_retained
+            and grouped_counts.get(str(node.node_id), 0) == 0
             and str(node.node_id) in retained_parent_ids
         ):
             metadata = dict(payload.get("metadata") or {})
@@ -1814,7 +2006,11 @@ def commit_layer_children(
         return SemanticNode.model_validate(payload)
 
     committed = walk(tree)
-    return finalize_semantic_tree(committed)
+    return finalize_semantic_tree(
+        committed,
+        parser_source_map=parser_source_map,
+        max_depth=max_depth,
+    )
 
 
 def requeue_failed_frontier_items(
@@ -1917,44 +2113,14 @@ def finalize_semantic_tree(
     semantic_tree: SemanticNode,
     *,
     parser_source_map: ParserSourceMap | None = None,
+    max_depth: int | None = None,
 ) -> SemanticNode:
     """Validate the replayed tree before it reaches export or persistence."""
-    seen_ids: set[str] = set()
-    visiting: set[str] = set()
-    pending: list[tuple[SemanticNode, str | None, bool]] = [(semantic_tree, None, False)]
-    while pending:
-        node, expected_parent_id, exiting = pending.pop()
-        node_id = _required_node_id(node)
-        if exiting:
-            visiting.remove(node_id)
-            continue
-        if node_id in visiting:
-            raise ValueError(f"semantic tree contains a cycle at {node_id!r}")
-        if node_id in seen_ids:
-            raise ValueError(f"semantic tree contains duplicate node id {node_id!r}")
-        if node.parent_id != expected_parent_id:
-            raise ValueError(
-                f"semantic tree parent mismatch for {node_id!r}: "
-                f"expected {expected_parent_id!r}, got {node.parent_id!r}"
-            )
-        seen_ids.add(node_id)
-        visiting.add(node_id)
-        for pointer in [*node.total_content_pointers, *node.aggregate_content_pointers]:
-            if pointer.start_char < 0 or pointer.end_char < -1:
-                raise ValueError(f"invalid pointer bounds for node {node_id!r}")
-            if pointer.end_char != -1 and pointer.end_char < pointer.start_char:
-                raise ValueError(f"reversed pointer bounds for node {node_id!r}")
-            if parser_source_map is not None:
-                pointer_error = pointer_source_validation_error(pointer, parser_source_map)
-                if pointer_error is not None:
-                    raise ValueError(f"node {node_id!r}: {pointer_error}")
-        pending.append((node, expected_parent_id, True))
-        for child in reversed(node.child_nodes):
-            pending.append((child, node_id, False))
-    # Run the shared structural check after identity/cycle checks so callers
-    # receive the more actionable cycle/duplicate diagnostic for malformed
-    # graphs that also happen to contain a unary branch.
-    validate_semantic_tree_shape(semantic_tree)
+    validate_semantic_tree_integrity(
+        semantic_tree,
+        parser_source_map=parser_source_map,
+        max_depth=max_depth,
+    )
     return semantic_tree
 
 

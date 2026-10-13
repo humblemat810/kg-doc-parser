@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .models import (
     CurrentLayerResult,
@@ -28,9 +28,10 @@ from .parser_core import (
     legacy_children_for_context,
     prepare_layer_frontier,
     propose_layer_breakdown,
+    requeue_failed_frontier_items,
     validate_layer_commit,
 )
-from .semantics import SemanticNode
+from .semantics import SemanticNode, validate_semantic_tree_integrity
 from .serialization import JsonValue
 
 
@@ -81,6 +82,11 @@ class LayeredParseSeedResult(BaseModel):
     diagnostics: LayeredPayload = Field(default_factory=dict)
     usage: LayeredParseUsage = Field(default_factory=LayeredParseUsage)
 
+    @model_validator(mode="after")
+    def _validate_root(self) -> "LayeredParseSeedResult":
+        validate_semantic_tree_integrity(self.root, max_depth=self.session.max_depth)
+        return self
+
 
 class LayeredParseExpandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -92,6 +98,15 @@ class LayeredParseExpandRequest(BaseModel):
     parser_input: LayeredPayload
     source_map: LayeredSourceMap
     limits: LayeredParseLimits = Field(default_factory=LayeredParseLimits)
+
+    @model_validator(mode="after")
+    def _validate_input_tree(self) -> "LayeredParseExpandRequest":
+        validate_semantic_tree_integrity(
+            SemanticNode.model_validate(self.semantic_tree),
+            parser_source_map=cast(dict[str, dict[str, object]], self.source_map),
+            max_depth=min(self.limits.max_depth, self.session.max_depth),
+        )
+        return self
 
 
 class LayeredParseExpandResult(BaseModel):
@@ -105,6 +120,11 @@ class LayeredParseExpandResult(BaseModel):
     stable: bool
     diagnostics: LayeredPayload = Field(default_factory=dict)
     usage: LayeredParseUsage = Field(default_factory=LayeredParseUsage)
+
+    @model_validator(mode="after")
+    def _validate_result_tree(self) -> "LayeredParseExpandResult":
+        validate_semantic_tree_integrity(self.semantic_tree, max_depth=self.session.max_depth)
+        return self
 
 
 def initialize_layered_parse(request: LayeredParseSeedRequest) -> LayeredParseSeedResult:
@@ -215,12 +235,19 @@ def expand_layered_frontier(
         current_layer_result=committed_result,
         current_depth=context.depth,
         parent_node_ids=commit_review.committable_parent_node_ids,
+        parser_source_map=_parser_source_map(request.source_map),
+        max_depth=request.limits.max_depth,
     )
     next_frontier = enqueue_next_layer_frontier(
         frontier_queue=remaining,
         current_layer_context=context,
         current_layer_result=committed_result,
         parse_session=session,
+    )
+    next_frontier = requeue_failed_frontier_items(
+        frontier_queue=next_frontier,
+        parent_node_ids=commit_review.failed_parent_node_ids,
+        depth=context.depth,
     )
     elapsed_ms = int((time.monotonic() - started) * 1000)
     if (

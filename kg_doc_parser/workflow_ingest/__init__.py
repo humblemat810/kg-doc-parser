@@ -110,7 +110,12 @@ from .runners import (
     run_page_index_batch_workflow,
     run_page_index_source_workflow,
 )
-from .semantics import HydratedTextPointer, SemanticNode, validate_semantic_tree_shape
+from .semantics import (
+    HydratedTextPointer,
+    SemanticNode,
+    validate_semantic_tree_integrity,
+    validate_semantic_tree_shape,
+)
 from .service import build_default_engines, build_runtime, run_ingest_workflow
 from .smoke_assets import generate_ocr_smoke_assets
 from .strategy import (
@@ -148,6 +153,7 @@ __all__ = [
     "HierarchicalSummaryBatch",
     "HydratedTextPointer",
     "validate_semantic_tree_shape",
+    "validate_semantic_tree_integrity",
     "IngestExecutionClient",
     "IngestRunHandle",
     "IngestRunResult",

@@ -130,6 +130,25 @@ def _partial_semantic_tree(*, collection, parser_input_dict, parser_source_map):
             parent_id=root.node_id,
         )
     )
+    # Keep this fixture structurally valid so the test reaches the intended
+    # coverage gate instead of being rejected as a unary refinement.
+    root.child_nodes.append(
+        SemanticNode(
+            title="partial-tail",
+            node_type="TEXT_FLOW",
+            total_content_pointers=[
+                HydratedTextPointer(
+                    source_cluster_id=first_id,
+                    start_char=partial_end + 1,
+                    end_char=partial_end + 1,
+                    verbatim_text=text[partial_end + 1 : partial_end + 2],
+                )
+            ],
+            child_nodes=[],
+            level_from_root=1,
+            parent_id=root.node_id,
+        )
+    )
     return root
 
 

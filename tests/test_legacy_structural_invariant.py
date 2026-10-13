@@ -69,3 +69,11 @@ def test_legacy_import_rejects_a_persisted_unary_tree() -> None:
 
     with pytest.raises(ValueError, match="unary semantic node"):
         kge_payload_to_semantic_tree(payload)
+
+
+def test_legacy_export_rejects_a_parent_id_mismatch():
+    root = _legacy_tree(2)
+    root.child_nodes[0].parent_id = "wrong-parent"
+
+    with pytest.raises(ValueError, match="parent mismatch"):
+        semantic_tree_to_kge_payload(root)
