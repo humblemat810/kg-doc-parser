@@ -40,6 +40,25 @@ The local Bonsai 2 model was loaded with its multimodal projector through
 - Empty page: `false`
 - Credentials recorded in artifacts: `false`
 
+The saved response was compared with the exact strings and drawing positions
+used by the deterministic smoke-image generator:
+
+- Regions detected: `4/4` (`100%` region recall).
+- Exact region strings: `3/4`.
+- Characters returned: `159/160` (`99.375%` character coverage); the only
+  mismatch was the missing space in `OCRWorkflow Smoke Page 1`.
+- Spatial result: approximate pass. Returned starts were approximately
+  `x=62` in the provider's 1000-wide coordinate system and `y=72, 162, 252,
+  342`; the source starts map to approximately `x=57.1` and
+  `y=70, 160, 250, 340`.
+- Spatial limitation: this smoke does not establish IoU or word-level
+  grounding because the provider returns coarse line boxes and the adapter
+  does not invent finer geometry.
+
+The detailed response and measurements are retained in
+`experiments/ocr-provider-smoke/bonsai-live-loopback/ocr-response.json` and
+`quality-report.json`.
+
 The first attempt used `reasoning_effort=none`, which the Bonsai chat template
 rejects. A second attempt bound the server to a non-responsive virtual
 interface. The successful run used the supported `low` setting and loopback
