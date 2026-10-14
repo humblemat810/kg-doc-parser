@@ -139,3 +139,22 @@ def test_title_and_atomic_sixty_row_table_remain_two_grounded_children() -> None
     )
     assert len(tree.nodes[-1].children) == 2
     assert tree.render_preview() == f"Report{table_text}"
+
+
+def test_source_fingerprint_includes_authoritative_reading_order() -> None:
+    first = DocumentTree(
+        document_id="order-doc",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(_item("a", "a"), _item("b", "b")),
+        nodes=(
+            _leaf("a-leaf", "a", "a"),
+            _leaf("b-leaf", "b", "b"),
+            DocumentNode(node_id="root", kind="document", children=({"node_id": "a-leaf"}, {"node_id": "b-leaf"})),
+        ),
+    )
+    reordered = first.model_dump(mode="json")
+    reordered["source_items"] = list(reversed(reordered["source_items"]))
+    second = DocumentTree.model_validate(reordered)
+    assert first.source_fingerprint() != second.source_fingerprint()

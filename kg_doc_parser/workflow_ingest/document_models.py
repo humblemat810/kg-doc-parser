@@ -243,7 +243,7 @@ class DocumentTree(FrozenModel):
         return self
 
     def source_fingerprint(self) -> str:
-        payload = [item.model_dump(mode="json") for item in sorted(self.source_items, key=lambda value: value.item_id)]
+        payload = [item.model_dump(mode="json") for item in self.source_items]
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def summary_input_fingerprint(self, node_id: str, evidence_item_ids: tuple[str, ...] | None = None) -> str:
