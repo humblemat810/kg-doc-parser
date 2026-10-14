@@ -55,6 +55,9 @@ from pypdf import PdfReader
 from ..llm_structured_output import build_structured_output_runnable
 from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
 from .adapters import OCRPageJSON, normalize_ocr_pages
+from .document_adapters import apply_grouping_proposals, build_document_tree
+from .document_grouping import GroupProposal
+from .document_models import DocumentTree
 from .models import WorkflowExportBundle, WorkflowIngestInput
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import (
@@ -141,6 +144,11 @@ class OCRWorkflowArtifacts:
     summary_path: Path
     completed_pages: list[int]
     reused_pages: list[int]
+    document_tree: DocumentTree | None = None
+
+    @property
+    def document_tree_path(self) -> Path:
+        return self.legacy_dir / "document-tree.json"
 
 
 class OCRRunner(Protocol):
@@ -499,6 +507,7 @@ def _finalize_ocr_workflow_artifacts(
         title=title,
         pages=raw_pages,
     )
+    document_tree = build_document_tree(workflow_input)
     artifacts = OCRWorkflowArtifacts(
         workflow_input=workflow_input,
         ocr_pages=raw_pages,
@@ -509,7 +518,13 @@ def _finalize_ocr_workflow_artifacts(
         summary_path=summary_path,
         completed_pages=completed_pages,
         reused_pages=reused_pages,
+        document_tree=document_tree,
     )
+    if document_tree is not None:
+        (legacy_dir / "document-tree.json").write_text(
+            json.dumps(document_tree.model_dump(mode="json"), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
     _write_summary(
         artifacts,
         document_id=document_id,
@@ -1447,6 +1462,7 @@ def _write_summary(
             for page_number in artifacts.completed_pages
         },
         "page_count": len(artifacts.ocr_pages),
+        "document_tree_path": str(artifacts.document_tree_path) if artifacts.document_tree is not None else None,
     }
     artifacts.summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -1685,6 +1701,8 @@ def run_ocr_ingest_workflow(
     ocr_candidate_models: Sequence[str] | None = None,
     deps: dict[str, object] | None = None,
     probe: WorkflowProbe | None = None,
+    grouping_proposals: Sequence[GroupProposal] | None = None,
+    grouping_policy_version: str = "baseline-v1",
 ) -> tuple[_RunCompat, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
     """Run OCR preparation and then feed the normalized result into workflow ingest.
 
@@ -1707,6 +1725,18 @@ def run_ocr_ingest_workflow(
         ocr_candidate_models=ocr_candidate_models,
         probe=probe,
     )
+    if grouping_proposals:
+        if artifacts.document_tree is None:
+            raise ValueError("cannot group an OCR document with no source observations")
+        artifacts.document_tree = apply_grouping_proposals(
+            artifacts.document_tree,
+            tuple(grouping_proposals),
+            grouping_policy_version=grouping_policy_version,
+        )
+        (artifacts.legacy_dir / "document-tree.json").write_text(
+            json.dumps(artifacts.document_tree.model_dump(mode="json"), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
     run, bundle = run_ingest_workflow(
         inp=artifacts.workflow_input,
         workflow_engine=workflow_engine,

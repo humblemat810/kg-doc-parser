@@ -22,6 +22,7 @@ from .design import (
     ensure_ingest_workflow_design,
 )
 from .document_grouping import GroupProposal, merge_groups
+from .document_adapters import apply_grouping_proposals, build_document_tree
 from .document_models import (
     ChildRef,
     DocumentNode,
@@ -233,6 +234,8 @@ __all__ = [
     "WorkflowProviderSettings",
     "apply_cud_update",
     "build_authoritative_source_map",
+    "build_document_tree",
+    "apply_grouping_proposals",
     "build_chat_model",
     "build_chat_model_for_role",
     "build_default_engines",

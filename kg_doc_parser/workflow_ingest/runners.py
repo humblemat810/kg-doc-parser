@@ -25,6 +25,7 @@ from .ocr_pipeline import (
     PDFRasterizer,
     run_ocr_ingest_workflow,
 )
+from .document_grouping import GroupProposal
 from .page_index import PageIndexParseResult, PageIndexSourceFormat
 from .parser_core import (
     ParserPayload,
@@ -249,6 +250,8 @@ def run_ocr_source_workflow(
     deps: Mapping[str, object] | None = None,
     document_id: str | None = None,
     title: str | None = None,
+    grouping_proposals: Sequence[GroupProposal] | None = None,
+    grouping_policy_version: str = "baseline-v1",
 ) -> OcrWorkflowCommandResult:
     source_path = Path(source_path)
     output_dir = Path(output_dir)
@@ -296,6 +299,8 @@ def run_ocr_source_workflow(
         ocr_candidate_models=ocr_candidate_models,
         deps={"probe": probe, **(deps or {})},
         probe=probe,
+        grouping_proposals=grouping_proposals,
+        grouping_policy_version=grouping_policy_version,
     )
     _emit(
         probe,
@@ -320,6 +325,7 @@ def run_ocr_source_workflow(
             "state_db_path": str(artifacts.state_db_path),
             "legacy_dir": str(artifacts.legacy_dir),
             "rendered_dir": str(artifacts.rendered_dir),
+            "document_tree_path": str(artifacts.document_tree_path) if artifacts.document_tree is not None else None,
         },
         artifacts=artifacts,
     )
