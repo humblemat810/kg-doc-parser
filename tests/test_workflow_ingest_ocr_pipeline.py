@@ -81,6 +81,14 @@ from kg_doc_parser.workflow_ingest import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
+from kg_doc_parser.workflow_ingest.document_models import (
+    ChildRef,
+    DocumentNode,
+    DocumentTree,
+    SourceItem,
+    SourceLocation,
+    SourceSlice,
+)
 from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     OCRWorkflowStateStore,
     _compute_input_fingerprint,
@@ -468,6 +476,76 @@ def test_ocr_state_rebuild_rejects_non_digest_progress_hash() -> None:
     )
     assert state is not None
     assert state.content_hash == hashlib.sha256(rendered.read_bytes()).hexdigest()
+
+
+@pytest.mark.ci
+def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source() -> None:
+    scratch = _scratch("ocr_grouping_checkpoint")
+    tree = DocumentTree(
+        document_id="grouped-doc",
+        source_revision="ocr-v1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="a",
+                kind="text",
+                location=SourceLocation(page_index=0, accuracy="page"),
+                text="alpha",
+            ),
+            SourceItem(
+                item_id="b",
+                kind="text",
+                location=SourceLocation(page_index=0, accuracy="page"),
+                text="beta",
+            ),
+            SourceItem(
+                item_id="c",
+                kind="text",
+                location=SourceLocation(page_index=0, accuracy="page"),
+                text="gamma",
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(ChildRef(node_id="group"), ChildRef(node_id="leaf")),
+            ),
+            DocumentNode(
+                node_id="group",
+                kind="section",
+                parts=(SourceSlice(item_id="a", start=0, end=5), SourceSlice(item_id="b", start=0, end=4, separator_before="\n")),
+            ),
+            DocumentNode(
+                node_id="leaf",
+                kind="text",
+                parts=(SourceSlice(item_id="c", start=0, end=5),),
+            ),
+        ),
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="grouped-doc",
+        title="Grouped",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-v1",
+    )
+    revision = store.save_document_tree(document_id="grouped-doc", tree=tree, grouping_policy_version="group-v1")
+    assert len(revision) == 64
+    restored = store.load_document_tree(document_id="grouped-doc", source_fingerprint=tree.source_fingerprint())
+    assert restored is not None
+    assert restored.model_dump(mode="json") == tree.model_dump(mode="json")
+
+    store.ensure_document(
+        document_id="grouped-doc",
+        title="Grouped",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-v2",
+    )
+    assert store.load_document_tree(document_id="grouped-doc") is None
 
 
 @pytest.mark.ci

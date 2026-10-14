@@ -524,6 +524,14 @@ def _finalize_ocr_workflow_artifacts(
     )
     document_tree = build_document_tree(workflow_input)
     if document_tree is not None:
+        checkpointed_tree = state_store.load_document_tree(
+            document_id=document_id,
+            source_fingerprint=document_tree.source_fingerprint(),
+        )
+        if checkpointed_tree is not None:
+            document_tree = checkpointed_tree
+        else:
+            state_store.save_document_tree(document_id=document_id, tree=document_tree)
         attach_document_tree_metadata(workflow_input, document_tree)
     artifacts = OCRWorkflowArtifacts(
         workflow_input=workflow_input,
@@ -649,6 +657,15 @@ class OCRWorkflowStateStore:
                     attempted_ts REAL NOT NULL,
                     PRIMARY KEY (document_id, page_number, stage, attempt_index)
                 );
+
+                CREATE TABLE IF NOT EXISTS document_tree_state (
+                    document_id TEXT PRIMARY KEY,
+                    tree_revision TEXT NOT NULL,
+                    source_fingerprint TEXT NOT NULL,
+                    grouping_policy_version TEXT NOT NULL,
+                    tree_json TEXT NOT NULL,
+                    last_updated_ts REAL NOT NULL
+                );
                 """
             )
 
@@ -675,6 +692,7 @@ class OCRWorkflowStateStore:
             if existing is not None and str(existing["input_fingerprint"]) != input_fingerprint:
                 conn.execute("DELETE FROM model_attempts WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM page_state WHERE document_id = ?", (document_id,))
+                conn.execute("DELETE FROM document_tree_state WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM document_state WHERE document_id = ?", (document_id,))
             conn.execute(
                 """
@@ -701,6 +719,61 @@ class OCRWorkflowStateStore:
                     now,
                 ),
             )
+
+    def save_document_tree(
+        self,
+        *,
+        document_id: str,
+        tree: DocumentTree,
+        grouping_policy_version: str = "baseline-v1",
+    ) -> str:
+        """Persist a validated tree for crash-safe, idempotent grouping replay."""
+        tree_json = json.dumps(tree.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        tree_revision = hashlib.sha256(tree_json.encode("utf-8")).hexdigest()
+        with self._session() as conn:
+            conn.execute(
+                """
+                INSERT INTO document_tree_state (
+                    document_id, tree_revision, source_fingerprint,
+                    grouping_policy_version, tree_json, last_updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(document_id) DO UPDATE SET
+                    tree_revision = excluded.tree_revision,
+                    source_fingerprint = excluded.source_fingerprint,
+                    grouping_policy_version = excluded.grouping_policy_version,
+                    tree_json = excluded.tree_json,
+                    last_updated_ts = excluded.last_updated_ts
+                """,
+                (
+                    document_id,
+                    tree_revision,
+                    tree.source_fingerprint(),
+                    grouping_policy_version,
+                    tree_json,
+                    time.time(),
+                ),
+            )
+        return tree_revision
+
+    def load_document_tree(
+        self,
+        *,
+        document_id: str,
+        source_fingerprint: str | None = None,
+    ) -> DocumentTree | None:
+        """Load only a validated tree matching the current source identity."""
+        with self._session() as conn:
+            row = conn.execute(
+                """
+                SELECT source_fingerprint, tree_json
+                FROM document_tree_state
+                WHERE document_id = ?
+                """,
+                (document_id,),
+            ).fetchone()
+        if row is None or (source_fingerprint is not None and str(row["source_fingerprint"]) != source_fingerprint):
+            return None
+        return DocumentTree.model_validate_json(str(row["tree_json"]))
 
     def rebuild_from_artifacts(
         self,
@@ -1757,6 +1830,12 @@ def run_ocr_ingest_workflow(
                 tuple(grouping_proposals or ()),
                 grouping_policy_version=grouping_policy_version,
             )
+        state_store = OCRWorkflowStateStore(artifacts.state_db_path)
+        state_store.save_document_tree(
+            document_id=document_id,
+            tree=artifacts.document_tree,
+            grouping_policy_version=grouping_policy_version,
+        )
         attach_document_tree_metadata(artifacts.workflow_input, artifacts.document_tree)
         _write_document_tree(artifacts.document_tree_path, artifacts.document_tree)
     run, bundle = run_ingest_workflow(
