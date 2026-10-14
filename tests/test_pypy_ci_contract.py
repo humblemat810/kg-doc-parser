@@ -35,9 +35,9 @@ def test_parser_ci_uses_the_declared_kogwistar_release() -> None:
 
 
 def test_installed_kogwistar_exposes_the_persisted_workflow_api() -> None:
-    import kogwistar
     from kogwistar.runtime.models import WorkflowInvocationRequest
     from kogwistar.runtime.runtime import WorkflowRuntime
+    import kogwistar
 
     assert kogwistar.__version__ == "0.6.8"
     assert WorkflowInvocationRequest is not None
