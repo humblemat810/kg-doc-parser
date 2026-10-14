@@ -44,7 +44,7 @@ for a passing test.
   `-p no:cacheprovider` and `-o log_cli=false`.
 - [x] Run parser lock verification, Pyright, and the complete CI command.
 - [ ] Run supported CPython 3.12-3.14 and PyPy 3.11 checks.
-- [ ] Update this file with the exact command results and commit hash.
+- [x] Record exact local results and implementation commit `9e34a31`.
 - [ ] Push the feature branch and monitor the GitHub PR checks to completion.
 
 ## Current Focused Evidence
