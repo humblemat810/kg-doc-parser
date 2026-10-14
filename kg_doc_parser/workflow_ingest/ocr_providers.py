@@ -153,11 +153,9 @@ def run_docling_ocr_page(
         from docling.datamodel.base_models import (  # pyright: ignore[reportMissingImports]
             InputFormat,
         )
-        from docling.datamodel.pipeline_options import (  # pyright: ignore[reportMissingImports]
-            ImageFormatOption,
-        )
         from docling.document_converter import (  # pyright: ignore[reportMissingImports]
             DocumentConverter,
+            ImageFormatOption,
         )
         from docling.pipeline.standard_pdf_pipeline import (  # pyright: ignore[reportMissingImports]
             StandardPdfPipeline,

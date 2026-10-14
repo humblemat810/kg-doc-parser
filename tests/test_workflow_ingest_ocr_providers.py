@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
 
@@ -74,6 +75,8 @@ def test_docling_is_configurable_without_importing_docling() -> None:
 
 
 def test_docling_missing_runtime_fails_at_selection_boundary() -> None:
+    if find_spec("docling") is not None:
+        pytest.skip("Docling is installed; missing-runtime branch is not applicable")
     settings = WorkflowProviderSettings(
         ocr=ProviderEndpointConfig(provider="docling", model="docling", ocr_engine="rapidocr")
     )

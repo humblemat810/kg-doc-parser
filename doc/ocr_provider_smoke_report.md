@@ -97,7 +97,38 @@ The successful run is in `bonsai-live-loopback/` and includes:
 - the existing smoke image assets;
 - prior fake-provider and failed Bonsai attempt artifacts for comparison.
 
-Raw credentials and raw model responses are not stored.
+Credentials are never stored. The normalized OCR responses used for this
+quality comparison are intentionally retained as experiment artifacts; they
+contain no credentials or transport headers.
+
+## Docling Engine Comparison
+
+For this comparison, a deterministic 1600x1200 page contained a title, three
+numbered list items, and a bordered three-column table. Docling 2.139.0 was
+run with both RapidOCR and EasyOCR.
+
+| Engine | List exactness | Table structure | Spatial provenance |
+| --- | --- | --- | --- |
+| RapidOCR | 2/3 exact; `Firstordered` lost one space | 0 structured tables; region classified as `picture` | Text starts within about 1-4 px of source; table region within about 1 px |
+| EasyOCR | 2/3 exact; item 2 lost its period | 0 structured tables; region classified as `picture` | Text starts within about 1-2 px of source; table region within about 1 px |
+
+Both engines recovered the title and all three list regions. Neither recovered
+the table cells in this raster fixture. The table region itself was localized
+well, but its content was not structurally extracted.
+
+The normalized parser adapter intentionally converts Docling output to one
+full-page `TextCluster` and sets `contains_table` to false because its current
+contract promises page-level geometry only. Consequently, the native Docling
+provenance is more spatially informative than the adapter response, and table
+structure is not currently preserved by this adapter. The native Markdown and
+provenance reports are retained in:
+
+- `experiments/ocr-provider-smoke/docling-rapidocr-v2/`
+- `experiments/ocr-provider-smoke/docling-easyocr/`
+
+These results do not justify claiming table extraction correctness. A future
+contract extension would be needed to preserve Docling table cells and
+fine-grained provenance without changing the current OCR workflow entry point.
 
 ## Verification Boundary
 
