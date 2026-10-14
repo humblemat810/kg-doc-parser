@@ -6,9 +6,10 @@ They are the immutable evidence view produced by OCR before semantic parsing.
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from hashlib import sha256
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -140,6 +141,29 @@ class Summary(FrozenModel):
         return self
 
 
+class DocumentReferenceMention(FrozenModel):
+    """A source-grounded reference phrase kept outside the source partition.
+
+    This is deliberately not a graph edge.  Resolution to a document node is
+    optional and belongs to a later projection or application layer.
+    """
+
+    mention_id: str = Field(min_length=1)
+    source: SourceSlice
+    target_kind: Literal["page", "section", "figure", "table"]
+    target_label: str = Field(min_length=1, max_length=128)
+    target_node_id: str | None = None
+    status: Literal["pending", "resolved"] = "pending"
+
+    @model_validator(mode="after")
+    def valid(self) -> DocumentReferenceMention:
+        if self.source.start is None or self.source.end is None:
+            raise ValueError("reference mentions require a text source interval")
+        if self.status == "resolved" and not self.target_node_id:
+            raise ValueError("resolved reference mentions require a target node")
+        return self
+
+
 class SummaryPolicy(FrozenModel):
     """Bound optional derived-summary work independently of OCR."""
 
@@ -191,6 +215,7 @@ class DocumentTree(FrozenModel):
     root_id: str = Field(min_length=1)
     source_items: tuple[SourceItem, ...]
     nodes: tuple[DocumentNode, ...]
+    references: tuple[DocumentReferenceMention, ...] = ()
 
     @model_validator(mode="after")
     def validate_tree(self) -> DocumentTree:
@@ -201,6 +226,17 @@ class DocumentTree(FrozenModel):
         root = nodes.get(self.root_id)
         if root is None or root.kind != "document":
             raise ValueError("document root is missing or has the wrong kind")
+        reference_ids = [reference.mention_id for reference in self.references]
+        if len(reference_ids) != len(set(reference_ids)):
+            raise ValueError("duplicate document reference mention")
+        for reference in self.references:
+            item = items.get(reference.source.item_id)
+            if item is None or item.text is None:
+                raise ValueError("reference mention must point to a text source item")
+            if reference.source.end is None or reference.source.end > len(item.text):
+                raise ValueError("reference mention exceeds source item")
+            if reference.target_node_id is not None and reference.target_node_id not in nodes:
+                raise ValueError("reference mention target node does not exist")
         parents: dict[str, int] = defaultdict(int)
         intervals: dict[str, list[tuple[int, int]]] = defaultdict(list)
         media: dict[str, int] = defaultdict(int)
@@ -313,4 +349,56 @@ class DocumentTree(FrozenModel):
         return render(self.root_id)
 
 
-__all__ = ["BoundingBox", "ChildRef", "DocumentNode", "DocumentTree", "FrozenModel", "MediaRef", "OCRMetadata", "SourceItem", "SourceLocation", "SourceSlice", "Summary"]
+_REFERENCE_PATTERN = re.compile(
+    r"\b(?:see|refer\s+to|referenced\s+in)\s+"
+    r"(?P<target_kind>page|section|figure|table)\s+"
+    r"(?P<target_label>[A-Za-z0-9][A-Za-z0-9._-]*)",
+    re.IGNORECASE,
+)
+
+
+def extract_reference_mentions(tree: DocumentTree) -> tuple[DocumentReferenceMention, ...]:
+    """Extract only explicit, source-grounded document-reference phrases.
+
+    The result is metadata outside the tree's primary coverage partition.  It
+    never assigns a target node or creates a semantic relation.
+    """
+
+    mentions: list[DocumentReferenceMention] = []
+    for item in tree.source_items:
+        if item.text is None:
+            continue
+        for match in _REFERENCE_PATTERN.finditer(item.text):
+            start, end = match.span()
+            target_kind = cast(
+                Literal["page", "section", "figure", "table"],
+                match.group("target_kind").lower(),
+            )
+            target_label = match.group("target_label")
+            digest = sha256(f"{item.item_id}:{start}:{end}:{target_kind}:{target_label}".encode()).hexdigest()[:24]
+            mentions.append(
+                DocumentReferenceMention(
+                    mention_id=f"mention:{digest}",
+                    source=SourceSlice(item_id=item.item_id, start=start, end=end),
+                    target_kind=target_kind,
+                    target_label=target_label,
+                )
+            )
+    return tuple(mentions)
+
+
+__all__ = [
+    "BoundingBox",
+    "ChildRef",
+    "DocumentNode",
+    "DocumentReferenceMention",
+    "DocumentTree",
+    "FrozenModel",
+    "MediaRef",
+    "OCRMetadata",
+    "SourceItem",
+    "SourceLocation",
+    "SourceSlice",
+    "Summary",
+    "extract_reference_mentions",
+]

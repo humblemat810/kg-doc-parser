@@ -4,6 +4,7 @@ import pytest
 
 from kg_doc_parser.workflow_ingest.document_adapters import (
     apply_summary_updates,
+    extract_reference_mentions,
     select_summary_targets,
 )
 from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal, merge_groups
@@ -301,3 +302,75 @@ def test_source_fingerprint_includes_authoritative_reading_order() -> None:
     reordered["source_items"] = list(reversed(reordered["source_items"]))
     second = DocumentTree.model_validate(reordered)
     assert first.source_fingerprint() != second.source_fingerprint()
+
+
+def test_explicit_reference_mentions_are_source_grounded_and_outside_partition() -> None:
+    text = "Intro; see page 5 and refer to section 4.2 for details."
+    item = _item("source", text)
+    tree = DocumentTree(
+        document_id="references",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(item,),
+        nodes=(_leaf("root", "source", text, kind="document"),),
+    )
+
+    mentions = extract_reference_mentions(tree)
+    assert [(mention.target_kind, mention.target_label) for mention in mentions] == [
+        ("page", "5"),
+        ("section", "4.2"),
+    ]
+    assert all(mention.status == "pending" for mention in mentions)
+    assert all(mention.source.item_id == "source" for mention in mentions)
+    assert all(text[mention.source.start : mention.source.end] for mention in mentions)
+    assert tree.render_preview() == text
+
+
+def test_reference_mentions_round_trip_and_validate_targets_without_becoming_children() -> None:
+    text = "See figure 2."
+    base = DocumentTree(
+        document_id="reference-roundtrip",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(_item("source", text), _item("target", "Figure")),
+        nodes=(
+            _leaf("source-leaf", "source", text),
+            _leaf("target-leaf", "target", "Figure"),
+            DocumentNode(node_id="root", kind="document", children=({"node_id": "source-leaf"}, {"node_id": "target-leaf"})),
+        ),
+    )
+    mention = extract_reference_mentions(base)[0].model_copy(
+        update={"target_node_id": "target-leaf", "status": "resolved"}
+    )
+    payload = base.model_dump(mode="json")
+    payload["references"] = [mention.model_dump(mode="json")]
+    round_tripped = DocumentTree.model_validate(payload)
+    assert round_tripped.references[0].target_node_id == "target-leaf"
+    assert all(reference.source.item_id != child.node_id for reference in round_tripped.references for child in round_tripped.nodes[-1].children)
+
+
+def test_reference_mentions_reject_unknown_targets_and_non_text_sources() -> None:
+    text = "See page 5."
+    base = DocumentTree(
+        document_id="reference-invalid",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(_item("source", text),),
+        nodes=(_leaf("root", "source", text, kind="document"),),
+    )
+    payload = base.model_dump(mode="json")
+    payload["references"] = [
+        {
+            "mention_id": "mention:bad",
+            "source": {"item_id": "source", "start": 0, "end": len(text)},
+            "target_kind": "page",
+            "target_label": "5",
+            "target_node_id": "missing",
+            "status": "resolved",
+        }
+    ]
+    with pytest.raises(ValueError, match="target node"):
+        DocumentTree.model_validate(payload)

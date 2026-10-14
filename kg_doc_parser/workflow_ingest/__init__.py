@@ -34,6 +34,7 @@ from .document_grouping import GroupProposal, merge_groups
 from .document_models import (
     ChildRef,
     DocumentNode,
+    DocumentReferenceMention,
     DocumentTree,
     MediaRef,
     OCRMetadata,
@@ -42,6 +43,7 @@ from .document_models import (
     SourceSlice,
     Summary,
     SummaryPolicy,
+    extract_reference_mentions,
 )
 from .handlers import build_ingest_step_resolver
 from .models import (
@@ -185,6 +187,7 @@ __all__ = [
     "DirectRuntimeIngestClient",
     "DoclingEngine",
     "DocumentNode",
+    "DocumentReferenceMention",
     "DocumentTree",
     "DocumentTreeApiPersistenceClient",
     "EmbeddingProviderConfig",
@@ -271,6 +274,7 @@ __all__ = [
     "discover_input_files",
     "emit_probe_event",
     "ensure_ingest_workflow_design",
+    "extract_reference_mentions",
     "finalize_semantic_tree",
     "generate_ocr_smoke_assets",
     "hardcoded_strategy",

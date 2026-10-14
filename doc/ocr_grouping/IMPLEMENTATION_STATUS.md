@@ -21,10 +21,10 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C12 | PASS | Existing OCR models and workflow input remain unchanged; adapter is additive |
 | C13 | PASS | Grouping adapter performs no semantic inference |
 | C14 | DEFERRED | Kogwistar projection remains a separate optional adapter |
-| C15 | PASS | Six lazy Docling engines, direct RapidOCR/EasyOCR, platform/CLI gating, KServe v2 transport, and process-local user-provider registration; `tests/test_workflow_ingest_ocr_providers.py` passed 16 tests (one optional-runtime skip) |
+| C15 | PASS | Six lazy Docling engines, direct RapidOCR/EasyOCR, platform/CLI gating, KServe v2 transport, and process-local user-provider registration; `tests/test_workflow_ingest_ocr_providers.py` passed 16 tests (one optional-runtime skip); real-provider observations are recorded in `doc/ocr_grouping/PROVIDER_SMOKE_RESULTS.md` |
 | C16 | PASS | `SummaryPolicy` and `select_summary_targets()` bound eligible kinds, evidence size, information gain, estimated input tokens, and target count without invoking a provider; `test_summary_target_planner_is_bounded_and_skips_low_information_nodes` |
 | C17 | PASS | Atomic tree replacement, versioned SQLite tree/frontier checkpoints after each page/pass, and idempotent SQLite summary-attempt journal; `test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping` and summary journal tests |
-| C18 | DEFERRED | Explicit reference mentions are outside this slice |
+| C18 | PASS | `DocumentReferenceMention` keeps explicit page/section/figure/table phrases source-grounded and outside the primary coverage partition; unresolved targets remain pending; `test_explicit_reference_mentions_are_source_grounded_and_outside_partition`, `test_reference_mentions_round_trip_and_validate_targets_without_becoming_children`, and `test_reference_mentions_reject_unknown_targets_and_non_text_sources` |
 | C19 | PASS | `render_preview()` reads only accepted source intervals and display separators |
 | C20 | PASS | Open node kinds and heterogeneous adjacent merges are supported |
 | C21 | PASS | Public vocabulary and legacy exports are preserved |

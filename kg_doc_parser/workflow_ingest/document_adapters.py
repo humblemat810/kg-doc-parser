@@ -20,6 +20,7 @@ from .document_models import (
     SourceSlice,
     Summary,
     SummaryPolicy,
+    extract_reference_mentions,
 )
 from .models import WorkflowIngestInput
 
@@ -156,7 +157,7 @@ def build_document_tree(
             children=tuple(ChildRef(node_id=leaf.node_id) for leaf in leaves),
         )
         nodes = (*leaves, root)
-    return DocumentTree(
+    tree = DocumentTree(
         document_id=collection.collection_id,
         source_revision=source_revision,
         tree_revision=1,
@@ -164,6 +165,7 @@ def build_document_tree(
         source_items=tuple(items),
         nodes=tuple(nodes),
     )
+    return tree.model_copy(update={"references": extract_reference_mentions(tree)})
 
 
 def _ocr_metadata(metadata: Mapping[str, object]) -> OCRMetadata | None:
@@ -399,6 +401,7 @@ __all__ = [
     "apply_summary_updates",
     "attach_document_tree_metadata",
     "build_document_tree",
+    "extract_reference_mentions",
     "select_summary_targets",
     "suggest_cross_page_continuations",
 ]
