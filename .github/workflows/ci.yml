@@ -100,6 +100,7 @@ jobs:
           tests/test_parser_state_edge_cases.py
           tests/test_pointer_edge_cases.py
           tests/test_workflow_ingest_contracts.py
+          tests/test_fixture_payload_regressions.py
           tests/test_workflow_ingest_conversation_graph.py
           tests/test_workflow_ingest_layerwise_llm.py
           tests/test_workflow_ingest_layerwise_parser.py
@@ -119,6 +120,7 @@ jobs:
           tests/test_parser_state_edge_cases.py
           tests/test_pointer_edge_cases.py
           tests/test_workflow_ingest_contracts.py
+          tests/test_fixture_payload_regressions.py
           tests/test_workflow_ingest_conversation_graph.py
           tests/test_workflow_ingest_layerwise_llm.py
           tests/test_workflow_ingest_layerwise_parser.py

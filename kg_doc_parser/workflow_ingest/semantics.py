@@ -280,6 +280,7 @@ def validate_semantic_tree_integrity(
     *,
     parser_source_map: Mapping[str, Mapping[str, object]] | None = None,
     max_depth: int | None = None,
+    validate_shape: bool = True,
 ) -> None:
     """Validate identity, ancestry, grounding, and branching in one pass.
 
@@ -329,7 +330,8 @@ def validate_semantic_tree_integrity(
         pending.append((node, expected_parent_id, depth, True))
         for child in reversed(node.child_nodes):
             pending.append((cast(SemanticIntegrityNodeLike, child), node_id, depth + 1, False))
-    validate_semantic_tree_shape(root, max_depth=max_depth)
+    if validate_shape:
+        validate_semantic_tree_shape(root, max_depth=max_depth)
 
 
 def compute_pointer_coverage(

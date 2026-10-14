@@ -33,7 +33,7 @@ meaningful split.
 | Commit | Validate immediately before mutation and again after mutation. Reject unary children and invalid atomic retention. |
 | Frontier | Never enqueue a unary, unchanged, or rejected refinement. |
 | Layered DTO adapter | Validate request/source grounding at the core expansion boundary; validate result DTO identity, shape, and depth at construction, use the same commit gate, and requeue failed parents instead of dropping them. |
-| PageIndex | Normalize heading/page wrappers deterministically, rebase descendant parent IDs and levels when promoting a wrapper, retain unresolved branches atomically, then run final validation. |
+| PageIndex | Normalize heading/page wrappers deterministically without deleting nested descendants; distinguish structural source extents from independently owned content, then validate exact terminal-source ownership before returning. |
 | Legacy import/export | Validate before conversion and serialization, including IDs and parent ancestry. Persisted unary trees fail closed and are not silently rewritten. |
 | Graph export | Require the authoritative source map whenever a tree carries pointers; validate every span against that map before serialization. |
 | Final result | Run iterative identity, parent, pointer, cycle, duplicate-ID, depth, and branching checks. Tree traversals used after validation must also be iterative so valid deep branches remain usable. |
@@ -91,8 +91,13 @@ shared across parent groups are converted into parent-scoped commit diagnostics
 before mutation; they cannot be allowed to overwrite or alias one another.
 
 The finalized-tree validator is iterative and checks identity, ancestry,
-cycles, duplicate IDs, source-pointer ownership when a source map is
-available, configured depth, and the zero-or-two-plus branching rule. Public
+cycles, duplicate IDs, source-pointer grounding when a source map is
+available, configured depth, and the zero-or-two-plus branching rule. Exact
+terminal-source ownership is a separate check: a structurally valid tree can
+still omit source characters or assign them to multiple leaves. The workflow
+`validate_tree` step enforces this before successful export, and PageIndex
+enforces it before returning. Direct legacy entry points need separate
+verification before claiming the same guarantee. Public
 graph export requires that source map whenever source pointers are present.
 Legacy frontier adaptation retains terminal parents independently in mixed
 batches and fails closed when a requested parent is absent from its stored
