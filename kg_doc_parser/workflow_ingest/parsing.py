@@ -20,11 +20,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
 
+from .document_models import SummaryPolicy
 from .ocr_pipeline import (
     OCRImagePayload,
     OCRRunner,
     OCRWorkflowArtifacts,
     PDFRasterizer,
+    SummaryGenerator,
     prepare_ocr_workflow_input,
 )
 from .page_index import (
@@ -63,6 +65,8 @@ class OCRParseKwargs(TypedDict):
     pdf_rasterizer: NotRequired[PDFRasterizer | None]
     ocr_candidate_models: NotRequired[Sequence[str] | None]
     probe: NotRequired[WorkflowProbe | None]
+    summary_policy: NotRequired[SummaryPolicy | None]
+    summary_generator: NotRequired[SummaryGenerator | None]
 
 
 class PageIndexParseKwargs(TypedDict):
@@ -108,6 +112,8 @@ class OCRParseRequest:
     ocr_candidate_models: Sequence[str] | None = None
     probe: WorkflowProbe | None = None
     restore_grouping_checkpoint: bool = True
+    summary_policy: SummaryPolicy | None = None
+    summary_generator: SummaryGenerator | None = None
 
 
 @dataclass(slots=True)
@@ -198,6 +204,8 @@ def parse_ocr_document(
     probe: WorkflowProbe | None = None,
     restore_grouping_checkpoint: bool = True,
     grouping_policy_version: str = "baseline-v1",
+    summary_policy: SummaryPolicy | None = None,
+    summary_generator: SummaryGenerator | None = None,
 ) -> OCRWorkflowArtifacts:
     """Parse OCR inputs into normalized workflow-ingest artifacts."""
 
@@ -220,6 +228,8 @@ def parse_ocr_document(
         probe=probe,
         restore_grouping_checkpoint=restore_grouping_checkpoint,
         grouping_policy_version=grouping_policy_version,
+        summary_policy=summary_policy,
+        summary_generator=summary_generator,
     )
 
 

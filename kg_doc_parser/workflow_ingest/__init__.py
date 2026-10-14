@@ -71,6 +71,7 @@ from .ocr_pipeline import (
     OCRImagePayload,
     OCRWorkflowArtifacts,
     OCRWorkflowStateStore,
+    SummaryGenerator,
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
@@ -234,6 +235,7 @@ __all__ = [
     "SourceSlice",
     "SourceUnit",
     "Summary",
+    "SummaryGenerator",
     "SummaryPolicy",
     "TreeParseRequest",
     "UnsupportedClientOperation",

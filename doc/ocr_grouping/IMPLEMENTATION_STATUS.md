@@ -14,16 +14,16 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C05 | PASS | `merge_groups()` keeps unmerged frontier members |
 | C06 | PASS | Adjacent, disjoint, known-member proposal validation |
 | C07 | PASS | Stable merge IDs, ordered source fingerprints, SQLite replay, and grouping-policy matching; `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` |
-| C08 | PARTIAL | Valid content-addressed media references and non-text descriptions round-trip; provider-specific media acquisition remains outside the adapter |
+| C08 | PASS | Content-addressed `MediaRef` records and non-text descriptions survive normalized tree and JSON state round-trips without fabricated geometry; `test_build_document_tree_uses_only_declared_content_addressed_media` |
 | C09 | PASS | OCR pages rebuild the validated tree after every accepted/reused page, apply OCR-signaled adjacent continuations, and persist the open frontier/tree in SQLite; `test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping` |
-| C10 | PARTIAL | Versioned grounded `Summary` model, stale-fingerprint validation, and validated summary updates are present; provider-backed generation policy remains |
+| C10 | PASS | Bounded planner now invokes an injected summary generator, validates evidence/fingerprint provenance, persists derived summaries independently, and records failures without failing OCR; `test_prepare_ocr_workflow_input_generates_grounded_summary_with_journal` and `test_summary_failure_is_journaled_without_failing_ocr_ingestion` |
 | C11 | PASS | Empty OCR observations return no tree and normalized pages carry explicit `is_blank_page` metadata; `test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items` |
 | C12 | PASS | Existing OCR models and workflow input remain unchanged; adapter is additive |
 | C13 | PASS | Grouping adapter performs no semantic inference |
 | C14 | DEFERRED | Kogwistar projection remains a separate optional adapter |
 | C15 | PASS | Six lazy Docling engines, direct RapidOCR/EasyOCR, platform/CLI gating, KServe v2 transport, and process-local user-provider registration; `tests/test_workflow_ingest_ocr_providers.py` passed 16 tests (one optional-runtime skip) |
 | C16 | PASS | `SummaryPolicy` and `select_summary_targets()` bound eligible kinds, evidence size, information gain, estimated input tokens, and target count without invoking a provider; `test_summary_target_planner_is_bounded_and_skips_low_information_nodes` |
-| C17 | PARTIAL | Atomic tree artifact replacement plus versioned SQLite tree/frontier checkpoints after each grouping pass; page/merge persistence is covered, while a separate summary-attempt journal remains |
+| C17 | PASS | Atomic tree replacement, versioned SQLite tree/frontier checkpoints after each page/pass, and idempotent SQLite summary-attempt journal; `test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping` and summary journal tests |
 | C18 | DEFERRED | Explicit reference mentions are outside this slice |
 | C19 | PASS | `render_preview()` reads only accepted source intervals and display separators |
 | C20 | PASS | Open node kinds and heterogeneous adjacent merges are supported |
@@ -58,6 +58,8 @@ poetry run pytest tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_sto
 1 passed
 poetry run pytest tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping -q -p no:cacheprovider --basetemp .tmp_live_grouping_test
 1 passed
+poetry run pytest tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_input_generates_grounded_summary_with_journal tests/test_workflow_ingest_ocr_pipeline.py::test_summary_failure_is_journaled_without_failing_ocr_ingestion -q -p no:cacheprovider
+2 passed
 poetry run pytest tests/test_workflow_ingest_ocr_providers.py -q -p no:cacheprovider --basetemp .tmp_ocr_provider_test3
 16 passed, 1 skipped
 ```

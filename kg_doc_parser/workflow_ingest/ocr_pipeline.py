@@ -57,12 +57,20 @@ from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
 from .adapters import OCRPageJSON, normalize_ocr_pages
 from .document_adapters import (
     apply_grouping_proposals,
+    apply_summary_updates,
     attach_document_tree_metadata,
     build_document_tree,
+    select_summary_targets,
     suggest_cross_page_continuations,
 )
 from .document_grouping import GroupProposal
-from .document_models import DocumentTree
+from .document_models import (
+    DocumentNode,
+    DocumentTree,
+    SourceItem,
+    Summary,
+    SummaryPolicy,
+)
 from .models import WorkflowExportBundle, WorkflowIngestInput
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import (
@@ -194,6 +202,19 @@ class PDFRasterizer(Protocol):
 
     def __call__(self, pdf_path: Path, rendered_dir: Path, /) -> list[Path]: ...
 
+
+class SummaryGenerator(Protocol):
+    """Generate one bounded, evidence-grounded summary for a tree node."""
+
+    def __call__(
+        self,
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary: ...
+
 _OCR_STATE_SCHEMA_VERSION = 1
 
 
@@ -245,6 +266,79 @@ def _apply_cross_page_continuations(
         proposals,
         grouping_policy_version=grouping_policy_version,
     )
+
+
+def _generate_tree_summaries(
+    tree: DocumentTree,
+    *,
+    document_id: str,
+    state_store: OCRWorkflowStateStore,
+    policy: SummaryPolicy | None,
+    generator: SummaryGenerator | None,
+    grouping_policy_version: str,
+) -> DocumentTree:
+    """Run optional bounded summary generation without making OCR depend on it."""
+    if generator is None or policy is None or not policy.enabled:
+        return tree
+    items = {item.item_id: item for item in tree.source_items}
+    current = tree
+    for node_id in select_summary_targets(current, policy):
+        input_fingerprint = current.summary_input_fingerprint(node_id)
+        state_store.record_summary_attempt(
+            document_id=document_id,
+            node_id=node_id,
+            input_fingerprint=input_fingerprint,
+            status="pending",
+        )
+        # Recompute the node's evidence through the tree contract; the
+        # generator receives only source items in that subtree.
+        node_map = {node.node_id: node for node in current.nodes}
+        covered: set[str] = set()
+
+        def collect(
+            current_id: str,
+            node_map: dict[str, DocumentNode] = node_map,
+            covered: set[str] = covered,
+        ) -> None:
+            node = node_map[current_id]
+            if node.parts:
+                covered.update(part.item_id for part in node.parts)
+                return
+            for child in node.children:
+                collect(child.node_id)
+
+        collect(node_id)
+        evidence_ids = tuple(sorted(covered))
+        try:
+            summary = generator(
+                tree=current,
+                node_id=node_id,
+                source_items=tuple(items[item_id] for item_id in evidence_ids),
+                input_fingerprint=input_fingerprint,
+            )
+            updated = apply_summary_updates(current, {node_id: summary})
+            state_store.save_document_tree(
+                document_id=document_id,
+                tree=updated,
+                grouping_policy_version=grouping_policy_version,
+            )
+            state_store.record_summary_attempt(
+                document_id=document_id,
+                node_id=node_id,
+                input_fingerprint=input_fingerprint,
+                status=summary.status,
+                summary=summary,
+            )
+            current = updated
+        except Exception as exc:  # noqa: BLE001
+            state_store.record_summary_attempt(
+                document_id=document_id,
+                node_id=node_id,
+                input_fingerprint=input_fingerprint,
+                status="failed",
+                error_message=str(exc),
+            )
+    return current
 
 
 @dataclass(slots=True)
@@ -593,6 +687,8 @@ def _finalize_ocr_workflow_artifacts(
     state_store: OCRWorkflowStateStore,
     restore_grouping_checkpoint: bool = True,
     grouping_policy_version: str = "baseline-v1",
+    summary_policy: SummaryPolicy | None = None,
+    summary_generator: SummaryGenerator | None = None,
 ) -> OCRWorkflowArtifacts:
     workflow_input: WorkflowIngestInput = normalize_ocr_pages(
         document_id=document_id,
@@ -622,6 +718,14 @@ def _finalize_ocr_workflow_artifacts(
                 tree=document_tree,
                 grouping_policy_version=grouping_policy_version,
             )
+        document_tree = _generate_tree_summaries(
+            document_tree,
+            document_id=document_id,
+            state_store=state_store,
+            policy=summary_policy,
+            generator=summary_generator,
+            grouping_policy_version=grouping_policy_version,
+        )
         attach_document_tree_metadata(workflow_input, document_tree)
     artifacts = OCRWorkflowArtifacts(
         workflow_input=workflow_input,
@@ -764,6 +868,18 @@ class OCRWorkflowStateStore:
                     frontier_json TEXT NOT NULL,
                     last_updated_ts REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS summary_attempts (
+                    document_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL,
+                    input_fingerprint TEXT NOT NULL,
+                    attempt_index INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    summary_json TEXT,
+                    error_message TEXT,
+                    last_updated_ts REAL NOT NULL,
+                    PRIMARY KEY (document_id, node_id, input_fingerprint, attempt_index)
+                );
                 """
             )
 
@@ -792,6 +908,7 @@ class OCRWorkflowStateStore:
                 conn.execute("DELETE FROM page_state WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM document_tree_state WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM grouping_frontier_state WHERE document_id = ?", (document_id,))
+                conn.execute("DELETE FROM summary_attempts WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM document_state WHERE document_id = ?", (document_id,))
             conn.execute(
                 """
@@ -1278,6 +1395,68 @@ class OCRWorkflowStateStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def record_summary_attempt(
+        self,
+        *,
+        document_id: str,
+        node_id: str,
+        input_fingerprint: str,
+        status: str,
+        summary: Summary | None = None,
+        error_message: str | None = None,
+    ) -> int:
+        """Journal one idempotent summary attempt for crash-safe retries."""
+        if status not in {"pending", "generated", "verified", "failed", "skipped"}:
+            raise ValueError(f"unsupported summary status: {status}")
+        summary_json = (
+            json.dumps(summary.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+            if summary is not None
+            else None
+        )
+        with self._session() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(MAX(attempt_index), 0) AS last_attempt
+                FROM summary_attempts
+                WHERE document_id = ? AND node_id = ? AND input_fingerprint = ?
+                """,
+                (document_id, node_id, input_fingerprint),
+            ).fetchone()
+            attempt_index = int(row["last_attempt"]) + 1 if row is not None else 1
+            conn.execute(
+                """
+                INSERT INTO summary_attempts (
+                    document_id, node_id, input_fingerprint, attempt_index,
+                    status, summary_json, error_message, last_updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_id,
+                    node_id,
+                    input_fingerprint,
+                    attempt_index,
+                    status,
+                    summary_json,
+                    error_message,
+                    time.time(),
+                ),
+            )
+        return attempt_index
+
+    def list_summary_attempts(self, *, document_id: str) -> list[JsonObject]:
+        with self._session() as conn:
+            rows = conn.execute(
+                """
+                SELECT node_id, input_fingerprint, attempt_index, status,
+                       summary_json, error_message, last_updated_ts
+                FROM summary_attempts
+                WHERE document_id = ?
+                ORDER BY node_id, input_fingerprint, attempt_index
+                """,
+                (document_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def export_progress_payload(
         self,
         *,
@@ -1725,6 +1904,7 @@ def _write_summary(
             str(page_number): state_store.list_model_attempts(document_id=document_id, page_number=page_number)
             for page_number in artifacts.completed_pages
         },
+        "summary_attempts": state_store.list_summary_attempts(document_id=document_id),
         "page_count": len(artifacts.ocr_pages),
         "document_tree_path": str(artifacts.document_tree_path) if artifacts.document_tree is not None else None,
     }
@@ -1749,6 +1929,8 @@ def prepare_ocr_workflow_input(
     probe: WorkflowProbe | None = None,
     restore_grouping_checkpoint: bool = True,
     grouping_policy_version: str = "baseline-v1",
+    summary_policy: SummaryPolicy | None = None,
+    summary_generator: SummaryGenerator | None = None,
 ) -> OCRWorkflowArtifacts:
     """Prepare OCR pages and normalize them into workflow ingest input.
 
@@ -1971,6 +2153,8 @@ def prepare_ocr_workflow_input(
         state_store=state_store,
         restore_grouping_checkpoint=restore_grouping_checkpoint,
         grouping_policy_version=grouping_policy_version,
+        summary_policy=summary_policy,
+        summary_generator=summary_generator,
     )
 
 
@@ -1993,6 +2177,8 @@ def run_ocr_ingest_workflow(
     grouping_proposals: Sequence[GroupProposal] | None = None,
     grouping_passes: Sequence[Sequence[GroupProposal]] | None = None,
     grouping_policy_version: str = "baseline-v1",
+    summary_policy: SummaryPolicy | None = None,
+    summary_generator: SummaryGenerator | None = None,
 ) -> tuple[_RunCompat, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
     """Run OCR preparation and then feed the normalized result into workflow ingest.
 
@@ -2018,6 +2204,8 @@ def run_ocr_ingest_workflow(
         ocr_candidate_models=ocr_candidate_models,
         probe=probe,
         restore_grouping_checkpoint=grouping_proposals is None and grouping_passes is None,
+        summary_policy=summary_policy,
+        summary_generator=summary_generator,
     )
     if grouping_proposals is not None or grouping_passes is not None:
         if artifacts.document_tree is None:

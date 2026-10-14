@@ -88,6 +88,8 @@ from kg_doc_parser.workflow_ingest.document_models import (
     SourceItem,
     SourceLocation,
     SourceSlice,
+    Summary,
+    SummaryPolicy,
 )
 from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     OCRWorkflowStateStore,
@@ -430,6 +432,115 @@ def test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping() -> None:
     )
     assert persisted is not None
     assert any(node.kind == "layout:cross-page-continuation" for node in persisted.nodes)
+
+
+@pytest.mark.ci
+def test_prepare_ocr_workflow_input_generates_grounded_summary_with_journal() -> None:
+    scratch = _scratch("ocr_summary_journal")
+    image_paths = [scratch / "images" / f"page_{page}.png" for page in (1, 2)]
+    for page, image_path in enumerate(image_paths, start=1):
+        _draw_test_image(image_path, lines=[f"Summary page {page}"])
+    payloads = [
+        OCRImagePayload(page_number=page, image_path=str(image_path))
+        for page, image_path in enumerate(image_paths, start=1)
+    ]
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+
+    def _generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        assert node_id == tree.root_id
+        return Summary(
+            status="generated",
+            text="A grounded summary",
+            evidence_item_ids=tuple(item.item_id for item in source_items),
+            provider_model="fake-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    artifacts = prepare_ocr_workflow_input(
+        document_id="ocr-summary-journal-doc",
+        title="OCR Summary Journal Doc",
+        output_dir=scratch / "artifacts",
+        image_payloads=payloads,
+        provider_settings=settings,
+        ocr_runner=lambda image_path, page_number, provider_settings: _fake_ocr_response(
+            page_number, f"Summary page {page_number}"
+        ),
+        summary_policy=SummaryPolicy(
+            eligible_kinds=("document",),
+            minimum_source_items=2,
+            minimum_source_chars=1,
+        ),
+        summary_generator=_generator,
+    )
+
+    assert artifacts.document_tree is not None
+    root = next(node for node in artifacts.document_tree.nodes if node.node_id == "root")
+    assert root.summary is not None
+    assert root.summary.status == "generated"
+    assert root.summary.input_fingerprint == artifacts.document_tree.summary_input_fingerprint("root")
+    attempts = OCRWorkflowStateStore(artifacts.state_db_path).list_summary_attempts(
+        document_id="ocr-summary-journal-doc"
+    )
+    assert [attempt["status"] for attempt in attempts] == ["pending", "generated"]
+
+
+@pytest.mark.ci
+def test_summary_failure_is_journaled_without_failing_ocr_ingestion() -> None:
+    scratch = _scratch("ocr_summary_failure")
+    image_paths = [scratch / "images" / f"page_{page}.png" for page in (1, 2)]
+    for page, image_path in enumerate(image_paths, start=1):
+        _draw_test_image(image_path, lines=[f"Summary failure page {page}"])
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+
+    def _generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        raise RuntimeError("summary provider unavailable")
+
+    artifacts = prepare_ocr_workflow_input(
+        document_id="ocr-summary-failure-doc",
+        title="OCR Summary Failure Doc",
+        output_dir=scratch / "artifacts",
+        image_payloads=[
+            OCRImagePayload(page_number=page, image_path=str(image_path))
+            for page, image_path in enumerate(image_paths, start=1)
+        ],
+        provider_settings=settings,
+        ocr_runner=lambda image_path, page_number, provider_settings: _fake_ocr_response(
+            page_number, f"Summary failure page {page_number}"
+        ),
+        summary_policy=SummaryPolicy(
+            eligible_kinds=("document",),
+            minimum_source_items=1,
+            minimum_source_chars=1,
+        ),
+        summary_generator=_generator,
+    )
+
+    assert artifacts.document_tree is not None
+    assert next(node for node in artifacts.document_tree.nodes if node.node_id == "root").summary is None
+    attempts = OCRWorkflowStateStore(artifacts.state_db_path).list_summary_attempts(
+        document_id="ocr-summary-failure-doc"
+    )
+    assert [attempt["status"] for attempt in attempts] == ["pending", "failed"]
+    assert "summary provider unavailable" in str(attempts[-1]["error_message"])
 
 
 @pytest.mark.ci
