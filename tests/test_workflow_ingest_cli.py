@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+
 from kg_doc_parser.workflow_ingest import (
     OCRWorkflowArtifacts,
     ProviderEndpointConfig,
@@ -253,6 +254,24 @@ def test_cli_ocr_smoke_assets_writes_expected_files() -> None:
     assert (output_dir / "ocr_smoke_page_1.png").exists()
     assert (output_dir / "ocr_smoke_page_2.png").exists()
     assert (output_dir / "ocr_smoke_document.pdf").exists()
+
+
+def test_cli_ocr_exposes_runtime_checkpoint_resume_controls() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "ocr",
+            "document.pdf",
+            "--output-dir",
+            "tests/.tmp-workflow-ingest-cli/ocr",
+            "--run-id",
+            "run|ocr-document|1",
+            "--resume-from-checkpoint",
+        ]
+    )
+
+    assert args.run_id == "run|ocr-document|1"
+    assert args.resume_from_checkpoint is True
 
 
 def test_demo_cli_accepts_proposal_mode_and_builds_provider_settings() -> None:

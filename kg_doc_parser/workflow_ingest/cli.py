@@ -229,9 +229,15 @@ def _ocr_command(args: argparse.Namespace) -> int:
                 ocr_candidate_models=args.ocr_candidate_model or None,
                 probe=probe,
                 deps=deps,
+                run_id=args.run_id,
+                resume_from_checkpoint=args.resume_from_checkpoint,
             )
             _emit_result(result)
         else:
+            if args.run_id is not None or args.resume_from_checkpoint:
+                raise ValueError(
+                    "--run-id and --resume-from-checkpoint require one OCR file, not a batch"
+                )
             result = run_ocr_batch_workflow(
                 inputs,
                 output_dir=output_dir,
@@ -352,6 +358,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_output_args(ocr)
     _add_provider_args(ocr)
     ocr.add_argument("--ocr-candidate-model", action="append", default=[], help="Candidate OCR model names")
+    ocr.add_argument(
+        "--run-id",
+        default=None,
+        help="Persisted Kogwistar runtime run ID to continue after a semantic-stage suspension",
+    )
+    ocr.add_argument(
+        "--resume-from-checkpoint",
+        action="store_true",
+        help="Resume the semantic OCR workflow from its persisted Kogwistar checkpoint",
+    )
     ocr.set_defaults(func=_ocr_command)
 
     page_index = subparsers.add_parser("page-index", help="Parse text/markdown into a page-index tree")
