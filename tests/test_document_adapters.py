@@ -15,6 +15,7 @@ from kg_doc_parser.workflow_ingest import (
     merge_groups,
     normalize_ocr_pages,
     prepare_ocr_workflow_input,
+    suggest_cross_page_continuations,
 )
 from kg_doc_parser.workflow_ingest.models import SourceUnit, WorkflowIngestInput
 
@@ -91,6 +92,32 @@ def test_grouping_can_join_a_cross_page_continuation_without_rewriting_source() 
     group = next(node for node in grouped.nodes if node.kind == "layout:cross-page-paragraph")
     assert {item.location.page_index for item in grouped.source_items if item.item_id in {first.item_id, second.item_id}} == {0, 1}
     assert {child.node_id for child in group.children} == {f"leaf:{first.item_id}", f"leaf:{second.item_id}"}
+
+
+def test_cross_page_continuation_suggestion_requires_ocr_boundary_signal() -> None:
+    inp = WorkflowIngestInput(
+        request_id="continuation-signal",
+        collections=[
+            {
+                "collection_id": "continuation-signal",
+                "title": "Continuation",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "metadata": {"incomplete_text": True},
+                        "units": [SourceUnit(modality="text", page_number=1, text="head")],
+                    },
+                    {"page_number": 2, "units": [SourceUnit(modality="text", page_number=2, text="tail")]},
+                ],
+            }
+        ],
+    )
+    tree = build_document_tree(inp)
+    assert tree is not None
+    proposals = suggest_cross_page_continuations(tree)
+    assert len(proposals) == 1
+    assert proposals[0].kind == "layout:cross-page-continuation"
 
 
 def test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items() -> None:

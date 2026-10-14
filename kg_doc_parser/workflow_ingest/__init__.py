@@ -26,6 +26,7 @@ from .document_adapters import (
     apply_grouping_proposals,
     attach_document_tree_metadata,
     build_document_tree,
+    suggest_cross_page_continuations,
 )
 from .document_grouping import GroupProposal, merge_groups
 from .document_models import (
@@ -292,6 +293,7 @@ __all__ = [
     "run_rapidocr_page",
     "select_parse_strategy",
     "source_map_fingerprint",
+    "suggest_cross_page_continuations",
     "validate_semantic_tree_integrity",
     "validate_semantic_tree_shape",
     "workflow_cache_namespace",

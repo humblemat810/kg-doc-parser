@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from itertools import pairwise
 from typing import Literal, cast
 
 from .adapters import _allocated_cluster_numbers
@@ -92,6 +93,7 @@ def build_document_tree(
                 accuracy="region" if precise_bbox is not None else "page",
             )
             ocr_metadata = _ocr_metadata(unit.metadata)
+            page_annotations = _page_annotations(page.metadata)
             kind = "text" if unit.modality in {"text", "ocr_text"} else "non_text:description"
             if has_media:
                 assert unit.source_uri is not None
@@ -110,7 +112,10 @@ def build_document_tree(
                             byte_length=media_size,
                         ),
                         ocr_metadata=ocr_metadata,
-                        annotations={"description": unit.description} if unit.description else {},
+                        annotations={
+                            **page_annotations,
+                            **({"description": unit.description} if unit.description else {}),
+                        },
                     )
                 )
                 leaf_kind = unit.modality
@@ -127,6 +132,7 @@ def build_document_tree(
                         text=text,
                         location=location,
                         ocr_metadata=ocr_metadata,
+                        annotations=page_annotations,
                     )
                 )
             leaves.append(
@@ -176,6 +182,60 @@ def _ocr_metadata(metadata: Mapping[str, object]) -> OCRMetadata | None:
         configuration_fingerprint=configuration,
         confidence=confidence if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) else None,
     )
+
+
+def _page_annotations(metadata: Mapping[str, object]) -> dict[str, str]:
+    annotations: dict[str, str] = {}
+    for key in ("incomplete_text", "incomplete_words_on_edge", "data_loss_likelihood", "scan_quality"):
+        value = metadata.get(key)
+        if isinstance(value, (str, int, float, bool)):
+            annotations[f"ocr:{key}"] = str(value)
+    return annotations
+
+
+def suggest_cross_page_continuations(tree: DocumentTree) -> tuple[GroupProposal, ...]:
+    """Suggest only OCR-signaled cross-page joins; never infer semantic links."""
+    nodes = {node.node_id: node for node in tree.nodes}
+    items = {item.item_id: item for item in tree.source_items}
+    root = nodes[tree.root_id]
+    if not root.children:
+        return ()
+    frontier = [nodes[child.node_id] for child in root.children]
+    if any(not node.parts for node in frontier):
+        return ()
+    leaves = frontier
+    ordered_leaves = sorted(
+        leaves,
+        key=lambda node: min(
+            items[part.item_id].location.page_index or 0 for part in node.parts
+        ),
+    )
+    proposals: list[GroupProposal] = []
+    for previous, current in pairwise(ordered_leaves):
+        previous_pages = [
+            page
+            for part in previous.parts
+            if (page := items[part.item_id].location.page_index) is not None
+        ]
+        current_pages = [
+            page
+            for part in current.parts
+            if (page := items[part.item_id].location.page_index) is not None
+        ]
+        if not previous_pages or not current_pages or max(previous_pages) + 1 != min(current_pages):
+            continue
+        previous_item = items[previous.parts[-1].item_id]
+        if previous_item.annotations.get("ocr:incomplete_text") != "True" and previous_item.annotations.get(
+            "ocr:incomplete_words_on_edge"
+        ) != "True":
+            continue
+        proposals.append(
+            GroupProposal(
+                kind="layout:cross-page-continuation",
+                members=(previous.node_id, current.node_id),
+            )
+        )
+    return tuple(proposals)
 
 
 def attach_document_tree_metadata(workflow_input: WorkflowIngestInput, tree: DocumentTree) -> None:
@@ -244,4 +304,5 @@ __all__ = [
     "apply_grouping_proposals",
     "attach_document_tree_metadata",
     "build_document_tree",
+    "suggest_cross_page_continuations",
 ]

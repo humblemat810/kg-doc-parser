@@ -140,6 +140,10 @@ def normalize_ocr_pages(
         page_metadata = raw_page.get("metadata", {})
         if not isinstance(page_metadata, dict):
             raise TypeError("OCR page metadata must be an object")
+        for key in ("incomplete_text", "incomplete_words_on_edge", "data_loss_likelihood", "scan_quality"):
+            value = raw_page.get(key)
+            if value is not None:
+                page_metadata = {**page_metadata, key: value}
         ordering = raw_page.get("meaningful_ordering")
         if ordering is not None:
             if not isinstance(ordering, list) or any(type(value) is not int for value in ordering):
