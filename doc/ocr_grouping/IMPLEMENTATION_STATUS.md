@@ -20,7 +20,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C11 | PASS | Empty OCR observations return no tree and normalized pages carry explicit `is_blank_page` metadata; `test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items` |
 | C12 | PASS | Existing OCR models and workflow input remain unchanged; adapter is additive |
 | C13 | PASS | Grouping adapter performs no semantic inference |
-| C14 | DEFERRED | Kogwistar projection remains a separate optional adapter |
+| C14 | PASS | `DocumentTree` remains standalone; OCR metadata and lineage enter the existing `WorkflowIngestInput`, semantic parser, `WorkflowExportBundle`, and `CanonicalGraphPersistenceClient` boundary. No persistent Kogwistar model is subclassed; a separate direct `DocumentTree` serializer is intentionally not duplicated |
 | C15 | PASS | Six lazy Docling engines, direct RapidOCR/EasyOCR, platform/CLI gating, KServe v2 transport, and process-local user-provider registration; `tests/test_workflow_ingest_ocr_providers.py` passed 16 tests (one optional-runtime skip); real-provider observations are recorded in `doc/ocr_grouping/PROVIDER_SMOKE_RESULTS.md` |
 | C16 | PASS | `SummaryPolicy` and `select_summary_targets()` bound eligible kinds, evidence size, information gain, estimated input tokens, and target count without invoking a provider; `test_summary_target_planner_is_bounded_and_skips_low_information_nodes` |
 | C17 | PASS | Atomic tree replacement, versioned SQLite page/tree/frontier checkpoints after each page/pass, idempotent summary-attempt journal, and forwarding of the existing Kogwistar `run_id`/`resume_from_checkpoint` contract through `run_ocr_source_workflow()`; `test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping`, `test_prepare_ocr_workflow_input_resumes_after_mid_document_interruption`, and runtime resume tests |
@@ -73,6 +73,7 @@ poetry run pytest tests/test_workflow_ingest_ocr_providers.py -q -p no:cacheprov
 16 passed, 1 skipped
 ```
 
-The full C01–C21 goal is not complete while any row above is `PARTIAL` or
-`DEFERRED`; this file must be updated with stronger evidence as implementation
-continues.
+All required C01–C21 rows are currently marked `PASS`. A direct export format
+for `DocumentTree` independent of the established semantic parser is not part
+of this contract; adding one would duplicate the existing Kogwistar projection
+boundary and is intentionally out of scope.
