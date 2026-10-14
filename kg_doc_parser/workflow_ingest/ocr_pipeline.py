@@ -1321,8 +1321,14 @@ def _run_live_ocr_page(
             provider_settings,
             engine=provider_settings.ocr.ocr_engine or "rapidocr",
         )
-    if provider_settings.ocr.provider == "codex":
-        raise ValueError("Codex is not advertised as an OCR vision provider")
+    if provider_settings.ocr.provider == "rapidocr":
+        from .ocr_providers import run_rapidocr_page
+
+        return run_rapidocr_page(image_path, page_number, provider_settings.ocr)
+    if provider_settings.ocr.provider == "easyocr":
+        from .ocr_providers import run_easyocr_page
+
+        return run_easyocr_page(image_path, page_number, provider_settings.ocr)
     chat = build_chat_model_for_role("ocr", provider_settings)
     structured = build_structured_output_runnable(chat, OCRClusterResponse, include_raw=True)
     prompt = (

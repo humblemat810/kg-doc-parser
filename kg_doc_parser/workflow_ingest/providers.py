@@ -102,7 +102,18 @@ _codex_messages = bridge_messages
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 TConstructedProvider = TypeVar("TConstructedProvider")
 ChatProviderName = Literal[
-    "anthropic", "gemini", "ollama", "openai", "bonsai", "azure", "vertex", "fake", "codex", "docling"
+    "anthropic",
+    "gemini",
+    "ollama",
+    "openai",
+    "bonsai",
+    "azure",
+    "vertex",
+    "fake",
+    "codex",
+    "docling",
+    "rapidocr",
+    "easyocr",
 ]
 EmbeddingProviderName = Literal["fake", "openai", "vertex", "ollama"]
 ProposalMode = Literal["children", "boundaries"]
@@ -385,6 +396,8 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
             "openai",
             "bonsai",
             "docling",
+            "rapidocr",
+            "easyocr",
             "azure",
             "vertex",
             "fake",
@@ -439,6 +452,13 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
+    ocr_language: Annotated[
+        str,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = "en"
     location: Annotated[
         str | None,
         DtoField(),
@@ -743,6 +763,7 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 project=_env("KG_DOC_OCR_PROJECT"),
                 location=_env("KG_DOC_OCR_LOCATION"),
                 ocr_engine=_env("KG_DOC_OCR_ENGINE"),
+                ocr_language=str(_env("KG_DOC_OCR_LANGUAGE", "en") or "en"),
                 max_retries=int(_env("KG_DOC_OCR_MAX_RETRIES", "2") or "2"),
                 timeout_seconds=float(_env("KG_DOC_OCR_TIMEOUT_SECONDS", "120") or "120"),
                 retry_backoff_seconds=float(_env("KG_DOC_OCR_RETRY_BACKOFF_SECONDS", "0.25") or "0.25"),

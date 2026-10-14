@@ -19,9 +19,136 @@ optional runtimes at package-import time:
 - Nemotron-OCR
 
 It also exposes the existing OpenAI-compatible vision path as `bonsai` and
-keeps `codex` available for structured parser/chat work. Codex is explicitly
-not advertised as an OCR vision provider because image support was not
-verified for that bridge.
+the Codex bridge OCR path. Codex image forwarding is now implemented through
+validated temporary files and `codex exec --image`; a real Codex smoke remains
+environment-dependent.
+
+The provider inventory now also includes direct `rapidocr` and `easyocr`
+adapters. These bypass Docling and return the existing typed OCR response with
+one pixel bounding box per detected text region.
+
+## Real Codex Bridge Smoke
+
+On 2026-10-14, a real one-request smoke was run through the host bridge using
+the signed-in Codex CLI session. This was not a mocked provider response:
+
+- Bridge health: `200`, provider `codex`
+- Structured request: succeeded
+- Duration: `7.43s`
+- Output: schema-valid JSON with the expected `confidence: "inferred"`
+- Graph writes: none
+- Maintenance jobs: none
+- MCP/tool calls: none
+
+This verifies bridge authentication, the host-to-Codex CLI transport, bounded
+structured output, and response decoding. It is separate from OCR accuracy:
+the request contained text only. A real Codex image-page OCR smoke remains
+unchecked until a vision-capable Codex model is exercised with an image and
+its text, coverage, and spatial results are measured. The implementation now
+supports that path through validated inline base64 image parts and CLI
+`--image` files; App Server transport currently rejects image requests
+explicitly rather than silently dropping them.
+
+## Direct RapidOCR Run
+
+The direct RapidOCR adapter was run against the retained 1600x1200 layout
+fixture without importing Docling:
+
+- Provider: `rapidocr`
+- Result: succeeded
+- Text clusters: `16`
+- Non-text objects: `0`
+- Coordinates: preserved as pixel bounding boxes
+- Artifacts: `experiments/ocr-provider-smoke/direct-rapidocr/`
+
+This confirms the direct dispatch and normalization path, not table semantics.
+RapidOCR recognized the table text as individual detections; it did not produce
+rows, columns, or merged-cell records.
+
+## Direct EasyOCR Run
+
+The direct EasyOCR adapter was run through the parser against the same fixture
+using the cached Latin recognition model (`KG_DOC_OCR_LANGUAGE=fr`). This is a
+real EasyOCR run, not a mocked response:
+
+- Provider: `easyocr`
+- Result: succeeded
+- Text clusters: `13`
+- Non-text objects: `0`
+- Coordinates: preserved as pixel bounding boxes
+- Artifacts: `experiments/ocr-provider-smoke/direct-easyocr-fr/`
+
+The title and all three list regions were localized. Nine of the twelve table
+cell regions were localized; the small numeric cells `42`, `17`, and `8` were
+missed. OCR text also had minor recognition errors such as missing spaces in
+the title/list text and `Ready` becoming `Peady`. The table was detected as
+independent text regions; no row/column structure was inferred.
+
+The default English model (`english_g2.pth`) was not cached on this host. A
+separate default-English run attempted to download it and failed with a DNS
+error; that failed artifact remains in
+`experiments/ocr-provider-smoke/direct-easyocr-cached/`. The explicit language
+setting prevents that environmental limitation from being hidden.
+
+## Codex Bridge OCR
+
+The parser now forwards image content parts to the authenticated Codex bridge.
+The bridge accepts only inline base64 image data URLs, writes them to a
+temporary directory, and passes those files to the Codex CLI with
+`--image`. It rejects remote URLs, unsupported image formats, oversized
+payloads, and does not forward images through the App Server transport yet.
+
+The real structured bridge smoke above confirms the authenticated transport.
+The real page-OCR smoke below now measures the image path separately.
+
+### Real Codex Page OCR Result
+
+The retained `ocr_layout_page.png` fixture was sent through the parser's
+`codex` OCR provider, the authenticated bridge, and the real Codex CLI session.
+The sanitized response is retained under
+`experiments/ocr-provider-smoke/direct-codex-bridge/`.
+
+- Provider: `codex` through the host bridge
+- Model: `gpt-5.6-luna`
+- Result: succeeded
+- Text clusters: `16`
+- Exact expected regions recovered: `16/16`
+- Expected text character coverage: `100%` for the fixture's title, three list
+  items, and nine table cells
+- Table signal: `contains_table=true`
+- Non-text objects: `0`
+- Empty page: `false`
+- Spatial result: approximate pass; returned boxes align with the fixture's
+  title, list rows, and three table columns/row bands on the 1600x1200 page
+- Credentials recorded: `false`
+
+This is a real one-page OCR smoke, not a mocked response. It demonstrates that
+the Codex bridge can carry image input through the parser and return typed OCR
+geometry and table classification. It is still a fixture smoke rather than a
+general accuracy benchmark: the fixture has clean typography, and the current
+measurement records approximate box agreement rather than IoU or word-level
+ground-truth polygons.
+
+### Real Codex Multi-Page Result
+
+Both rendered pages from `ocr_smoke_document.pdf` were then sent through the
+same real Codex OCR provider, one page at a time:
+
+- Pages attempted: `2`
+- Pages succeeded: `2`
+- Page 1: `4/4` regions and exact fixture text
+- Page 2: `4/4` regions; one terminal punctuation mark was omitted from the
+  final sentence
+- Page ordering: preserved (`1`, then `2`)
+- Non-text objects: `0` on both pages
+- Table detection: not applicable to this document (`false` on both pages)
+
+The full parser workflow wrapper could not be used for this particular run
+because local Chroma engine initialization failed first with its installed
+embedding-function signature mismatch. The direct page calls use the same
+`_run_live_ocr_page` provider boundary and isolate OCR behavior from that
+unrelated local graph-engine dependency issue. The sanitized summary is in
+`experiments/ocr-provider-smoke/direct-codex-bridge-multipage/`.
 
 ## Real Bonsai Run
 
@@ -138,3 +265,44 @@ six optional Docling runtimes are installed on this host. Their selection and
 lazy-import behavior are covered by unit tests and the capability inventory;
 each engine still needs its own environment-specific smoke when that optional
 runtime is available.
+
+## Coverage Audit
+
+This branch does not claim a real multi-page, multimodal smoke for every
+provider. Real evidence currently covers direct RapidOCR, direct EasyOCR,
+Docling RapidOCR/EasyOCR, Bonsai, and Codex. The Codex path now has both a
+single-page table fixture and a two-page document fixture. The other real
+provider runs are single-page. Cloud providers, Ollama, and the remaining
+Docling engines have capability and mocked-contract coverage only.
+
+The current OCR contract accepts rendered image pages (including pages
+rendered from PDF). It does not accept audio or video inputs, so audio/video
+coverage would require a separate multimodal evidence contract rather than a
+larger OCR smoke matrix. No audio/video result is being claimed here.
+
+The legacy `kg_doc_parser/ocr.py` implementation is pre-existing and was not
+duplicated by this branch. The new direct adapters intentionally remain
+separate from Docling adapters, while the Codex parser alias reuses
+Kogwistar's shared `StructuredBridgeChatModel` instead of creating a second
+bridge client.
+
+## Real Two-Page Provider Matrix
+
+The two generated pages from `ocr_smoke_document.pdf` were also run through
+the locally installed providers in the parser environment:
+
+| Provider | Page 1 | Page 2 | Result | Interpretation |
+| --- | ---: | ---: | --- | --- |
+| Direct RapidOCR | 4 clusters | 4 clusters | succeeded | Direct pixel-box path; no table in this fixture |
+| Direct EasyOCR (`fr`) | 7 clusters | 11 clusters | succeeded | Real recognition, but detector fragmentation means counts are not text accuracy |
+| Docling RapidOCR | 1 page cluster | 1 page cluster | succeeded | Adapter intentionally collapses native Docling layout to one page cluster |
+| Docling EasyOCR | 1 page cluster | 1 page cluster | succeeded | Same page-level adapter contract |
+| Bonsai | 4 clusters | 4 clusters | succeeded | Real local multimodal model path |
+| Codex bridge | 4 clusters | 4 clusters | succeeded | Page 1 exact; page 2 omitted one terminal punctuation mark |
+
+This is real provider execution, not mocked payload coverage. The matrix is a
+two-page execution smoke, not a claim that all providers have equal semantic
+or table accuracy. Direct EasyOCR and the two Docling cases require richer
+text/layout scoring before comparing quality fairly. Cloud providers,
+Ollama, and optional Docling engines not installed in this environment were
+not silently substituted with fake results.

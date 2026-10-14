@@ -1,0 +1,32 @@
+{
+  "provider": "codex-bridge",
+  "model": "gpt-5.6-luna",
+  "fixture": "ocr_smoke_document.pdf",
+  "pages_attempted": 2,
+  "pages_succeeded": 2,
+  "page_results": [
+    {
+      "page": 1,
+      "expected_regions": 4,
+      "returned_regions": 4,
+      "exact_region_matches": 4,
+      "text_status": "exact",
+      "contains_table": false,
+      "non_text_objects": 0,
+      "spatial_status": "approximate_pass"
+    },
+    {
+      "page": 2,
+      "expected_regions": 4,
+      "returned_regions": 4,
+      "exact_region_matches": 4,
+      "text_status": "one_terminal_punctuation_mark_omitted",
+      "contains_table": false,
+      "non_text_objects": 0,
+      "spatial_status": "approximate_pass"
+    }
+  ],
+  "page_order_preserved": true,
+  "credentials_recorded": false,
+  "workflow_wrapper_note": "Default graph-engine initialization was not used because local Chroma embedding-function compatibility failed before OCR; page calls used the same _run_live_ocr_page provider boundary."
+}

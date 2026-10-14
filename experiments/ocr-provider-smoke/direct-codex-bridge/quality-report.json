@@ -1,0 +1,15 @@
+{
+  "provider": "codex-bridge",
+  "model": "gpt-5.6-luna",
+  "fixture": "ocr_layout_page.png",
+  "expected_regions": 16,
+  "returned_regions": 16,
+  "exact_region_matches": 16,
+  "region_recall": 1.0,
+  "expected_text_character_coverage": 1.0,
+  "contains_table": true,
+  "non_text_objects": 0,
+  "spatial_status": "approximate_pass_no_IoU_ground_truth",
+  "spatial_note": "Returned boxes align with the expected title, list rows, and three table columns/row bands on the 1600x1200 fixture; word-level polygons and IoU were not measured.",
+  "credentials_recorded": false
+}

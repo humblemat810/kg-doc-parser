@@ -194,8 +194,9 @@ An example template is provided in [`.env.example`](.env.example).
 `run_ocr_source_workflow(...)` remains the single OCR workflow entrypoint.
 Existing chat providers (`gemini`, `ollama`, `openai`, `azure`, `vertex`, and
 the local OpenAI-compatible `bonsai` alias) use the existing structured OCR
-contract. The Codex bridge remains available for parser/chat work, but is not
-advertised as a vision OCR provider until image support is verified.
+contract. The Codex bridge can also receive OCR images when it is configured
+with a vision-capable Codex model and the bridge's CLI image forwarding is
+available.
 
 Docling is an optional adapter selected with `KG_DOC_OCR_PROVIDER=docling` and
 `KG_DOC_OCR_ENGINE` set to `rapidocr`, `easyocr`, `tesseract`, `tesserocr`,
@@ -203,6 +204,13 @@ Docling is an optional adapter selected with `KG_DOC_OCR_PROVIDER=docling` and
 the base package does not install these dependencies. The adapter returns
 page-level geometry when it cannot prove precise word coordinates rather than
 inventing them.
+
+Direct local OCR is also available without Docling:
+`KG_DOC_OCR_PROVIDER=rapidocr` uses `rapidocr-onnxruntime`, and
+`KG_DOC_OCR_PROVIDER=easyocr` uses `easyocr`. These adapters preserve one
+typed cluster per detected text region and its pixel bounding box. They do not
+claim table structure or merged-cell semantics; use the Docling path when
+layout interpretation is required.
 
 Run `ocr-provider-smoke --output-dir experiments/ocr-provider-smoke` for an
 offline capability report. Add `--live --image <page.png>` to execute one real
