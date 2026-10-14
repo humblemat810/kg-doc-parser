@@ -27,6 +27,7 @@ from .document_adapters import (
     apply_summary_updates,
     attach_document_tree_metadata,
     build_document_tree,
+    select_summary_targets,
     suggest_cross_page_continuations,
 )
 from .document_grouping import GroupProposal, merge_groups
@@ -40,6 +41,7 @@ from .document_models import (
     SourceLocation,
     SourceSlice,
     Summary,
+    SummaryPolicy,
 )
 from .handlers import build_ingest_step_resolver
 from .models import (
@@ -232,6 +234,7 @@ __all__ = [
     "SourceSlice",
     "SourceUnit",
     "Summary",
+    "SummaryPolicy",
     "TreeParseRequest",
     "UnsupportedClientOperation",
     "ValidationReport",
@@ -301,6 +304,7 @@ __all__ = [
     "run_rapidocr_page",
     "run_registered_ocr_page",
     "select_parse_strategy",
+    "select_summary_targets",
     "source_map_fingerprint",
     "suggest_cross_page_continuations",
     "unregister_ocr_provider",

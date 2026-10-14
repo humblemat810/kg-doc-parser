@@ -19,6 +19,7 @@ from .document_models import (
     SourceLocation,
     SourceSlice,
     Summary,
+    SummaryPolicy,
 )
 from .models import WorkflowIngestInput
 
@@ -265,6 +266,77 @@ def apply_summary_updates(
     return DocumentTree.model_validate(payload)
 
 
+def select_summary_targets(
+    tree: DocumentTree,
+    policy: SummaryPolicy | None = None,
+) -> tuple[str, ...]:
+    """Select bounded, evidence-bearing grouping nodes for optional summaries.
+
+    This deterministic planner does not call a provider or attach a summary,
+    so it cannot change source evidence. Token cost is conservatively
+    estimated from text size before a downstream provider is invoked.
+    """
+
+    policy = policy or SummaryPolicy()
+    if not policy.enabled:
+        return ()
+    nodes = {node.node_id: node for node in tree.nodes}
+    items = {item.item_id: item for item in tree.source_items}
+
+    def descendants(node_id: str) -> set[str]:
+        node = nodes[node_id]
+        if node.parts:
+            return {part.item_id for part in node.parts}
+        result: set[str] = set()
+        for child in node.children:
+            result.update(descendants(child.node_id))
+        return result
+
+    def depth(node_id: str) -> int:
+        result = 0
+        current = nodes[node_id]
+        while current.node_id != tree.root_id:
+            parent = next(
+                parent
+                for parent in tree.nodes
+                if any(child.node_id == current.node_id for child in parent.children)
+            )
+            result += 1
+            current = parent
+        return result
+
+    candidates: list[tuple[int, str, int]] = []
+    eligible = set(policy.eligible_kinds)
+    for node in tree.nodes:
+        if node.parts or node.summary is not None or node.kind not in eligible:
+            continue
+        item_ids = descendants(node.node_id)
+        text_chars = sum(len(items[item_id].text or "") for item_id in item_ids)
+        if len(item_ids) < policy.minimum_source_items or text_chars < policy.minimum_source_chars:
+            continue
+        child_sizes = [
+            sum(len(items[item_id].text or "") for item_id in descendants(child.node_id))
+            for child in node.children
+        ]
+        information_gain = text_chars - max(child_sizes, default=0)
+        if information_gain < policy.minimum_information_gain_chars:
+            continue
+        estimated_tokens = max(1, (text_chars + 3) // 4)
+        candidates.append((depth(node.node_id), node.node_id, estimated_tokens))
+
+    selected: list[str] = []
+    used_tokens = 0
+    for _depth, node_id, estimated_tokens in sorted(candidates):
+        if len(selected) >= policy.maximum_targets:
+            break
+        bounded_tokens = min(estimated_tokens, policy.maximum_input_tokens)
+        if used_tokens + bounded_tokens > policy.maximum_input_tokens:
+            continue
+        selected.append(node_id)
+        used_tokens += bounded_tokens
+    return tuple(selected)
+
+
 def apply_grouping_proposals(
     tree: DocumentTree,
     proposals: tuple[GroupProposal, ...],
@@ -327,5 +399,6 @@ __all__ = [
     "apply_summary_updates",
     "attach_document_tree_metadata",
     "build_document_tree",
+    "select_summary_targets",
     "suggest_cross_page_continuations",
 ]

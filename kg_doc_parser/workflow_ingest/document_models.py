@@ -140,6 +140,30 @@ class Summary(FrozenModel):
         return self
 
 
+class SummaryPolicy(FrozenModel):
+    """Bound optional derived-summary work independently of OCR."""
+
+    enabled: bool = True
+    eligible_kinds: tuple[str, ...] = (
+        "table",
+        "figure",
+        "section",
+        "chapter",
+        "document",
+    )
+    minimum_source_items: int = Field(default=2, ge=1)
+    minimum_source_chars: int = Field(default=1, ge=0)
+    minimum_information_gain_chars: int = Field(default=1, ge=0)
+    maximum_input_tokens: int = Field(default=2048, ge=1)
+    maximum_targets: int = Field(default=32, ge=1)
+
+    @model_validator(mode="after")
+    def valid(self) -> SummaryPolicy:
+        if len(set(self.eligible_kinds)) != len(self.eligible_kinds):
+            raise ValueError("summary policy kinds must be unique")
+        return self
+
+
 class DocumentNode(FrozenModel):
     node_id: str = Field(min_length=1)
     kind: str = Field(min_length=1, max_length=128)

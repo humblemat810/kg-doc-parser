@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from kg_doc_parser.workflow_ingest.document_adapters import apply_summary_updates
+from kg_doc_parser.workflow_ingest.document_adapters import (
+    apply_summary_updates,
+    select_summary_targets,
+)
 from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal, merge_groups
 from kg_doc_parser.workflow_ingest.document_models import (
     DocumentNode,
@@ -11,6 +14,7 @@ from kg_doc_parser.workflow_ingest.document_models import (
     SourceLocation,
     SourceSlice,
     Summary,
+    SummaryPolicy,
 )
 
 
@@ -167,6 +171,40 @@ def test_summary_updates_validate_grounding_before_tree_persistence() -> None:
         )
     with pytest.raises(ValueError, match="unknown node"):
         apply_summary_updates(base, {"missing": Summary(status="pending")})
+
+
+def test_summary_target_planner_is_bounded_and_skips_low_information_nodes() -> None:
+    tree = DocumentTree(
+        document_id="summary-policy",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(_item("a", "alpha"), _item("b", "beta"), _item("c", "x")),
+        nodes=(
+            _leaf("a-leaf", "a", "alpha"),
+            _leaf("b-leaf", "b", "beta"),
+            _leaf("c-leaf", "c", "x"),
+            DocumentNode(
+                node_id="section",
+                kind="section",
+                children=({"node_id": "a-leaf"}, {"node_id": "b-leaf"}),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=({"node_id": "section"}, {"node_id": "c-leaf"}),
+            ),
+        ),
+    )
+    assert select_summary_targets(
+        tree,
+        SummaryPolicy(minimum_source_chars=100),
+    ) == ()
+    assert select_summary_targets(
+        tree,
+        SummaryPolicy(maximum_input_tokens=10, maximum_targets=1),
+    ) == ("root",)
+    assert select_summary_targets(tree, SummaryPolicy(enabled=False)) == ()
 
 
 def test_title_and_atomic_sixty_row_table_remain_two_grounded_children() -> None:
