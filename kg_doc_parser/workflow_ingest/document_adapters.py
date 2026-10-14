@@ -176,7 +176,10 @@ def apply_grouping_proposals(
             kind="document",
             children=tuple(ChildRef(node_id=node_id) for node_id in new_frontier),
         )
-    return tree.model_copy(update={"nodes": tuple(by_id.values()), "tree_revision": tree.tree_revision + 1})
+    payload = tree.model_dump(mode="json")
+    payload["nodes"] = tuple(by_id.values())
+    payload["tree_revision"] = tree.tree_revision + 1
+    return DocumentTree.model_validate(payload)
 
 
 def apply_grouping_passes(
