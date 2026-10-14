@@ -101,7 +101,9 @@ _codex_messages = bridge_messages
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 TConstructedProvider = TypeVar("TConstructedProvider")
-ChatProviderName = Literal["anthropic", "gemini", "ollama", "openai", "azure", "vertex", "fake", "codex"]
+ChatProviderName = Literal[
+    "anthropic", "gemini", "ollama", "openai", "bonsai", "azure", "vertex", "fake", "codex", "docling"
+]
 EmbeddingProviderName = Literal["fake", "openai", "vertex", "ollama"]
 ProposalMode = Literal["children", "boundaries"]
 ParseStrategyName = Literal["layer_excerpt", "layer_boundary", "page_index"]
@@ -381,6 +383,8 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
             "gemini",
             "ollama",
             "openai",
+            "bonsai",
+            "docling",
             "azure",
             "vertex",
             "fake",
@@ -423,6 +427,13 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
     ] = None
     project: Annotated[
         str | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
+    ocr_engine: Annotated[
+        Literal["rapidocr", "easyocr", "tesseract", "tesserocr", "ocrmac", "nemotron-ocr"] | None,
         DtoField(),
         BackendField(),
         FrontendField(),
@@ -731,6 +742,7 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 api_version=_env("KG_DOC_OCR_API_VERSION"),
                 project=_env("KG_DOC_OCR_PROJECT"),
                 location=_env("KG_DOC_OCR_LOCATION"),
+                ocr_engine=_env("KG_DOC_OCR_ENGINE"),
                 max_retries=int(_env("KG_DOC_OCR_MAX_RETRIES", "2") or "2"),
                 timeout_seconds=float(_env("KG_DOC_OCR_TIMEOUT_SECONDS", "120") or "120"),
                 retry_backoff_seconds=float(_env("KG_DOC_OCR_RETRY_BACKOFF_SECONDS", "0.25") or "0.25"),
@@ -1059,7 +1071,7 @@ def build_chat_model(
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["google_api_key"] = os.getenv(spec.api_key_env)
         return cast(SupportsStructuredOutput, _construct_provider(ChatGoogleGenerativeAI, kwargs))
-    if spec.provider == "openai":
+    if spec.provider in {"openai", "bonsai"}:
         max_output_tokens = (
             spec.max_output_tokens
             if spec.max_output_tokens is not None

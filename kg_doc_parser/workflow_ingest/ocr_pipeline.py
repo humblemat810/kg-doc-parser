@@ -1312,6 +1312,17 @@ def _run_live_ocr_page(
     replace it with a fake runner, but the callable contract stays the same:
     page image in, structured OCR model out.
     """
+    if provider_settings.ocr.provider == "docling":
+        from .ocr_providers import run_docling_ocr_page
+
+        return run_docling_ocr_page(
+            image_path,
+            page_number,
+            provider_settings,
+            engine=provider_settings.ocr.ocr_engine or "rapidocr",
+        )
+    if provider_settings.ocr.provider == "codex":
+        raise ValueError("Codex is not advertised as an OCR vision provider")
     chat = build_chat_model_for_role("ocr", provider_settings)
     structured = build_structured_output_runnable(chat, OCRClusterResponse, include_raw=True)
     prompt = (

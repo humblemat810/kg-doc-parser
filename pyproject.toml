@@ -50,6 +50,7 @@ pytest = "^9.0.2"
 
 [tool.poetry.scripts]
 workflow-ingest = "kg_doc_parser.workflow_ingest.cli:main"
+ocr-provider-smoke = "kg_doc_parser.workflow_ingest.ocr_provider_smoke:main"
 
 
 [build-system]

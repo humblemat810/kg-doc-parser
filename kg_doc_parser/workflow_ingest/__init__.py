@@ -52,6 +52,13 @@ from .ocr_pipeline import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
+from .ocr_providers import (
+    DoclingEngine,
+    OCRPageProvider,
+    OCRProviderCapabilities,
+    list_ocr_provider_capabilities,
+    normalize_ocr_provider,
+)
 from .page_index import (
     BlockAssignment,
     BlockAssignmentBatch,
@@ -170,6 +177,9 @@ __all__ = [
     "OCRParseRequest",
     "OCRWorkflowArtifacts",
     "OCRWorkflowStateStore",
+    "OCRProviderCapabilities",
+    "OCRPageProvider",
+    "DoclingEngine",
     "OcrWorkflowCommandResult",
     "PageIndexBlockSpec",
     "PageIndexParseRequest",
@@ -222,6 +232,8 @@ __all__ = [
     "hardcoded_strategy",
     "initialize_parse_session",
     "normalize_ocr_pages",
+    "normalize_ocr_provider",
+    "list_ocr_provider_capabilities",
     "parse_document",
     "parse_ocr_document",
     "parse_page_index_document",
