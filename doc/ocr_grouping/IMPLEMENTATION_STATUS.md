@@ -9,21 +9,21 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | --- | --- | --- |
 | C01 | PASS | Frozen `SourceItem`/`DocumentTree` models; `test_document_tree_requires_exact_source_coverage` |
 | C02 | PASS | Half-open interval validator; gap/overlap and duplicate coverage tests |
-| C03 | PARTIAL | `SourceLocation` preserves page-level versus region-level accuracy; media geometry adapter still pending |
+| C03 | PASS | `SourceLocation` preserves page/region accuracy and declared pixels/relative/points frames; unknown frames downgrade to page accuracy; `test_unknown_ocr_coordinate_system_downgrades_to_page_accuracy` |
 | C04 | PASS | Cycle, orphan, duplicate-parent, and unary-node validation |
 | C05 | PASS | `merge_groups()` keeps unmerged frontier members |
 | C06 | PASS | Adjacent, disjoint, known-member proposal validation |
-| C07 | PARTIAL | Stable merge IDs, source fingerprints, SQLite replay, and explicit bypass when a new grouping proposal is supplied; full policy/model invalidation coverage remains |
-| C08 | PARTIAL | Media contract exists; current OCR adapter preserves non-text descriptions and needs content-addressed media input |
-| C09 | PARTIAL | Multi-page source locations are supported; automatic continuation grouping is pending |
-| C10 | PARTIAL | Versioned grounded `Summary` model exists; generation/invalidation workflow is pending |
+| C07 | PASS | Stable merge IDs, ordered source fingerprints, SQLite replay, and grouping-policy matching; `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` |
+| C08 | PARTIAL | Valid content-addressed media references and non-text descriptions round-trip; provider-specific media acquisition remains outside the adapter |
+| C09 | PARTIAL | Multi-page source locations and OCR-signaled continuation proposals are supported; streaming open-frontier persistence remains |
+| C10 | PARTIAL | Versioned grounded `Summary` model, stale-fingerprint validation, and validated summary updates are present; provider-backed generation policy remains |
 | C11 | PASS | Empty OCR observations return no tree and normalized pages carry explicit `is_blank_page` metadata; `test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items` |
 | C12 | PASS | Existing OCR models and workflow input remain unchanged; adapter is additive |
 | C13 | PASS | Grouping adapter performs no semantic inference |
 | C14 | DEFERRED | Kogwistar projection remains a separate optional adapter |
 | C15 | PARTIAL | Existing direct, Docling, and chat provider registry remains; all provider-specific grouping coverage is pending |
 | C16 | DEFERRED | Summary scheduling policy is not enabled by default |
-| C17 | PARTIAL | Atomic tree artifact replacement plus versioned SQLite `document_tree_state` checkpoint; page/merge persistence is covered, while summary/frontier journal coverage remains |
+| C17 | PARTIAL | Atomic tree artifact replacement plus versioned SQLite `document_tree_state` checkpoint; page/merge persistence is covered, while a separate summary/frontier journal remains |
 | C18 | DEFERRED | Explicit reference mentions are outside this slice |
 | C19 | PASS | `render_preview()` reads only accepted source intervals and display separators |
 | C20 | PASS | Open node kinds and heterogeneous adjacent merges are supported |
@@ -45,11 +45,13 @@ slice does not silently replace the established parser contract.
 
 ```text
 python -m pytest tests/test_document_grouping_contract.py -q -p no:cacheprovider
-5 passed
-python -m pytest tests/test_document_adapters.py::test_apply_grouping_proposals_keeps_source_coverage_and_rejects_bad_members -q -p no:cacheprovider
-1 passed
+9 passed
+python -m pytest tests/test_document_adapters.py -q -p no:cacheprovider
+focused adapter tests passed
 python -m compileall -q kg_doc_parser/workflow_ingest/...
 git diff --check
+poetry run ruff check kg_doc_parser/workflow_ingest/... tests/test_document_adapters.py
+poetry run pyright kg_doc_parser/workflow_ingest/...  # changed production modules: 0 errors
 ```
 
 The full C01–C21 goal is not complete while any row above is `PARTIAL` or
