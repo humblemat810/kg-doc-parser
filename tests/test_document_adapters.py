@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from PIL import Image
+
+from kg_doc_parser.models import OCRClusterResponse, TextCluster
 from kg_doc_parser.workflow_ingest import GroupProposal, apply_grouping_proposals, build_document_tree
+from kg_doc_parser.workflow_ingest import OCRImagePayload, WorkflowProviderSettings, prepare_ocr_workflow_input
 from kg_doc_parser.workflow_ingest.models import SourceUnit, WorkflowIngestInput
 
 
@@ -61,3 +67,40 @@ def test_apply_grouping_proposals_keeps_source_coverage_and_rejects_bad_members(
     )
     assert grouped.render_preview() == "ab"
     assert grouped.tree_revision == 2
+
+
+def test_prepare_ocr_workflow_emits_the_tree_at_the_existing_pipeline_boundary(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (40, 40), "white").save(image_path)
+
+    def fake_runner(image: Path, page_number: int, settings: object) -> OCRClusterResponse:
+        del image, page_number, settings
+        return OCRClusterResponse(
+            OCR_text_clusters=[TextCluster(text="OCR text", bb_x_min=1, bb_x_max=20, bb_y_min=1, bb_y_max=10, cluster_number=0)],
+            non_text_objects=[],
+            is_empty_page=False,
+            printed_page_number=None,
+            meaningful_ordering=[0],
+            page_x_min=0,
+            page_x_max=40,
+            page_y_min=0,
+            page_y_max=40,
+            estimated_rotation_degrees=0,
+            incomplete_words_on_edge=False,
+            incomplete_text=False,
+            data_loss_likelihood=0,
+            scan_quality="high",
+            contains_table=False,
+        )
+
+    artifacts = prepare_ocr_workflow_input(
+        document_id="doc",
+        title="Doc",
+        output_dir=tmp_path / "out",
+        image_payloads=(OCRImagePayload(page_number=1, image_path=str(image_path)),),
+        provider_settings=WorkflowProviderSettings(),
+        ocr_runner=fake_runner,
+    )
+    assert artifacts.document_tree is not None
+    assert artifacts.document_tree_path.exists()
+    assert artifacts.document_tree.source_items[0].item_id == "doc|p1_t0"
