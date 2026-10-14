@@ -1,7 +1,7 @@
 # KG Doc Parser — Executable Fixture Checklist & Coding-Agent Runbook
 
-**Companion requirements:** `kg_doc_parser_regression_investigation_and_requirements.md`  
-**Machine-readable payloads:** `kg_doc_parser_test_payloads.json`  
+**Companion requirements:** `kg_doc_parser_regression_investigation_and_requirements.md`
+**Machine-readable payloads:** `kg_doc_parser_test_payloads.json`
 **Date:** 2026-10-14 · **Repository:** https://github.com/humblemat810/kg-doc-parser
 
 > **Normative rule:** Every non-leaf node has **at least two children**, at **every depth**, for **all parsing paths**. Recovery differs by strategy: **PageIndex = deterministic, lossless structural morphism**; **boundary/excerpt = CUD correction/revalidation with finite retries and explicit failure**, with separately recorded strategy fallback where authorized. `Title → Table` is merely one example of the **universal `Parent → Child` invariant**.
