@@ -516,6 +516,7 @@ def _finalize_ocr_workflow_artifacts(
     summary_path: Path,
     provider_settings: WorkflowProviderSettings,
     state_store: OCRWorkflowStateStore,
+    restore_grouping_checkpoint: bool = True,
 ) -> OCRWorkflowArtifacts:
     workflow_input: WorkflowIngestInput = normalize_ocr_pages(
         document_id=document_id,
@@ -524,9 +525,13 @@ def _finalize_ocr_workflow_artifacts(
     )
     document_tree = build_document_tree(workflow_input)
     if document_tree is not None:
-        checkpointed_tree = state_store.load_document_tree(
-            document_id=document_id,
-            source_fingerprint=document_tree.source_fingerprint(),
+        checkpointed_tree = (
+            state_store.load_document_tree(
+                document_id=document_id,
+                source_fingerprint=document_tree.source_fingerprint(),
+            )
+            if restore_grouping_checkpoint
+            else None
         )
         if checkpointed_tree is not None:
             document_tree = checkpointed_tree
@@ -1570,6 +1575,7 @@ def prepare_ocr_workflow_input(
     pdf_rasterizer: PDFRasterizer | None = None,
     ocr_candidate_models: Sequence[str] | None = None,
     probe: WorkflowProbe | None = None,
+    restore_grouping_checkpoint: bool = True,
 ) -> OCRWorkflowArtifacts:
     """Prepare OCR pages and normalize them into workflow ingest input.
 
@@ -1769,6 +1775,7 @@ def prepare_ocr_workflow_input(
         summary_path=summary_path,
         provider_settings=provider_settings,
         state_store=state_store,
+        restore_grouping_checkpoint=restore_grouping_checkpoint,
     )
 
 
@@ -1812,6 +1819,7 @@ def run_ocr_ingest_workflow(
         pdf_rasterizer=pdf_rasterizer,
         ocr_candidate_models=ocr_candidate_models,
         probe=probe,
+        restore_grouping_checkpoint=grouping_proposals is None and grouping_passes is None,
     )
     if grouping_proposals is not None and grouping_passes is not None:
         raise ValueError("provide grouping_proposals or grouping_passes, not both")
