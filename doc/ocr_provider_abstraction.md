@@ -19,6 +19,8 @@ This design adds provider selection without introducing OCR v2.
 | `docling:nemotron-ocr` | local Docling engine | Docling/Nemotron runtime | yes | page-level |
 | `bonsai` | OpenAI-compatible local vision model | `langchain-openai` | configured model | page-level |
 | `codex` | authenticated Codex bridge with CLI image forwarding | configured bridge and vision-capable Codex model | yes | page-level |
+| `custom` | explicitly registered user VLM/OCR provider | user supplied | provider-defined | provider-defined |
+| `kserve` | KServe v2 image inference endpoint | standard library HTTP | model-defined response, validated as `OCRClusterResponse` | model-defined |
 
 The six Docling engines are lazy imports. Selecting one without its runtime
 produces an actionable error and does not affect users of other providers.
@@ -30,6 +32,18 @@ not infer table rows, columns, merged cells, or non-text layout objects; use a
 Docling layout pipeline when those semantics are required.
 The current OCR model stores a full-page bounding box when an adapter cannot
 prove more precise geometry; it does not claim word-level coordinates.
+
+`custom` providers are process-local registrations made with
+`register_ocr_provider(name, provider)`. Select them with
+`KG_DOC_OCR_PROVIDER=custom` and `KG_DOC_OCR_MODEL=<registered-name>`; the
+provider must return the existing `OCRClusterResponse` and remains behind the
+normal workflow checkpoint and validation path. `kserve` posts a KServe v2
+`/v2/models/<model>/infer` request with a base64 `BYTES` image input. Because
+KServe does not define a universal OCR output tensor, the default adapter
+accepts an `outputs[0].data` JSON representation of `OCRClusterResponse`; use a
+registered provider for model-specific tensor decoding. Missing optional
+engines and platform-incompatible engines fail explicitly rather than being
+reported as available.
 
 ## Configuration
 
@@ -52,6 +66,17 @@ For direct local OCR without Docling:
 ```text
 KG_DOC_OCR_PROVIDER=rapidocr
 # or: KG_DOC_OCR_PROVIDER=easyocr
+```
+
+For a registered provider or KServe v2:
+
+```python
+from kg_doc_parser.workflow_ingest import register_ocr_provider
+
+register_ocr_provider("my-vlm", my_provider)
+# KG_DOC_OCR_PROVIDER=custom, KG_DOC_OCR_MODEL=my-vlm
+# or KG_DOC_OCR_PROVIDER=kserve, KG_DOC_OCR_BASE_URL=http://localhost:8080,
+# KG_DOC_OCR_MODEL=ocr-model
 ```
 
 ## Smoke evidence

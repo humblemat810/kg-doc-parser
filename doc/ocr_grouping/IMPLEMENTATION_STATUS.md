@@ -21,7 +21,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C12 | PASS | Existing OCR models and workflow input remain unchanged; adapter is additive |
 | C13 | PASS | Grouping adapter performs no semantic inference |
 | C14 | DEFERRED | Kogwistar projection remains a separate optional adapter |
-| C15 | PARTIAL | Existing direct, Docling, and chat provider registry remains; all provider-specific grouping coverage is pending |
+| C15 | PASS | Six lazy Docling engines, direct RapidOCR/EasyOCR, platform/CLI gating, KServe v2 transport, and process-local user-provider registration; `tests/test_workflow_ingest_ocr_providers.py` passed 16 tests (one optional-runtime skip) |
 | C16 | DEFERRED | Summary scheduling policy is not enabled by default |
 | C17 | PARTIAL | Atomic tree artifact replacement plus versioned SQLite `document_tree_state` checkpoint; page/merge persistence is covered, while a separate summary/frontier journal remains |
 | C18 | DEFERRED | Explicit reference mentions are outside this slice |
@@ -52,6 +52,8 @@ python -m compileall -q kg_doc_parser/workflow_ingest/...
 git diff --check
 poetry run ruff check kg_doc_parser/workflow_ingest/... tests/test_document_adapters.py
 poetry run pyright kg_doc_parser/workflow_ingest/...  # changed production modules: 0 errors
+poetry run pytest tests/test_workflow_ingest_ocr_providers.py -q -p no:cacheprovider --basetemp .tmp_ocr_provider_test3
+16 passed, 1 skipped
 ```
 
 The full C01–C21 goal is not complete while any row above is `PARTIAL` or

@@ -1481,6 +1481,19 @@ def _run_live_ocr_page(
         from .ocr_providers import run_easyocr_page
 
         return run_easyocr_page(image_path, page_number, provider_settings.ocr)
+    if provider_settings.ocr.provider == "kserve":
+        from .ocr_providers import run_kserve_v2_page
+
+        return run_kserve_v2_page(image_path, page_number, provider_settings)
+    if provider_settings.ocr.provider == "custom":
+        from .ocr_providers import run_registered_ocr_page
+
+        return run_registered_ocr_page(
+            image_path,
+            page_number,
+            provider_settings,
+            provider_name=provider_settings.ocr.model,
+        )
     chat = build_chat_model_for_role("ocr", provider_settings)
     structured = build_structured_output_runnable(chat, OCRClusterResponse, include_raw=True)
     prompt = (

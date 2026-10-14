@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import sys
 from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
-from typing import ClassVar
+from typing import ClassVar, Self
 
 import pytest
 
+from kg_doc_parser.models import OCRClusterResponse
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
@@ -15,9 +17,13 @@ from kg_doc_parser.workflow_ingest import (
 from kg_doc_parser.workflow_ingest.ocr_providers import (
     list_ocr_provider_capabilities,
     normalize_ocr_provider,
+    register_ocr_provider,
     run_docling_ocr_page,
     run_easyocr_page,
+    run_kserve_v2_page,
     run_rapidocr_page,
+    run_registered_ocr_page,
+    unregister_ocr_provider,
 )
 from kg_doc_parser.workflow_ingest.providers import build_chat_model
 
@@ -31,15 +37,24 @@ def test_capability_inventory_contains_all_docling_engines_and_codex_boundary() 
     direct = {item.provider for item in capabilities if item.provider in {"rapidocr", "easyocr"}}
     assert direct == {"rapidocr", "easyocr"}
     assert all(item.coordinates for item in capabilities if item.provider in direct)
+    assert {item.provider for item in capabilities} >= {"custom", "kserve"}
 
 
 @pytest.mark.parametrize(
     ("raw", "engine"),
-    [("docling:easyocr", "easyocr"), ("rapidocr", None), ("easyocr", None), ("bonsai2", None), ("openai", None)],
+    [
+        ("docling:easyocr", "easyocr"),
+        ("rapidocr", None),
+        ("easyocr", None),
+        ("bonsai2", None),
+        ("openai", None),
+        ("custom", None),
+        ("kserve", None),
+    ],
 )
 def test_provider_names_are_normalized(raw: str, engine: str | None) -> None:
     provider, selected_engine = normalize_ocr_provider(raw)
-    assert provider in {"docling", "rapidocr", "easyocr", "bonsai", "openai"}
+    assert provider in {"docling", "rapidocr", "easyocr", "bonsai", "openai", "custom", "kserve"}
     assert selected_engine == engine
 
 
@@ -139,3 +154,129 @@ def test_docling_missing_runtime_fails_at_selection_boundary() -> None:
     )
     with pytest.raises(RuntimeError, match="optional docling package"):
         run_docling_ocr_page(Path("missing-page.png"), 1, settings, engine="rapidocr")
+
+
+def test_registered_provider_is_explicit_and_process_local(tmp_path: Path) -> None:
+    image_path = tmp_path / "page.png"
+    image_path.write_bytes(b"image")
+    expected = OCRClusterResponse(
+        OCR_text_clusters=[],
+        non_text_objects=[],
+        is_empty_page=True,
+        printed_page_number=None,
+        meaningful_ordering=[],
+        page_x_min=0.0,
+        page_x_max=1.0,
+        page_y_min=0.0,
+        page_y_max=1.0,
+        estimated_rotation_degrees=0.0,
+        incomplete_words_on_edge=False,
+        incomplete_text=False,
+        data_loss_likelihood=0.0,
+        scan_quality="high",
+        contains_table=False,
+    )
+
+    def provider(
+        path: Path, page_number: int, provider_settings: WorkflowProviderSettings, /
+    ) -> OCRClusterResponse:
+        assert path == image_path and page_number == 1
+        assert provider_settings.ocr.provider == "custom"
+        return expected
+
+    register_ocr_provider("test-vlm", provider)
+    try:
+        result = run_registered_ocr_page(
+            image_path,
+            1,
+            WorkflowProviderSettings(ocr=ProviderEndpointConfig(provider="custom", model="test-vlm")),
+            provider_name="test-vlm",
+        )
+        assert result == expected
+    finally:
+        unregister_ocr_provider("test-vlm")
+    with pytest.raises(RuntimeError, match="no OCR provider is registered"):
+        run_registered_ocr_page(
+            image_path,
+            1,
+            WorkflowProviderSettings(ocr=ProviderEndpointConfig(provider="custom", model="test-vlm")),
+            provider_name="test-vlm",
+        )
+
+
+def test_kserve_v2_adapter_posts_image_and_decodes_canonical_response(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    image_path = tmp_path / "page.png"
+    image_path.write_bytes(b"image")
+    response_model = OCRClusterResponse(
+        OCR_text_clusters=[],
+        non_text_objects=[],
+        is_empty_page=True,
+        printed_page_number=None,
+        meaningful_ordering=[],
+        page_x_min=0.0,
+        page_x_max=1.0,
+        page_y_min=0.0,
+        page_y_max=1.0,
+        estimated_rotation_degrees=0.0,
+        incomplete_words_on_edge=False,
+        incomplete_text=False,
+        data_loss_likelihood=0.0,
+        scan_quality="high",
+        contains_table=False,
+    )
+    captured: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"outputs": [{"data": [json.dumps(response_model.model_dump(dump_format="json"))]}]}).encode()
+
+    def fake_urlopen(request: object, *, timeout: float) -> Response:
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(
+            provider="kserve",
+            model="ocr-model",
+            base_url="http://kserve.test",
+            timeout_seconds=7.0,
+        )
+    )
+    result = run_kserve_v2_page(image_path, 1, settings)
+    request = captured["request"]
+    assert result == response_model
+    assert request.full_url == "http://kserve.test/v2/models/ocr-model/infer"
+    body = json.loads(request.data.decode())
+    assert body["inputs"][0]["datatype"] == "BYTES"
+
+
+def test_kserve_v2_adapter_rejects_unknown_output_shape(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    image_path = tmp_path / "page.png"
+    image_path.write_bytes(b"image")
+
+    class Response:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"outputs": [{"data": ["{\\"blocks\\": []}"]}]}'
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda request, *, timeout: Response())
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="kserve", model="ocr-model", base_url="http://kserve.test")
+    )
+    with pytest.raises(ValueError, match="validation error|OCRClusterResponse"):
+        run_kserve_v2_page(image_path, 1, settings)

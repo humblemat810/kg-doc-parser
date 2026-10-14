@@ -114,6 +114,8 @@ ChatProviderName = Literal[
     "docling",
     "rapidocr",
     "easyocr",
+    "custom",
+    "kserve",
 ]
 EmbeddingProviderName = Literal["fake", "openai", "vertex", "ollama"]
 ProposalMode = Literal["children", "boundaries"]
@@ -402,6 +404,8 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
             "vertex",
             "fake",
             "codex",
+            "custom",
+            "kserve",
         ],
         DtoField(),
         BackendField(),
@@ -762,7 +766,10 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 api_version=_env("KG_DOC_OCR_API_VERSION"),
                 project=_env("KG_DOC_OCR_PROJECT"),
                 location=_env("KG_DOC_OCR_LOCATION"),
-                ocr_engine=_env("KG_DOC_OCR_ENGINE"),
+                ocr_engine=cast(
+                    Literal["rapidocr", "easyocr", "tesseract", "tesserocr", "ocrmac", "nemotron-ocr"] | None,
+                    _env("KG_DOC_OCR_ENGINE"),
+                ),
                 ocr_language=str(_env("KG_DOC_OCR_LANGUAGE", "en") or "en"),
                 max_retries=int(_env("KG_DOC_OCR_MAX_RETRIES", "2") or "2"),
                 timeout_seconds=float(_env("KG_DOC_OCR_TIMEOUT_SECONDS", "120") or "120"),
@@ -1148,7 +1155,9 @@ def build_chat_model(
         return cast(SupportsStructuredOutput, _construct_provider(AzureChatOpenAI, kwargs))
     if spec.provider == "anthropic":
         try:
-            from langchain_anthropic import ChatAnthropic
+            from langchain_anthropic import (  # pyright: ignore[reportMissingImports]
+                ChatAnthropic,
+            )
         except ImportError as exc:
             raise RuntimeError(
                 "Anthropic provider selected; install the optional langchain-anthropic package"

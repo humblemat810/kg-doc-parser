@@ -212,6 +212,14 @@ typed cluster per detected text region and its pixel bounding box. They do not
 claim table structure or merged-cell semantics; use the Docling path when
 layout interpretation is required.
 
+User VLM adapters can be registered explicitly with
+`register_ocr_provider(name, provider)` and selected with
+`KG_DOC_OCR_PROVIDER=custom` plus `KG_DOC_OCR_MODEL=<name>`. A KServe v2
+endpoint is available with `KG_DOC_OCR_PROVIDER=kserve`; it sends a base64
+image to `/v2/models/<model>/infer` and accepts only a response that can be
+validated as the existing `OCRClusterResponse` (model-specific tensor layouts
+should use a registered adapter).
+
 Run `ocr-provider-smoke --output-dir experiments/ocr-provider-smoke` for an
 offline capability report. Add `--live --image <page.png>` to execute one real
 OCR request through the same provider path used by the workflow. The live

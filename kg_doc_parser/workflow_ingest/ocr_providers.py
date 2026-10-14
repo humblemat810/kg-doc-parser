@@ -9,7 +9,12 @@ parser's base installation.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import base64
+import json
+import os
+import platform
+import shutil
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
@@ -21,6 +26,8 @@ DoclingEngine = Literal["rapidocr", "easyocr", "tesseract", "tesserocr", "ocrmac
 OCRProviderName = Literal[
     "anthropic",
     "codex",
+    "custom",
+    "kserve",
     "docling",
     "rapidocr",
     "easyocr",
@@ -58,6 +65,38 @@ class OCRPageProvider(Protocol):
     ) -> OCRClusterResponse: ...
 
 
+OCRResponseDecoder = Callable[[Mapping[str, object]], OCRClusterResponse]
+
+_REGISTERED_PROVIDERS: dict[str, OCRPageProvider] = {}
+
+
+def register_ocr_provider(name: str, provider: OCRPageProvider) -> None:
+    """Register a named user provider for explicit ``custom`` OCR calls.
+
+    Registration only affects the current process.  The provider still has to
+    return the existing ``OCRClusterResponse`` contract; it does not bypass
+    workflow validation or checkpointing.
+    """
+
+    normalized = name.strip()
+    if not normalized or normalized in {"custom", "kserve"}:
+        raise ValueError("custom OCR provider names must be nonempty and non-reserved")
+    _REGISTERED_PROVIDERS[normalized] = provider
+
+
+def unregister_ocr_provider(name: str) -> None:
+    """Remove a process-local provider registration if present."""
+
+    _REGISTERED_PROVIDERS.pop(name.strip(), None)
+
+
+def _registered_ocr_provider(name: str) -> OCRPageProvider:
+    try:
+        return _REGISTERED_PROVIDERS[name]
+    except KeyError as exc:
+        raise RuntimeError(f"no OCR provider is registered as {name!r}") from exc
+
+
 _DOCLING_CAPABILITIES: tuple[OCRProviderCapabilities, ...] = (
     OCRProviderCapabilities("docling", "rapidocr", True, True, False, False, "docling", ("linux", "windows", "macos")),
     OCRProviderCapabilities("docling", "easyocr", True, True, False, False, "docling[easyocr]", ("linux", "windows", "macos")),
@@ -82,6 +121,8 @@ _CHAT_CAPABILITIES: tuple[OCRProviderCapabilities, ...] = (
     OCRProviderCapabilities("anthropic", None, True, False, False, True, "langchain-anthropic", ("linux", "windows", "macos")),
     OCRProviderCapabilities("codex", None, True, False, False, True, None, ("linux", "windows", "macos")),
     OCRProviderCapabilities("fake", None, False, True, False, True, None, ("linux", "windows", "macos")),
+    OCRProviderCapabilities("custom", None, True, False, False, True, None, ("linux", "windows", "macos")),
+    OCRProviderCapabilities("kserve", None, True, False, False, True, "urllib", ("linux", "windows", "macos")),
 )
 
 
@@ -116,6 +157,101 @@ def normalize_ocr_provider(value: str, *, engine: str | None = None) -> tuple[OC
     return cast(OCRProviderName, provider), None
 
 
+def run_registered_ocr_page(
+    image_path: Path,
+    page_number: int,
+    provider_settings: WorkflowProviderSettings,
+    *,
+    provider_name: str,
+) -> OCRClusterResponse:
+    """Invoke one explicitly registered user OCR provider."""
+
+    return _registered_ocr_provider(provider_name)(image_path, page_number, provider_settings)
+
+
+def _default_kserve_response_decoder(payload: Mapping[str, object]) -> OCRClusterResponse:
+    """Decode a KServe response whose output contains the public OCR model.
+
+    KServe does not prescribe an OCR tensor schema.  This decoder accepts the
+    common ``outputs[*].data`` JSON-string/object form and then validates the
+    result as the parser's stable response model.  Model-specific tensor
+    layouts should use a registered provider instead of being guessed here.
+    """
+
+    outputs = payload.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        raise ValueError("KServe OCR response must contain a non-empty outputs list")
+    first = outputs[0]
+    if not isinstance(first, Mapping):
+        raise TypeError("KServe OCR response output must be an object")
+    data = first.get("data")
+    if isinstance(data, list) and len(data) == 1:
+        data = data[0]
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise ValueError("KServe OCR output data is not JSON") from exc
+    if not isinstance(data, Mapping):
+        raise TypeError("KServe OCR output data must contain OCRClusterResponse JSON")
+    return OCRClusterResponse.model_validate(data)
+
+
+def run_kserve_v2_page(
+    image_path: Path,
+    page_number: int,
+    provider_settings: WorkflowProviderSettings,
+    *,
+    response_decoder: OCRResponseDecoder = _default_kserve_response_decoder,
+) -> OCRClusterResponse:
+    """Call a KServe v2 ``/v2/models/{model}/infer`` OCR endpoint.
+
+    The transport is dependency-free and deliberately does not infer a
+    provider-specific tensor layout.  A custom decoder may be supplied for a
+    model whose output is not the canonical OCR response object.
+    """
+
+    del page_number
+    endpoint = provider_settings.ocr.base_url
+    model = provider_settings.ocr.model.strip()
+    if not endpoint or not model:
+        raise ValueError("KServe OCR requires base_url and model")
+    image_bytes = image_path.read_bytes()
+    payload = {
+        "inputs": [
+            {
+                "name": "image",
+                "shape": [1],
+                "datatype": "BYTES",
+                "data": [base64.b64encode(image_bytes).decode("ascii")],
+            }
+        ]
+    }
+    body = json.dumps(payload).encode("utf-8")
+    url = endpoint.rstrip("/") + f"/v2/models/{model}/infer"
+    headers = {"Content-Type": "application/json"}
+    api_key_env = provider_settings.ocr.api_key_env
+    if api_key_env:
+        token = os.getenv(api_key_env)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    from urllib.request import Request, urlopen
+
+    request = Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urlopen(request, timeout=provider_settings.ocr.timeout_seconds) as response:
+            raw = response.read()
+    except OSError as exc:
+        raise RuntimeError(f"KServe OCR request failed for model {model!r}") from exc
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("KServe OCR response was not valid JSON") from exc
+    if not isinstance(decoded, Mapping):
+        raise TypeError("KServe OCR response must be a JSON object")
+    return response_decoder(decoded)
+
+
 def _image_size(image_path: Path) -> tuple[int, int]:
     try:
         from PIL import Image
@@ -143,7 +279,7 @@ def _box_to_bounds(box: object) -> tuple[float, float, float, float]:
 
 def _direct_response(
     image_path: Path,
-    detections: list[tuple[object, str]],
+    detections: Sequence[tuple[object, str]],
 ) -> OCRClusterResponse:
     width, height = _image_size(image_path)
     normalized: list[tuple[float, float, float, float, str]] = []
@@ -213,12 +349,23 @@ def run_easyocr_page(image_path: Path, page_number: int, provider_settings: Prov
     ) or ("en",)
     reader = Reader(list(languages), gpu=False, verbose=False)
     raw_results = reader.readtext(str(image_path), detail=1)
-    detections = [(item[0], str(item[1])) for item in raw_results]
+    detections: list[tuple[object, str]] = []
+    for item in raw_results:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            detections.append((item[0], str(item[1])))
     return _direct_response(image_path, detections)
 
 
 def _docling_pipeline_options(engine: str) -> object:
     """Build one official Docling pipeline option object lazily."""
+
+    system = platform.system().lower()
+    if engine == "ocrmac" and system != "darwin":
+        raise RuntimeError("Docling OcrMac is only available on macOS")
+    if engine == "nemotron-ocr" and system != "linux":
+        raise RuntimeError("Docling Nemotron-OCR is only supported on Linux")
+    if engine == "tesseract" and shutil.which("tesseract") is None:
+        raise RuntimeError("Docling Tesseract CLI selected but the tesseract executable is unavailable")
 
     try:
         from docling.datamodel.pipeline_options import (  # pyright: ignore[reportMissingImports]
@@ -289,7 +436,7 @@ def run_docling_ocr_page(
         format_options={
             InputFormat.IMAGE: ImageFormatOption(
                 pipeline_cls=StandardPdfPipeline,
-                pipeline_options=pipeline_options,
+                pipeline_options=pipeline_options,  # pyright: ignore[reportArgumentType]
             )
         }
     )
