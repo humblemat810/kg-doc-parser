@@ -43,9 +43,9 @@ import shutil
 import sqlite3
 import time
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -115,6 +115,7 @@ def _ocr_configuration_fingerprint(
     settings: WorkflowProviderSettings,
     *,
     candidate_models: Sequence[str] = (),
+    quality_policy: OCRQualityPolicy | None = None,
 ) -> str:
     """Return the non-secret identity of an OCR execution configuration."""
     config = {
@@ -126,6 +127,7 @@ def _ocr_configuration_fingerprint(
         "ocr_engine": settings.ocr.ocr_engine,
         "ocr_language": settings.ocr.ocr_language,
         "candidate_models": list(candidate_models),
+        "quality_policy": (quality_policy or OCRQualityPolicy()).model_dump(mode="json"),
     }
     return hashlib.sha256(
         json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -137,6 +139,7 @@ def _ocr_page_metadata(
     *,
     candidate_models: Sequence[str] = (),
     source_image_sha256: str | None = None,
+    quality_policy: OCRQualityPolicy | None = None,
 ) -> dict[str, str]:
     """Build stable, non-secret provenance for one accepted OCR page."""
     metadata = {
@@ -145,6 +148,7 @@ def _ocr_page_metadata(
         "ocr_configuration_fingerprint": _ocr_configuration_fingerprint(
             settings,
             candidate_models=candidate_models,
+            quality_policy=quality_policy,
         ),
     }
     if source_image_sha256 is not None:
@@ -235,6 +239,58 @@ class SummaryGenerator(Protocol):
         source_items: tuple[SourceItem, ...],
         input_fingerprint: str,
     ) -> Summary: ...
+
+
+class OCRQualityPolicy(BaseModel):
+    """Policy for turning provider quality signals into acceptance decisions."""
+
+    max_data_loss_likelihood: float = Field(default=1.0, ge=0.0, le=1.0)
+    reject_incomplete_text: bool = False
+    reject_incomplete_words_on_edge: bool = False
+
+
+class OCRQualityDiagnostic(BaseModel):
+    """A bounded, persisted explanation for a flagged OCR page."""
+
+    code: str
+    severity: Literal["warning", "error"]
+    message: str
+
+
+def _evaluate_ocr_quality(
+    response: OCRClusterResponse,
+    policy: OCRQualityPolicy,
+) -> tuple[OCRQualityDiagnostic, ...]:
+    diagnostics: list[OCRQualityDiagnostic] = []
+    if response.incomplete_text:
+        diagnostics.append(
+            OCRQualityDiagnostic(
+                code="incomplete_text",
+                severity="error" if policy.reject_incomplete_text else "warning",
+                message="provider marked the OCR text as incomplete",
+            )
+        )
+    if response.incomplete_words_on_edge:
+        diagnostics.append(
+            OCRQualityDiagnostic(
+                code="incomplete_words_on_edge",
+                severity="error" if policy.reject_incomplete_words_on_edge else "warning",
+                message="provider marked words at a page edge as incomplete",
+            )
+        )
+    if response.data_loss_likelihood > policy.max_data_loss_likelihood:
+        diagnostics.append(
+            OCRQualityDiagnostic(
+                code="data_loss_likelihood",
+                severity="error",
+                message=(
+                    "provider data-loss likelihood exceeds the configured "
+                    f"limit ({response.data_loss_likelihood:.3f} > "
+                    f"{policy.max_data_loss_likelihood:.3f})"
+                ),
+            )
+        )
+    return tuple(diagnostics)
 
 _OCR_STATE_SCHEMA_VERSION = 2
 _PDF_RENDER_MANIFEST_VERSION = 1
@@ -451,6 +507,7 @@ class OCRPageProcessingContext:
     state_store: OCRWorkflowStateStore
     probe: WorkflowProbe | None
     configuration_fingerprints: tuple[str, ...]
+    quality_policy: OCRQualityPolicy = field(default_factory=OCRQualityPolicy)
 
 
 @dataclass(slots=True)
@@ -483,6 +540,7 @@ def _build_ocr_page_preparation(
     pdf_rasterizer: PDFRasterizer | None,
     ocr_candidate_models: Sequence[str] | None,
     probe: WorkflowProbe | None,
+    quality_policy: OCRQualityPolicy | None = None,
 ) -> OCRPagePreparation:
     """Build the page-run context without invoking a provider."""
 
@@ -546,10 +604,17 @@ def _build_ocr_page_preparation(
                     update={"ocr": provider_settings.ocr.model_copy(update={"model": model})}
                 ),
                 candidate_models=candidate_models,
+                quality_policy=quality_policy or OCRQualityPolicy(),
             )
             for model in candidate_models
         )
-        + (_ocr_page_metadata(provider_settings)["ocr_configuration_fingerprint"],),
+        + (
+            _ocr_page_metadata(
+                provider_settings,
+                quality_policy=quality_policy or OCRQualityPolicy(),
+            )["ocr_configuration_fingerprint"],
+        ),
+        quality_policy=quality_policy or OCRQualityPolicy(),
     )
     return OCRPagePreparation(
         source_plan=source_plan,
@@ -746,10 +811,18 @@ def _process_ocr_page(
             config_fingerprint=_ocr_configuration_fingerprint(
                 candidate_settings,
                 candidate_models=context.candidate_models,
+                quality_policy=context.quality_policy,
             ),
         )
         try:
             response = context.ocr_page_runner(image_path, page_number, candidate_settings)
+            quality_diagnostics = _evaluate_ocr_quality(response, context.quality_policy)
+            if any(item.severity == "error" for item in quality_diagnostics):
+                raise ValueError(
+                    "OCR quality policy rejected page "
+                    f"{page_number}: "
+                    + "; ".join(item.code for item in quality_diagnostics)
+                )
             split_page: SplitPage = SplitPage(
                 pdf_page_num=page_number,
                 metadata=SplitPageMeta(
@@ -767,7 +840,12 @@ def _process_ocr_page(
                     candidate_settings,
                     candidate_models=context.candidate_models,
                     source_image_sha256=image_sha256,
+                    quality_policy=context.quality_policy,
                 ),
+                "ocr_quality_status": "flagged" if quality_diagnostics else "accepted",
+                "ocr_quality_diagnostics": [
+                    item.model_dump(mode="json") for item in quality_diagnostics
+                ],
             }
             # Validate before publication; the SQLite row is committed only
             # after the complete artifact is atomically visible.
@@ -784,6 +862,7 @@ def _process_ocr_page(
                 config_fingerprint=_ocr_configuration_fingerprint(
                     candidate_settings,
                     candidate_models=context.candidate_models,
+                    quality_policy=context.quality_policy,
                 ),
             )
             # The adapter consumes plain dict pages, not the Pydantic page
@@ -2314,6 +2393,7 @@ def prepare_ocr_workflow_input(
     grouping_policy_version: str = "baseline-v1",
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
+    quality_policy: OCRQualityPolicy | None = None,
 ) -> OCRWorkflowArtifacts:
     """Prepare OCR pages and normalize them into workflow ingest input.
 
@@ -2361,6 +2441,7 @@ def prepare_ocr_workflow_input(
         pdf_rasterizer=pdf_rasterizer,
         ocr_candidate_models=ocr_candidate_models,
         probe=probe,
+        quality_policy=quality_policy,
     )
     source_plan = preparation.source_plan
     state_store = preparation.state_store
@@ -2506,6 +2587,7 @@ def run_ocr_ingest_workflow(
     grouping_policy_version: str = "baseline-v1",
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
+    quality_policy: OCRQualityPolicy | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
 ) -> tuple[_RunCompat, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
@@ -2528,6 +2610,7 @@ def run_ocr_ingest_workflow(
         pdf_rasterizer=pdf_rasterizer,
         ocr_candidate_models=ocr_candidate_models,
         probe=probe,
+        quality_policy=quality_policy,
     )
     from .ocr_runtime import run_ocr_root_workflow
 

@@ -102,9 +102,11 @@ from kg_doc_parser.workflow_ingest.document_models import (
 )
 from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     OCRPageProcessingContext,
+    OCRQualityPolicy,
     OCRSourcePlan,
     OCRWorkflowStateStore,
     _compute_input_fingerprint,
+    _evaluate_ocr_quality,
     _ocr_configuration_fingerprint,
     _ocr_page_metadata,
     _resolve_ocr_source_plan,
@@ -506,6 +508,95 @@ def test_ocr_cluster_response_rejects_inconsistent_empty_or_ordering_state(updat
 
     with pytest.raises(ValueError, match="(is_empty_page|meaningful_ordering)"):
         OCRClusterResponse.model_validate(payload)
+
+
+@pytest.mark.ci
+def test_ocr_quality_policy_flags_and_can_reject_provider_loss_signals() -> None:
+    response = _fake_ocr_response(1, "quality signal").model_copy(
+        update={
+            "incomplete_text": True,
+            "incomplete_words_on_edge": True,
+            "data_loss_likelihood": 0.75,
+        }
+    )
+    flagged = _evaluate_ocr_quality(response, OCRQualityPolicy())
+    assert {item.code for item in flagged} == {
+        "incomplete_text",
+        "incomplete_words_on_edge",
+    }
+    assert all(item.severity == "warning" for item in flagged)
+
+    rejected = _evaluate_ocr_quality(
+        response,
+        OCRQualityPolicy(
+            max_data_loss_likelihood=0.5,
+            reject_incomplete_text=True,
+            reject_incomplete_words_on_edge=True,
+        ),
+    )
+    assert {item.code for item in rejected} == {
+        "incomplete_text",
+        "incomplete_words_on_edge",
+        "data_loss_likelihood",
+    }
+    assert all(item.severity == "error" for item in rejected)
+
+
+@pytest.mark.ci
+def test_ocr_quality_diagnostics_are_persisted_and_strict_policy_fails_closed() -> None:
+    scratch = _scratch("ocr_quality_persistence")
+    image_path = scratch / "images" / "page_1.png"
+    _draw_test_image(image_path, lines=["quality persistence"])
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+
+    def _incomplete_runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        return _fake_ocr_response(page_number, "quality persistence").model_copy(
+            update={"incomplete_text": True, "data_loss_likelihood": 0.25}
+        )
+
+    accepted = prepare_ocr_workflow_input(
+        document_id="ocr-quality-warning-doc",
+        title="OCR Quality Warning",
+        output_dir=scratch / "warning",
+        image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+        provider_settings=settings,
+        ocr_runner=_incomplete_runner,
+    )
+    persisted = json.loads((accepted.legacy_dir / "page_1.json").read_text(encoding="utf-8"))
+    metadata = persisted["metadata"]
+    assert metadata["ocr_quality_status"] == "flagged"
+    assert metadata["ocr_quality_diagnostics"] == [
+        {
+            "code": "incomplete_text",
+            "severity": "warning",
+            "message": "provider marked the OCR text as incomplete",
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="OCR preparation incomplete"):
+        prepare_ocr_workflow_input(
+            document_id="ocr-quality-strict-doc",
+            title="OCR Quality Strict",
+            output_dir=scratch / "strict",
+            image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+            provider_settings=settings,
+            ocr_runner=_incomplete_runner,
+            quality_policy=OCRQualityPolicy(reject_incomplete_text=True),
+        )
+    strict_store = OCRWorkflowStateStore(scratch / "strict" / "ocr-state.sqlite")
+    strict_state = strict_store.get_page_state(
+        document_id="ocr-quality-strict-doc", page_number=1, stage="ocr"
+    )
+    assert strict_state is not None
+    assert strict_state.status == "failed"
+    assert not (scratch / "strict" / "legacy" / "page_1.json").exists()
 
 
 @pytest.mark.ci

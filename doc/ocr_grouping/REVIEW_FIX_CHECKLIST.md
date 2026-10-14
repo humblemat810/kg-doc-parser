@@ -30,4 +30,8 @@ not a substitute for a test ID and runtime result.
   ordering and a tampered-but-well-formed JSON artifact.
 - [~] Add evidence-ledger rows for C01-C06 with implementation locations,
   exact test IDs, before/after behavior, and runtime classification.
+- [~] Record C06 OCR quality diagnostics as typed persisted metadata and include
+  the quality policy in page cache identity. Add a public strict-policy test;
+  still require persisted reopen evidence and provider-side non-text coverage
+  signals before marking the gate complete.
 - [ ] Run the full parser CI matrix after the P0 runtime work.

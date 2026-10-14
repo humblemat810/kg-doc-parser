@@ -289,11 +289,14 @@ adapter test passes.
 - [~] **C05 — True resume:** prove completed OCR, grouping, and summaries are
   not rerun after a failed child checkpoint. The same-process 100-page
   interruption/resume test is evidence for retryable child recovery; a new
-  process/SIGKILL proof and artifact/database reconciliation remain open.
-  not invoked again after recovery, while incomplete work is retried safely.
-- [ ] **C06 — OCR quality/completeness:** interval coverage is necessary but not
-  sufficient; record provider quality diagnostics and reject or flag pages with
-  missing non-text regions, unsupported coordinates, or incomplete evidence.
+  process/SIGKILL proof, duplicate-resume race, and artifact/database
+  reconciliation remain open. The acceptance target is at-least-once execution
+  with exactly one accepted canonical result, not exactly-once provider calls.
+- [~] **C06 — OCR quality/completeness:** interval coverage is necessary but not
+  sufficient. `OCRQualityPolicy` records typed provider diagnostics and can
+  reject incomplete text, edge-word loss, or excessive data-loss likelihood;
+  provider-side missing-region detection, unsupported-coordinate handling, and
+  persisted strict-policy evidence remain open.
 
 ## C. Required End-to-End Acceptance Fixture
 

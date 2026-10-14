@@ -71,6 +71,8 @@ from .models import (
 )
 from .ocr_pipeline import (
     OCRImagePayload,
+    OCRQualityDiagnostic,
+    OCRQualityPolicy,
     OCRWorkflowArtifacts,
     OCRWorkflowStateStore,
     SummaryGenerator,
@@ -215,6 +217,8 @@ __all__ = [
     "OCRPageProvider",
     "OCRParseRequest",
     "OCRProviderCapabilities",
+    "OCRQualityDiagnostic",
+    "OCRQualityPolicy",
     "OCRWorkflowArtifacts",
     "OCRWorkflowStateStore",
     "OcrWorkflowCommandResult",
