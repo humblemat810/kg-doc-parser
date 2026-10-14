@@ -50,3 +50,6 @@ and provider caches together for a full workflow run; do not commit them.
 
 This slice intentionally does not change OCR source semantics, add a second
 workflow, or claim that Codex supports image input.
+
+See [`ocr_provider_smoke_report.md`](ocr_provider_smoke_report.md) for the
+recorded real Bonsai vision smoke and retained experiment artifacts.
