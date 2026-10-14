@@ -45,7 +45,9 @@ for a passing test.
 - [x] Run parser lock verification, Pyright, and the complete CI command.
 - [ ] Run supported CPython 3.12-3.14 and PyPy 3.11 checks.
 - [x] Record exact local results and implementation commit `9e34a31`.
-- [ ] Push the feature branch and monitor the GitHub PR checks to completion.
+- [x] Push the feature branch at `aef4051`.
+- [ ] Open the GitHub PR and monitor its CPython 3.12-3.14 and PyPy 3.11
+  checks to completion.
 
 ## Current Focused Evidence
 
