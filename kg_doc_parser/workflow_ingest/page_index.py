@@ -73,6 +73,7 @@ from .semantics import (
     compute_pointer_coverage,
     compute_terminal_content_coverage,
     correct_and_validate_pointer,
+    validate_semantic_tree_integrity,
 )
 from .serialization import JsonValue
 
@@ -2938,6 +2939,15 @@ def parse_page_index_document(
             )
 
     semantic_tree = root_node.model_copy(update={"child_nodes": page_nodes})
+    # Check ancestry and source ownership before wrapper normalization.  The
+    # normalizer may intentionally reparent a valid structural wrapper; it
+    # must never be allowed to hide a malformed provider parent reference.
+    validate_semantic_tree_integrity(
+        semantic_tree,
+        parser_source_map=parser_source_map,
+        max_depth=max_depth,
+        validate_shape=False,
+    )
     semantic_tree = _normalize_page_index_unary_nodes(semantic_tree)
     semantic_tree = finalize_semantic_tree(
         semantic_tree,
