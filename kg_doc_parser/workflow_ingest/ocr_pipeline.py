@@ -58,6 +58,7 @@ from .adapters import OCRPageJSON, normalize_ocr_pages
 from .document_adapters import (
     apply_grouping_passes,
     apply_grouping_proposals,
+    attach_document_tree_metadata,
     build_document_tree,
 )
 from .document_grouping import GroupProposal
@@ -522,6 +523,8 @@ def _finalize_ocr_workflow_artifacts(
         pages=raw_pages,
     )
     document_tree = build_document_tree(workflow_input)
+    if document_tree is not None:
+        attach_document_tree_metadata(workflow_input, document_tree)
     artifacts = OCRWorkflowArtifacts(
         workflow_input=workflow_input,
         ocr_pages=raw_pages,
@@ -1754,6 +1757,7 @@ def run_ocr_ingest_workflow(
                 tuple(grouping_proposals or ()),
                 grouping_policy_version=grouping_policy_version,
             )
+        attach_document_tree_metadata(artifacts.workflow_input, artifacts.document_tree)
         _write_document_tree(artifacts.document_tree_path, artifacts.document_tree)
     run, bundle = run_ingest_workflow(
         inp=artifacts.workflow_input,

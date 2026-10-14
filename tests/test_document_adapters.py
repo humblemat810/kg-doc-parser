@@ -139,3 +139,4 @@ def test_prepare_ocr_workflow_emits_the_tree_at_the_existing_pipeline_boundary(t
     assert artifacts.document_tree is not None
     assert artifacts.document_tree_path.exists()
     assert artifacts.document_tree.source_items[0].item_id == "doc|p1_t0"
+    assert artifacts.workflow_input.collections[0].metadata["document_tree"]

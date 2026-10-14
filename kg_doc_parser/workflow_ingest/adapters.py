@@ -303,7 +303,10 @@ def build_parser_input_dict(
                 "non_text_objects": non_text_objects,
             }
         )
-    return {"document_filename": collection.title, "pages": pages}
+    payload: dict[str, object] = {"document_filename": collection.title, "pages": pages}
+    if "document_tree" in collection.metadata:
+        payload["document_tree"] = collection.metadata["document_tree"]
+    return payload
 
 
 def build_parser_source_map(

@@ -98,6 +98,11 @@ def build_document_tree(
     )
 
 
+def attach_document_tree_metadata(workflow_input: WorkflowIngestInput, tree: DocumentTree) -> None:
+    """Expose validated lineage through the normalized input metadata."""
+    workflow_input.collections[0].metadata["document_tree"] = tree.model_dump(mode="json")
+
+
 def apply_grouping_proposals(
     tree: DocumentTree,
     proposals: tuple[GroupProposal, ...],
@@ -151,4 +156,9 @@ def apply_grouping_passes(
     return current
 
 
-__all__ = ["apply_grouping_passes", "apply_grouping_proposals", "build_document_tree"]
+__all__ = [
+    "apply_grouping_passes",
+    "apply_grouping_proposals",
+    "attach_document_tree_metadata",
+    "build_document_tree",
+]
