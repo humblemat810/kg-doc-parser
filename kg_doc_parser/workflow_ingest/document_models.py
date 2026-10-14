@@ -5,9 +5,9 @@ They are the immutable evidence view produced by OCR before semantic parsing.
 """
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from hashlib import sha256
-import json
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -25,7 +25,7 @@ class BoundingBox(FrozenModel):
     coordinate_system: Literal["pixels", "relative", "points"]
 
     @model_validator(mode="after")
-    def valid(self) -> "BoundingBox":
+    def valid(self) -> BoundingBox:
         if not (self.x0 < self.x1 and self.y0 < self.y1):
             raise ValueError("bounding box must have positive area")
         if self.coordinate_system == "relative" and not all(0 <= v <= 1 for v in (self.x0, self.y0, self.x1, self.y1)):
@@ -43,7 +43,7 @@ class SourceLocation(FrozenModel):
     accuracy: Literal["character", "word", "line", "region", "page", "time", "path"]
 
     @model_validator(mode="after")
-    def valid(self) -> "SourceLocation":
+    def valid(self) -> SourceLocation:
         has_time = self.start_seconds is not None or self.end_seconds is not None
         if has_time and (self.start_seconds is None or self.end_seconds is None or self.end_seconds <= self.start_seconds):
             raise ValueError("time range must have positive endpoints")
@@ -83,7 +83,7 @@ class SourceItem(FrozenModel):
     ocr_metadata: OCRMetadata | None = None
 
     @model_validator(mode="after")
-    def one_payload(self) -> "SourceItem":
+    def one_payload(self) -> SourceItem:
         if (self.text is None) == (self.media is None):
             raise ValueError("source item requires exactly one text or media payload")
         if self.text == "":
@@ -98,8 +98,11 @@ class SourceSlice(FrozenModel):
     separator_before: str = ""
 
     @model_validator(mode="after")
-    def valid(self) -> "SourceSlice":
-        if (self.start is None) != (self.end is None) or (self.start is not None and self.end <= self.start):
+    def valid(self) -> SourceSlice:
+        if self.start is None or self.end is None:
+            if self.start is not None or self.end is not None:
+                raise ValueError("text slices require a nonempty half-open interval")
+        elif self.end <= self.start:
             raise ValueError("text slices require a nonempty half-open interval")
         if self.separator_before and not self.separator_before.isspace():
             raise ValueError("slice separators must be whitespace")
@@ -111,7 +114,7 @@ class ChildRef(FrozenModel):
     separator_before: str = ""
 
     @model_validator(mode="after")
-    def valid(self) -> "ChildRef":
+    def valid(self) -> ChildRef:
         if self.separator_before and not self.separator_before.isspace():
             raise ValueError("child separators must be whitespace")
         return self
@@ -126,7 +129,7 @@ class Summary(FrozenModel):
     input_fingerprint: str | None = None
 
     @model_validator(mode="after")
-    def grounded(self) -> "Summary":
+    def grounded(self) -> Summary:
         if self.status in {"generated", "verified"} and not (self.text and self.evidence_item_ids and self.provider_model and self.prompt_revision and self.input_fingerprint):
             raise ValueError("generated summaries require text, evidence, and provenance")
         if self.status not in {"generated", "verified"} and self.text is not None:
@@ -145,7 +148,7 @@ class DocumentNode(FrozenModel):
     annotations: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def shape(self) -> "DocumentNode":
+    def shape(self) -> DocumentNode:
         if bool(self.parts) == bool(self.children):
             raise ValueError("node must contain parts or children, exclusively")
         if self.children and len(self.children) < 2:
@@ -165,7 +168,7 @@ class DocumentTree(FrozenModel):
     nodes: tuple[DocumentNode, ...]
 
     @model_validator(mode="after")
-    def validate_tree(self) -> "DocumentTree":
+    def validate_tree(self) -> DocumentTree:
         items = {item.item_id: item for item in self.source_items}
         nodes = {node.node_id: node for node in self.nodes}
         if len(items) != len(self.source_items) or len(nodes) != len(self.nodes) or set(items) & set(nodes):

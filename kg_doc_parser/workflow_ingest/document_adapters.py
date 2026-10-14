@@ -1,9 +1,17 @@
 """Adapters from the existing normalized OCR records to document evidence."""
 from __future__ import annotations
 
-from .document_models import BoundingBox, ChildRef, DocumentNode, DocumentTree, SourceItem, SourceLocation, SourceSlice
-from .document_grouping import GroupProposal, merge_groups
 from .adapters import _allocated_cluster_numbers
+from .document_grouping import GroupProposal, merge_groups
+from .document_models import (
+    BoundingBox,
+    ChildRef,
+    DocumentNode,
+    DocumentTree,
+    SourceItem,
+    SourceLocation,
+    SourceSlice,
+)
 from .models import WorkflowIngestInput
 
 
@@ -33,26 +41,31 @@ def build_document_tree(
             text = unit.text if unit.modality in {"text", "ocr_text"} else unit.description
             if not text:
                 continue
-            has_precise_bbox = unit.bbox is not None and unit.bbox.x_min < unit.bbox.x_max and unit.bbox.y_min < unit.bbox.y_max
+            precise_bbox = (
+                unit.bbox
+                if unit.bbox is not None
+                and unit.bbox.x_min < unit.bbox.x_max
+                and unit.bbox.y_min < unit.bbox.y_max
+                else None
+            )
+            printed_page_label = page.metadata.get("printed_page_number")
+            if not isinstance(printed_page_label, str):
+                printed_page_label = None
             location = SourceLocation(
                 page_index=page.page_number - 1,
-                printed_page_label=(
-                    page.metadata.get("printed_page_number")
-                    if isinstance(page.metadata.get("printed_page_number"), str)
-                    else None
-                ),
+                printed_page_label=printed_page_label,
                 bbox=(
                     None
-                    if not has_precise_bbox
+                    if precise_bbox is None
                     else BoundingBox(
-                        x0=unit.bbox.x_min,
-                        y0=unit.bbox.y_min,
-                        x1=unit.bbox.x_max,
-                        y1=unit.bbox.y_max,
+                        x0=precise_bbox.x_min,
+                        y0=precise_bbox.y_min,
+                        x1=precise_bbox.x_max,
+                        y1=precise_bbox.y_max,
                         coordinate_system="pixels",
                     )
                 ),
-                accuracy="region" if has_precise_bbox else "page",
+                accuracy="region" if precise_bbox is not None else "page",
             )
             kind = "text" if unit.modality in {"text", "ocr_text"} else "non_text:description"
             items.append(SourceItem(item_id=item_id, kind=kind, text=text, location=location))

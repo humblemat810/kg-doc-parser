@@ -1,9 +1,9 @@
 """Deterministic validation of bottom-up grouping proposals."""
 from __future__ import annotations
 
-from hashlib import sha256
 import json
 from collections.abc import Sequence
+from hashlib import sha256
 
 from pydantic import Field, model_validator
 
@@ -15,7 +15,7 @@ class GroupProposal(FrozenModel):
     members: tuple[str, ...] = Field(min_length=2)
 
     @model_validator(mode="after")
-    def valid(self) -> "GroupProposal":
+    def valid(self) -> GroupProposal:
         if len(set(self.members)) != len(self.members):
             raise ValueError("a merge proposal cannot repeat a member")
         if self.kind == "document":

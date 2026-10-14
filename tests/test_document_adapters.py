@@ -5,8 +5,14 @@ from pathlib import Path
 from PIL import Image
 
 from kg_doc_parser.models import OCRClusterResponse, TextCluster
-from kg_doc_parser.workflow_ingest import GroupProposal, apply_grouping_proposals, build_document_tree
-from kg_doc_parser.workflow_ingest import OCRImagePayload, WorkflowProviderSettings, prepare_ocr_workflow_input
+from kg_doc_parser.workflow_ingest import (
+    GroupProposal,
+    OCRImagePayload,
+    WorkflowProviderSettings,
+    apply_grouping_proposals,
+    build_document_tree,
+    prepare_ocr_workflow_input,
+)
 from kg_doc_parser.workflow_ingest.models import SourceUnit, WorkflowIngestInput
 
 

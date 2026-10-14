@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Literal
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
+from .document_grouping import GroupProposal
 from .ocr_pipeline import (
     OCRImagePayload,
     OCRRunner,
@@ -25,7 +26,6 @@ from .ocr_pipeline import (
     PDFRasterizer,
     run_ocr_ingest_workflow,
 )
-from .document_grouping import GroupProposal
 from .page_index import PageIndexParseResult, PageIndexSourceFormat
 from .parser_core import (
     ParserPayload,
