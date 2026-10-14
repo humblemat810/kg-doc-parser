@@ -34,6 +34,16 @@ def test_parser_ci_uses_the_declared_kogwistar_release() -> None:
     assert "kogwistar==0.6.8" in exported_requirements
 
 
+def test_installed_kogwistar_exposes_the_persisted_workflow_api() -> None:
+    import kogwistar
+    from kogwistar.runtime.models import WorkflowInvocationRequest
+    from kogwistar.runtime.runtime import WorkflowRuntime
+
+    assert kogwistar.__version__ == "0.6.8"
+    assert WorkflowInvocationRequest is not None
+    assert callable(WorkflowRuntime.resume_from_latest_checkpoint)
+
+
 def test_parser_has_gated_pypi_release_workflow() -> None:
     workflow = (ROOT / ".github" / "workflows" / "pypi-release.yml").read_text(
         encoding="utf-8"
