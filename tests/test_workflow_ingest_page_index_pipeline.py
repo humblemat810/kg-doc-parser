@@ -28,7 +28,9 @@ from kg_doc_parser.workflow_ingest.parser_core import commit_layer_children
 from kg_doc_parser.workflow_ingest.semantics import (
     HydratedTextPointer,
     SemanticNode,
+    compute_terminal_content_coverage,
     semantic_tree_to_kge_payload,
+    validate_semantic_tree_integrity,
 )
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
 from kogwistar.utils.cache_backend import Memory
@@ -144,6 +146,367 @@ def test_page_index_atomic_fallback_preserves_child_evidence_metadata() -> None:
         "title": "Meaningful child",
         "node_type": "SECTION",
     }
+
+
+@pytest.mark.ci
+def test_page_index_unary_normalization_preserves_nested_descendants_and_ownership() -> None:
+    source = "Overview\nFirst row\nSecond row\nEndnote\n"
+    source_map = {"page_1": {"text": source}}
+
+    def pointer(excerpt: str) -> HydratedTextPointer:
+        start = source.index(excerpt)
+        return HydratedTextPointer(
+            source_cluster_id="page_1",
+            start_char=start,
+            end_char=start + len(excerpt) - 1,
+            verbatim_text=excerpt,
+        )
+
+    rows = [
+        SemanticNode(
+            node_id=node_id,
+            parent_id="inner",
+            node_type="TABLE_ROW",
+            title=excerpt,
+            total_content_pointers=[pointer(excerpt)],
+            level_from_root=3,
+        )
+        for node_id, excerpt in (("r1", "First row"), ("r2", "Second row"))
+    ]
+    root = SemanticNode(
+        node_id="doc",
+        node_type="DOCUMENT_ROOT",
+        title="Document",
+        child_nodes=[
+            SemanticNode(
+                node_id="p",
+                parent_id="doc",
+                node_type="PARAGRAPH",
+                title="Paragraph",
+                total_content_pointers=[pointer("Overview")],
+                child_nodes=[
+                    SemanticNode(
+                        node_id="inner",
+                        parent_id="p",
+                        node_type="TABLE",
+                        title="Table",
+                        child_nodes=rows,
+                        level_from_root=2,
+                    )
+                ],
+                level_from_root=1,
+            ),
+            SemanticNode(
+                node_id="end",
+                parent_id="doc",
+                title="End",
+                total_content_pointers=[pointer("Endnote")],
+                level_from_root=1,
+            ),
+        ],
+    )
+
+    normalized = page_index_module._normalize_page_index_unary_nodes(root)
+    validate_semantic_tree_integrity(normalized, parser_source_map=source_map)
+    pending = [normalized]
+    nodes = []
+    while pending:
+        node = pending.pop()
+        nodes.append(node)
+        pending.extend(node.child_nodes)
+    descendants = {node.node_id for node in nodes}
+    assert {"r1", "r2", "end"}.issubset(descendants)
+    assert all(len(node.child_nodes) != 1 for node in nodes)
+    assert compute_terminal_content_coverage(normalized, source_map)["valid"] is True
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize("corrupt_pointer", [False, True])
+def test_public_page_index_preserves_nested_rows_or_rejects_bad_grounding(
+    monkeypatch: pytest.MonkeyPatch, corrupt_pointer: bool
+) -> None:
+    source = "Overview\nFirst row\nSecond row\nEndnote\n"
+
+    def materialize_blocks(
+        *, unit_id: str, parent_id: str, level_from_root: int, **_kwargs: object
+    ) -> tuple[list[SemanticNode], int]:
+        def pointer(excerpt: str) -> HydratedTextPointer:
+            start = source.index(excerpt)
+            return HydratedTextPointer(
+                source_cluster_id=unit_id,
+                start_char=start,
+                end_char=start + len(excerpt) - 1,
+                verbatim_text=("forged" if corrupt_pointer and excerpt == "First row" else excerpt),
+            )
+
+        rows = [
+            SemanticNode(
+                node_id=node_id,
+                parent_id="inner",
+                node_type="TABLE_ROW",
+                title=excerpt,
+                total_content_pointers=[pointer(excerpt)],
+                level_from_root=level_from_root + 2,
+            )
+            for node_id, excerpt in (("r1", "First row"), ("r2", "Second row"))
+        ]
+        return [
+            SemanticNode(
+                node_id="p",
+                parent_id=parent_id,
+                node_type="PARAGRAPH",
+                title="Overview",
+                total_content_pointers=[pointer("Overview")],
+                child_nodes=[
+                    SemanticNode(
+                        node_id="inner",
+                        parent_id="p",
+                        node_type="TABLE",
+                        title="Table",
+                        child_nodes=rows,
+                        level_from_root=level_from_root + 1,
+                    )
+                ],
+                level_from_root=level_from_root,
+            ),
+            SemanticNode(
+                node_id="end",
+                parent_id=parent_id,
+                title="Endnote",
+                total_content_pointers=[pointer("Endnote")],
+                level_from_root=level_from_root,
+            ),
+        ], len(source)
+
+    monkeypatch.setattr(page_index_module, "_materialize_block_tree", materialize_blocks)
+    if corrupt_pointer:
+        with pytest.raises(ValueError, match="pointer excerpt does not match authoritative source slice"):
+            parse_page_index_document(
+                document_id="nested-rows", title="Document", raw_text=source, mode="heuristic"
+            )
+        return
+
+    result = parse_page_index_document(
+        document_id="nested-rows", title="Document", raw_text=source, mode="heuristic"
+    )
+    pending = [result.semantic_tree]
+    nodes = []
+    while pending:
+        node = pending.pop()
+        nodes.append(node)
+        pending.extend(node.child_nodes)
+    assert {"r1", "r2", "end"}.issubset({node.node_id for node in nodes})
+    assert all(len(node.child_nodes) != 1 for node in nodes)
+    assert compute_terminal_content_coverage(
+        result.semantic_tree, result.parser_source_map
+    )["valid"] is True
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize(
+    ("parent_type", "own_text", "child_type", "child_text"),
+    [
+        ("HEADING", "Financial Results", "TABLE", "| Year | Revenue |\n| 2025 | 120 |"),
+        ("PARAGRAPH", "Introduction:", "TABLE", "| A | B |\n| x | y |"),
+        ("SECTION", "Experiment notes", "FIGURE", "[F1]"),
+        (
+            "HEADING",
+            "Ledger",
+            "TABLE",
+            "| idx | val |\n" + "\n".join(f"| {index:02d} | value_{index:02d} |" for index in range(1, 52)),
+        ),
+    ],
+)
+def test_public_page_index_morphs_content_parent_without_splitting_atomic_child(
+    monkeypatch: pytest.MonkeyPatch,
+    parent_type: str,
+    own_text: str,
+    child_type: str,
+    child_text: str,
+) -> None:
+    source = f"{own_text}\n{child_text}\n"
+
+    def materialize_blocks(
+        *, unit_id: str, parent_id: str, level_from_root: int, **_kwargs: object
+    ) -> tuple[list[SemanticNode], int]:
+        def pointer(excerpt: str) -> HydratedTextPointer:
+            start = source.index(excerpt)
+            return HydratedTextPointer(
+                source_cluster_id=unit_id,
+                start_char=start,
+                end_char=start + len(excerpt) - 1,
+                verbatim_text=excerpt,
+            )
+
+        parent = SemanticNode(
+            node_id="content-parent",
+            parent_id=parent_id,
+            node_type=parent_type,
+            title=own_text,
+            total_content_pointers=[pointer(own_text)],
+            child_nodes=[
+                SemanticNode(
+                    node_id="atomic-child",
+                    parent_id="content-parent",
+                    node_type=child_type,
+                    title=child_type,
+                    total_content_pointers=[pointer(child_text)],
+                    level_from_root=level_from_root + 1,
+                )
+            ],
+            level_from_root=level_from_root,
+        )
+        return [parent], len(source)
+
+    monkeypatch.setattr(page_index_module, "_materialize_block_tree", materialize_blocks)
+    result = parse_page_index_document(
+        document_id="content-and-atomic-child",
+        title="Document",
+        raw_text=source,
+        mode="heuristic",
+    )
+    pending = [result.semantic_tree]
+    nodes = []
+    while pending:
+        node = pending.pop()
+        nodes.append(node)
+        pending.extend(node.child_nodes)
+    atomic = next(node for node in nodes if node.node_id == "atomic-child")
+    assert atomic.node_type == child_type
+    assert atomic.child_nodes == []
+    assert atomic.total_content_pointers[0].verbatim_text == child_text
+    assert all(len(node.child_nodes) != 1 for node in nodes)
+    assert compute_terminal_content_coverage(
+        result.semantic_tree, result.parser_source_map
+    )["valid"] is True
+
+
+@pytest.mark.ci
+def test_page_index_collapses_contentless_wrappers_without_losing_source() -> None:
+    source = "First entry\nSecond entry\n"
+    source_map = {"page_1": {"text": source}}
+
+    def leaf(node_id: str, excerpt: str) -> SemanticNode:
+        start = source.index(excerpt)
+        return SemanticNode(
+            node_id=node_id,
+            parent_id="section",
+            title=excerpt,
+            total_content_pointers=[
+                HydratedTextPointer(
+                    source_cluster_id="page_1",
+                    start_char=start,
+                    end_char=start + len(excerpt) - 1,
+                    verbatim_text=excerpt,
+                )
+            ],
+            level_from_root=3,
+        )
+
+    root = SemanticNode(
+        node_id="doc",
+        node_type="DOCUMENT_ROOT",
+        title="Doc",
+        child_nodes=[
+            SemanticNode(
+                node_id="wrap",
+                parent_id="doc",
+                node_type="PAGE",
+                title="Page",
+                child_nodes=[
+                    SemanticNode(
+                        node_id="section",
+                        parent_id="wrap",
+                        node_type="SECTION",
+                        title="Section",
+                        child_nodes=[leaf("a", "First entry"), leaf("b", "Second entry")],
+                        level_from_root=2,
+                    )
+                ],
+                level_from_root=1,
+            )
+        ],
+    )
+    normalized = page_index_module._normalize_page_index_unary_nodes(root)
+    validate_semantic_tree_integrity(normalized, parser_source_map=source_map)
+    assert {node.node_id for node in normalized.child_nodes} == {"a", "b"}
+    assert compute_terminal_content_coverage(normalized, source_map)["valid"] is True
+
+
+@pytest.mark.ci
+def test_atomic_fallback_does_not_claim_missing_content_from_parent_aggregate() -> None:
+    source = "Heading\nBody"
+    source_map = {"page_1": {"text": source}}
+    parent = SemanticNode(
+        node_id="page",
+        node_type="PAGE",
+        title="Page",
+        aggregate_content_pointers=[
+            HydratedTextPointer(
+                source_cluster_id="page_1",
+                start_char=0,
+                end_char=len(source) - 1,
+                verbatim_text=source,
+            )
+        ],
+        child_nodes=[
+            SemanticNode(
+                node_id="heading",
+                parent_id="page",
+                node_type="HEADING_TEXT",
+                title="Heading",
+                total_content_pointers=[
+                    HydratedTextPointer(
+                        source_cluster_id="page_1",
+                        start_char=0,
+                        end_char=len("Heading") - 1,
+                        verbatim_text="Heading",
+                    )
+                ],
+                level_from_root=1,
+            )
+        ],
+    )
+
+    normalized = page_index_module._normalize_page_index_unary_nodes(parent)
+    assert normalized.total_content_pointers[0].verbatim_text == "Heading"
+    assert compute_terminal_content_coverage(normalized, source_map)["valid"] is False
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize("corruption", ["missing", "duplicate"])
+def test_public_page_index_rejects_invalid_terminal_ownership(
+    monkeypatch: pytest.MonkeyPatch, corruption: str
+) -> None:
+    normalize = page_index_module._normalize_page_index_unary_nodes
+
+    def corrupt_after_normalization(root: SemanticNode) -> SemanticNode:
+        normalized = normalize(root)
+        pending = [normalized]
+        leaves = []
+        while pending:
+            node = pending.pop()
+            if not node.child_nodes and node.total_content_pointers:
+                leaves.append(node)
+            pending.extend(node.child_nodes)
+        assert len(leaves) >= 2
+        if corruption == "missing":
+            leaves[0].total_content_pointers = []
+        else:
+            leaves[1].total_content_pointers.append(leaves[0].total_content_pointers[0])
+        return normalized
+
+    monkeypatch.setattr(
+        page_index_module, "_normalize_page_index_unary_nodes", corrupt_after_normalization
+    )
+    with pytest.raises(ValueError, match="terminal source ownership"):
+        parse_page_index_document(
+            document_id="ownership-check",
+            title="Title",
+            raw_text="# Title\n\nAlpha.\n\nBeta.",
+            source_format="markdown",
+            mode="heuristic",
+        )
 
 
 def _ollama_parser_model_params() -> list[object]:

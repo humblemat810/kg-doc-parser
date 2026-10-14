@@ -86,3 +86,25 @@ evidence for it.
 - [x] Exact deterministic CI test selection on local CPython 3.14.6: 258 passed, 118 deselected
 - [x] Full GitHub CI and supported-interpreter matrix rerun after review follow-up changes
 - [x] Push and monitor the updated feature-branch CI
+
+## 2026-10-14 Follow-Up Fixture Audit
+
+The earlier checked items describe the structural-hardening release, not full
+acceptance of the later P001-P018/W001-W010 fixture matrix. Do not infer that
+the matrix is complete from the historical checkboxes above.
+
+- [x] P005: reproduce the PageIndex descendant-loss bug with a failing test; preserve both nested rows and exact source ownership.
+- [x] P005: exercise the same nested-row shape through the public PageIndex parser API.
+- [x] P001-P003/P015: exercise analogous content-parent/atomic-child shapes through the public heuristic PageIndex API; keep the table as one leaf.
+- [x] P004: verify contentless-wrapper collapse, descendant IDs, and source ownership at the normalizer boundary.
+- [x] P010/P011-style corruption: reject missing and multiply owned terminal source positions at the public PageIndex return boundary.
+- [x] Atomic fallback cannot use a broad parent aggregate to conceal a narrower child span and missing source content.
+- [x] P012-style corruption: reject mismatched pointer text through the public PageIndex parser API instead of rehydrating it after parsing.
+- [x] Audit all 18 supplied tree shapes against the local PageIndex normalizer, integrity check, and terminal-ownership calculation; the Unicode/CRLF case requires UTF-8 file input on Windows.
+- [ ] Run the exact P001-P018 JSON fixtures through each specified public profile; the local normalizer-only sweep is not sufficient for full acceptance.
+- [ ] Run the W001-W010 workflow cases with deterministic provider, retry, cache, and resume doubles.
+- [x] Run the CI-marked PageIndex selection locally on CPython 3.13 (23 passed, 54 deselected).
+- [x] Run parser production-module Pyright (0 errors), Ruff CI selection, lock verification, and `git diff --check` locally.
+- [ ] Complete the exact deterministic parser CI selection. The local Windows run was stopped after slow workflow tests; it did not return a final result.
+- [ ] Run the CPython 3.12-3.14 and PyPy 3.11 GitHub CI matrix for this follow-up branch. Local Docker's Linux engine was unavailable.
+- [ ] Merge this parser branch before updating the LLM-Wiki parser pin or releasing either package.

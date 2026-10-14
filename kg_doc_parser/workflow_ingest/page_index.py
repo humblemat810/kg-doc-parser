@@ -71,6 +71,7 @@ from .semantics import (
     HydratedTextPointer,
     SemanticNode,
     compute_pointer_coverage,
+    compute_terminal_content_coverage,
     correct_and_validate_pointer,
 )
 from .serialization import JsonValue
@@ -2481,11 +2482,12 @@ def _rebase_page_index_subtree(
 
 
 def _normalize_page_index_unary_nodes(node: SemanticNode) -> SemanticNode:
-    """Normalize known page-index wrappers without inventing children.
+    """Normalize PageIndex unary shapes without losing owned source or descendants.
 
-    A wrapper can be flattened only when its child already represents a real
-    branching section. Other unary semantic nodes are retained as atomic
-    evidence-bearing nodes and diagnosed in metadata.
+    Structural wrappers can be collapsed when their content is carried by
+    descendants. A semantic parent with independent source content retains
+    its real child and gets a source-owning leaf. An unresolved branch fails
+    rather than being silently replaced by an atomic leaf.
     """
 
     pending: list[tuple[SemanticNode, bool]] = [(node, False)]
@@ -2502,12 +2504,18 @@ def _normalize_page_index_unary_nodes(node: SemanticNode) -> SemanticNode:
             child = normalized_children[0]
             role = str(current.metadata.get("page_index_role", ""))
             child_role = str(child.metadata.get("page_index_role", ""))
-            is_document_wrapper = (
-                role == "DOCUMENT_ROOT"
-                or (role == "" and current.node_type == "DOCUMENT_ROOT")
-            ) and child_role == "page"
-            is_section_wrapper = role in {"page", "heading_container"}
-            if (is_document_wrapper or is_section_wrapper) and len(child.child_nodes) >= 2:
+            is_document_wrapper = current.node_type == "DOCUMENT_ROOT" or role == "DOCUMENT_ROOT"
+            is_section_wrapper = current.node_type == "PAGE" or role in {"page", "heading_container"}
+            owns_content = not (is_document_wrapper or current.node_type == "PAGE" or role == "page")
+            child_owns_content = bool(child.total_content_pointers) and not (
+                child.node_type in {"DOCUMENT_ROOT", "PAGE"} or child_role == "page"
+            )
+            if (
+                (is_document_wrapper or is_section_wrapper)
+                and (not owns_content or not current.total_content_pointers)
+                and not child_owns_content
+                and len(child.child_nodes) >= 2
+            ):
                 normalized[marker] = current.model_copy(
                     update={
                         "child_nodes": _rebase_page_index_subtree(
@@ -2519,14 +2527,43 @@ def _normalize_page_index_unary_nodes(node: SemanticNode) -> SemanticNode:
                 )
                 continue
 
+            if owns_content and current.total_content_pointers:
+                own_content = SemanticNode(
+                    node_id=str(stable_id(
+                        "workflow_ingest.page_index.owned_content",
+                        _stable_part(current.node_id),
+                    )),
+                    parent_id=current.node_id,
+                    node_type=(
+                        "HEADING_TEXT" if current.node_type == "HEADING" else current.node_type
+                    ),
+                    title=current.title,
+                    summary=current.summary,
+                    total_content_pointers=list(current.total_content_pointers),
+                    level_from_root=current.level_from_root + 1,
+                    metadata={"page_index_role": "owned_content"},
+                )
+                normalized[marker] = current.model_copy(
+                    update={
+                        "total_content_pointers": [],
+                        "child_nodes": [own_content, child],
+                    }
+                )
+                continue
+
+            if child.child_nodes:
+                raise ValueError(
+                    f"cannot losslessly normalize unary PageIndex subtree at {current.node_id!r}"
+                )
+
             metadata = dict(current.metadata)
             metadata["atomic_retained"] = True
             metadata["unary_normalization"] = "atomic_retained"
-            total_pointers = list(current.total_content_pointers)
+            total_pointers = list(child.total_content_pointers)
+            if not total_pointers:
+                total_pointers = list(current.total_content_pointers)
             if not total_pointers:
                 total_pointers = list(current.aggregate_content_pointers)
-            if not total_pointers:
-                total_pointers = list(child.total_content_pointers)
             if not total_pointers:
                 total_pointers = list(child.aggregate_content_pointers)
             metadata["atomic_retained_child"] = {
@@ -2907,6 +2944,14 @@ def parse_page_index_document(
         parser_source_map=parser_source_map,
         max_depth=max_depth,
     )
+    terminal_coverage = compute_terminal_content_coverage(
+        semantic_tree, parser_source_map
+    )
+    if terminal_coverage["valid"] is not True:
+        raise ValueError(
+            "PageIndex terminal source ownership is incomplete or duplicated: "
+            f"{terminal_coverage}"
+        )
     coverage = compute_pointer_coverage(
         semantic_tree,
         cast(dict[str, dict[str, JsonValue]], parser_source_map),
