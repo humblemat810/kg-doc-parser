@@ -27,6 +27,72 @@ def test_build_document_tree_preserves_two_pages_and_exact_text() -> None:
     assert {item.location.page_index for item in tree.source_items} == {0}
 
 
+def test_repeated_identical_ocr_text_keeps_distinct_source_identity() -> None:
+    inp = WorkflowIngestInput(
+        request_id="repeat-doc",
+        collections=[
+            {
+                "collection_id": "repeat-doc",
+                "title": "Repeated",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "units": [
+                            SourceUnit(modality="text", page_number=1, text="same"),
+                            SourceUnit(modality="text", page_number=1, text="same"),
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+    tree = build_document_tree(inp)
+    assert tree is not None
+    assert [item.text for item in tree.source_items] == ["same", "same"]
+    assert len({item.item_id for item in tree.source_items}) == 2
+    assert tree.render_preview() == "samesame"
+
+
+def test_grouping_can_join_a_cross_page_continuation_without_rewriting_source() -> None:
+    inp = WorkflowIngestInput(
+        request_id="cross-page-doc",
+        collections=[
+            {
+                "collection_id": "cross-page-doc",
+                "title": "Cross page",
+                "modality": "ocr",
+                "pages": [
+                    {"page_number": 1, "units": [SourceUnit(modality="text", page_number=1, text="head")]},
+                    {
+                        "page_number": 2,
+                        "units": [
+                            SourceUnit(modality="text", page_number=2, text="tail"),
+                            SourceUnit(modality="text", page_number=2, text="after"),
+                        ],
+                    },
+                ],
+            }
+        ],
+    )
+    tree = build_document_tree(inp)
+    assert tree is not None
+    first, second = tree.source_items[:2]
+    grouped = apply_grouping_proposals(
+        tree,
+        (
+            GroupProposal(
+                kind="layout:cross-page-paragraph",
+                members=(f"leaf:{first.item_id}", f"leaf:{second.item_id}"),
+            ),
+        ),
+        grouping_policy_version="v1",
+    )
+    group = next(node for node in grouped.nodes if node.kind == "layout:cross-page-paragraph")
+    assert {item.location.page_index for item in grouped.source_items if item.item_id in {first.item_id, second.item_id}} == {0, 1}
+    assert {child.node_id for child in group.children} == {f"leaf:{first.item_id}", f"leaf:{second.item_id}"}
+
+
 def test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items() -> None:
     inp = normalize_ocr_pages(
         document_id="blank-doc",
