@@ -56,7 +56,7 @@ def test_apply_grouping_proposals_keeps_source_coverage_and_rejects_bad_members(
     assert tree is not None
     grouped = apply_grouping_proposals(
         tree,
-        (GroupProposal(kind="layout:pair", members=("leaf:doc|p1|u0", "leaf:doc|p1|u1")),),
+        (GroupProposal(kind="layout:pair", members=("leaf:doc|p1_t0", "leaf:doc|p1_t1")),),
         grouping_policy_version="v1",
     )
     assert grouped.render_preview() == "ab"

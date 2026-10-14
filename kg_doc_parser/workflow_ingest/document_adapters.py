@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .document_models import BoundingBox, ChildRef, DocumentNode, DocumentTree, SourceItem, SourceLocation, SourceSlice
 from .document_grouping import GroupProposal, merge_groups
+from .adapters import _allocated_cluster_numbers
 from .models import WorkflowIngestInput
 
 
@@ -22,8 +23,13 @@ def build_document_tree(
     items: list[SourceItem] = []
     leaves: list[DocumentNode] = []
     for page in collection.pages:
-        for ordinal, unit in enumerate(page.units):
-            item_id = unit.unit_id or f"{collection.collection_id}|p{page.page_number}|u{ordinal}"
+        allocated = _allocated_cluster_numbers(page.units)
+        for unit, cluster_number in zip(page.units, allocated, strict=True):
+            if unit.unit_id:
+                item_id = unit.unit_id
+            else:
+                prefix = "t" if unit.modality in {"text", "ocr_text"} else "i"
+                item_id = f"{collection.collection_id}|p{page.page_number}_{prefix}{cluster_number}"
             text = unit.text if unit.modality in {"text", "ocr_text"} else unit.description
             if not text:
                 continue
