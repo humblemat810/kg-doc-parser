@@ -132,25 +132,24 @@ def _ocr_configuration_fingerprint(
     ).hexdigest()
 
 
-def _ocr_page_metadata(settings: WorkflowProviderSettings) -> dict[str, str]:
+def _ocr_page_metadata(
+    settings: WorkflowProviderSettings,
+    *,
+    candidate_models: Sequence[str] = (),
+    source_image_sha256: str | None = None,
+) -> dict[str, str]:
     """Build stable, non-secret provenance for one accepted OCR page."""
-    config = {
-        "provider": settings.ocr.provider,
-        "model": settings.ocr.model,
-        "base_url": settings.ocr.base_url,
-        "api_version": settings.ocr.api_version,
-        "project": settings.ocr.project,
-        "ocr_engine": settings.ocr.ocr_engine,
-        "ocr_language": settings.ocr.ocr_language,
-    }
-    fingerprint = hashlib.sha256(
-        json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    ).hexdigest()
-    return {
+    metadata = {
         "ocr_provider": settings.ocr.provider,
         "ocr_model_name": settings.ocr.model,
-        "ocr_configuration_fingerprint": fingerprint,
+        "ocr_configuration_fingerprint": _ocr_configuration_fingerprint(
+            settings,
+            candidate_models=candidate_models,
+        ),
     }
+    if source_image_sha256 is not None:
+        metadata["source_image_sha256"] = source_image_sha256
+    return metadata
 
 
 class OCRImagePayload(BaseModel):
@@ -764,7 +763,11 @@ def _process_ocr_page(
             page_payload = split_page.dump_raw(dump_format="json")
             page_payload["metadata"] = {
                 **split_page.metadata.model_dump(mode="json"),
-                **_ocr_page_metadata(candidate_settings),
+                **_ocr_page_metadata(
+                    candidate_settings,
+                    candidate_models=context.candidate_models,
+                    source_image_sha256=image_sha256,
+                ),
             }
             # Validate before publication; the SQLite row is committed only
             # after the complete artifact is atomically visible.
@@ -1470,6 +1473,60 @@ class OCRWorkflowStateStore:
             return False
         return state.artifact_sha256 is not None and _sha256_file(artifact_path) == state.artifact_sha256
 
+    def reconcile_orphan_artifact(
+        self,
+        *,
+        document_id: str,
+        page_number: int,
+        content_hash: str,
+        artifact_path: Path,
+        config_fingerprints: Sequence[str],
+    ) -> bool:
+        """Adopt an artifact published before its SQLite completion commit.
+
+        The artifact must carry its source and configuration identity. A
+        well-formed JSON file without those identities is never promoted from
+        the orphan state, because it could belong to another source or OCR
+        configuration. Existing completed rows are never repaired here; the
+        normal digest check must decide whether they are still reusable.
+        """
+        state = self.get_page_state(document_id=document_id, page_number=page_number, stage="ocr")
+        if state is not None and state.status == "completed":
+            return False
+        if not artifact_path.is_file():
+            return False
+        persisted = _read_json_object(artifact_path)
+        try:
+            split_page = SplitPage.model_validate(persisted)
+        except ValueError:
+            return False
+        if split_page.pdf_page_num != page_number:
+            return False
+        metadata = persisted.get("metadata")
+        if not isinstance(metadata, dict):
+            return False
+        source_digest = metadata.get("source_image_sha256")
+        config_fingerprint = metadata.get("ocr_configuration_fingerprint")
+        if source_digest != content_hash or not isinstance(config_fingerprint, str):
+            return False
+        if config_fingerprint not in set(config_fingerprints):
+            return False
+        model_name = metadata.get("ocr_model_name")
+        self._upsert_page_state(
+            document_id=document_id,
+            page_number=page_number,
+            stage="ocr",
+            attempt_count=state.attempt_count if state is not None else 1,
+            status="completed",
+            content_hash=content_hash,
+            artifact_path=str(artifact_path),
+            last_error=None,
+            last_model=model_name if isinstance(model_name, str) else None,
+            config_fingerprint=config_fingerprint,
+            artifact_sha256=_sha256_file(artifact_path),
+        )
+        return True
+
     def record_attempt(
         self,
         *,
@@ -1931,11 +1988,7 @@ def _render_pdf_with_identity(
 
 
 def _write_progress(progress: OCRWorkflowProgress, progress_path: Path) -> None:
-    progress_path.parent.mkdir(parents=True, exist_ok=True)
-    progress_path.write_text(
-        json.dumps(progress.model_dump(mode="json"), indent=2),
-        encoding="utf-8",
-    )
+    _write_json_atomic(progress_path, progress.model_dump(mode="json"))
 
 
 def _sync_progress_from_state(

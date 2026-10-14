@@ -160,6 +160,14 @@ def _reconcile_page_checkpoint(
     for index, (page_number, image_path) in enumerate(sources[:cursor]):
         image_digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
         page_path = source_plan.legacy_dir / f"page_{page_number}.json"
+        if context.state_store.reconcile_orphan_artifact(
+            document_id=context.document_id,
+            page_number=page_number,
+            content_hash=image_digest,
+            artifact_path=page_path,
+            config_fingerprints=context.configuration_fingerprints,
+        ):
+            continue
         if context.state_store.should_skip_page(
             document_id=context.document_id,
             page_number=page_number,

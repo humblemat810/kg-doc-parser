@@ -73,7 +73,12 @@ from _kogwistar_test_helpers import (
 from PIL import Image, ImageDraw
 
 import kg_doc_parser.workflow_ingest.ocr_pipeline as ocr_pipeline_module
-from kg_doc_parser.models import OCRClusterResponse, TextCluster
+from kg_doc_parser.models import (
+    OCRClusterResponse,
+    SplitPage,
+    SplitPageMeta,
+    TextCluster,
+)
 from kg_doc_parser.ocr import RawOCRResponse, regen_doc
 from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
@@ -100,7 +105,10 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     OCRSourcePlan,
     OCRWorkflowStateStore,
     _compute_input_fingerprint,
+    _ocr_configuration_fingerprint,
+    _ocr_page_metadata,
     _resolve_ocr_source_plan,
+    _write_json_atomic,
 )
 from kg_doc_parser.workflow_ingest.ocr_runtime import (
     _reconcile_page_checkpoint,
@@ -1612,6 +1620,83 @@ def test_ocr_state_rejects_stale_provider_config_or_tampered_artifact() -> None:
         content_hash="image-hash",
         artifact_path=artifact,
         config_fingerprint="provider-a/model-a",
+    )
+
+
+@pytest.mark.ci
+def test_ocr_state_adopts_valid_artifact_left_before_completion_commit() -> None:
+    scratch = _scratch("ocr_orphan_artifact")
+    image = scratch / "page-1.png"
+    image.write_bytes(b"stable-source-image")
+    artifact = scratch / "page-1.json"
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="model-a"),
+        parser=ProviderEndpointConfig(provider="fake", model="parser"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="embed", dimension=1),
+    )
+    image_digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    config_fingerprint = _ocr_configuration_fingerprint(settings)
+    response = _fake_ocr_response(1, "orphan artifact")
+    split_page = SplitPage(
+        pdf_page_num=1,
+        metadata=SplitPageMeta(
+            ocr_model_name="model-a",
+            ocr_datetime=0.0,
+            ocr_json_version="workflow_ingest_v1",
+        ),
+        **response.model_dump(dump_format="python"),
+    )
+    payload = split_page.dump_raw(dump_format="json")
+    payload["metadata"] = {
+        **split_page.metadata.model_dump(mode="json"),
+        **_ocr_page_metadata(
+            settings,
+            source_image_sha256=image_digest,
+        ),
+    }
+    _write_json_atomic(artifact, payload)
+
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="orphan-artifact-doc",
+        title="Orphan Artifact",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="input-fingerprint",
+    )
+    store.record_attempt(
+        document_id="orphan-artifact-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=image_digest,
+        model_name="model-a",
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+
+    assert store.reconcile_orphan_artifact(
+        document_id="orphan-artifact-doc",
+        page_number=1,
+        content_hash=image_digest,
+        artifact_path=artifact,
+        config_fingerprints=(config_fingerprint,),
+    )
+    assert store.should_skip_page(
+        document_id="orphan-artifact-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=image_digest,
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+
+    artifact.write_text(json.dumps({"pdf_page_num": 1}), encoding="utf-8")
+    assert not store.reconcile_orphan_artifact(
+        document_id="orphan-artifact-doc",
+        page_number=1,
+        content_hash=image_digest,
+        artifact_path=artifact,
+        config_fingerprints=(config_fingerprint,),
     )
 
 

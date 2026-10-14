@@ -149,8 +149,10 @@ adapter test passes.
   replace the final artifact before recording completion. The write path is
   atomic, but rename-before-database and database-before-rename crash-window
   reconciliation are not yet proven.
-- [ ] Validate and reconcile an artifact left behind by a crash between rename
-  and database commit.
+- [~] Validate and reconcile an artifact left behind by a crash between rename
+  and database commit. A valid rename-before-DB orphan is adopted only when
+  its source-image and OCR-configuration identities match; DB-before-rename
+  and fresh-process crash-order tests remain open.
 - [~] Test truncated JSON, valid JSON from another page, schema-version change,
   and crash-window recovery. Rebuild now validates `SplitPage` and leaves
   malformed/ambiguous artifacts pending; crash-window reconciliation remains.
