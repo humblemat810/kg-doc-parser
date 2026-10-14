@@ -374,6 +374,65 @@ def test_prepare_ocr_workflow_input_resumes_completed_pages() -> None:
 
 
 @pytest.mark.ci
+def test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping() -> None:
+    scratch = _scratch("ocr_live_cross_page_grouping")
+    image_paths = [scratch / "images" / f"page_{page}.png" for page in (1, 2, 3)]
+    for page, image_path in enumerate(image_paths, start=1):
+        _draw_test_image(image_path, lines=[f"Continuation page {page}"])
+    payloads = [
+        OCRImagePayload(page_number=page, image_path=str(image_path))
+        for page, image_path in enumerate(image_paths, start=1)
+    ]
+
+    def _runner(image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings):
+        response = _fake_ocr_response(page_number, f"Continuation page {page_number}")
+        if page_number == 1:
+            response = response.model_copy(update={"incomplete_text": True})
+        return response
+
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+    artifacts = prepare_ocr_workflow_input(
+        document_id="ocr-live-cross-page-doc",
+        title="OCR Live Cross Page Doc",
+        output_dir=scratch / "artifacts",
+        image_payloads=payloads,
+        provider_settings=settings,
+        ocr_runner=_runner,
+    )
+
+    assert artifacts.document_tree is not None
+    continuation_nodes = [
+        node
+        for node in artifacts.document_tree.nodes
+        if node.kind == "layout:cross-page-continuation"
+    ]
+    assert len(continuation_nodes) == 1
+    continuation = continuation_nodes[0]
+    assert len(continuation.children) == 2
+    assert {
+        artifacts.document_tree.source_items[
+            next(
+                index
+                for index, item in enumerate(artifacts.document_tree.source_items)
+                if item.item_id == child.node_id.removeprefix("leaf:")
+            )
+        ].location.page_index
+        for child in continuation.children
+    } == {0, 1}
+
+    persisted = OCRWorkflowStateStore(artifacts.state_db_path).load_document_tree(
+        document_id="ocr-live-cross-page-doc",
+        source_fingerprint=artifacts.document_tree.source_fingerprint(),
+        grouping_policy_version="baseline-v1",
+    )
+    assert persisted is not None
+    assert any(node.kind == "layout:cross-page-continuation" for node in persisted.nodes)
+
+
+@pytest.mark.ci
 def test_prepare_ocr_workflow_input_rebuilds_state_db_from_existing_artifacts() -> None:
     scratch = _scratch("ocr_rebuild")
     image_path = scratch / "images" / "page_1.png"

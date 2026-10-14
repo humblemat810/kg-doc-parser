@@ -59,6 +59,7 @@ from .document_adapters import (
     apply_grouping_proposals,
     attach_document_tree_metadata,
     build_document_tree,
+    suggest_cross_page_continuations,
 )
 from .document_grouping import GroupProposal
 from .document_models import DocumentTree
@@ -204,6 +205,46 @@ def _write_document_tree(path: Path, tree: DocumentTree) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _coalesce_cross_page_continuations(
+    proposals: Sequence[GroupProposal],
+) -> tuple[GroupProposal, ...]:
+    """Turn adjacent pair suggestions into disjoint continuation chains."""
+    if not proposals:
+        return ()
+    chains: list[GroupProposal] = []
+    current = proposals[0]
+    for proposal in proposals[1:]:
+        if (
+            proposal.kind == current.kind
+            and proposal.members[0] == current.members[-1]
+        ):
+            current = GroupProposal(
+                kind=current.kind,
+                members=current.members + (proposal.members[-1],),
+            )
+        else:
+            chains.append(current)
+            current = proposal
+    chains.append(current)
+    return tuple(chains)
+
+
+def _apply_cross_page_continuations(
+    tree: DocumentTree,
+    *,
+    grouping_policy_version: str,
+) -> DocumentTree:
+    """Apply only provider-signaled, adjacent cross-page continuations."""
+    proposals = _coalesce_cross_page_continuations(suggest_cross_page_continuations(tree))
+    if not proposals:
+        return tree
+    return apply_grouping_proposals(
+        tree,
+        proposals,
+        grouping_policy_version=grouping_policy_version,
+    )
 
 
 @dataclass(slots=True)
@@ -572,7 +613,15 @@ def _finalize_ocr_workflow_artifacts(
         if checkpointed_tree is not None:
             document_tree = checkpointed_tree
         else:
-            state_store.save_document_tree(document_id=document_id, tree=document_tree)
+            document_tree = _apply_cross_page_continuations(
+                document_tree,
+                grouping_policy_version=grouping_policy_version,
+            )
+            state_store.save_document_tree(
+                document_id=document_id,
+                tree=document_tree,
+                grouping_policy_version=grouping_policy_version,
+            )
         attach_document_tree_metadata(workflow_input, document_tree)
     artifacts = OCRWorkflowArtifacts(
         workflow_input=workflow_input,
@@ -1843,6 +1892,27 @@ def prepare_ocr_workflow_input(
             reused_pages=reused_pages,
             page_failures=page_failures,
         )
+
+        # Rebuild from accepted pages after every successful/reused page so an
+        # open cross-page continuation is visible and resumable immediately.
+        if raw_pages:
+            partial_input = normalize_ocr_pages(
+                document_id=document_id,
+                title=title,
+                pages=list(raw_pages),
+            )
+            partial_tree = build_document_tree(partial_input)
+            if partial_tree is not None:
+                partial_tree = _apply_cross_page_continuations(
+                    partial_tree,
+                    grouping_policy_version=grouping_policy_version,
+                )
+                state_store.save_document_tree(
+                    document_id=document_id,
+                    tree=partial_tree,
+                    grouping_policy_version=grouping_policy_version,
+                )
+                _write_document_tree(source_plan.legacy_dir / "document-tree.json", partial_tree)
 
         # Mirror the SQLite state into the human-readable progress file.
         _sync_progress_from_state(

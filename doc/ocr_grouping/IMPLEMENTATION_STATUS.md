@@ -15,7 +15,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C06 | PASS | Adjacent, disjoint, known-member proposal validation |
 | C07 | PASS | Stable merge IDs, ordered source fingerprints, SQLite replay, and grouping-policy matching; `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` |
 | C08 | PARTIAL | Valid content-addressed media references and non-text descriptions round-trip; provider-specific media acquisition remains outside the adapter |
-| C09 | PARTIAL | Multi-page source locations, OCR-signaled continuation proposals, and per-pass frontier checkpoints are supported; page-by-page live grouping remains |
+| C09 | PASS | OCR pages rebuild the validated tree after every accepted/reused page, apply OCR-signaled adjacent continuations, and persist the open frontier/tree in SQLite; `test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping` |
 | C10 | PARTIAL | Versioned grounded `Summary` model, stale-fingerprint validation, and validated summary updates are present; provider-backed generation policy remains |
 | C11 | PASS | Empty OCR observations return no tree and normalized pages carry explicit `is_blank_page` metadata; `test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items` |
 | C12 | PASS | Existing OCR models and workflow input remain unchanged; adapter is additive |
@@ -55,6 +55,8 @@ poetry run pyright kg_doc_parser/workflow_ingest/...  # changed production modul
 poetry run pytest tests/test_document_grouping_contract.py -q -p no:cacheprovider --basetemp .tmp_summary_policy_test
 10 passed
 poetry run pytest tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source -q -p no:cacheprovider --basetemp .tmp_frontier_test
+1 passed
+poetry run pytest tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping -q -p no:cacheprovider --basetemp .tmp_live_grouping_test
 1 passed
 poetry run pytest tests/test_workflow_ingest_ocr_providers.py -q -p no:cacheprovider --basetemp .tmp_ocr_provider_test3
 16 passed, 1 skipped
