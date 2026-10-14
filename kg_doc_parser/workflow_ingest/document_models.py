@@ -225,5 +225,23 @@ class DocumentTree(FrozenModel):
         payload = [item.model_dump(mode="json") for item in sorted(self.source_items, key=lambda value: value.item_id)]
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
+    def render_preview(self) -> str:
+        """Render source text for inspection without changing canonical evidence."""
+        items = {item.item_id: item for item in self.source_items}
+        nodes = {node.node_id: node for node in self.nodes}
+
+        def render(node_id: str) -> str:
+            node = nodes[node_id]
+            if node.parts:
+                output = ""
+                for part in node.parts:
+                    item = items[part.item_id]
+                    output += part.separator_before
+                    output += item.text[part.start:part.end] if item.text is not None else f"[media:{item.item_id}]"
+                return output
+            return "".join(link.separator_before + render(link.node_id) for link in node.children)
+
+        return render(self.root_id)
+
 
 __all__ = ["BoundingBox", "ChildRef", "DocumentNode", "DocumentTree", "FrozenModel", "MediaRef", "OCRMetadata", "SourceItem", "SourceLocation", "SourceSlice", "Summary"]
