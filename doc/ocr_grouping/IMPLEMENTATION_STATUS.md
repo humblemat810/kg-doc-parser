@@ -13,17 +13,17 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C04 | PASS | Cycle, orphan, duplicate-parent, and unary-node validation |
 | C05 | PASS | `merge_groups()` keeps unmerged frontier members |
 | C06 | PASS | Adjacent, disjoint, known-member proposal validation |
-| C07 | PARTIAL | Stable merge IDs and source fingerprints; durable grouping replay is pending |
+| C07 | PARTIAL | Stable merge IDs and source fingerprints; grouped trees now replay from the SQLite checkpoint, but full policy/model invalidation coverage remains |
 | C08 | PARTIAL | Media contract exists; current OCR adapter preserves non-text descriptions and needs content-addressed media input |
 | C09 | PARTIAL | Multi-page source locations are supported; automatic continuation grouping is pending |
 | C10 | PARTIAL | Versioned grounded `Summary` model exists; generation/invalidation workflow is pending |
-| C11 | PARTIAL | Empty OCR observations return no tree; explicit blank-page metadata integration is pending |
+| C11 | PASS | Empty OCR observations return no tree and normalized pages carry explicit `is_blank_page` metadata; `test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items` |
 | C12 | PASS | Existing OCR models and workflow input remain unchanged; adapter is additive |
 | C13 | PASS | Grouping adapter performs no semantic inference |
 | C14 | DEFERRED | Kogwistar projection remains a separate optional adapter |
 | C15 | PARTIAL | Existing direct, Docling, and chat provider registry remains; all provider-specific grouping coverage is pending |
 | C16 | DEFERRED | Summary scheduling policy is not enabled by default |
-| C17 | PARTIAL | Atomic tree artifact replacement exists; SQLite grouping checkpoints are pending |
+| C17 | PARTIAL | Atomic tree artifact replacement plus versioned SQLite `document_tree_state` checkpoint; page/merge persistence is covered, while summary/frontier journal coverage remains |
 | C18 | DEFERRED | Explicit reference mentions are outside this slice |
 | C19 | PASS | `render_preview()` reads only accepted source intervals and display separators |
 | C20 | PASS | Open node kinds and heterogeneous adjacent merges are supported |

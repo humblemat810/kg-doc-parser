@@ -183,6 +183,7 @@ def normalize_ocr_pages(
                 metadata={
                     "printed_page_number": raw_page.get("printed_page_number"),
                     "contains_table": raw_page.get("contains_table"),
+                    "is_blank_page": not units,
                 },
             )
         )

@@ -13,6 +13,7 @@ from kg_doc_parser.workflow_ingest import (
     apply_grouping_proposals,
     build_document_tree,
     merge_groups,
+    normalize_ocr_pages,
     prepare_ocr_workflow_input,
 )
 from kg_doc_parser.workflow_ingest.models import SourceUnit, WorkflowIngestInput
@@ -24,6 +25,18 @@ def test_build_document_tree_preserves_two_pages_and_exact_text() -> None:
     assert tree is not None
     assert tree.render_preview() == "first\nsecond"
     assert {item.location.page_index for item in tree.source_items} == {0}
+
+
+def test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items() -> None:
+    inp = normalize_ocr_pages(
+        document_id="blank-doc",
+        title="Blank",
+        pages=[{"pdf_page_num": 1, "OCR_text_clusters": [], "non_text_objects": []}],
+    )
+    page = inp.collections[0].pages[0]
+    assert page.units == []
+    assert page.metadata["is_blank_page"] is True
+    assert build_document_tree(inp) is None
 
 
 def test_build_document_tree_keeps_nontext_observation_without_fake_media() -> None:
