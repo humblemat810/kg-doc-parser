@@ -1,10 +1,10 @@
 # KG Doc Parser — Upstream Correctness, Recovery, and Regression-Prevention Handoff
 
-**Status:** executable engineering specification + investigation checklist  
-**Prepared:** 2026-10-14 (Australia/Brisbane)  
-**Target repository:** https://github.com/humblemat810/kg-doc-parser  
-**Primary audience:** coding agent working **in that repository** with Git history, source, test runner, and CI files available.  
-**Priority:** P0 correctness/data-loss and invariant preservation; P1 triage/cache/checkpoint integration and observability.  
+**Status:** executable engineering specification + investigation checklist
+**Prepared:** 2026-10-14 (Australia/Brisbane)
+**Target repository:** https://github.com/humblemat810/kg-doc-parser
+**Primary audience:** coding agent working **in that repository** with Git history, source, test runner, and CI files available.
+**Priority:** P0 correctness/data-loss and invariant preservation; P1 triage/cache/checkpoint integration and observability.
 **Important:** This document is a **requirement**, not proof that each suspected bug persists at current `HEAD`. Pin `HEAD` and reproduce every claim before changing code. Do not rely on `main` URLs or line numbers as immutable evidence.
 
 ---
