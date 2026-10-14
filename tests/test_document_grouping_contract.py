@@ -80,3 +80,38 @@ def test_identical_text_items_remain_distinct_by_identity() -> None:
     left = _item("left", "same")
     right = _item("right", "same")
     assert left.text == right.text and left.item_id != right.item_id
+
+
+def test_generated_summary_requires_current_descendant_fingerprint() -> None:
+    base = DocumentTree(
+        document_id="doc",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(_item("a", "one"), _item("b", "two")),
+        nodes=(
+            _leaf("a-leaf", "a", "one"),
+            _leaf("b-leaf", "b", "two"),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=({"node_id": "a-leaf"}, {"node_id": "b-leaf"}),
+            ),
+        ),
+    )
+    fingerprint = base.summary_input_fingerprint("root")
+    payload = base.model_dump(mode="json")
+    payload["nodes"][-1]["summary"] = {
+        "status": "generated",
+        "text": "one and two",
+        "evidence_item_ids": ["a", "b"],
+        "provider_model": "fake",
+        "prompt_revision": "prompt-v1",
+        "input_fingerprint": fingerprint,
+    }
+    validated = DocumentTree.model_validate(payload)
+    assert validated.nodes[-1].summary is not None
+
+    payload["nodes"][-1]["summary"]["input_fingerprint"] = "0" * 64
+    with pytest.raises(ValueError, match="summary fingerprint is stale"):
+        DocumentTree.model_validate(payload)

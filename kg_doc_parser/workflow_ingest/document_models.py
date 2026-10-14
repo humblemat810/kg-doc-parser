@@ -182,6 +182,7 @@ class DocumentTree(FrozenModel):
         media: dict[str, int] = defaultdict(int)
         visiting: set[str] = set()
         seen: set[str] = set()
+        covered_by_node: dict[str, set[str]] = {}
 
         def visit(node_id: str) -> set[str]:
             if node_id in visiting:
@@ -215,6 +216,7 @@ class DocumentTree(FrozenModel):
                 raise ValueError("summary cites evidence outside its subtree")
             visiting.remove(node_id)
             seen.add(node_id)
+            covered_by_node[node_id] = set(covered)
             return covered
 
         visit(self.root_id)
@@ -232,10 +234,39 @@ class DocumentTree(FrozenModel):
                 cursor = end
             if cursor != len(item.text):
                 raise ValueError(f"incomplete source coverage: {item_id}")
+        for node_id, node in nodes.items():
+            if node.summary is None or node.summary.status not in {"generated", "verified"}:
+                continue
+            evidence = covered_by_node[node_id]
+            payload = [items[item_id].model_dump(mode="json") for item_id in sorted(evidence)]
+            expected = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            if node.summary.input_fingerprint != expected:
+                raise ValueError(f"summary fingerprint is stale for node {node_id}")
         return self
 
     def source_fingerprint(self) -> str:
         payload = [item.model_dump(mode="json") for item in sorted(self.source_items, key=lambda value: value.item_id)]
+        return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+    def summary_input_fingerprint(self, node_id: str) -> str:
+        """Return the fingerprint a generated summary must record for a node."""
+        nodes = {node.node_id: node for node in self.nodes}
+        items = {item.item_id: item for item in self.source_items}
+        node = nodes.get(node_id)
+        if node is None:
+            raise KeyError(node_id)
+        covered: set[str] = set()
+
+        def visit(current_id: str) -> None:
+            current = nodes[current_id]
+            if current.parts:
+                covered.update(part.item_id for part in current.parts)
+            else:
+                for child in current.children:
+                    visit(child.node_id)
+
+        visit(node_id)
+        payload = [items[item_id].model_dump(mode="json") for item_id in sorted(covered)]
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def render_preview(self) -> str:
