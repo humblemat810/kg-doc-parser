@@ -1866,6 +1866,9 @@ def run_ocr_ingest_workflow(
     2. normalize those pages and hand them to the semantic workflow parser
     """
 
+    if grouping_proposals is not None and grouping_passes is not None:
+        raise ValueError("provide grouping_proposals or grouping_passes, not both")
+
     from .parsing import parse_ocr_document
 
     artifacts = parse_ocr_document(
@@ -1881,8 +1884,6 @@ def run_ocr_ingest_workflow(
         probe=probe,
         restore_grouping_checkpoint=grouping_proposals is None and grouping_passes is None,
     )
-    if grouping_proposals is not None and grouping_passes is not None:
-        raise ValueError("provide grouping_proposals or grouping_passes, not both")
     if grouping_proposals is not None or grouping_passes is not None:
         if artifacts.document_tree is None:
             raise ValueError("cannot group an OCR document with no source observations")
