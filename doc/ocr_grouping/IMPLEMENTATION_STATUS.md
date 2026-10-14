@@ -14,7 +14,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C05 | PASS | `merge_groups()` keeps unmerged frontier members |
 | C06 | PASS | Adjacent, disjoint, known-member proposal validation |
 | C07 | PASS | Stable merge IDs, ordered source fingerprints, SQLite replay, and grouping-policy matching; `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` |
-| C08 | PASS | Content-addressed `MediaRef` records and non-text descriptions survive normalized tree and JSON state round-trips without fabricated geometry; `test_build_document_tree_uses_only_declared_content_addressed_media` |
+| C08 | PASS | Content-addressed `MediaRef` records, captions/non-text descriptions, and page/time locations survive normalized tree and JSON round-trips without fabricated geometry; `test_multimodal_media_and_time_ranges_round_trip_without_fabricated_geometry` |
 | C09 | PASS | OCR pages rebuild the validated tree after every accepted/reused page, apply OCR-signaled adjacent continuations, and persist the open frontier/tree in SQLite; `test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping` |
 | C10 | PASS | Bounded planner now invokes an injected summary generator, validates evidence/fingerprint provenance, persists derived summaries independently, and records failures without failing OCR; `test_prepare_ocr_workflow_input_generates_grounded_summary_with_journal` and `test_summary_failure_is_journaled_without_failing_ocr_ingestion` |
 | C11 | PASS | Empty OCR observations return no tree and normalized pages carry explicit `is_blank_page` metadata; `test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items` |

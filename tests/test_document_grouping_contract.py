@@ -10,6 +10,7 @@ from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal, merge
 from kg_doc_parser.workflow_ingest.document_models import (
     DocumentNode,
     DocumentTree,
+    MediaRef,
     SourceItem,
     SourceLocation,
     SourceSlice,
@@ -229,6 +230,58 @@ def test_title_and_atomic_sixty_row_table_remain_two_grounded_children() -> None
     )
     assert len(tree.nodes[-1].children) == 2
     assert tree.render_preview() == f"Report{table_text}"
+
+
+def test_multimodal_media_and_time_ranges_round_trip_without_fabricated_geometry() -> None:
+    media_specs = (
+        ("image", SourceLocation(page_index=0, accuracy="page")),
+        ("table", SourceLocation(page_index=1, accuracy="page")),
+        ("diagram", SourceLocation(page_index=2, accuracy="page")),
+        ("audio", SourceLocation(start_seconds=1.0, end_seconds=2.5, accuracy="time")),
+        ("video", SourceLocation(start_seconds=4.0, end_seconds=8.0, accuracy="time")),
+    )
+    items = tuple(
+        SourceItem(
+            item_id=f"{kind}-1",
+            kind=kind,
+            location=location,
+            media=MediaRef(
+                uri=f"https://example.invalid/{kind}.bin",
+                mime_type="application/octet-stream",
+                sha256_hex=f"{index + 1:064x}",
+                byte_length=index + 1,
+            ),
+        )
+        for index, (kind, location) in enumerate(media_specs)
+    )
+    leaves = tuple(
+        DocumentNode(
+            node_id=f"leaf:{item.item_id}",
+            kind=item.kind,
+            parts=(SourceSlice(item_id=item.item_id),),
+        )
+        for item in items
+    )
+    tree = DocumentTree(
+        document_id="multimodal-doc",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=items,
+        nodes=(*leaves, DocumentNode(
+            node_id="root",
+            kind="document",
+            children=tuple({"node_id": leaf.node_id} for leaf in leaves),
+        )),
+    )
+
+    round_tripped = DocumentTree.model_validate(tree.model_dump(mode="json"))
+    assert [item.kind for item in round_tripped.source_items] == [spec[0] for spec in media_specs]
+    assert [item.media.sha256_hex for item in round_tripped.source_items if item.media] == [
+        f"{index + 1:064x}" for index in range(len(media_specs))
+    ]
+    assert round_tripped.source_items[-2].location.accuracy == "time"
+    assert round_tripped.source_items[-1].location.end_seconds == 8.0
 
 
 def test_source_fingerprint_includes_authoritative_reading_order() -> None:
