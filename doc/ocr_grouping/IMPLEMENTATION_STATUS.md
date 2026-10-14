@@ -13,7 +13,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C04 | PASS | Cycle, orphan, duplicate-parent, and unary-node validation |
 | C05 | PASS | `merge_groups()` keeps unmerged frontier members |
 | C06 | PASS | Adjacent, disjoint, known-member proposal validation |
-| C07 | PARTIAL | Stable merge IDs and source fingerprints; grouped trees now replay from the SQLite checkpoint, but full policy/model invalidation coverage remains |
+| C07 | PARTIAL | Stable merge IDs, source fingerprints, SQLite replay, and explicit bypass when a new grouping proposal is supplied; full policy/model invalidation coverage remains |
 | C08 | PARTIAL | Media contract exists; current OCR adapter preserves non-text descriptions and needs content-addressed media input |
 | C09 | PARTIAL | Multi-page source locations are supported; automatic continuation grouping is pending |
 | C10 | PARTIAL | Versioned grounded `Summary` model exists; generation/invalidation workflow is pending |
