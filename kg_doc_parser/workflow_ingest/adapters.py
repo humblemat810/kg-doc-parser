@@ -42,6 +42,7 @@ class OCRPageJSON(TypedDict):
     pdf_page_num: int
     printed_page_number: NotRequired[str]
     contains_table: NotRequired[bool]
+    is_blank_page: NotRequired[bool]
     OCR_text_clusters: NotRequired[list[OCRTextClusterJSON]]
     non_text_objects: NotRequired[list[OCRNonTextObjectJSON]]
     text: NotRequired[str]
@@ -310,6 +311,7 @@ def build_parser_input_dict(
                 "pdf_page_num": page.page_number,
                 "printed_page_number": page.metadata.get("printed_page_number"),
                 "contains_table": page.metadata.get("contains_table", False),
+                "is_blank_page": page.metadata.get("is_blank_page", not page.units),
                 "OCR_text_clusters": text_clusters,
                 "non_text_objects": non_text_objects,
             }
