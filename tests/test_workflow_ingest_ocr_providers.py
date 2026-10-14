@@ -9,7 +9,7 @@ from typing import ClassVar, Self
 
 import pytest
 
-from kg_doc_parser.models import OCRClusterResponse
+from kg_doc_parser.models import NonTextCluster, OCRClusterResponse, TextCluster
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
@@ -38,6 +38,45 @@ def test_capability_inventory_contains_all_docling_engines_and_codex_boundary() 
     assert direct == {"rapidocr", "easyocr"}
     assert all(item.coordinates for item in capabilities if item.provider in direct)
     assert {item.provider for item in capabilities} >= {"custom", "kserve"}
+
+
+def test_ocr_response_accepts_unified_text_and_nontext_reading_order() -> None:
+    response = OCRClusterResponse(
+        OCR_text_clusters=[
+            TextCluster(
+                text="caption",
+                bb_x_min=0,
+                bb_x_max=10,
+                bb_y_min=0,
+                bb_y_max=10,
+                cluster_number=0,
+            )
+        ],
+        non_text_objects=[
+            NonTextCluster(
+                description="figure",
+                bb_x_min=0,
+                bb_x_max=10,
+                bb_y_min=10,
+                bb_y_max=20,
+                cluster_number=1,
+            )
+        ],
+        is_empty_page=False,
+        printed_page_number=None,
+        meaningful_ordering=[0, 1],
+        page_x_min=0,
+        page_x_max=100,
+        page_y_min=0,
+        page_y_max=100,
+        estimated_rotation_degrees=0,
+        incomplete_words_on_edge=False,
+        incomplete_text=False,
+        data_loss_likelihood=0,
+        scan_quality="high",
+        contains_table=False,
+    )
+    assert response.meaningful_ordering == [0, 1]
 
 
 @pytest.mark.parametrize(

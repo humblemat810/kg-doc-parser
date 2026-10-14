@@ -160,6 +160,35 @@ def test_normalize_ocr_pages_preserves_declared_order_and_provider_metadata() ->
     assert tree.source_items[0].ocr_metadata.model == "rapidocr-v1"
 
 
+def test_normalize_ocr_pages_preserves_unified_text_and_nontext_order() -> None:
+    inp = normalize_ocr_pages(
+        document_id="mixed-order-doc",
+        title="Mixed order",
+        pages=[
+            {
+                "pdf_page_num": 1,
+                "meaningful_ordering": [0, 1, 2],
+                "OCR_text_clusters": [
+                    {"cluster_number": 0, "text": "before", "bb_x_max": 10, "bb_y_max": 10},
+                    {"cluster_number": 2, "text": "after", "bb_x_max": 10, "bb_y_max": 10},
+                ],
+                "non_text_objects": [
+                    {
+                        "cluster_number": 1,
+                        "description": "figure",
+                        "bb_x_max": 10,
+                        "bb_y_max": 10,
+                    }
+                ],
+            }
+        ],
+    )
+
+    units = inp.collections[0].pages[0].units
+    assert [unit.cluster_number for unit in units] == [0, 1, 2]
+    assert [unit.modality for unit in units] == ["ocr_text", "image_region", "ocr_text"]
+
+
 def test_unknown_ocr_coordinate_system_downgrades_to_page_accuracy() -> None:
     inp = normalize_ocr_pages(
         document_id="unknown-coordinates",

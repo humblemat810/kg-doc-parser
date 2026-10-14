@@ -102,7 +102,7 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
-    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of the identified text clusters. Must cover all OCR_text_clusters once and only once. ")
+    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of all text and non-text clusters. Must cover every cluster once and only once. ")
     page_x_min : DtoType[float]=Field(description='the page x min in pixel coordinate. ')
     page_x_max : DtoType[float]=Field(description='the page x max in pixel coordinate. ')
     page_y_min : DtoType[float]=Field(description='the page y min in pixel coordinate. ')
@@ -118,17 +118,19 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
 
     @model_validator(mode='after')
     def check_cluster_meaningful_ordering_agreement(self) -> Self:
-        if bool(self.is_empty_page) == (len(self.OCR_text_clusters) > 0):
+        all_clusters = self.OCR_text_clusters + self.non_text_objects
+        if bool(self.is_empty_page) == (len(all_clusters) > 0):
             raise ValueError(
-                f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters "
-                f"len={len(self.OCR_text_clusters)}"
+                f"is_empty_page value {self.is_empty_page} disagree with OCR clusters "
+                f"len={len(all_clusters)}"
             )
-        text_ids = {item.cluster_number for item in self.OCR_text_clusters}
-        overlap_id = text_ids.intersection({item.cluster_number for item in self.non_text_objects})
+        all_ids = [item.cluster_number for item in all_clusters]
+        overlap_id = {cluster_id for cluster_id in all_ids if all_ids.count(cluster_id) > 1}
         if overlap_id:
             raise ValueError(f"cluster number from non_text_objects block and ocr text blocks must be ALL distinct. Overlapped ids: {list(overlap_id)}")
-        if len(self.meaningful_ordering) != len(text_ids) or set(self.meaningful_ordering) != text_ids:
-            raise ValueError("meaningful_ordering must cover each text cluster exactly once")
+        all_ids_set = set(all_ids)
+        if len(self.meaningful_ordering) != len(all_ids_set) or set(self.meaningful_ordering) != all_ids_set:
+            raise ValueError("meaningful_ordering must cover each text and non-text cluster exactly once")
         return self
 
     

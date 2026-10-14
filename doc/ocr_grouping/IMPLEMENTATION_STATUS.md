@@ -5,6 +5,11 @@ This is the implementation checklist for the contract in `reference/START_HERE_A
 the contract exists but the real OCR workflow or all required modalities are not yet
 covered. `DEFERRED` means intentionally outside this implementation slice.
 
+Audit rule: a focused adapter test does not close a persistence/runtime seam.
+The status below distinguishes implemented code from release evidence. In
+particular, artifact digests, atomic replacement, and same-process resume are
+not claims of complete crash consistency or fresh-process recovery.
+
 | ID | Status | Current evidence |
 | --- | --- | --- |
 | C01 | PASS | Frozen `SourceItem`/`DocumentTree` models; `test_document_tree_requires_exact_source_coverage` |
@@ -15,7 +20,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C06 | PASS | Adjacent, disjoint, known-member proposal validation |
 | C07 | PASS | Stable merge IDs, ordered source fingerprints, SQLite replay, and grouping-policy matching; `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` |
 | C08 | PASS | Content-addressed `MediaRef` records, captions/non-text descriptions, and page/time locations survive normalized tree and JSON round-trips without fabricated geometry; `test_multimodal_media_and_time_ranges_round_trip_without_fabricated_geometry` |
-| C09 | PARTIAL | OCR pages are normalized into one validated complete tree, apply OCR-signaled adjacent continuations, and persist the canonical tree only after complete input; prefix trees are deliberately not persisted because they could overwrite a complete resume checkpoint. Incremental frontier execution remains a follow-up. |
+| C09 | PARTIAL | OCR pages are normalized into one validated complete tree, apply OCR-signaled adjacent continuations, and persist the canonical tree only after complete input; prefix trees are deliberately not persisted because they could overwrite a complete resume checkpoint. Incremental frontier execution remains a follow-up. Mixed text/non-text traversal is now validated at the model and adapter boundary, but downstream grouping/export preservation remains open. |
 | C10 | PASS | Bounded planner now invokes an injected summary generator, validates evidence/fingerprint provenance, persists derived summaries independently, and records failures without failing OCR; `test_prepare_ocr_workflow_input_generates_grounded_summary_with_journal` and `test_summary_failure_is_journaled_without_failing_ocr_ingestion` |
 | C11 | PASS | Empty OCR observations return no tree and normalized pages carry explicit `is_blank_page` metadata; `test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items` |
 | C12 | PASS | Existing OCR models and workflow input remain unchanged; adapter is additive |

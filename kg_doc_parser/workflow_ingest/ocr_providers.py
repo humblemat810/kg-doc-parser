@@ -98,12 +98,12 @@ def _registered_ocr_provider(name: str) -> OCRPageProvider:
 
 
 _DOCLING_CAPABILITIES: tuple[OCRProviderCapabilities, ...] = (
-    OCRProviderCapabilities("docling", "rapidocr", True, True, False, False, "docling", ("linux", "windows", "macos")),
-    OCRProviderCapabilities("docling", "easyocr", True, True, False, False, "docling[easyocr]", ("linux", "windows", "macos")),
-    OCRProviderCapabilities("docling", "tesseract", True, True, False, False, "docling + tesseract", ("linux", "windows", "macos")),
-    OCRProviderCapabilities("docling", "tesserocr", True, True, False, False, "docling[tesserocr]", ("linux", "windows", "macos")),
-    OCRProviderCapabilities("docling", "ocrmac", True, True, False, False, "docling[ocrmac]", ("macos",)),
-    OCRProviderCapabilities("docling", "nemotron-ocr", True, True, False, False, "docling[nemotron]", ("linux",)),
+    OCRProviderCapabilities("docling", "rapidocr", True, True, True, False, "docling", ("linux", "windows", "macos")),
+    OCRProviderCapabilities("docling", "easyocr", True, True, True, False, "docling[easyocr]", ("linux", "windows", "macos")),
+    OCRProviderCapabilities("docling", "tesseract", True, True, True, False, "docling + tesseract", ("linux", "windows", "macos")),
+    OCRProviderCapabilities("docling", "tesserocr", True, True, True, False, "docling[tesserocr]", ("linux", "windows", "macos")),
+    OCRProviderCapabilities("docling", "ocrmac", True, True, True, False, "docling[ocrmac]", ("macos",)),
+    OCRProviderCapabilities("docling", "nemotron-ocr", True, True, True, False, "docling[nemotron]", ("linux",)),
 )
 
 _DIRECT_CAPABILITIES: tuple[OCRProviderCapabilities, ...] = (
@@ -449,28 +449,35 @@ def run_docling_ocr_page(
 
     def _box(item: object) -> tuple[float, float, float, float] | None:
         provenance = getattr(item, "prov", None)
-        records = provenance if isinstance(provenance, (list, tuple)) else [provenance]
+        records: list[object] = list(provenance) if isinstance(provenance, (list, tuple)) else [provenance]
         for record in records:
             bbox = getattr(record, "bbox", None)
             if bbox is None:
                 continue
-            values = {
-                "left": getattr(bbox, "l", getattr(bbox, "left", None)),
-                "right": getattr(bbox, "r", getattr(bbox, "right", None)),
-                "top": getattr(bbox, "t", getattr(bbox, "top", None)),
-                "bottom": getattr(bbox, "b", getattr(bbox, "bottom", None)),
-            }
-            if all(isinstance(value, (int, float)) for value in values.values()):
-                left = max(0.0, float(values["left"]))
-                right = min(float(width), float(values["right"]))
-                top = max(0.0, float(values["top"]))
-                bottom = min(float(height), float(values["bottom"]))
-                if right > left and bottom > top:
-                    return left, right, top, bottom
+            left_value = getattr(bbox, "l", getattr(bbox, "left", None))
+            right_value = getattr(bbox, "r", getattr(bbox, "right", None))
+            top_value = getattr(bbox, "t", getattr(bbox, "top", None))
+            bottom_value = getattr(bbox, "b", getattr(bbox, "bottom", None))
+            raw_values = (left_value, right_value, top_value, bottom_value)
+            numeric_values: list[float] = []
+            for value in raw_values:
+                if not isinstance(value, (int, float)):
+                    break
+                numeric_values.append(float(value))
+            if len(numeric_values) != 4:
+                continue
+            left_value, right_value, top_value, bottom_value = numeric_values
+            left = max(0.0, left_value)
+            right = min(float(width), right_value)
+            top = max(0.0, top_value)
+            bottom = min(float(height), bottom_value)
+            if right > left and bottom > top:
+                return left, right, top, bottom
         return None
 
     iterate_items = getattr(document, "iterate_items", None)
-    items = list(iterate_items()) if callable(iterate_items) else []
+    raw_items = iterate_items() if callable(iterate_items) else []
+    items = list(raw_items) if isinstance(raw_items, (list, tuple)) else []
     for item_record in items:
         item = item_record[0] if isinstance(item_record, tuple) and item_record else item_record
         box = _box(item)
@@ -526,7 +533,7 @@ def run_docling_ocr_page(
     return OCRClusterResponse(
         OCR_text_clusters=clusters,
         non_text_objects=non_text_objects,
-        is_empty_page=not bool(clusters),
+        is_empty_page=not bool(clusters or non_text_objects),
         printed_page_number=None,
         meaningful_ordering=ordering,
         page_x_min=0.0,

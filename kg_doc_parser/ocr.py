@@ -129,7 +129,7 @@ class RawOCRResponse(BaseModel):
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
-    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of the identified text clusters. Must cover all OCR_text_clusters once and only once. ")
+    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of all text and non-text clusters. Must cover every cluster once and only once. ")
     page_x_min : DtoType[float]=Field(description='the page x min in pixel coordinate. ')
     page_x_max : DtoType[float]=Field(description='the page x max in pixel coordinate. ')
     page_y_min : DtoType[float]=Field(description='the page y min in pixel coordinate. ')
@@ -150,17 +150,18 @@ class RawOCRResponse(BaseModel):
     
     @model_validator(mode='after')
     def check_cluster_meaningful_ordering_agreement(self) -> Self:
-        if bool(self.is_empty_page) == (len(self.boxes_2d) > 0):
+        all_clusters = self.boxes_2d + self.non_text_objects
+        if bool(self.is_empty_page) == (len(all_clusters) > 0):
             raise ValueError(
-                f"is_empty_page value {self.is_empty_page} disagree with boxes_2d "
-                f"len={len(self.boxes_2d)}"
+                f"is_empty_page value {self.is_empty_page} disagree with OCR clusters "
+                f"len={len(all_clusters)}"
             )
-        text_ids = {item.id for item in self.boxes_2d}
-        all_ids = [item.id for item in self.non_text_objects] + [item.id for item in self.boxes_2d]
+        all_ids = [item.id for item in all_clusters]
         if len(all_ids) != len(set(all_ids)):
             raise ValueError(f"cluster number from non_text_objects block and boxes_2d must be ALL distinct. overlap ids {set(all_ids)}")
-        if len(self.meaningful_ordering) != len(text_ids) or set(self.meaningful_ordering) != text_ids:
-            raise ValueError("meaningful_ordering must cover each text cluster exactly once")
+        all_ids_set = set(all_ids)
+        if len(self.meaningful_ordering) != len(all_ids_set) or set(self.meaningful_ordering) != all_ids_set:
+            raise ValueError("meaningful_ordering must cover each text and non-text cluster exactly once")
         return self
 
 

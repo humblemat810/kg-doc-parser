@@ -131,7 +131,7 @@ def normalize_ocr_pages(
         if page_number in seen_page_numbers:
             raise ValueError(f"duplicate OCR pdf_page_num: {page_number}")
         seen_page_numbers.add(page_number)
-        seen_clusters: dict[str, set[int]] = {"text": set(), "image": set()}
+        seen_clusters: set[int] = set()
         units: list[SourceUnit] = []
         text_clusters = raw_page.get("OCR_text_clusters", [])
         non_text_objects = raw_page.get("non_text_objects", [])
@@ -148,24 +148,47 @@ def normalize_ocr_pages(
         if ordering is not None:
             if not isinstance(ordering, list) or any(type(value) is not int for value in ordering):
                 raise TypeError("meaningful_ordering must be a list of integer cluster numbers")
-            text_by_cluster = {
+            all_clusters = [*text_clusters, *non_text_objects]
+            cluster_by_number = {
                 cluster.get("cluster_number"): cluster
-                for cluster in text_clusters
+                for cluster in all_clusters
                 if isinstance(cluster, dict) and cluster.get("cluster_number") is not None
             }
-            if len(ordering) != len(text_clusters) or set(ordering) != set(text_by_cluster):
-                raise ValueError("meaningful_ordering must cover each OCR text cluster exactly once")
-            ordered_text_clusters = [text_by_cluster[cluster_number] for cluster_number in ordering]
+            if len(cluster_by_number) != len(all_clusters):
+                raise ValueError("meaningful_ordering requires every OCR cluster to have a unique number")
+            if len(ordering) != len(all_clusters) or set(ordering) != set(cluster_by_number):
+                raise ValueError("meaningful_ordering must cover each OCR text and non-text cluster exactly once")
+            text_numbers = {
+                cluster.get("cluster_number")
+                for cluster in text_clusters
+                if isinstance(cluster, dict)
+            }
+            non_text_numbers = {
+                cluster.get("cluster_number")
+                for cluster in non_text_objects
+                if isinstance(cluster, dict)
+            }
+            ordered_text_clusters = [
+                cluster_by_number[cluster_number]
+                for cluster_number in ordering
+                if cluster_number in text_numbers
+            ]
+            ordered_non_text_objects = [
+                cluster_by_number[cluster_number]
+                for cluster_number in ordering
+                if cluster_number in non_text_numbers
+            ]
         else:
             ordered_text_clusters = text_clusters
+            ordered_non_text_objects = non_text_objects
         for cluster in ordered_text_clusters:
             if not isinstance(cluster, dict):
                 raise TypeError("each OCR text cluster must be an object")
             cluster_number = _ocr_cluster_number(cluster.get("cluster_number"))
-            if cluster_number is not None and cluster_number in seen_clusters["text"]:
+            if cluster_number is not None and cluster_number in seen_clusters:
                 raise ValueError(f"duplicate OCR text cluster_number: {cluster_number}")
             if cluster_number is not None:
-                seen_clusters["text"].add(cluster_number)
+                seen_clusters.add(cluster_number)
             units.append(
                 SourceUnit(
                     modality="ocr_text",
@@ -179,14 +202,14 @@ def normalize_ocr_pages(
                     },
                 )
             )
-        for obj in non_text_objects:
+        for obj in ordered_non_text_objects:
             if not isinstance(obj, dict):
                 raise TypeError("each OCR non-text object must be an object")
             cluster_number = _ocr_cluster_number(obj.get("cluster_number"))
-            if cluster_number is not None and cluster_number in seen_clusters["image"]:
+            if cluster_number is not None and cluster_number in seen_clusters:
                 raise ValueError(f"duplicate OCR image cluster_number: {cluster_number}")
             if cluster_number is not None:
-                seen_clusters["image"].add(cluster_number)
+                seen_clusters.add(cluster_number)
             units.append(
                 SourceUnit(
                     modality="image_region",
@@ -208,6 +231,13 @@ def normalize_ocr_pages(
                     },
                 )
             )
+        if ordering is not None:
+            unit_by_cluster = {
+                unit.cluster_number: unit
+                for unit in units
+                if unit.cluster_number is not None
+            }
+            units = [unit_by_cluster[cluster_number] for cluster_number in ordering]
         normalized_pages.append(
             NormalizedPage(
                 page_number=page_number,

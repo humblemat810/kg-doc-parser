@@ -31,6 +31,33 @@ Every row marked `[x]` must have an evidence entry with all of these fields:
 Do not mark a row `[x]` merely because a helper exists or because a mocked
 adapter test passes.
 
+## Audit note (2026-10-15)
+
+The external seam review found that earlier green marks overstated the
+evidence for artifact integrity and runtime ownership. Those marks are
+intentionally downgraded below. In particular, an artifact being written with
+an atomic replace is not proof that the database/runtime checkpoint and the
+artifact commit are crash-consistent, and a stored digest is not proof until
+the exact reuse path rejects a well-formed tampered artifact. The release gate
+therefore requires both implementation evidence and a reusable test at the
+actual boundary.
+
+The reviewer also identified six release gates which must remain visible:
+
+- **C01:** verify the installed Kogwistar API, not only the source checkout;
+- **C02:** define the root-versus-child runtime ownership boundary;
+- **C03:** reconcile SQLite artifact commits with Kogwistar checkpoints in
+  either crash order;
+- **C04:** prove incremental and uninterrupted grouping are canonically
+  equivalent;
+- **C05:** prove true resume without redundant accepted work;
+- **C06:** require an explicit OCR completeness/quality gate beyond interval
+  coverage.
+
+These gates are tracked in section C and the evidence ledger. A focused test
+may close a sub-item, but cannot close the parent gate when fresh-process,
+SIGKILL, concurrency, or real-provider evidence is still absent.
+
 ## A. Runtime Integration
 
 ### A1. Workflow design
@@ -173,14 +200,20 @@ adapter test passes.
 
 ### S04. Cluster order to multimodal reading order
 
-- [ ] Normalize text and non-text objects into one explicit source traversal.
-- [ ] Validate that `meaningful_ordering` covers every accepted cluster exactly
-  once, including non-text clusters.
-- [ ] Preserve order through normalization, grouping, serialization, and graph
-  export.
+- [x] Normalize text and non-text objects into one explicit source traversal in
+  the response models and document adapter. Focused tests cover mixed text and
+  figure order; downstream grouping/graph preservation remains open.
+- [x] Validate that `meaningful_ordering` covers every accepted cluster exactly
+  once, including non-text clusters. Duplicate IDs, missing IDs, and empty-page
+  agreement are rejected by the typed model/adapter boundary.
+- [~] Preserve order through normalization, grouping, serialization, and graph
+  export. Normalization is tested, but grouping/export and a real multi-object
+  provider fixture are not yet evidenced.
 - [ ] Represent ambiguous provider order explicitly instead of silently
   appending non-text objects after text.
-- [ ] Test text A, figure, caption, text B and deliberate child permutation.
+- [~] Test text A, figure, caption, text B and deliberate child permutation.
+  The current test covers text/figure/text; caption permutation and rejection
+  diagnostics remain open.
 
 ### S05. Accepted group tree to semantic parser input
 
@@ -298,6 +331,36 @@ adapter test passes.
   reject incomplete text, edge-word loss, or excessive data-loss likelihood;
   provider-side missing-region detection, unsupported-coordinate handling, and
   persisted strict-policy evidence remain open.
+
+### Reviewer acceptance matrix
+
+The following matrix is the required status ledger for the external review.
+It deliberately records the current gaps instead of treating the checklist
+itself as proof:
+
+| Gate | Current status | Required closure evidence |
+| --- | --- | --- |
+| C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38655395569`; source-checkout-only tests do not count. |
+| C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs exist, but a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
+| C03 dual-store reconciliation | OPEN | Crash tests for rename-before-checkpoint and checkpoint-before-rename, plus tampered JSON rejection and deterministic recovery. |
+| C04 incremental equivalence | OPEN | Canonical tree comparison between uninterrupted batch and interrupted incremental grouping; exclude timestamps/run metadata. |
+| C05 true resume | PARTIAL | Same-process 100-page interruption evidence exists; SIGKILL/new-process resume, duplicate-resume race, and no redundant accepted work remain. |
+| C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
+
+### S02 correction ledger
+
+S02 must not be marked complete until all of the following are independently
+demonstrated:
+
+- [~] configuration fingerprint changes prevent reuse in a fresh process;
+- [~] a well-formed but tampered OCR JSON is rejected by the reuse path;
+- [~] atomic rename is used for publication;
+- [ ] both artifact/checkpoint crash orders reconcile without accepting a
+  partial or stale result.
+
+The current implementation has atomic publication, digest fields, and a
+rename-before-database orphan-adoption path. These are implementation facts,
+not yet a complete S02 release proof.
 
 ## C. Required End-to-End Acceptance Fixture
 
