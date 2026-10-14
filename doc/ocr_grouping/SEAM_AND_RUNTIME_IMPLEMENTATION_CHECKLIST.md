@@ -274,9 +274,10 @@ adapter test passes.
 
 ## C. Release gates added by the implementation review
 
-- [ ] **C01 — Installed API compatibility:** record the installed Kogwistar
+- [x] **C01 — Installed API compatibility:** record the installed Kogwistar
   version and verify the exact persisted invocation/checkpoint APIs used by the
-  parser on CPython 3.12-3.14 and PyPy 3.11.
+  parser on CPython 3.12-3.14 and PyPy 3.11. Parser CI run `38655395569`
+  passed this matrix.
 - [~] **C02 — Runtime ownership boundary:** the root run owns page, grouping,
   and semantic child invocations with stable child IDs. Prove recovery of the
   complete parent/child lineage before release.
@@ -347,5 +348,7 @@ protocol.
 - [ ] Run `git diff --check` and lock verification.
 - [ ] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
-- [ ] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11.
+- [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11.
+  Parser CI run `38655395569` passed; slow/manual provider experiments remain
+  separate gates.
 - [ ] Only after all release gates pass, update version/release notes and pins.
