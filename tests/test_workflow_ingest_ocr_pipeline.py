@@ -606,6 +606,11 @@ def test_prepare_ocr_workflow_input_writes_legacy_compatible_artifacts() -> None
     assert len(regenerated) == 1
     assert regenerated[0]["OCR_text_clusters"][0]["text"] == "Compatibility page"
     assert artifacts.workflow_input.collections[0].pages[0].units[0].text == "Compatibility page"
+    persisted_page = json.loads((artifacts.legacy_dir / "page_1.json").read_text(encoding="utf-8"))
+    assert persisted_page["metadata"]["ocr_provider"] == "fake"
+    assert len(persisted_page["metadata"]["ocr_configuration_fingerprint"]) == 64
+    assert artifacts.document_tree is not None
+    assert artifacts.document_tree.source_items[0].ocr_metadata is not None
 
 
 @pytest.mark.ci
