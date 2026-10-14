@@ -36,6 +36,11 @@ def build_document_tree(
             has_precise_bbox = unit.bbox is not None and unit.bbox.x_min < unit.bbox.x_max and unit.bbox.y_min < unit.bbox.y_max
             location = SourceLocation(
                 page_index=page.page_number - 1,
+                printed_page_label=(
+                    page.metadata.get("printed_page_number")
+                    if isinstance(page.metadata.get("printed_page_number"), str)
+                    else None
+                ),
                 bbox=(
                     None
                     if not has_precise_bbox

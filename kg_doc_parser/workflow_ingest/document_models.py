@@ -76,7 +76,7 @@ class OCRMetadata(FrozenModel):
 
 class SourceItem(FrozenModel):
     item_id: str = Field(min_length=1)
-    kind: str = Field(min_length=1, max_length=128)
+    kind: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z][A-Za-z0-9_.:/-]*$")
     location: SourceLocation
     text: str | None = None
     media: MediaRef | None = None
@@ -131,6 +131,8 @@ class Summary(FrozenModel):
             raise ValueError("generated summaries require text, evidence, and provenance")
         if self.status not in {"generated", "verified"} and self.text is not None:
             raise ValueError("unavailable summaries cannot contain text")
+        if len(set(self.evidence_item_ids)) != len(self.evidence_item_ids):
+            raise ValueError("summary evidence items must be unique")
         return self
 
 
@@ -140,6 +142,7 @@ class DocumentNode(FrozenModel):
     parts: tuple[SourceSlice, ...] = ()
     children: tuple[ChildRef, ...] = ()
     summary: Summary | None = None
+    annotations: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def shape(self) -> "DocumentNode":
