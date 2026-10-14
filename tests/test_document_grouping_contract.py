@@ -115,3 +115,27 @@ def test_generated_summary_requires_current_descendant_fingerprint() -> None:
     payload["nodes"][-1]["summary"]["input_fingerprint"] = "0" * 64
     with pytest.raises(ValueError, match="summary fingerprint is stale"):
         DocumentTree.model_validate(payload)
+
+
+def test_title_and_atomic_sixty_row_table_remain_two_grounded_children() -> None:
+    title = _item("title", "Report")
+    table_text = "\n".join(f"row-{index}|value-{index}" for index in range(60))
+    table = _item("table", table_text)
+    tree = DocumentTree(
+        document_id="table-doc",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(title, table),
+        nodes=(
+            _leaf("title-leaf", "title", title.text or "", kind="heading"),
+            _leaf("table-leaf", "table", table.text or "", kind="table"),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=({"node_id": "title-leaf"}, {"node_id": "table-leaf"}),
+            ),
+        ),
+    )
+    assert len(tree.nodes[-1].children) == 2
+    assert tree.render_preview() == f"Report{table_text}"
