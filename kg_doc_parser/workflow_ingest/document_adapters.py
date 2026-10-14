@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from typing import Literal, cast
 
 from .adapters import _allocated_cluster_numbers
 from .document_grouping import GroupProposal, merge_groups
@@ -64,6 +65,13 @@ def build_document_tree(
                 and unit.bbox.y_min < unit.bbox.y_max
                 else None
             )
+            coordinate_system = unit.metadata.get("coordinate_system", "pixels")
+            if coordinate_system not in {"pixels", "relative", "points"}:
+                precise_bbox = None
+                coordinate_system = "pixels"
+            coordinate_system_literal = cast(
+                Literal["pixels", "relative", "points"], coordinate_system
+            )
             printed_page_label = page.metadata.get("printed_page_number")
             if not isinstance(printed_page_label, str):
                 printed_page_label = None
@@ -78,7 +86,7 @@ def build_document_tree(
                         y0=precise_bbox.y_min,
                         x1=precise_bbox.x_max,
                         y1=precise_bbox.y_max,
-                        coordinate_system="pixels",
+                        coordinate_system=coordinate_system_literal,
                     )
                 ),
                 accuracy="region" if precise_bbox is not None else "page",

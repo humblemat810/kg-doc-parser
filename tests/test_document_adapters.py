@@ -133,6 +133,32 @@ def test_normalize_ocr_pages_preserves_declared_order_and_provider_metadata() ->
     assert tree.source_items[0].ocr_metadata.model == "rapidocr-v1"
 
 
+def test_unknown_ocr_coordinate_system_downgrades_to_page_accuracy() -> None:
+    inp = normalize_ocr_pages(
+        document_id="unknown-coordinates",
+        title="Unknown coordinates",
+        pages=[
+            {
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [
+                    {
+                        "cluster_number": 0,
+                        "text": "opaque frame",
+                        "bb_x_max": 10,
+                        "bb_y_max": 10,
+                        "coordinate_system": "provider-native-v2",
+                    }
+                ],
+                "non_text_objects": [],
+            }
+        ],
+    )
+    tree = build_document_tree(inp)
+    assert tree is not None
+    assert tree.source_items[0].location.accuracy == "page"
+    assert tree.source_items[0].location.bbox is None
+
+
 def test_build_document_tree_keeps_nontext_observation_without_fake_media() -> None:
     inp = WorkflowIngestInput(
         request_id="doc",

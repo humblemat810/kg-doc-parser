@@ -22,6 +22,7 @@ class OCRTextClusterJSON(TypedDict, total=False):
     bb_x_max: float
     cluster_number: int
     text: str
+    coordinate_system: str
 
 
 class OCRNonTextObjectJSON(TypedDict, total=False):
@@ -35,6 +36,7 @@ class OCRNonTextObjectJSON(TypedDict, total=False):
     mime_type: str
     media_sha256: str
     media_byte_length: int
+    coordinate_system: str
 
 
 class OCRPageJSON(TypedDict):
@@ -167,7 +169,10 @@ def normalize_ocr_pages(
                     cluster_number=cluster_number,
                     text=cluster.get("text"),
                     bbox=_ocr_bbox(cluster),
-                    metadata=dict(page_metadata),
+                    metadata={
+                        **page_metadata,
+                        "coordinate_system": cluster.get("coordinate_system", "pixels"),
+                    },
                 )
             )
         for obj in non_text_objects:
@@ -191,6 +196,7 @@ def normalize_ocr_pages(
                     embedding_space="image",
                     metadata={
                         **page_metadata,
+                        "coordinate_system": obj.get("coordinate_system", "pixels"),
                         "participates_in_semantic_text": False,
                         "mime_type": obj.get("mime_type"),
                         "media_sha256": obj.get("media_sha256"),
