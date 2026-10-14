@@ -253,6 +253,8 @@ def run_ocr_source_workflow(
     grouping_proposals: Sequence[GroupProposal] | None = None,
     grouping_passes: Sequence[Sequence[GroupProposal]] | None = None,
     grouping_policy_version: str = "baseline-v1",
+    run_id: str | None = None,
+    resume_from_checkpoint: bool = False,
 ) -> OcrWorkflowCommandResult:
     source_path = Path(source_path)
     output_dir = Path(output_dir)
@@ -303,6 +305,8 @@ def run_ocr_source_workflow(
         grouping_proposals=grouping_proposals,
         grouping_passes=grouping_passes,
         grouping_policy_version=grouping_policy_version,
+        run_id=run_id,
+        resume_from_checkpoint=resume_from_checkpoint,
     )
     _emit(
         probe,

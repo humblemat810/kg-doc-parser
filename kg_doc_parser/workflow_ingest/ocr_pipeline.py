@@ -2179,6 +2179,8 @@ def run_ocr_ingest_workflow(
     grouping_policy_version: str = "baseline-v1",
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
+    run_id: str | None = None,
+    resume_from_checkpoint: bool = False,
 ) -> tuple[_RunCompat, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
     """Run OCR preparation and then feed the normalized result into workflow ingest.
 
@@ -2237,6 +2239,10 @@ def run_ocr_ingest_workflow(
         )
         attach_document_tree_metadata(artifacts.workflow_input, artifacts.document_tree)
         _write_document_tree(artifacts.document_tree_path, artifacts.document_tree)
+    # OCR page progress is resumed from the state store above.  The semantic
+    # node/edge workflow uses the same run token when its execution was
+    # suspended after OCR completed, so callers can resume both stages with
+    # the runtime's normal checkpoint contract.
     run, bundle = run_ingest_workflow(
         inp=artifacts.workflow_input,
         workflow_engine=workflow_engine,
@@ -2244,5 +2250,7 @@ def run_ocr_ingest_workflow(
         knowledge_engine=knowledge_engine,
         provider_settings=provider_settings,
         deps=deps,
+        run_id=run_id,
+        resume_from_checkpoint=resume_from_checkpoint,
     )
     return run, bundle, artifacts

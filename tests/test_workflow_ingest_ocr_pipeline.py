@@ -376,6 +376,62 @@ def test_prepare_ocr_workflow_input_resumes_completed_pages() -> None:
 
 
 @pytest.mark.ci
+def test_prepare_ocr_workflow_input_resumes_after_mid_document_interruption() -> None:
+    """A failed page does not discard accepted pages from a long document."""
+
+    scratch = _scratch("ocr_mid_document_resume")
+    image_paths = [scratch / "images" / f"page_{page}.png" for page in range(1, 7)]
+    for page, image_path in enumerate(image_paths, start=1):
+        _draw_test_image(image_path, lines=[f"Long document page {page}"])
+    payloads = [
+        OCRImagePayload(page_number=page, image_path=str(image_path))
+        for page, image_path in enumerate(image_paths, start=1)
+    ]
+    calls: list[int] = []
+    interrupted = True
+
+    def _runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        nonlocal interrupted
+        calls.append(page_number)
+        if page_number == 4 and interrupted:
+            interrupted = False
+            raise RuntimeError("simulated process interruption")
+        return _fake_ocr_response(page_number, f"Long document page {page_number}")
+
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+    with pytest.raises(RuntimeError, match=r"pages \[4\]"):
+        prepare_ocr_workflow_input(
+            document_id="ocr-mid-document-resume",
+            title="OCR Mid Document Resume",
+            output_dir=scratch / "artifacts",
+            image_payloads=payloads,
+            provider_settings=settings,
+            ocr_runner=_runner,
+        )
+
+    resumed = prepare_ocr_workflow_input(
+        document_id="ocr-mid-document-resume",
+        title="OCR Mid Document Resume",
+        output_dir=scratch / "artifacts",
+        image_payloads=payloads,
+        provider_settings=settings,
+        ocr_runner=_runner,
+    )
+
+    assert resumed.completed_pages == list(range(1, 7))
+    assert resumed.reused_pages == [1, 2, 3, 5, 6]
+    assert calls == [1, 2, 3, 4, 5, 6, 4]
+    assert resumed.document_tree is not None
+
+
+@pytest.mark.ci
 def test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping() -> None:
     scratch = _scratch("ocr_live_cross_page_grouping")
     image_paths = [scratch / "images" / f"page_{page}.png" for page in (1, 2, 3)]
