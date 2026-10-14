@@ -15,7 +15,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C06 | PASS | Adjacent, disjoint, known-member proposal validation |
 | C07 | PASS | Stable merge IDs, ordered source fingerprints, SQLite replay, and grouping-policy matching; `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` |
 | C08 | PASS | Content-addressed `MediaRef` records, captions/non-text descriptions, and page/time locations survive normalized tree and JSON round-trips without fabricated geometry; `test_multimodal_media_and_time_ranges_round_trip_without_fabricated_geometry` |
-| C09 | PASS | OCR pages rebuild the validated tree after every accepted/reused page, apply OCR-signaled adjacent continuations, and persist the open frontier/tree in SQLite; `test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping` |
+| C09 | PARTIAL | OCR pages are normalized into one validated complete tree, apply OCR-signaled adjacent continuations, and persist the canonical tree only after complete input; prefix trees are deliberately not persisted because they could overwrite a complete resume checkpoint. Incremental frontier execution remains a follow-up. |
 | C10 | PASS | Bounded planner now invokes an injected summary generator, validates evidence/fingerprint provenance, persists derived summaries independently, and records failures without failing OCR; `test_prepare_ocr_workflow_input_generates_grounded_summary_with_journal` and `test_summary_failure_is_journaled_without_failing_ocr_ingestion` |
 | C11 | PASS | Empty OCR observations return no tree and normalized pages carry explicit `is_blank_page` metadata; `test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items` |
 | C12 | PASS | Existing OCR models and workflow input remain unchanged; adapter is additive |
@@ -23,7 +23,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C14 | PASS | `DocumentTree` remains standalone; OCR metadata and lineage enter the existing `WorkflowIngestInput`, semantic parser, `WorkflowExportBundle`, and `CanonicalGraphPersistenceClient` boundary. No persistent Kogwistar model is subclassed; a separate direct `DocumentTree` serializer is intentionally not duplicated |
 | C15 | PASS | Six lazy Docling engines, direct RapidOCR/EasyOCR, platform/CLI gating, KServe v2 transport, and process-local user-provider registration; `tests/test_workflow_ingest_ocr_providers.py` passed 16 tests (one optional-runtime skip); real-provider observations are recorded in `doc/ocr_grouping/PROVIDER_SMOKE_RESULTS.md` |
 | C16 | PASS | `SummaryPolicy` and `select_summary_targets()` bound eligible kinds, evidence size, information gain, estimated input tokens, and target count without invoking a provider; `test_summary_target_planner_is_bounded_and_skips_low_information_nodes` |
-| C17 | PASS | Atomic tree replacement, versioned SQLite page/tree/frontier checkpoints after each page/pass, idempotent summary-attempt journal, and forwarding of the existing Kogwistar `run_id`/`resume_from_checkpoint` contract through `run_ocr_source_workflow()`; `test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping`, `test_prepare_ocr_workflow_input_resumes_after_mid_document_interruption`, and runtime resume tests |
+| C17 | PARTIAL | Atomic tree replacement, migrated SQLite page/config/artifact checkpoints, idempotent summary-attempt journal, and a versioned root Kogwistar workflow with page/grouping/semantic child invocations are present. Crash-window reconciliation, SIGKILL resume, and duplicate-resume evidence remain open; see `REVIEW_FIX_CHECKLIST.md`. |
 | C18 | PASS | `DocumentReferenceMention` keeps explicit page/section/figure/table phrases source-grounded and outside the primary coverage partition; unresolved targets remain pending; `test_explicit_reference_mentions_are_source_grounded_and_outside_partition`, `test_reference_mentions_round_trip_and_validate_targets_without_becoming_children`, and `test_reference_mentions_reject_unknown_targets_and_non_text_sources` |
 | C19 | PASS | `render_preview()` reads only accepted source intervals and display separators |
 | C20 | PASS | Open node kinds and heterogeneous adjacent merges are supported |
@@ -32,9 +32,15 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 ## Current Call Chain
 
 `run_ocr_source_workflow()` -> `run_ocr_ingest_workflow()` ->
-`parse_ocr_document()` -> `prepare_ocr_workflow_input()` ->
-`normalize_ocr_pages()` -> `build_document_tree()` -> optional
-`apply_grouping_proposals()` -> existing `run_ingest_workflow()` semantic path.
+`_build_ocr_page_preparation()` -> `run_ocr_root_workflow()` -> persisted
+`ocr_pages` child -> persisted `grouping` child -> persisted semantic ingest
+child -> root finalization.
+
+The root and child stages now use the existing Kogwistar runtime and stable
+parent/child invocation IDs. SQLite remains an artifact/cache index, not the
+authoritative workflow cursor. Crash reconciliation and release-grade
+interruption evidence remain open; passing a runtime `run_id` alone is not
+treated as proof of recovery.
 
 The tree is written atomically to `legacy_dir/document-tree.json` and is also
 available as `OCRWorkflowArtifacts.document_tree`. The semantic parser still
@@ -73,7 +79,24 @@ poetry run pytest tests/test_workflow_ingest_ocr_providers.py -q -p no:cacheprov
 16 passed, 1 skipped
 ```
 
-All required C01–C21 rows are currently marked `PASS`. A direct export format
+The legacy summary below is retained for historical context; the current
+release status is tracked above and is not all green. A direct export format
 for `DocumentTree` independent of the established semantic parser is not part
 of this contract; adding one would duplicate the existing Kogwistar projection
 boundary and is intentionally out of scope.
+
+The status above is not a release claim. C09, C17 and several seam rows remain
+partial or unchecked pending runtime lineage, crash-window, incremental-
+frontier, and multimodal evidence. A row may move to `PASS` only when an
+evidence ledger records its implementation location, exact pytest node ID,
+before/after behavior, and whether the proof used the persisted Kogwistar
+runtime or only a standalone/mock path. The additional review gates C01-C06
+are defined in `SEAM_AND_RUNTIME_IMPLEMENTATION_CHECKLIST.md`.
+
+## Current evidence ledger
+
+| Gate | Implementation | Regression test | Runtime | Status |
+| --- | --- | --- | --- | --- |
+| C02 | `workflow_ingest/design.py:build_ocr_workflow_design`; `workflow_ingest/ocr_runtime.py:run_ocr_root_workflow` | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`; `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` | Persisted Kogwistar runtime with page, grouping, and semantic child invocations; coordinated parser/core checkout | VERIFIED for failed-child resume and canonical equivalence in one process; fresh-process lineage remains open |
+| C03 | `workflow_ingest/ocr_runtime.py:_reconcile_page_checkpoint`; `OCRWorkflowStateStore.should_skip_page` | Existing artifact digest/tamper tests cover the predicate; crash-window ordering test remains required | Persisted runtime plus SQLite/artifact cache | PARTIAL |
+| C05 | `workflow_ingest/ocr_runtime.py:run_ocr_root_workflow` stable child IDs and terminal resume; Kogwistar `runtime.py:_run_workflow_invocation` retryable failed-child handling | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`; `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`; `tests/runtime/test_workflow_invocation_and_route_next.py::test_nested_workflow_failure_short_circuits_parent_routing` | Persisted Kogwistar runtime; 100-page same-process interruption at page 63 completed in 688.20s with pages 1-62 reused and graph payload equal to uninterrupted reference | VERIFIED for failed-child retry and accepted-result equivalence; SIGKILL/new-process and dual-store crash recovery remain open |

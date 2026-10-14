@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
-from ..models import OCRClusterResponse, TextCluster
+from ..models import NonTextCluster, OCRClusterResponse, TextCluster
 from .providers import ProviderEndpointConfig, WorkflowProviderSettings
 
 DoclingEngine = Literal["rapidocr", "easyocr", "tesseract", "tesserocr", "ocrmac", "nemotron-ocr"]
@@ -406,9 +406,10 @@ def run_docling_ocr_page(
 ) -> OCRClusterResponse:
     """OCR one image through a selected Docling engine.
 
-    Docling's document text is authoritative here, while the current parser
-    contract only promises page-level geometry.  We therefore use the image's
-    full-page bounds rather than inventing word coordinates.
+    Prefer Docling provenance boxes for each item.  The Markdown export is a
+    fallback only for older/limited Docling adapters that expose no item
+    provenance; it must not erase positional information when that information
+    is available.
     """
 
     try:
@@ -442,26 +443,92 @@ def run_docling_ocr_page(
     )
     result = converter.convert(str(image_path))
     document = result.document
-    export = getattr(document, "export_to_markdown", None)
-    text = str(export() if callable(export) else getattr(document, "text", "")).strip()
     clusters: list[TextCluster] = []
-    if text:
-        clusters.append(
-            TextCluster(
-                text=text,
-                bb_x_min=0.0,
-                bb_x_max=float(width),
-                bb_y_min=0.0,
-                bb_y_max=float(height),
-                cluster_number=0,
+    non_text_objects: list[NonTextCluster] = []
+    ordering: list[int] = []
+
+    def _box(item: object) -> tuple[float, float, float, float] | None:
+        provenance = getattr(item, "prov", None)
+        records = provenance if isinstance(provenance, (list, tuple)) else [provenance]
+        for record in records:
+            bbox = getattr(record, "bbox", None)
+            if bbox is None:
+                continue
+            values = {
+                "left": getattr(bbox, "l", getattr(bbox, "left", None)),
+                "right": getattr(bbox, "r", getattr(bbox, "right", None)),
+                "top": getattr(bbox, "t", getattr(bbox, "top", None)),
+                "bottom": getattr(bbox, "b", getattr(bbox, "bottom", None)),
+            }
+            if all(isinstance(value, (int, float)) for value in values.values()):
+                left = max(0.0, float(values["left"]))
+                right = min(float(width), float(values["right"]))
+                top = max(0.0, float(values["top"]))
+                bottom = min(float(height), float(values["bottom"]))
+                if right > left and bottom > top:
+                    return left, right, top, bottom
+        return None
+
+    iterate_items = getattr(document, "iterate_items", None)
+    items = list(iterate_items()) if callable(iterate_items) else []
+    for item_record in items:
+        item = item_record[0] if isinstance(item_record, tuple) and item_record else item_record
+        box = _box(item)
+        if box is None:
+            continue
+        text_value = getattr(item, "text", "")
+        if not text_value:
+            export_item = getattr(item, "export_to_markdown", None)
+            text_value = export_item() if callable(export_item) else ""
+        text = str(text_value or "").strip()
+        label = str(getattr(item, "label", "") or "").lower()
+        cluster_number = len(ordering)
+        if text and "table" not in label and "picture" not in label and "figure" not in label:
+            clusters.append(
+                TextCluster(
+                    text=text,
+                    bb_x_min=box[0],
+                    bb_x_max=box[1],
+                    bb_y_min=box[2],
+                    bb_y_max=box[3],
+                    cluster_number=cluster_number,
+                )
             )
-        )
+        else:
+            description = text or label or "Docling non-text item"
+            non_text_objects.append(
+                NonTextCluster(
+                    description=description,
+                    bb_x_min=box[0],
+                    bb_x_max=box[1],
+                    bb_y_min=box[2],
+                    bb_y_max=box[3],
+                    cluster_number=cluster_number,
+                )
+            )
+        ordering.append(cluster_number)
+
+    if not ordering:
+        export = getattr(document, "export_to_markdown", None)
+        text = str(export() if callable(export) else getattr(document, "text", "")).strip()
+        if text:
+            clusters.append(
+                TextCluster(
+                    text=text,
+                    bb_x_min=0.0,
+                    bb_x_max=float(width),
+                    bb_y_min=0.0,
+                    bb_y_max=float(height),
+                    cluster_number=0,
+                )
+            )
+            ordering = [0]
     return OCRClusterResponse(
         OCR_text_clusters=clusters,
-        non_text_objects=[],
+        non_text_objects=non_text_objects,
         is_empty_page=not bool(clusters),
         printed_page_number=None,
-        meaningful_ordering=[0] if clusters else [],
+        meaningful_ordering=ordering,
         page_x_min=0.0,
         page_x_max=float(width),
         page_y_min=0.0,
@@ -471,6 +538,6 @@ def run_docling_ocr_page(
         incomplete_text=False,
         data_loss_likelihood=0.0,
         scan_quality="medium",
-        contains_table=False,
+        contains_table=any("table" in str(getattr(item, "label", "")).lower() for item in items),
     )
 

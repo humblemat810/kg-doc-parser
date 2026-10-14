@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
 
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
 from .document_models import SummaryPolicy
 from .ocr_pipeline import (
     OCRImagePayload,
@@ -112,6 +114,7 @@ class OCRParseRequest:
     ocr_candidate_models: Sequence[str] | None = None
     probe: WorkflowProbe | None = None
     restore_grouping_checkpoint: bool = True
+    persist_grouping_checkpoint: bool = True
     summary_policy: SummaryPolicy | None = None
     summary_generator: SummaryGenerator | None = None
 
@@ -203,6 +206,11 @@ def parse_ocr_document(
     ocr_candidate_models: Sequence[str] | None = None,
     probe: WorkflowProbe | None = None,
     restore_grouping_checkpoint: bool = True,
+    persist_grouping_checkpoint: bool = True,
+    workflow_engine: GraphKnowledgeEngine | None = None,
+    conversation_engine: GraphKnowledgeEngine | None = None,
+    ocr_runtime_run_id: str | None = None,
+    resume_from_checkpoint: bool = False,
     grouping_policy_version: str = "baseline-v1",
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
@@ -227,6 +235,11 @@ def parse_ocr_document(
         ocr_candidate_models=ocr_candidate_models,
         probe=probe,
         restore_grouping_checkpoint=restore_grouping_checkpoint,
+        persist_grouping_checkpoint=persist_grouping_checkpoint,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        ocr_runtime_run_id=ocr_runtime_run_id,
+        resume_from_checkpoint=resume_from_checkpoint,
         grouping_policy_version=grouping_policy_version,
         summary_policy=summary_policy,
         summary_generator=summary_generator,

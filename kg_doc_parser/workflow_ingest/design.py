@@ -9,6 +9,9 @@ from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.typing_interfaces import ReadLike, WriteLike
 
 DEFAULT_WORKFLOW_ID = "kg_doc_parser.ingest.v1"
+DEFAULT_OCR_WORKFLOW_ID = "kg_doc_parser.ocr.v1"
+DEFAULT_OCR_GROUPING_WORKFLOW_ID = "kg_doc_parser.ocr_grouping.v1"
+DEFAULT_OCR_PAGE_WORKFLOW_ID = "kg_doc_parser.ocr_pages.v1"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -250,3 +253,179 @@ def ensure_ingest_workflow_design(
             len(edges),
             edge.label,
         )
+
+
+def build_ocr_grouping_workflow_design(
+    workflow_id: str = DEFAULT_OCR_GROUPING_WORKFLOW_ID,
+) -> tuple[list[WorkflowNode], list[WorkflowEdge]]:
+    """Build the durable workflow design for document grouping and summaries."""
+    specs = [
+        ("start", "start", True, False),
+        ("restore_grouping_checkpoint", "restore_grouping_checkpoint", False, False),
+        ("apply_grouping_pass", "apply_grouping_pass", False, False),
+        ("generate_grouping_summaries", "generate_grouping_summaries", False, False),
+        ("persist_grouping_result", "persist_grouping_result", False, False),
+        ("end", "end", False, True),
+    ]
+    nodes = [
+        _workflow_node(
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|{suffix}",
+            op=op,
+            start=start,
+            terminal=terminal,
+        )
+        for suffix, op, start, terminal in specs
+    ]
+    by_suffix = {node.safe_get_id().split("|")[-1]: node for node in nodes}
+    pairs = [
+        ("start", "restore_grouping_checkpoint"),
+        ("restore_grouping_checkpoint", "apply_grouping_pass"),
+        ("apply_grouping_pass", "apply_grouping_pass"),
+        ("apply_grouping_pass", "generate_grouping_summaries"),
+        ("generate_grouping_summaries", "persist_grouping_result"),
+        ("persist_grouping_result", "end"),
+    ]
+    edges = [
+        _workflow_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|{index}|{src}->{dst}",
+            src=by_suffix[src].safe_get_id(),
+            dst=by_suffix[dst].safe_get_id(),
+        )
+        for index, (src, dst) in enumerate(pairs)
+    ]
+    return nodes, edges
+
+
+def ensure_ocr_grouping_workflow_design(
+    workflow_engine: WorkflowEngineLike,
+    workflow_id: str = DEFAULT_OCR_GROUPING_WORKFLOW_ID,
+) -> None:
+    """Install the grouping workflow nodes/edges idempotently."""
+    nodes, edges = build_ocr_grouping_workflow_design(workflow_id)
+    for node in nodes:
+        if not workflow_engine.persist.exists_node(node.safe_get_id()):
+            workflow_engine.write.add_node(node)
+    for edge in edges:
+        if not workflow_engine.persist.exists_edge(edge.safe_get_id()):
+            workflow_engine.write.add_edge(edge)
+
+
+def build_ocr_page_workflow_design(
+    workflow_id: str = DEFAULT_OCR_PAGE_WORKFLOW_ID,
+) -> tuple[list[WorkflowNode], list[WorkflowEdge]]:
+    """Build the persisted per-page OCR workflow design."""
+    specs = [
+        ("start", "start", True, False),
+        ("process_ocr_page", "process_ocr_page", False, False),
+        ("finalize_ocr_pages", "finalize_ocr_pages", False, False),
+        ("end", "end", False, True),
+    ]
+    nodes = [
+        _workflow_node(
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|{suffix}",
+            op=op,
+            start=start,
+            terminal=terminal,
+        )
+        for suffix, op, start, terminal in specs
+    ]
+    by_suffix = {node.safe_get_id().split("|")[-1]: node for node in nodes}
+    pairs = [
+        ("start", "process_ocr_page"),
+        ("process_ocr_page", "process_ocr_page"),
+        ("process_ocr_page", "finalize_ocr_pages"),
+        ("finalize_ocr_pages", "end"),
+    ]
+    edges = [
+        _workflow_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|{index}|{src}->{dst}",
+            src=by_suffix[src].safe_get_id(),
+            dst=by_suffix[dst].safe_get_id(),
+        )
+        for index, (src, dst) in enumerate(pairs)
+    ]
+    return nodes, edges
+
+
+def ensure_ocr_page_workflow_design(
+    workflow_engine: WorkflowEngineLike,
+    workflow_id: str = DEFAULT_OCR_PAGE_WORKFLOW_ID,
+) -> None:
+    """Install the per-page OCR workflow nodes and edges idempotently."""
+    nodes, edges = build_ocr_page_workflow_design(workflow_id)
+    for node in nodes:
+        if not workflow_engine.persist.exists_node(node.safe_get_id()):
+            workflow_engine.write.add_node(node)
+    for edge in edges:
+        if not workflow_engine.persist.exists_edge(edge.safe_get_id()):
+            workflow_engine.write.add_edge(edge)
+
+
+def build_ocr_workflow_design(
+    workflow_id: str = DEFAULT_OCR_WORKFLOW_ID,
+) -> tuple[list[WorkflowNode], list[WorkflowEdge]]:
+    """Build the durable parent workflow for OCR, grouping, and parsing.
+
+    The three expensive stages remain independently versioned child workflows,
+    but their invocation records are owned by this parent run.  A caller can
+    therefore resume one root identity and recover the complete stage lineage.
+    """
+
+    specs = [
+        ("start", "ocr_root_start", True, False),
+        ("invoke_ocr_pages", "ocr_root_invoke_pages", False, False),
+        ("prepare_grouping_input", "ocr_root_prepare_grouping_input", False, False),
+        ("invoke_grouping", "ocr_root_invoke_grouping", False, False),
+        ("prepare_semantic_input", "ocr_root_prepare_semantic_input", False, False),
+        ("invoke_semantic", "ocr_root_invoke_semantic", False, False),
+        ("finalize", "ocr_root_finalize", False, False),
+        ("end", "ocr_root_end", False, True),
+    ]
+    nodes = [
+        _workflow_node(
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|{suffix}",
+            op=op,
+            start=start,
+            terminal=terminal,
+        )
+        for suffix, op, start, terminal in specs
+    ]
+    by_suffix = {node.safe_get_id().split("|")[-1]: node for node in nodes}
+    pairs = [
+        ("start", "invoke_ocr_pages"),
+        ("invoke_ocr_pages", "prepare_grouping_input"),
+        ("prepare_grouping_input", "invoke_grouping"),
+        ("invoke_grouping", "prepare_semantic_input"),
+        ("prepare_semantic_input", "invoke_semantic"),
+        ("invoke_semantic", "finalize"),
+        ("finalize", "end"),
+    ]
+    edges = [
+        _workflow_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|{index}|{src}->{dst}",
+            src=by_suffix[src].safe_get_id(),
+            dst=by_suffix[dst].safe_get_id(),
+        )
+        for index, (src, dst) in enumerate(pairs)
+    ]
+    return nodes, edges
+
+
+def ensure_ocr_workflow_design(
+    workflow_engine: WorkflowEngineLike,
+    workflow_id: str = DEFAULT_OCR_WORKFLOW_ID,
+) -> None:
+    """Install the OCR parent workflow design idempotently."""
+    nodes, edges = build_ocr_workflow_design(workflow_id)
+    for node in nodes:
+        if not workflow_engine.persist.exists_node(node.safe_get_id()):
+            workflow_engine.write.add_node(node)
+    for edge in edges:
+        if not workflow_engine.persist.exists_edge(edge.safe_get_id()):
+            workflow_engine.write.add_edge(edge)

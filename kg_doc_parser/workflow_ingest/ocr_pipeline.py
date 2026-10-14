@@ -38,6 +38,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import time
@@ -80,7 +81,7 @@ from .providers import (
     invoke_with_timeout,
 )
 from .serialization import JsonValue
-from .service import _RunCompat, run_ingest_workflow
+from .service import _RunCompat
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,6 +109,27 @@ def _is_sha256_digest(value: object) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdefABCDEF" for character in value)
     )
+
+
+def _ocr_configuration_fingerprint(
+    settings: WorkflowProviderSettings,
+    *,
+    candidate_models: Sequence[str] = (),
+) -> str:
+    """Return the non-secret identity of an OCR execution configuration."""
+    config = {
+        "provider": settings.ocr.provider,
+        "model": settings.ocr.model,
+        "base_url": settings.ocr.base_url,
+        "api_version": settings.ocr.api_version,
+        "project": settings.ocr.project,
+        "ocr_engine": settings.ocr.ocr_engine,
+        "ocr_language": settings.ocr.ocr_language,
+        "candidate_models": list(candidate_models),
+    }
+    return hashlib.sha256(
+        json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
 
 
 def _ocr_page_metadata(settings: WorkflowProviderSettings) -> dict[str, str]:
@@ -215,7 +237,9 @@ class SummaryGenerator(Protocol):
         input_fingerprint: str,
     ) -> Summary: ...
 
-_OCR_STATE_SCHEMA_VERSION = 1
+_OCR_STATE_SCHEMA_VERSION = 2
+_PDF_RENDER_MANIFEST_VERSION = 1
+_PDF_RENDERER_VERSION = "pdf2image-pillow-v1"
 
 
 def _write_document_tree(path: Path, tree: DocumentTree) -> None:
@@ -226,6 +250,22 @@ def _write_document_tree(path: Path, tree: DocumentTree) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _write_json_atomic(path: Path, payload: object) -> None:
+    """Publish a JSON artifact only after serialization succeeds."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        encoded = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+        with temporary.open("wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _coalesce_cross_page_continuations(
@@ -283,7 +323,25 @@ def _generate_tree_summaries(
     items = {item.item_id: item for item in tree.source_items}
     current = tree
     for node_id in select_summary_targets(current, policy):
-        input_fingerprint = current.summary_input_fingerprint(node_id)
+        evidence_fingerprint = current.summary_input_fingerprint(node_id)
+        policy_payload = policy.model_dump(mode="json") if policy is not None else {}
+        generator_name = (
+            f"{getattr(generator, '__module__', type(generator).__module__)}."
+            f"{getattr(generator, '__qualname__', type(generator).__qualname__)}"
+        )
+        input_fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "evidence": evidence_fingerprint,
+                    "tree_revision": current.tree_revision,
+                    "grouping_policy_version": grouping_policy_version,
+                    "summary_policy": policy_payload,
+                    "generator": generator_name,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         state_store.record_summary_attempt(
             document_id=document_id,
             node_id=node_id,
@@ -314,7 +372,7 @@ def _generate_tree_summaries(
                 tree=current,
                 node_id=node_id,
                 source_items=tuple(items[item_id] for item_id in evidence_ids),
-                input_fingerprint=input_fingerprint,
+                input_fingerprint=evidence_fingerprint,
             )
             updated = apply_summary_updates(current, {node_id: summary})
             state_store.save_document_tree(
@@ -353,6 +411,8 @@ class OCRPageStateSnapshot:
     last_error: str | None
     last_model: str | None
     last_attempted_ts: float | None
+    config_fingerprint: str | None = None
+    artifact_sha256: str | None = None
 
 
 @dataclass(slots=True)
@@ -391,6 +451,115 @@ class OCRPageProcessingContext:
     ocr_page_runner: OCRRunner
     state_store: OCRWorkflowStateStore
     probe: WorkflowProbe | None
+    configuration_fingerprints: tuple[str, ...]
+
+
+@dataclass(slots=True)
+class OCRPagePreparation:
+    """Durable inputs and injected dependencies for the page workflow.
+
+    The preparation object deliberately contains runtime-only dependencies.  A
+    workflow checkpoint receives only the JSON source plan and accepted page
+    payloads; providers, SQLite handles, and callables stay in the process that
+    owns the runtime resolver.
+    """
+
+    source_plan: OCRSourcePlan
+    state_store: OCRWorkflowStateStore
+    page_context: OCRPageProcessingContext
+    state_db_path: Path
+    progress_path: Path
+    summary_path: Path
+
+
+def _build_ocr_page_preparation(
+    *,
+    document_id: str,
+    title: str,
+    output_dir: Path,
+    image_payloads: Sequence[OCRImagePayload] | None,
+    pdf_path: Path | None,
+    provider_settings: WorkflowProviderSettings,
+    ocr_runner: OCRRunner | None,
+    pdf_rasterizer: PDFRasterizer | None,
+    ocr_candidate_models: Sequence[str] | None,
+    probe: WorkflowProbe | None,
+) -> OCRPagePreparation:
+    """Build the page-run context without invoking a provider."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = output_dir / "ocr-progress.json"
+    summary_path = output_dir / "ocr-summary.json"
+    state_db_path = output_dir / "ocr-state.sqlite"
+    source_plan = _resolve_ocr_source_plan(
+        document_id=document_id,
+        output_dir=output_dir,
+        image_payloads=image_payloads,
+        pdf_path=pdf_path,
+        pdf_rasterizer=pdf_rasterizer,
+    )
+    state_store = OCRWorkflowStateStore.open_or_rebuild(
+        db_path=state_db_path,
+        document_id=document_id,
+        title=title,
+        source_kind=source_plan.source_kind,
+        total_pages=len(source_plan.page_sources),
+        input_fingerprint=source_plan.input_fingerprint,
+        rendered_dir=source_plan.rendered_dir,
+        legacy_dir=source_plan.legacy_dir,
+        progress_path=progress_path,
+    )
+    candidate_models = list(ocr_candidate_models or [provider_settings.ocr.model])
+    if ocr_runner is None:
+        def _instrumented_ocr_runner(
+            image_path: Path,
+            page_number: int,
+            settings: WorkflowProviderSettings,
+        ) -> OCRClusterResponse:
+            return _run_live_ocr_page(
+                image_path,
+                page_number,
+                settings,
+                provider_diagnostics_sink=(
+                    lambda diagnostics: _emit_ocr_event(probe, "ocr.provider_call", **diagnostics)
+                    if probe is not None
+                    else None
+                ),
+            )
+
+        effective_runner: OCRRunner = _instrumented_ocr_runner
+    else:
+        effective_runner = ocr_runner
+    page_context = OCRPageProcessingContext(
+        document_id=document_id,
+        title=title,
+        source_kind=source_plan.source_kind,
+        total_pages=len(source_plan.page_sources),
+        input_fingerprint=source_plan.input_fingerprint,
+        candidate_models=candidate_models,
+        provider_settings=provider_settings,
+        ocr_page_runner=effective_runner,
+        state_store=state_store,
+        probe=probe,
+        configuration_fingerprints=tuple(
+            _ocr_configuration_fingerprint(
+                provider_settings.model_copy(
+                    update={"ocr": provider_settings.ocr.model_copy(update={"model": model})}
+                ),
+                candidate_models=candidate_models,
+            )
+            for model in candidate_models
+        )
+        + (_ocr_page_metadata(provider_settings)["ocr_configuration_fingerprint"],),
+    )
+    return OCRPagePreparation(
+        source_plan=source_plan,
+        state_store=state_store,
+        page_context=page_context,
+        state_db_path=state_db_path,
+        progress_path=progress_path,
+        summary_path=summary_path,
+    )
 
 
 def _resolve_ocr_source_plan(
@@ -410,7 +579,11 @@ def _resolve_ocr_source_plan(
         # stable page image files and the state store can resume individual pages.
         rendered_dir = rendered_root / pdf_source.stem
         pdf_page_rasterizer = pdf_rasterizer or _render_pdf_to_images
-        rendered_paths = pdf_page_rasterizer(pdf_source, rendered_dir)
+        rendered_paths = _render_pdf_with_identity(
+            pdf_path=pdf_source,
+            rendered_dir=rendered_dir,
+            rasterizer=pdf_page_rasterizer,
+        )
         page_sources = list(enumerate(rendered_paths, start=1))
         source_kind = "pdf"
         input_fingerprint = _compute_input_fingerprint(pdf_path=pdf_source)
@@ -509,6 +682,7 @@ def _process_ocr_page(
         stage="ocr",
         content_hash=image_sha256,
         artifact_path=page_json_path,
+        config_fingerprint=context.configuration_fingerprints,
     ):
         persisted_page = json.loads(page_json_path.read_text(encoding="utf-8"))
         split_page = SplitPage.model_validate(persisted_page)
@@ -570,6 +744,10 @@ def _process_ocr_page(
             content_hash=image_sha256,
             model_name=candidate_model,
             artifact_path=page_json_path,
+            config_fingerprint=_ocr_configuration_fingerprint(
+                candidate_settings,
+                candidate_models=context.candidate_models,
+            ),
         )
         try:
             response = context.ocr_page_runner(image_path, page_number, candidate_settings)
@@ -588,7 +766,10 @@ def _process_ocr_page(
                 **split_page.metadata.model_dump(mode="json"),
                 **_ocr_page_metadata(candidate_settings),
             }
-            page_json_path.write_text(json.dumps(page_payload, indent=2), encoding="utf-8")
+            # Validate before publication; the SQLite row is committed only
+            # after the complete artifact is atomically visible.
+            SplitPage.model_validate(page_payload)
+            _write_json_atomic(page_json_path, page_payload)
             state_store.record_page_completed(
                 document_id=document_id,
                 page_number=page_number,
@@ -597,6 +778,10 @@ def _process_ocr_page(
                 artifact_path=page_json_path,
                 model_name=candidate_model,
                 attempt_index=attempt_index,
+                config_fingerprint=_ocr_configuration_fingerprint(
+                    candidate_settings,
+                    candidate_models=context.candidate_models,
+                ),
             )
             # The adapter consumes plain dict pages, not the Pydantic page
             # model, so we serialize the page into the legacy-compatible shape here.
@@ -686,6 +871,7 @@ def _finalize_ocr_workflow_artifacts(
     provider_settings: WorkflowProviderSettings,
     state_store: OCRWorkflowStateStore,
     restore_grouping_checkpoint: bool = True,
+    persist_grouping_checkpoint: bool = True,
     grouping_policy_version: str = "baseline-v1",
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
@@ -695,7 +881,13 @@ def _finalize_ocr_workflow_artifacts(
         title=title,
         pages=raw_pages,
     )
-    document_tree = build_document_tree(workflow_input)
+    input_fingerprint = state_store.document_input_fingerprint(document_id=document_id)
+    source_revision = (
+        f"ocr-v1:{input_fingerprint}"
+        if input_fingerprint
+        else "ocr-v1"
+    )
+    document_tree = build_document_tree(workflow_input, source_revision=source_revision)
     if document_tree is not None:
         checkpointed_tree = (
             state_store.load_document_tree(
@@ -703,7 +895,7 @@ def _finalize_ocr_workflow_artifacts(
                 source_fingerprint=document_tree.source_fingerprint(),
                 grouping_policy_version=grouping_policy_version,
             )
-            if restore_grouping_checkpoint
+            if restore_grouping_checkpoint and persist_grouping_checkpoint
             else None
         )
         if checkpointed_tree is not None:
@@ -713,19 +905,21 @@ def _finalize_ocr_workflow_artifacts(
                 document_tree,
                 grouping_policy_version=grouping_policy_version,
             )
-            state_store.save_document_tree(
+            if persist_grouping_checkpoint:
+                state_store.save_document_tree(
+                    document_id=document_id,
+                    tree=document_tree,
+                    grouping_policy_version=grouping_policy_version,
+                )
+        if persist_grouping_checkpoint:
+            document_tree = _generate_tree_summaries(
+                document_tree,
                 document_id=document_id,
-                tree=document_tree,
+                state_store=state_store,
+                policy=summary_policy,
+                generator=summary_generator,
                 grouping_policy_version=grouping_policy_version,
             )
-        document_tree = _generate_tree_summaries(
-            document_tree,
-            document_id=document_id,
-            state_store=state_store,
-            policy=summary_policy,
-            generator=summary_generator,
-            grouping_policy_version=grouping_policy_version,
-        )
         attach_document_tree_metadata(workflow_input, document_tree)
     artifacts = OCRWorkflowArtifacts(
         workflow_input=workflow_input,
@@ -836,6 +1030,8 @@ class OCRWorkflowStateStore:
                     artifact_path TEXT,
                     last_error TEXT,
                     last_model TEXT,
+                    config_fingerprint TEXT,
+                    artifact_sha256 TEXT,
                     last_attempted_ts REAL,
                     PRIMARY KEY (document_id, page_number, stage)
                 );
@@ -882,11 +1078,25 @@ class OCRWorkflowStateStore:
                 );
                 """
             )
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(page_state)").fetchall()}
+            if "config_fingerprint" not in columns:
+                conn.execute("ALTER TABLE page_state ADD COLUMN config_fingerprint TEXT")
+            if "artifact_sha256" not in columns:
+                conn.execute("ALTER TABLE page_state ADD COLUMN artifact_sha256 TEXT")
 
     def _is_empty(self) -> bool:
         with self._session() as conn:
             row = conn.execute("SELECT COUNT(*) AS count FROM document_state").fetchone()
         return bool(row is None or int(row["count"]) == 0)
+
+    def document_input_fingerprint(self, *, document_id: str) -> str | None:
+        """Return the content identity used to build the current OCR state."""
+        with self._session() as conn:
+            row = conn.execute(
+                "SELECT input_fingerprint FROM document_state WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+        return None if row is None else str(row["input_fingerprint"])
 
     def ensure_document(
         self,
@@ -942,11 +1152,23 @@ class OCRWorkflowStateStore:
         document_id: str,
         tree: DocumentTree,
         grouping_policy_version: str = "baseline-v1",
+        expected_tree_revision: str | None = None,
     ) -> str:
-        """Persist a validated tree for crash-safe, idempotent grouping replay."""
+        """Persist a validated tree, optionally fenced by its prior digest."""
         tree_json = json.dumps(tree.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
         tree_revision = hashlib.sha256(tree_json.encode("utf-8")).hexdigest()
         with self._session() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT tree_revision FROM document_tree_state WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            current_revision = None if current is None else str(current["tree_revision"])
+            if expected_tree_revision is not None and current_revision != expected_tree_revision:
+                raise RuntimeError(
+                    f"grouping checkpoint revision conflict for {document_id!r}: "
+                    f"expected {expected_tree_revision!r}, found {current_revision!r}"
+                )
             conn.execute(
                 """
                 INSERT INTO document_tree_state (
@@ -996,6 +1218,15 @@ class OCRWorkflowStateStore:
                 ),
             )
         return tree_revision
+
+    def document_tree_revision(self, *, document_id: str) -> str | None:
+        """Return the current tree digest without applying source/policy filters."""
+        with self._session() as conn:
+            row = conn.execute(
+                "SELECT tree_revision FROM document_tree_state WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+        return None if row is None else str(row["tree_revision"])
 
     def load_document_tree(
         self,
@@ -1104,17 +1335,36 @@ class OCRWorkflowStateStore:
                     content_hash = candidate_hash
             if content_hash is None:
                 content_hash = _find_matching_render_hash(rendered_dir, legacy_dir, page_number)
+            config_fingerprint: str | None = None
+            artifact_valid = False
+            artifact_error: str | None = None
+            try:
+                persisted = _read_json_object(json_path)
+                SplitPage.model_validate(persisted)
+                artifact_valid = True
+                metadata = persisted.get("metadata")
+                if isinstance(metadata, dict):
+                    candidate = metadata.get("ocr_configuration_fingerprint")
+                    if isinstance(candidate, str):
+                        config_fingerprint = candidate
+            except (OSError, ValueError) as exc:
+                artifact_error = f"invalid OCR artifact during state rebuild: {exc}"
+            if content_hash is None:
+                artifact_valid = False
+                artifact_error = artifact_error or "OCR artifact has no authoritative source-image digest"
             rebuilt_any = True
             self._upsert_page_state(
                 document_id=document_id,
                 page_number=page_number,
                 stage="ocr",
                 attempt_count=1,
-                status="completed",
+                status="completed" if artifact_valid else "pending",
                 content_hash=content_hash,
                 artifact_path=str(json_path),
-                last_error=None,
+                last_error=artifact_error,
                 last_model=None,
+                config_fingerprint=config_fingerprint,
+                artifact_sha256=_sha256_file(json_path) if artifact_valid else None,
             )
         self.refresh_document_completion(document_id=document_id)
         return rebuilt_any
@@ -1131,6 +1381,8 @@ class OCRWorkflowStateStore:
         artifact_path: str | None,
         last_error: str | None,
         last_model: str | None,
+        config_fingerprint: str | None = None,
+        artifact_sha256: str | None = None,
     ) -> None:
         now = time.time()
         with self._session() as conn:
@@ -1138,8 +1390,9 @@ class OCRWorkflowStateStore:
                 """
                 INSERT INTO page_state (
                     document_id, page_number, stage, attempt_count, status,
-                    content_hash, artifact_path, last_error, last_model, last_attempted_ts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    content_hash, artifact_path, last_error, last_model,
+                    config_fingerprint, artifact_sha256, last_attempted_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(document_id, page_number, stage) DO UPDATE SET
                     attempt_count = excluded.attempt_count,
                     status = excluded.status,
@@ -1147,6 +1400,8 @@ class OCRWorkflowStateStore:
                     artifact_path = excluded.artifact_path,
                     last_error = excluded.last_error,
                     last_model = excluded.last_model,
+                    config_fingerprint = excluded.config_fingerprint,
+                    artifact_sha256 = excluded.artifact_sha256,
                     last_attempted_ts = excluded.last_attempted_ts
                 """,
                 (
@@ -1159,6 +1414,8 @@ class OCRWorkflowStateStore:
                     artifact_path,
                     last_error,
                     last_model,
+                    config_fingerprint,
+                    artifact_sha256,
                     now,
                 ),
             )
@@ -1168,7 +1425,8 @@ class OCRWorkflowStateStore:
             row = conn.execute(
                 """
                 SELECT page_number, stage, attempt_count, status, content_hash, artifact_path,
-                       last_error, last_model, last_attempted_ts
+                       last_error, last_model, config_fingerprint, artifact_sha256,
+                       last_attempted_ts
                 FROM page_state
                 WHERE document_id = ? AND page_number = ? AND stage = ?
                 """,
@@ -1186,6 +1444,8 @@ class OCRWorkflowStateStore:
             last_error=row["last_error"],
             last_model=row["last_model"],
             last_attempted_ts=row["last_attempted_ts"],
+            config_fingerprint=row["config_fingerprint"],
+            artifact_sha256=row["artifact_sha256"],
         )
 
     def should_skip_page(
@@ -1196,11 +1456,19 @@ class OCRWorkflowStateStore:
         stage: str,
         content_hash: str,
         artifact_path: Path | None = None,
+        config_fingerprint: str | Sequence[str] | None = None,
     ) -> bool:
         state = self.get_page_state(document_id=document_id, page_number=page_number, stage=stage)
         if state is None or state.status != "completed" or state.content_hash != content_hash:
             return False
-        return artifact_path is None or artifact_path.exists()
+        expected = {config_fingerprint} if isinstance(config_fingerprint, str) else set(config_fingerprint or ())
+        if expected and state.config_fingerprint not in expected:
+            return False
+        if artifact_path is None:
+            return True
+        if not artifact_path.is_file():
+            return False
+        return state.artifact_sha256 is not None and _sha256_file(artifact_path) == state.artifact_sha256
 
     def record_attempt(
         self,
@@ -1211,6 +1479,7 @@ class OCRWorkflowStateStore:
         content_hash: str | None,
         model_name: str,
         artifact_path: Path | None = None,
+        config_fingerprint: str | None = None,
     ) -> int:
         now = time.time()
         with self._session() as conn:
@@ -1227,8 +1496,9 @@ class OCRWorkflowStateStore:
                 """
                 INSERT INTO page_state (
                     document_id, page_number, stage, attempt_count, status,
-                    content_hash, artifact_path, last_error, last_model, last_attempted_ts
-                ) VALUES (?, ?, ?, ?, 'pending', ?, ?, NULL, ?, ?)
+                    content_hash, artifact_path, last_error, last_model,
+                    config_fingerprint, artifact_sha256, last_attempted_ts
+                ) VALUES (?, ?, ?, ?, 'pending', ?, ?, NULL, ?, ?, NULL, ?)
                 ON CONFLICT(document_id, page_number, stage) DO UPDATE SET
                     attempt_count = excluded.attempt_count,
                     status = excluded.status,
@@ -1236,6 +1506,8 @@ class OCRWorkflowStateStore:
                     artifact_path = excluded.artifact_path,
                     last_error = excluded.last_error,
                     last_model = excluded.last_model,
+                    config_fingerprint = excluded.config_fingerprint,
+                    artifact_sha256 = NULL,
                     last_attempted_ts = excluded.last_attempted_ts
                 """,
                 (
@@ -1246,6 +1518,7 @@ class OCRWorkflowStateStore:
                     content_hash,
                     str(artifact_path) if artifact_path is not None else None,
                     model_name,
+                    config_fingerprint,
                     now,
                 ),
             )
@@ -1269,6 +1542,7 @@ class OCRWorkflowStateStore:
         artifact_path: Path | None,
         model_name: str | None,
         attempt_index: int | None = None,
+        config_fingerprint: str | None = None,
     ) -> None:
         now = time.time()
         with self._session() as conn:
@@ -1280,6 +1554,8 @@ class OCRWorkflowStateStore:
                     artifact_path = ?,
                     last_error = NULL,
                     last_model = ?,
+                    config_fingerprint = ?,
+                    artifact_sha256 = ?,
                     last_attempted_ts = ?
                 WHERE document_id = ? AND page_number = ? AND stage = ?
                 """,
@@ -1287,6 +1563,8 @@ class OCRWorkflowStateStore:
                     content_hash,
                     str(artifact_path) if artifact_path is not None else None,
                     model_name,
+                    config_fingerprint,
+                    _sha256_file(artifact_path) if artifact_path is not None and artifact_path.is_file() else None,
                     now,
                     document_id,
                     page_number,
@@ -1603,6 +1881,53 @@ def _compute_input_fingerprint(*, page_sources: Sequence[tuple[int, Path]] | Non
         ]
     encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _pdf_render_manifest_payload(
+    *,
+    pdf_path: Path,
+    rasterizer: PDFRasterizer,
+) -> JsonObject:
+    """Describe the exact PDF/rendering inputs behind cached page images."""
+    rasterizer_name = getattr(rasterizer, "__qualname__", type(rasterizer).__qualname__)
+    rasterizer_module = getattr(rasterizer, "__module__", type(rasterizer).__module__)
+    config: JsonObject = {
+        "manifest_version": _PDF_RENDER_MANIFEST_VERSION,
+        "pdf_sha256": _sha256_file(pdf_path),
+        "renderer_version": _PDF_RENDERER_VERSION,
+        "rasterizer": f"{rasterizer_module}.{rasterizer_name}",
+    }
+    encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    config["render_identity"] = hashlib.sha256(encoded).hexdigest()
+    return config
+
+
+def _render_pdf_with_identity(
+    *,
+    pdf_path: Path,
+    rendered_dir: Path,
+    rasterizer: PDFRasterizer,
+) -> list[Path]:
+    """Reuse rendered pages only when the source and renderer identity match."""
+    rendered_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = rendered_dir / "render-manifest.json"
+    expected = _pdf_render_manifest_payload(pdf_path=pdf_path, rasterizer=rasterizer)
+    existing: dict[str, object] | None = None
+    if manifest_path.exists():
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                existing = payload
+        except (OSError, ValueError):
+            existing = None
+    if existing != expected:
+        for candidate in rendered_dir.glob("page_*.png"):
+            candidate.unlink(missing_ok=True)
+        _write_json_atomic(manifest_path, expected)
+    paths = [Path(path) for path in rasterizer(pdf_path, rendered_dir)]
+    if not paths or any(not path.is_file() for path in paths):
+        raise RuntimeError("pdf rasterizer returned no complete page set")
+    return paths
 
 
 def _write_progress(progress: OCRWorkflowProgress, progress_path: Path) -> None:
@@ -1928,6 +2253,11 @@ def prepare_ocr_workflow_input(
     ocr_candidate_models: Sequence[str] | None = None,
     probe: WorkflowProbe | None = None,
     restore_grouping_checkpoint: bool = True,
+    persist_grouping_checkpoint: bool = True,
+    workflow_engine: GraphKnowledgeEngine | None = None,
+    conversation_engine: GraphKnowledgeEngine | None = None,
+    ocr_runtime_run_id: str | None = None,
+    resume_from_checkpoint: bool = False,
     grouping_policy_version: str = "baseline-v1",
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
@@ -1965,34 +2295,26 @@ def prepare_ocr_workflow_input(
         output_dir=str(output_dir),
         source_kind="pdf" if pdf_path is not None else "image",
     )
-    # Resolve the output folder and the inspectable files we will write.
+    # Build the source plan and injected page context without invoking OCR.
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    summary_path = output_dir / "ocr-summary.json"
-    progress_path = output_dir / "ocr-progress.json"
-    state_db_path = output_dir / "ocr-state.sqlite"
-
-    # Turn the source input into a concrete page-by-page plan.
-    source_plan = _resolve_ocr_source_plan(
+    preparation = _build_ocr_page_preparation(
         document_id=document_id,
+        title=title,
         output_dir=output_dir,
         image_payloads=image_payloads,
         pdf_path=Path(pdf_path) if pdf_path is not None else None,
+        provider_settings=provider_settings,
+        ocr_runner=ocr_runner,
         pdf_rasterizer=pdf_rasterizer,
+        ocr_candidate_models=ocr_candidate_models,
+        probe=probe,
     )
-
-    # Open or rebuild the SQLite resume store for this exact document input.
-    state_store = OCRWorkflowStateStore.open_or_rebuild(
-        db_path=state_db_path,
-        document_id=document_id,
-        title=title,
-        source_kind=source_plan.source_kind,
-        total_pages=len(source_plan.page_sources),
-        input_fingerprint=source_plan.input_fingerprint,
-        rendered_dir=source_plan.rendered_dir,
-        legacy_dir=source_plan.legacy_dir,
-        progress_path=progress_path,
-    )
+    source_plan = preparation.source_plan
+    state_store = preparation.state_store
+    page_context = preparation.page_context
+    state_db_path = preparation.state_db_path
+    progress_path = preparation.progress_path
+    summary_path = preparation.summary_path
 
     # Emit a trace that the state store and inspectable folders are ready.
     _emit_ocr_event(
@@ -2012,99 +2334,50 @@ def prepare_ocr_workflow_input(
     completed_pages: list[int] = []
     reused_pages: list[int] = []
 
-    # Select candidate OCR models, falling back to the configured default model.
-    candidate_models: list[str] = list(ocr_candidate_models or [provider_settings.ocr.model])
-
     # Collect pages that still fail after exhausting every candidate model.
     page_failures: list[int] = []
 
-    # Bundle the reusable per-run OCR context so the per-page loop stays small.
-    if ocr_runner is None:
-        def _instrumented_ocr_runner(
-            image_path: Path,
-            page_number: int,
-            settings: WorkflowProviderSettings,
-        ) -> OCRClusterResponse:
-            return _run_live_ocr_page(
-                image_path,
-                page_number,
-                settings,
-                provider_diagnostics_sink=(
-                    lambda diagnostics: _emit_ocr_event(probe, "ocr.provider_call", **diagnostics)
-                    if probe is not None
-                    else None
-                ),
-            )
+    if workflow_engine is not None and conversation_engine is not None:
+        from .ocr_runtime import run_ocr_page_workflow
 
-        effective_ocr_runner: OCRRunner = _instrumented_ocr_runner
-    else:
-        effective_ocr_runner = ocr_runner
-
-    page_context = OCRPageProcessingContext(
-        document_id=document_id,
-        title=title,
-        source_kind=source_plan.source_kind,
-        total_pages=len(source_plan.page_sources),
-        input_fingerprint=source_plan.input_fingerprint,
-        candidate_models=candidate_models,
-        provider_settings=provider_settings,
-        ocr_page_runner=effective_ocr_runner,
-        state_store=state_store,
-        probe=probe,
-    )
-
-    # Process every rendered page one-by-one.
-    for done_count, (page_number, image_path) in enumerate(source_plan.page_sources, start=1):
-        image_path = Path(image_path)
-        image_sha256 = _sha256_file(image_path)
-        page_json_path = source_plan.legacy_dir / f"page_{page_number}.json"
-        page_image_path = source_plan.legacy_dir / f"page_{page_number}{image_path.suffix or '.png'}"
-
-        # Run the page through the resume-aware OCR processor.
-        _process_ocr_page(
+        raw_pages, completed_pages, reused_pages, _ocr_runtime_run_id = run_ocr_page_workflow(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
             context=page_context,
-            done_count=done_count,
-            page_number=page_number,
-            image_path=image_path,
-            image_sha256=image_sha256,
-            page_json_path=page_json_path,
-            page_image_path=page_image_path,
-            raw_pages=raw_pages,
-            completed_pages=completed_pages,
-            reused_pages=reused_pages,
-            page_failures=page_failures,
+            source_plan=source_plan,
+            progress_path=progress_path,
+            run_id=ocr_runtime_run_id or f"ocr-pages|{document_id}",
+            resume_from_checkpoint=resume_from_checkpoint,
         )
-
-        # Rebuild from accepted pages after every successful/reused page so an
-        # open cross-page continuation is visible and resumable immediately.
-        if raw_pages:
-            partial_input = normalize_ocr_pages(
+    else:
+        # Compatibility path for the standalone preparation API. The high
+        # level ingest entrypoint supplies engines and uses the persisted path.
+        for done_count, (page_number, image_path) in enumerate(source_plan.page_sources, start=1):
+            image_path = Path(image_path)
+            image_sha256 = _sha256_file(image_path)
+            page_json_path = source_plan.legacy_dir / f"page_{page_number}.json"
+            page_image_path = source_plan.legacy_dir / f"page_{page_number}{image_path.suffix or '.png'}"
+            _process_ocr_page(
+                context=page_context,
+                done_count=done_count,
+                page_number=page_number,
+                image_path=image_path,
+                image_sha256=image_sha256,
+                page_json_path=page_json_path,
+                page_image_path=page_image_path,
+                raw_pages=raw_pages,
+                completed_pages=completed_pages,
+                reused_pages=reused_pages,
+                page_failures=page_failures,
+            )
+            _sync_progress_from_state(
+                state_store=state_store,
                 document_id=document_id,
                 title=title,
-                pages=list(raw_pages),
+                source_kind=source_plan.source_kind,
+                total_pages=len(source_plan.page_sources),
+                progress_path=progress_path,
             )
-            partial_tree = build_document_tree(partial_input)
-            if partial_tree is not None:
-                partial_tree = _apply_cross_page_continuations(
-                    partial_tree,
-                    grouping_policy_version=grouping_policy_version,
-                )
-                state_store.save_document_tree(
-                    document_id=document_id,
-                    tree=partial_tree,
-                    grouping_policy_version=grouping_policy_version,
-                )
-                _write_document_tree(source_plan.legacy_dir / "document-tree.json", partial_tree)
-
-        # Mirror the SQLite state into the human-readable progress file.
-        _sync_progress_from_state(
-            state_store=state_store,
-            document_id=document_id,
-            title=title,
-            source_kind=source_plan.source_kind,
-            total_pages=len(source_plan.page_sources),
-            progress_path=progress_path,
-        )
 
     # Mark the whole document complete once every page has been processed.
     state_store.refresh_document_completion(document_id=document_id)
@@ -2152,6 +2425,7 @@ def prepare_ocr_workflow_input(
         provider_settings=provider_settings,
         state_store=state_store,
         restore_grouping_checkpoint=restore_grouping_checkpoint,
+        persist_grouping_checkpoint=persist_grouping_checkpoint,
         grouping_policy_version=grouping_policy_version,
         summary_policy=summary_policy,
         summary_generator=summary_generator,
@@ -2182,75 +2456,51 @@ def run_ocr_ingest_workflow(
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
 ) -> tuple[_RunCompat, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
-    """Run OCR preparation and then feed the normalized result into workflow ingest.
-
-    This is the high-level two-stage orchestration:
-    1. produce or reuse per-page OCR artifacts
-    2. normalize those pages and hand them to the semantic workflow parser
-    """
+    """Run OCR, grouping, and semantic ingest under one persisted root run."""
 
     if grouping_proposals is not None and grouping_passes is not None:
         raise ValueError("provide grouping_proposals or grouping_passes, not both")
 
-    from .parsing import parse_ocr_document
-
-    artifacts = parse_ocr_document(
+    if bool(image_payloads) == bool(pdf_path):
+        raise ValueError("provide exactly one of image_payloads or pdf_path")
+    effective_settings = provider_settings or WorkflowProviderSettings.from_env()
+    preparation = _build_ocr_page_preparation(
         document_id=document_id,
         title=title,
-        output_dir=output_dir,
+        output_dir=Path(output_dir),
         image_payloads=image_payloads,
-        pdf_path=pdf_path,
-        provider_settings=provider_settings,
+        pdf_path=Path(pdf_path) if pdf_path is not None else None,
+        provider_settings=effective_settings,
         ocr_runner=ocr_runner,
         pdf_rasterizer=pdf_rasterizer,
         ocr_candidate_models=ocr_candidate_models,
         probe=probe,
-        restore_grouping_checkpoint=grouping_proposals is None and grouping_passes is None,
-        summary_policy=summary_policy,
-        summary_generator=summary_generator,
     )
-    if grouping_proposals is not None or grouping_passes is not None:
-        if artifacts.document_tree is None:
-            raise ValueError("cannot group an OCR document with no source observations")
-        if grouping_passes is not None:
-            state_store = OCRWorkflowStateStore(artifacts.state_db_path)
-            for pass_number, grouping_pass in enumerate(grouping_passes, start=1):
-                artifacts.document_tree = apply_grouping_proposals(
-                    artifacts.document_tree,
-                    tuple(grouping_pass),
-                    grouping_policy_version=f"{grouping_policy_version}:{pass_number}",
-                )
-                state_store.save_document_tree(
-                    document_id=document_id,
-                    tree=artifacts.document_tree,
-                    grouping_policy_version=f"{grouping_policy_version}:{pass_number}",
-                )
-        else:
-            artifacts.document_tree = apply_grouping_proposals(
-                artifacts.document_tree,
-                tuple(grouping_proposals or ()),
-                grouping_policy_version=grouping_policy_version,
-            )
-        state_store = OCRWorkflowStateStore(artifacts.state_db_path)
-        state_store.save_document_tree(
-            document_id=document_id,
-            tree=artifacts.document_tree,
-            grouping_policy_version=grouping_policy_version,
-        )
-        attach_document_tree_metadata(artifacts.workflow_input, artifacts.document_tree)
-        _write_document_tree(artifacts.document_tree_path, artifacts.document_tree)
-    # OCR page progress is resumed from the state store above.  The semantic
-    # node/edge workflow uses the same run token when its execution was
-    # suspended after OCR completed, so callers can resume both stages with
-    # the runtime's normal checkpoint contract.
-    run, bundle = run_ingest_workflow(
-        inp=artifacts.workflow_input,
+    from .ocr_runtime import run_ocr_root_workflow
+
+    root_result, bundle, artifacts = run_ocr_root_workflow(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
         knowledge_engine=knowledge_engine,
-        provider_settings=provider_settings,
+        preparation=preparation,
+        provider_settings=effective_settings,
+        document_id=document_id,
+        title=title,
+        grouping_policy_version=grouping_policy_version,
+        grouping_proposals=tuple(grouping_proposals or ()),
+        grouping_passes=tuple(grouping_passes or ()),
+        summary_policy=summary_policy,
+        summary_generator=summary_generator,
         deps=deps,
         run_id=run_id,
         resume_from_checkpoint=resume_from_checkpoint,
     )
-    return run, bundle, artifacts
+    return (
+        _RunCompat(
+            run_id=str(root_result.run_id),
+            final_state=root_result.final_state,
+            status=str(root_result.status),
+        ),
+        bundle,
+        artifacts,
+    )

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Workflow-first OCR ingest tests.
 
 This file is intentionally split into two layers:
@@ -54,12 +52,15 @@ Both manual matrix variants end in the same normalized workflow-ingest path.
 
 """
 
+from __future__ import annotations
+
 import hashlib
 import importlib.util
 import json
 import logging
 import os
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -83,6 +84,7 @@ from kg_doc_parser.workflow_ingest import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
+from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal
 from kg_doc_parser.workflow_ingest.document_models import (
     ChildRef,
     DocumentNode,
@@ -94,9 +96,16 @@ from kg_doc_parser.workflow_ingest.document_models import (
     SummaryPolicy,
 )
 from kg_doc_parser.workflow_ingest.ocr_pipeline import (
+    OCRPageProcessingContext,
+    OCRSourcePlan,
     OCRWorkflowStateStore,
     _compute_input_fingerprint,
     _resolve_ocr_source_plan,
+)
+from kg_doc_parser.workflow_ingest.ocr_runtime import (
+    _reconcile_page_checkpoint,
+    run_grouping_workflow,
+    run_ocr_page_workflow,
 )
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 
@@ -137,6 +146,311 @@ def _write_two_page_pdf(image_paths: list[Path], pdf_path: Path) -> None:
     first.save(pdf_path, "PDF", save_all=True, append_images=rest)
     for image in images:
         image.close()
+
+
+@pytest.mark.ci
+def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
+    scratch = _scratch("ocr_grouping_runtime")
+    workflow_engine, conversation_engine, _knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines",
+        "in_memory",
+    )
+    tree = DocumentTree(
+        document_id="grouping-runtime-doc",
+        source_revision="ocr-v1:source-digest",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="item-a",
+                kind="text",
+                text="alpha",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+            SourceItem(
+                item_id="item-b",
+                kind="text",
+                text="beta",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+            SourceItem(
+                item_id="item-c",
+                kind="text",
+                text="gamma",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(node_id="leaf:item-a", kind="text", parts=(SourceSlice(item_id="item-a", start=0, end=5),)),
+            DocumentNode(node_id="leaf:item-b", kind="text", parts=(SourceSlice(item_id="item-b", start=0, end=4),)),
+            DocumentNode(node_id="leaf:item-c", kind="text", parts=(SourceSlice(item_id="item-c", start=0, end=5),)),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(
+                    ChildRef(node_id="leaf:item-a"),
+                    ChildRef(node_id="leaf:item-b"),
+                    ChildRef(node_id="leaf:item-c"),
+                ),
+            ),
+        ),
+    )
+    grouped, run_id = run_grouping_workflow(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        state_store=OCRWorkflowStateStore(scratch / "ocr-state.sqlite"),
+        tree=tree,
+        document_id=tree.document_id,
+        grouping_policy_version="test-v1",
+        grouping_proposals=(GroupProposal(kind="section", members=("leaf:item-a", "leaf:item-b")),),
+        run_id="ocr-grouping-test-run",
+    )
+    assert run_id == "ocr-grouping-test-run"
+    assert any(node.kind == "section" for node in grouped.nodes)
+    resumed, resumed_run_id = run_grouping_workflow(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        state_store=OCRWorkflowStateStore(scratch / "ocr-state.sqlite"),
+        tree=tree,
+        document_id=tree.document_id,
+        grouping_policy_version="test-v1",
+        grouping_proposals=(GroupProposal(kind="section", members=("leaf:item-a", "leaf:item-b")),),
+        run_id=run_id,
+        resume_from_checkpoint=True,
+    )
+    assert resumed_run_id == run_id
+    assert resumed == grouped
+    trace = list(
+        conversation_engine.read.get_nodes(
+            where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id}]}
+        )
+    )
+    assert {str(node.metadata.get("op")) for node in trace} >= {
+        "start",
+        "restore_grouping_checkpoint",
+        "apply_grouping_pass",
+        "persist_grouping_result",
+    }
+
+
+@pytest.mark.ci
+def test_ocr_pages_run_as_persisted_steps_and_terminal_resume_does_not_recall_provider() -> None:
+    scratch = _scratch("ocr_page_runtime")
+    image_paths = []
+    for page_number, text in ((1, "page one"), (2, "page two")):
+        image_path = scratch / "source" / f"page-{page_number}.png"
+        _draw_test_image(image_path, lines=[text])
+        image_paths.append((page_number, image_path))
+    workflow_engine, conversation_engine, _knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines",
+        "in_memory",
+    )
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    calls = {"count": 0}
+
+    def _runner(image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings):
+        del image_path, provider_settings
+        calls["count"] += 1
+        return _fake_ocr_response(page_number, f"page {page_number}")
+
+    source_plan = OCRSourcePlan(
+        pdf_source=None,
+        rendered_dir=scratch / "rendered",
+        legacy_dir=scratch / "legacy",
+        page_sources=image_paths,
+        source_kind="image",
+        input_fingerprint="source-fingerprint",
+    )
+    source_plan.legacy_dir.mkdir(parents=True)
+    context = OCRPageProcessingContext(
+        document_id="ocr-page-runtime-doc",
+        title="OCR Page Runtime",
+        source_kind="image",
+        total_pages=2,
+        input_fingerprint=source_plan.input_fingerprint,
+        candidate_models=["fake-ocr"],
+        provider_settings=settings,
+        ocr_page_runner=_runner,
+        state_store=store,
+        probe=None,
+        configuration_fingerprints=(
+            ocr_pipeline_module._ocr_configuration_fingerprint(
+                settings,
+                candidate_models=["fake-ocr"],
+            ),
+        ),
+    )
+    raw_pages, completed, reused, run_id = run_ocr_page_workflow(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        context=context,
+        source_plan=source_plan,
+        progress_path=scratch / "ocr-progress.json",
+        run_id="ocr-page-runtime-run",
+    )
+    assert len(raw_pages) == 2
+    assert completed == [1, 2]
+    assert reused == []
+    assert calls["count"] == 2
+
+    def _unexpected_runner(image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings):
+        raise AssertionError(f"provider called during terminal resume for page {page_number}: {image_path}")
+
+    resumed_context = replace(context, ocr_page_runner=_unexpected_runner)
+    resumed_pages, resumed_completed, resumed_reused, resumed_run_id = run_ocr_page_workflow(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        context=resumed_context,
+        source_plan=source_plan,
+        progress_path=scratch / "ocr-progress.json",
+        run_id=run_id,
+        resume_from_checkpoint=True,
+    )
+    assert resumed_pages == raw_pages
+    assert resumed_completed == completed
+    assert resumed_reused == reused
+    assert resumed_run_id == run_id
+    trace = list(
+        conversation_engine.read.get_nodes(
+            where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id}]}
+        )
+    )
+    assert {str(node.metadata.get("op")) for node in trace} >= {
+        "start",
+        "process_ocr_page",
+        "finalize_ocr_pages",
+        "end",
+    }
+
+    page_two = source_plan.legacy_dir / "page_2.json"
+    page_two.write_text(page_two.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    repair = _reconcile_page_checkpoint(
+        state={
+            "page_sources": [
+                {"page_number": number, "image_path": str(path)} for number, path in image_paths
+            ],
+            "page_cursor": 2,
+            "raw_pages": raw_pages,
+            "completed_pages": completed,
+            "reused_pages": [],
+        },
+        context=context,
+        source_plan=source_plan,
+    )
+    assert repair is not None
+    assert repair["page_cursor"] == 1
+    assert repair["raw_pages"] == raw_pages[:1]
+
+
+@pytest.mark.ci
+@pytest.mark.slow
+def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() -> None:
+    def _make_case(name: str) -> tuple[Path, list[OCRImagePayload]]:
+        scratch = _scratch(name)
+        payloads: list[OCRImagePayload] = []
+        for page_number in range(1, 101):
+            image_path = scratch / "source" / f"page-{page_number}.png"
+            _draw_test_image(image_path, lines=[f"Acceptance page {page_number}"])
+            payloads.append(OCRImagePayload(page_number=page_number, image_path=str(image_path)))
+        return scratch, payloads
+
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        parser=ProviderEndpointConfig(provider="fake", model="fake-parser"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+        triage_enabled=False,
+    )
+    interrupted_scratch, interrupted_payloads = _make_case("ocr_root_100_interrupted")
+    reference_scratch, reference_payloads = _make_case("ocr_root_100_reference")
+    interrupted_engines = build_workflow_engine_triplet(
+        interrupted_scratch / "engines", "in_memory"
+    )
+    reference_engines = build_workflow_engine_triplet(reference_scratch / "engines", "in_memory")
+    interrupted_calls: list[int] = []
+    reference_calls: list[int] = []
+
+    def _interrupted_runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        interrupted_calls.append(page_number)
+        if page_number == 63 and interrupted_calls.count(63) == 1:
+            raise RuntimeError("simulated process interruption after page 62")
+        return _fake_ocr_response(page_number, f"Acceptance page {page_number}")
+
+    def _reference_runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        reference_calls.append(page_number)
+        return _fake_ocr_response(page_number, f"Acceptance page {page_number}")
+
+    def _parse_semantic_fn(*, collection, parser_input_dict, parser_source_map):
+        return _grounded_semantic_tree(
+            collection=collection,
+            parser_input_dict=parser_input_dict,
+            parser_source_map=parser_source_map,
+        )
+
+    reference_run, reference_bundle, _ = run_ocr_ingest_workflow(
+        document_id="ocr-root-100-doc",
+        title="OCR Root 100 Reference",
+        output_dir=reference_scratch / "artifacts",
+        image_payloads=reference_payloads,
+        provider_settings=settings,
+        workflow_engine=reference_engines[0],
+        conversation_engine=reference_engines[1],
+        knowledge_engine=reference_engines[2],
+        ocr_runner=_reference_runner,
+        deps={"parse_semantic_fn": _parse_semantic_fn},
+        run_id="ocr|ocr-root-100-reference",
+    )
+    with pytest.raises(RuntimeError, match="OCR root workflow"):
+        run_ocr_ingest_workflow(
+            document_id="ocr-root-100-doc",
+            title="OCR Root 100 Reference",
+            output_dir=interrupted_scratch / "artifacts",
+            image_payloads=interrupted_payloads,
+            provider_settings=settings,
+            workflow_engine=interrupted_engines[0],
+            conversation_engine=interrupted_engines[1],
+            knowledge_engine=interrupted_engines[2],
+            ocr_runner=_interrupted_runner,
+            deps={"parse_semantic_fn": _parse_semantic_fn},
+            run_id="ocr|ocr-root-100-interrupted",
+        )
+
+    resumed_run, resumed_bundle, _resumed_artifacts = run_ocr_ingest_workflow(
+        document_id="ocr-root-100-doc",
+        title="OCR Root 100 Reference",
+        output_dir=interrupted_scratch / "artifacts",
+        image_payloads=interrupted_payloads,
+        provider_settings=settings,
+        workflow_engine=interrupted_engines[0],
+        conversation_engine=interrupted_engines[1],
+        knowledge_engine=interrupted_engines[2],
+        ocr_runner=_interrupted_runner,
+        deps={"parse_semantic_fn": _parse_semantic_fn},
+        run_id="ocr|ocr-root-100-interrupted",
+        resume_from_checkpoint=True,
+    )
+
+    assert reference_run.status == "succeeded"
+    assert resumed_run.status == "succeeded"
+    assert reference_bundle is not None
+    assert resumed_bundle is not None
+    assert resumed_bundle.graph_payload == reference_bundle.graph_payload
+    assert interrupted_calls.count(63) == 2
+    assert all(interrupted_calls.count(page_number) == 1 for page_number in range(1, 63))
+    assert len(reference_calls) == 100
 
 
 def _fake_ocr_response(page_number: int, text: str) -> OCRClusterResponse:
@@ -716,6 +1030,7 @@ def test_ocr_state_rebuild_ignores_corrupt_progress_metadata() -> None:
     )
     assert state is not None
     assert state.content_hash == hashlib.sha256(rendered.read_bytes()).hexdigest()
+    assert state.status == "pending"
 
 
 @pytest.mark.ci
@@ -751,6 +1066,7 @@ def test_ocr_state_rebuild_rejects_non_digest_progress_hash() -> None:
     )
     assert state is not None
     assert state.content_hash == hashlib.sha256(rendered.read_bytes()).hexdigest()
+    assert state.status == "pending"
 
 
 @pytest.mark.ci
@@ -809,6 +1125,14 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
     )
     revision = store.save_document_tree(document_id="grouped-doc", tree=tree, grouping_policy_version="group-v1")
     assert len(revision) == 64
+    assert store.document_tree_revision(document_id="grouped-doc") == revision
+    with pytest.raises(RuntimeError, match="revision conflict"):
+        store.save_document_tree(
+            document_id="grouped-doc",
+            tree=tree,
+            grouping_policy_version="group-v1",
+            expected_tree_revision="stale-revision",
+        )
     assert store.load_grouping_frontier(
         document_id="grouped-doc",
         source_fingerprint=tree.source_fingerprint(),
@@ -1231,6 +1555,113 @@ def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
     )
 
 
+@pytest.mark.ci
+def test_ocr_state_rejects_stale_provider_config_or_tampered_artifact() -> None:
+    scratch = _scratch("ocr_config_identity")
+    artifact = scratch / "page-1.json"
+    artifact.write_text('{"page": 1}', encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="config-identity-doc",
+        title="Config Identity",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="config-identity-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        model_name="model-a",
+        artifact_path=artifact,
+        config_fingerprint="provider-a/model-a",
+    )
+    store.record_page_completed(
+        document_id="config-identity-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+        model_name="model-a",
+        attempt_index=attempt,
+        config_fingerprint="provider-a/model-a",
+    )
+
+    assert store.should_skip_page(
+        document_id="config-identity-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+        config_fingerprint=("provider-a/model-a", "provider-a/model-b"),
+    )
+    assert not store.should_skip_page(
+        document_id="config-identity-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+        config_fingerprint="provider-b/model-a",
+    )
+    artifact.write_text('{"page": 1, "tampered": true}', encoding="utf-8")
+    assert not store.should_skip_page(
+        document_id="config-identity-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+        config_fingerprint="provider-a/model-a",
+    )
+
+
+@pytest.mark.ci
+def test_ocr_state_does_not_reuse_legacy_completion_without_artifact_digest() -> None:
+    scratch = _scratch("ocr_missing_artifact_digest")
+    artifact = scratch / "page-1.json"
+    artifact.write_text("{}", encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="legacy-digest-doc",
+        title="Legacy Digest",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="legacy-digest-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        model_name="model",
+        artifact_path=artifact,
+        config_fingerprint="provider/model",
+    )
+    store.record_page_completed(
+        document_id="legacy-digest-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+        model_name="model",
+        attempt_index=attempt,
+        config_fingerprint="provider/model",
+    )
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE page_state SET artifact_sha256 = NULL WHERE document_id = ?",
+            ("legacy-digest-doc",),
+        )
+    assert not store.should_skip_page(
+        document_id="legacy-digest-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+        config_fingerprint="provider/model",
+    )
+
+
 # Manual examples with explicit parametrized node ids:
 #
 # Image payload + glm-ocr:
@@ -1394,7 +1825,7 @@ def test_workflow_first_ocr_manual_matrix(provider: str, model: str, input_kind:
 
 @pytest.mark.ci
 @pytest.mark.slow
-def test_ocr_workflow_reuses_cached_pages_but_regenerates_grounded_parse_tree() -> None:
+def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
     scratch = _scratch("ocr_grounded_cache")
     images_dir = scratch / "images"
     image_paths = [images_dir / "page_1.png", images_dir / "page_2.png"]
@@ -1450,6 +1881,7 @@ def test_ocr_workflow_reuses_cached_pages_but_regenerates_grounded_parse_tree() 
         knowledge_engine=knowledge_engine,
         ocr_runner=_runner,
         deps={"parse_semantic_fn": _parse_semantic_fn},
+        resume_from_checkpoint=True,
     )
 
     assert first_run.status == "succeeded"
@@ -1457,8 +1889,18 @@ def test_ocr_workflow_reuses_cached_pages_but_regenerates_grounded_parse_tree() 
     assert first_bundle is not None
     assert second_bundle is not None
     assert calls["ocr"] == 2
-    assert calls["parse"] == 2
+    assert calls["parse"] == 1
     assert second_artifacts.reused_pages == [1, 2]
     assert second_artifacts.state_db_path.exists()
     assert SemanticNode.model_validate(second_run.final_state["semantic_tree"]).child_nodes
     assert second_run.final_state["semantic_tree"]["child_nodes"][0]["total_content_pointers"]
+    root_trace = list(
+        conversation_engine.read.get_nodes(
+            where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": first_run.run_id}]}
+        )
+    )
+    assert {str(node.metadata.get("op")) for node in root_trace} >= {
+        "ocr_root_invoke_pages",
+        "ocr_root_invoke_grouping",
+        "ocr_root_invoke_semantic",
+    }
