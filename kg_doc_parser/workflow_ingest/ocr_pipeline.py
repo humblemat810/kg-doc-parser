@@ -708,6 +708,14 @@ class OCRWorkflowStateStore:
                     tree_json TEXT NOT NULL,
                     last_updated_ts REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS grouping_frontier_state (
+                    document_id TEXT PRIMARY KEY,
+                    source_fingerprint TEXT NOT NULL,
+                    grouping_policy_version TEXT NOT NULL,
+                    frontier_json TEXT NOT NULL,
+                    last_updated_ts REAL NOT NULL
+                );
                 """
             )
 
@@ -735,6 +743,7 @@ class OCRWorkflowStateStore:
                 conn.execute("DELETE FROM model_attempts WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM page_state WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM document_tree_state WHERE document_id = ?", (document_id,))
+                conn.execute("DELETE FROM grouping_frontier_state WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM document_state WHERE document_id = ?", (document_id,))
             conn.execute(
                 """
@@ -795,6 +804,32 @@ class OCRWorkflowStateStore:
                     time.time(),
                 ),
             )
+            root = next(node for node in tree.nodes if node.node_id == tree.root_id)
+            frontier = (
+                tuple(child.node_id for child in root.children)
+                if root.children
+                else (root.node_id,)
+            )
+            conn.execute(
+                """
+                INSERT INTO grouping_frontier_state (
+                    document_id, source_fingerprint, grouping_policy_version,
+                    frontier_json, last_updated_ts
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(document_id) DO UPDATE SET
+                    source_fingerprint = excluded.source_fingerprint,
+                    grouping_policy_version = excluded.grouping_policy_version,
+                    frontier_json = excluded.frontier_json,
+                    last_updated_ts = excluded.last_updated_ts
+                """,
+                (
+                    document_id,
+                    tree.source_fingerprint(),
+                    grouping_policy_version,
+                    json.dumps(frontier, separators=(",", ":")),
+                    time.time(),
+                ),
+            )
         return tree_revision
 
     def load_document_tree(
@@ -824,6 +859,37 @@ class OCRWorkflowStateStore:
         ):
             return None
         return DocumentTree.model_validate_json(str(row["tree_json"]))
+
+    def load_grouping_frontier(
+        self,
+        *,
+        document_id: str,
+        source_fingerprint: str | None = None,
+        grouping_policy_version: str | None = None,
+    ) -> tuple[str, ...] | None:
+        """Load an ordered frontier only when its source and policy still match."""
+        with self._session() as conn:
+            row = conn.execute(
+                """
+                SELECT source_fingerprint, grouping_policy_version, frontier_json
+                FROM grouping_frontier_state
+                WHERE document_id = ?
+                """,
+                (document_id,),
+            ).fetchone()
+        if (
+            row is None
+            or (source_fingerprint is not None and str(row["source_fingerprint"]) != source_fingerprint)
+            or (
+                grouping_policy_version is not None
+                and str(row["grouping_policy_version"]) != grouping_policy_version
+            )
+        ):
+            return None
+        payload = json.loads(str(row["frontier_json"]))
+        if not isinstance(payload, list) or not all(isinstance(item, str) and item for item in payload):
+            raise ValueError("persisted grouping frontier is malformed")
+        return tuple(payload)
 
     def rebuild_from_artifacts(
         self,

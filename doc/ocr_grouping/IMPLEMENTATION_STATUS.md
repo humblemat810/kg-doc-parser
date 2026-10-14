@@ -23,7 +23,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C14 | DEFERRED | Kogwistar projection remains a separate optional adapter |
 | C15 | PASS | Six lazy Docling engines, direct RapidOCR/EasyOCR, platform/CLI gating, KServe v2 transport, and process-local user-provider registration; `tests/test_workflow_ingest_ocr_providers.py` passed 16 tests (one optional-runtime skip) |
 | C16 | PASS | `SummaryPolicy` and `select_summary_targets()` bound eligible kinds, evidence size, information gain, estimated input tokens, and target count without invoking a provider; `test_summary_target_planner_is_bounded_and_skips_low_information_nodes` |
-| C17 | PARTIAL | Atomic tree artifact replacement plus versioned SQLite `document_tree_state` checkpoint; page/merge persistence is covered, while a separate summary/frontier journal remains |
+| C17 | PARTIAL | Atomic tree artifact replacement plus versioned SQLite `document_tree_state` and `grouping_frontier_state` checkpoints; page/merge persistence is covered, while a separate summary-attempt journal remains |
 | C18 | DEFERRED | Explicit reference mentions are outside this slice |
 | C19 | PASS | `render_preview()` reads only accepted source intervals and display separators |
 | C20 | PASS | Open node kinds and heterogeneous adjacent merges are supported |
@@ -54,6 +54,8 @@ poetry run ruff check kg_doc_parser/workflow_ingest/... tests/test_document_adap
 poetry run pyright kg_doc_parser/workflow_ingest/...  # changed production modules: 0 errors
 poetry run pytest tests/test_document_grouping_contract.py -q -p no:cacheprovider --basetemp .tmp_summary_policy_test
 10 passed
+poetry run pytest tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source -q -p no:cacheprovider --basetemp .tmp_frontier_test
+1 passed
 poetry run pytest tests/test_workflow_ingest_ocr_providers.py -q -p no:cacheprovider --basetemp .tmp_ocr_provider_test3
 16 passed, 1 skipped
 ```

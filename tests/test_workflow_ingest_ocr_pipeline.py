@@ -534,6 +534,16 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
     )
     revision = store.save_document_tree(document_id="grouped-doc", tree=tree, grouping_policy_version="group-v1")
     assert len(revision) == 64
+    assert store.load_grouping_frontier(
+        document_id="grouped-doc",
+        source_fingerprint=tree.source_fingerprint(),
+        grouping_policy_version="group-v1",
+    ) == ("group", "leaf")
+    assert store.load_grouping_frontier(
+        document_id="grouped-doc",
+        source_fingerprint=tree.source_fingerprint(),
+        grouping_policy_version="different-policy",
+    ) is None
     restored = store.load_document_tree(document_id="grouped-doc", source_fingerprint=tree.source_fingerprint())
     assert restored is not None
     assert restored.model_dump(mode="json") == tree.model_dump(mode="json")
@@ -554,6 +564,7 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
         input_fingerprint="source-v2",
     )
     assert store.load_document_tree(document_id="grouped-doc") is None
+    assert store.load_grouping_frontier(document_id="grouped-doc") is None
 
 
 @pytest.mark.ci
