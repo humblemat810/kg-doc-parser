@@ -171,6 +171,16 @@ class PDFRasterizer(Protocol):
 _OCR_STATE_SCHEMA_VERSION = 1
 
 
+def _write_document_tree(path: Path, tree: DocumentTree) -> None:
+    """Persist the derived tree with replace semantics for crash-safe replay."""
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(
+        json.dumps(tree.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
 @dataclass(slots=True)
 class OCRPageStateSnapshot:
     """One page/stage snapshot from the SQLite resume store."""
@@ -521,10 +531,7 @@ def _finalize_ocr_workflow_artifacts(
         document_tree=document_tree,
     )
     if document_tree is not None:
-        (legacy_dir / "document-tree.json").write_text(
-            json.dumps(document_tree.model_dump(mode="json"), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _write_document_tree(legacy_dir / "document-tree.json", document_tree)
     _write_summary(
         artifacts,
         document_id=document_id,
@@ -1733,10 +1740,7 @@ def run_ocr_ingest_workflow(
             tuple(grouping_proposals),
             grouping_policy_version=grouping_policy_version,
         )
-        (artifacts.legacy_dir / "document-tree.json").write_text(
-            json.dumps(artifacts.document_tree.model_dump(mode="json"), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _write_document_tree(artifacts.document_tree_path, artifacts.document_tree)
     run, bundle = run_ingest_workflow(
         inp=artifacts.workflow_input,
         workflow_engine=workflow_engine,

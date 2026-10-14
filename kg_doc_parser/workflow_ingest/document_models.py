@@ -110,6 +110,12 @@ class ChildRef(FrozenModel):
     node_id: str = Field(min_length=1)
     separator_before: str = ""
 
+    @model_validator(mode="after")
+    def valid(self) -> "ChildRef":
+        if self.separator_before and not self.separator_before.isspace():
+            raise ValueError("child separators must be whitespace")
+        return self
+
 
 class Summary(FrozenModel):
     status: Literal["pending", "generated", "verified", "failed", "skipped"]

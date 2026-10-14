@@ -1,7 +1,7 @@
 """Adapters from the existing normalized OCR records to document evidence."""
 from __future__ import annotations
 
-from .document_models import DocumentNode, DocumentTree, SourceItem, SourceLocation, SourceSlice
+from .document_models import BoundingBox, ChildRef, DocumentNode, DocumentTree, SourceItem, SourceLocation, SourceSlice
 from .document_grouping import GroupProposal, merge_groups
 from .models import WorkflowIngestInput
 
@@ -33,13 +33,13 @@ def build_document_tree(
                 bbox=(
                     None
                     if not has_precise_bbox
-                    else {
-                        "x0": unit.bbox.x_min,
-                        "y0": unit.bbox.y_min,
-                        "x1": unit.bbox.x_max,
-                        "y1": unit.bbox.y_max,
-                        "coordinate_system": "pixels",
-                    }
+                    else BoundingBox(
+                        x0=unit.bbox.x_min,
+                        y0=unit.bbox.y_min,
+                        x1=unit.bbox.x_max,
+                        y1=unit.bbox.y_max,
+                        coordinate_system="pixels",
+                    )
                 ),
                 accuracy="region" if has_precise_bbox else "page",
             )
@@ -61,7 +61,7 @@ def build_document_tree(
         root = DocumentNode(
             node_id="root",
             kind="document",
-            children=tuple({"node_id": leaf.node_id} for leaf in leaves),
+            children=tuple(ChildRef(node_id=leaf.node_id) for leaf in leaves),
         )
         nodes = (*leaves, root)
     return DocumentTree(
@@ -105,7 +105,7 @@ def apply_grouping_proposals(
         by_id[tree.root_id] = DocumentNode(
             node_id=tree.root_id,
             kind="document",
-            children=tuple({"node_id": node_id} for node_id in new_frontier),
+            children=tuple(ChildRef(node_id=node_id) for node_id in new_frontier),
         )
     return tree.model_copy(update={"nodes": tuple(by_id.values()), "tree_revision": tree.tree_revision + 1})
 
