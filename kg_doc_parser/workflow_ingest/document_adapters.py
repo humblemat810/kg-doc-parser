@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 from .adapters import _allocated_cluster_numbers
 from .document_grouping import GroupProposal, merge_groups
@@ -11,6 +12,7 @@ from .document_models import (
     DocumentNode,
     DocumentTree,
     MediaRef,
+    OCRMetadata,
     SourceItem,
     SourceLocation,
     SourceSlice,
@@ -81,6 +83,7 @@ def build_document_tree(
                 ),
                 accuracy="region" if precise_bbox is not None else "page",
             )
+            ocr_metadata = _ocr_metadata(unit.metadata)
             kind = "text" if unit.modality in {"text", "ocr_text"} else "non_text:description"
             if has_media:
                 assert unit.source_uri is not None
@@ -98,6 +101,7 @@ def build_document_tree(
                             sha256_hex=media_digest,
                             byte_length=media_size,
                         ),
+                        ocr_metadata=ocr_metadata,
                         annotations={"description": unit.description} if unit.description else {},
                     )
                 )
@@ -108,7 +112,15 @@ def build_document_tree(
                     raise ValueError("non-media source item requires provider text or description")
                 leaf_kind = kind
                 leaf_part = SourceSlice(item_id=item_id, start=0, end=len(text))
-                items.append(SourceItem(item_id=item_id, kind=kind, text=text, location=location))
+                items.append(
+                    SourceItem(
+                        item_id=item_id,
+                        kind=kind,
+                        text=text,
+                        location=location,
+                        ocr_metadata=ocr_metadata,
+                    )
+                )
             leaves.append(
                 DocumentNode(
                     node_id=f"leaf:{item_id}",
@@ -135,6 +147,26 @@ def build_document_tree(
         root_id="root",
         source_items=tuple(items),
         nodes=tuple(nodes),
+    )
+
+
+def _ocr_metadata(metadata: Mapping[str, object]) -> OCRMetadata | None:
+    """Preserve provider identity only when the source declares it completely."""
+    provider = metadata.get("ocr_provider")
+    model = metadata.get("ocr_model_name") or metadata.get("ocr_model")
+    configuration = metadata.get("ocr_configuration_fingerprint")
+    if not isinstance(provider, str) or not provider.strip():
+        return None
+    if not isinstance(model, str) or not model.strip():
+        return None
+    if not isinstance(configuration, str) or not configuration.strip():
+        return None
+    confidence = metadata.get("ocr_confidence")
+    return OCRMetadata(
+        provider=provider,
+        model=model,
+        configuration_fingerprint=configuration,
+        confidence=confidence if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) else None,
     )
 
 

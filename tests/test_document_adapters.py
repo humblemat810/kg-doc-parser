@@ -105,6 +105,34 @@ def test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items(
     assert build_document_tree(inp) is None
 
 
+def test_normalize_ocr_pages_preserves_declared_order_and_provider_metadata() -> None:
+    inp = normalize_ocr_pages(
+        document_id="ordered-doc",
+        title="Ordered",
+        pages=[
+            {
+                "pdf_page_num": 1,
+                "meaningful_ordering": [2, 1],
+                "metadata": {
+                    "ocr_provider": "rapidocr",
+                    "ocr_model_name": "rapidocr-v1",
+                    "ocr_configuration_fingerprint": "config-v1",
+                },
+                "OCR_text_clusters": [
+                    {"cluster_number": 1, "text": "second", "bb_x_max": 10, "bb_y_max": 10},
+                    {"cluster_number": 2, "text": "first", "bb_x_max": 10, "bb_y_max": 10},
+                ],
+                "non_text_objects": [],
+            }
+        ],
+    )
+    tree = build_document_tree(inp)
+    assert tree is not None
+    assert [item.text for item in tree.source_items] == ["first", "second"]
+    assert all(item.ocr_metadata is not None for item in tree.source_items)
+    assert tree.source_items[0].ocr_metadata.model == "rapidocr-v1"
+
+
 def test_build_document_tree_keeps_nontext_observation_without_fake_media() -> None:
     inp = WorkflowIngestInput(
         request_id="doc",

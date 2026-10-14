@@ -537,6 +537,14 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
     restored = store.load_document_tree(document_id="grouped-doc", source_fingerprint=tree.source_fingerprint())
     assert restored is not None
     assert restored.model_dump(mode="json") == tree.model_dump(mode="json")
+    assert (
+        store.load_document_tree(
+            document_id="grouped-doc",
+            source_fingerprint=tree.source_fingerprint(),
+            grouping_policy_version="different-policy",
+        )
+        is None
+    )
 
     store.ensure_document(
         document_id="grouped-doc",

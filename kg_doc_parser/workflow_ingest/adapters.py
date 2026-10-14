@@ -12,6 +12,7 @@ from .models import (
     SourceUnit,
     WorkflowIngestInput,
 )
+from .serialization import JsonValue
 
 
 class OCRTextClusterJSON(TypedDict, total=False):
@@ -43,6 +44,8 @@ class OCRPageJSON(TypedDict):
     printed_page_number: NotRequired[str]
     contains_table: NotRequired[bool]
     is_blank_page: NotRequired[bool]
+    meaningful_ordering: NotRequired[list[int]]
+    metadata: NotRequired[dict[str, JsonValue]]
     OCR_text_clusters: NotRequired[list[OCRTextClusterJSON]]
     non_text_objects: NotRequired[list[OCRNonTextObjectJSON]]
     text: NotRequired[str]
@@ -132,7 +135,24 @@ def normalize_ocr_pages(
         non_text_objects = raw_page.get("non_text_objects", [])
         if not isinstance(text_clusters, list) or not isinstance(non_text_objects, list):
             raise TypeError("OCR cluster collections must be lists")
-        for cluster in text_clusters:
+        page_metadata = raw_page.get("metadata", {})
+        if not isinstance(page_metadata, dict):
+            raise TypeError("OCR page metadata must be an object")
+        ordering = raw_page.get("meaningful_ordering")
+        if ordering is not None:
+            if not isinstance(ordering, list) or any(type(value) is not int for value in ordering):
+                raise TypeError("meaningful_ordering must be a list of integer cluster numbers")
+            text_by_cluster = {
+                cluster.get("cluster_number"): cluster
+                for cluster in text_clusters
+                if isinstance(cluster, dict) and cluster.get("cluster_number") is not None
+            }
+            if len(ordering) != len(text_clusters) or set(ordering) != set(text_by_cluster):
+                raise ValueError("meaningful_ordering must cover each OCR text cluster exactly once")
+            ordered_text_clusters = [text_by_cluster[cluster_number] for cluster_number in ordering]
+        else:
+            ordered_text_clusters = text_clusters
+        for cluster in ordered_text_clusters:
             if not isinstance(cluster, dict):
                 raise TypeError("each OCR text cluster must be an object")
             cluster_number = _ocr_cluster_number(cluster.get("cluster_number"))
@@ -147,7 +167,7 @@ def normalize_ocr_pages(
                     cluster_number=cluster_number,
                     text=cluster.get("text"),
                     bbox=_ocr_bbox(cluster),
-                    metadata={},
+                    metadata=dict(page_metadata),
                 )
             )
         for obj in non_text_objects:
@@ -170,6 +190,7 @@ def normalize_ocr_pages(
                     # current engine still embeds through a single function.
                     embedding_space="image",
                     metadata={
+                        **page_metadata,
                         "participates_in_semantic_text": False,
                         "mime_type": obj.get("mime_type"),
                         "media_sha256": obj.get("media_sha256"),
@@ -182,6 +203,7 @@ def normalize_ocr_pages(
                 page_number=page_number,
                 units=units,
                 metadata={
+                    **page_metadata,
                     "printed_page_number": raw_page.get("printed_page_number"),
                     "contains_table": raw_page.get("contains_table"),
                     "is_blank_page": not units,

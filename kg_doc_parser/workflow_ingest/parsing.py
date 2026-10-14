@@ -197,6 +197,7 @@ def parse_ocr_document(
     ocr_candidate_models: Sequence[str] | None = None,
     probe: WorkflowProbe | None = None,
     restore_grouping_checkpoint: bool = True,
+    grouping_policy_version: str = "baseline-v1",
 ) -> OCRWorkflowArtifacts:
     """Parse OCR inputs into normalized workflow-ingest artifacts."""
 
@@ -218,6 +219,7 @@ def parse_ocr_document(
         ocr_candidate_models=ocr_candidate_models,
         probe=probe,
         restore_grouping_checkpoint=restore_grouping_checkpoint,
+        grouping_policy_version=grouping_policy_version,
     )
 
 

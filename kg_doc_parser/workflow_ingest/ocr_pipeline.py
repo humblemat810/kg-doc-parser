@@ -102,6 +102,27 @@ def _is_sha256_digest(value: object) -> bool:
     )
 
 
+def _ocr_page_metadata(settings: WorkflowProviderSettings) -> dict[str, str]:
+    """Build stable, non-secret provenance for one accepted OCR page."""
+    config = {
+        "provider": settings.ocr.provider,
+        "model": settings.ocr.model,
+        "base_url": settings.ocr.base_url,
+        "api_version": settings.ocr.api_version,
+        "project": settings.ocr.project,
+        "ocr_engine": settings.ocr.ocr_engine,
+        "ocr_language": settings.ocr.ocr_language,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(config, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    return {
+        "ocr_provider": settings.ocr.provider,
+        "ocr_model_name": settings.ocr.model,
+        "ocr_configuration_fingerprint": fingerprint,
+    }
+
+
 class OCRImagePayload(BaseModel):
     """Single OCR page input.
 
@@ -355,8 +376,17 @@ def _process_ocr_page(
         content_hash=image_sha256,
         artifact_path=page_json_path,
     ):
-        split_page = SplitPage.model_validate(json.loads(page_json_path.read_text(encoding="utf-8")))
-        raw_pages.append(cast(OCRPageJSON, split_page.dump_supercede_parse()))
+        persisted_page = json.loads(page_json_path.read_text(encoding="utf-8"))
+        split_page = SplitPage.model_validate(persisted_page)
+        raw_page = split_page.dump_supercede_parse()
+        raw_page["meaningful_ordering"] = list(split_page.meaningful_ordering)
+        persisted_metadata = persisted_page.get("metadata", {})
+        raw_page["metadata"] = (
+            persisted_metadata
+            if isinstance(persisted_metadata, dict)
+            else split_page.metadata.model_dump(mode="json")
+        )
+        raw_pages.append(cast(OCRPageJSON, raw_page))
         completed_pages.append(page_number)
         reused_pages.append(page_number)
         _emit_ocr_event(
@@ -419,10 +449,12 @@ def _process_ocr_page(
                 **response.model_dump(dump_format="python"),
             )
             shutil.copy2(image_path, page_image_path)
-            page_json_path.write_text(
-                json.dumps(split_page.dump_raw(dump_format="json"), indent=2),
-                encoding="utf-8",
-            )
+            page_payload = split_page.dump_raw(dump_format="json")
+            page_payload["metadata"] = {
+                **split_page.metadata.model_dump(mode="json"),
+                **_ocr_page_metadata(candidate_settings),
+            }
+            page_json_path.write_text(json.dumps(page_payload, indent=2), encoding="utf-8")
             state_store.record_page_completed(
                 document_id=document_id,
                 page_number=page_number,
@@ -434,7 +466,10 @@ def _process_ocr_page(
             )
             # The adapter consumes plain dict pages, not the Pydantic page
             # model, so we serialize the page into the legacy-compatible shape here.
-            raw_pages.append(cast(OCRPageJSON, split_page.dump_supercede_parse()))
+            raw_page = split_page.dump_supercede_parse()
+            raw_page["meaningful_ordering"] = list(split_page.meaningful_ordering)
+            raw_page["metadata"] = page_payload["metadata"]
+            raw_pages.append(cast(OCRPageJSON, raw_page))
             completed_pages.append(page_number)
             page_completed = True
             _emit_ocr_event(
@@ -517,6 +552,7 @@ def _finalize_ocr_workflow_artifacts(
     provider_settings: WorkflowProviderSettings,
     state_store: OCRWorkflowStateStore,
     restore_grouping_checkpoint: bool = True,
+    grouping_policy_version: str = "baseline-v1",
 ) -> OCRWorkflowArtifacts:
     workflow_input: WorkflowIngestInput = normalize_ocr_pages(
         document_id=document_id,
@@ -529,6 +565,7 @@ def _finalize_ocr_workflow_artifacts(
             state_store.load_document_tree(
                 document_id=document_id,
                 source_fingerprint=document_tree.source_fingerprint(),
+                grouping_policy_version=grouping_policy_version,
             )
             if restore_grouping_checkpoint
             else None
@@ -765,18 +802,26 @@ class OCRWorkflowStateStore:
         *,
         document_id: str,
         source_fingerprint: str | None = None,
+        grouping_policy_version: str | None = None,
     ) -> DocumentTree | None:
         """Load only a validated tree matching the current source identity."""
         with self._session() as conn:
             row = conn.execute(
                 """
-                SELECT source_fingerprint, tree_json
+                SELECT source_fingerprint, grouping_policy_version, tree_json
                 FROM document_tree_state
                 WHERE document_id = ?
                 """,
                 (document_id,),
             ).fetchone()
-        if row is None or (source_fingerprint is not None and str(row["source_fingerprint"]) != source_fingerprint):
+        if (
+            row is None
+            or (source_fingerprint is not None and str(row["source_fingerprint"]) != source_fingerprint)
+            or (
+                grouping_policy_version is not None
+                and str(row["grouping_policy_version"]) != grouping_policy_version
+            )
+        ):
             return None
         return DocumentTree.model_validate_json(str(row["tree_json"]))
 
@@ -1576,6 +1621,7 @@ def prepare_ocr_workflow_input(
     ocr_candidate_models: Sequence[str] | None = None,
     probe: WorkflowProbe | None = None,
     restore_grouping_checkpoint: bool = True,
+    grouping_policy_version: str = "baseline-v1",
 ) -> OCRWorkflowArtifacts:
     """Prepare OCR pages and normalize them into workflow ingest input.
 
@@ -1776,6 +1822,7 @@ def prepare_ocr_workflow_input(
         provider_settings=provider_settings,
         state_store=state_store,
         restore_grouping_checkpoint=restore_grouping_checkpoint,
+        grouping_policy_version=grouping_policy_version,
     )
 
 
