@@ -182,7 +182,6 @@ class DocumentTree(FrozenModel):
         media: dict[str, int] = defaultdict(int)
         visiting: set[str] = set()
         seen: set[str] = set()
-        covered_by_node: dict[str, set[str]] = {}
 
         def visit(node_id: str) -> set[str]:
             if node_id in visiting:
@@ -216,7 +215,6 @@ class DocumentTree(FrozenModel):
                 raise ValueError("summary cites evidence outside its subtree")
             visiting.remove(node_id)
             seen.add(node_id)
-            covered_by_node[node_id] = set(covered)
             return covered
 
         visit(self.root_id)
@@ -237,7 +235,7 @@ class DocumentTree(FrozenModel):
         for node_id, node in nodes.items():
             if node.summary is None or node.summary.status not in {"generated", "verified"}:
                 continue
-            evidence = covered_by_node[node_id]
+            evidence = node.summary.evidence_item_ids
             payload = [items[item_id].model_dump(mode="json") for item_id in sorted(evidence)]
             expected = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
             if node.summary.input_fingerprint != expected:
@@ -248,7 +246,7 @@ class DocumentTree(FrozenModel):
         payload = [item.model_dump(mode="json") for item in sorted(self.source_items, key=lambda value: value.item_id)]
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
-    def summary_input_fingerprint(self, node_id: str) -> str:
+    def summary_input_fingerprint(self, node_id: str, evidence_item_ids: tuple[str, ...] | None = None) -> str:
         """Return the fingerprint a generated summary must record for a node."""
         nodes = {node.node_id: node for node in self.nodes}
         items = {item.item_id: item for item in self.source_items}
@@ -266,7 +264,10 @@ class DocumentTree(FrozenModel):
                     visit(child.node_id)
 
         visit(node_id)
-        payload = [items[item_id].model_dump(mode="json") for item_id in sorted(covered)]
+        selected = tuple(sorted(evidence_item_ids if evidence_item_ids is not None else covered))
+        if set(selected) - covered:
+            raise ValueError("summary evidence must be within the node subtree")
+        payload = [items[item_id].model_dump(mode="json") for item_id in selected]
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def render_preview(self) -> str:
