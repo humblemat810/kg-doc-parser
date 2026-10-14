@@ -23,7 +23,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C14 | DEFERRED | Kogwistar projection remains a separate optional adapter |
 | C15 | PASS | Six lazy Docling engines, direct RapidOCR/EasyOCR, platform/CLI gating, KServe v2 transport, and process-local user-provider registration; `tests/test_workflow_ingest_ocr_providers.py` passed 16 tests (one optional-runtime skip); real-provider observations are recorded in `doc/ocr_grouping/PROVIDER_SMOKE_RESULTS.md` |
 | C16 | PASS | `SummaryPolicy` and `select_summary_targets()` bound eligible kinds, evidence size, information gain, estimated input tokens, and target count without invoking a provider; `test_summary_target_planner_is_bounded_and_skips_low_information_nodes` |
-| C17 | PASS | Atomic tree replacement, versioned SQLite tree/frontier checkpoints after each page/pass, and idempotent SQLite summary-attempt journal; `test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping` and summary journal tests |
+| C17 | PASS | Atomic tree replacement, versioned SQLite page/tree/frontier checkpoints after each page/pass, idempotent summary-attempt journal, and forwarding of the existing Kogwistar `run_id`/`resume_from_checkpoint` contract through `run_ocr_source_workflow()`; `test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping`, `test_prepare_ocr_workflow_input_resumes_after_mid_document_interruption`, and runtime resume tests |
 | C18 | PASS | `DocumentReferenceMention` keeps explicit page/section/figure/table phrases source-grounded and outside the primary coverage partition; unresolved targets remain pending; `test_explicit_reference_mentions_are_source_grounded_and_outside_partition`, `test_reference_mentions_round_trip_and_validate_targets_without_becoming_children`, and `test_reference_mentions_reject_unknown_targets_and_non_text_sources` |
 | C19 | PASS | `render_preview()` reads only accepted source intervals and display separators |
 | C20 | PASS | Open node kinds and heterogeneous adjacent merges are supported |
@@ -40,6 +40,15 @@ The tree is written atomically to `legacy_dir/document-tree.json` and is also
 available as `OCRWorkflowArtifacts.document_tree`. The semantic parser still
 receives its existing `WorkflowIngestInput` and authoritative source map, so this
 slice does not silently replace the established parser contract.
+
+OCR page recovery and semantic workflow recovery are separate, deliberate
+boundaries. A process interruption during a multi-page OCR pass reuses accepted
+page artifacts and retries only the incomplete page(s) from `ocr-state.sqlite`.
+After OCR preparation succeeds, callers may pass the returned runtime `run_id`
+back to `run_ocr_source_workflow(..., resume_from_checkpoint=True)`; the existing
+Kogwistar node/edge runtime then resumes the semantic stage from its persisted
+checkpoint instead of replaying completed parser steps. No second OCR runtime or
+parallel checkpoint protocol is introduced.
 
 ## Verified Commands
 
