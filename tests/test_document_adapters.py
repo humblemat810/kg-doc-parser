@@ -9,8 +9,10 @@ from kg_doc_parser.workflow_ingest import (
     GroupProposal,
     OCRImagePayload,
     WorkflowProviderSettings,
+    apply_grouping_passes,
     apply_grouping_proposals,
     build_document_tree,
+    merge_groups,
     prepare_ocr_workflow_input,
 )
 from kg_doc_parser.workflow_ingest.models import SourceUnit, WorkflowIngestInput
@@ -73,6 +75,33 @@ def test_apply_grouping_proposals_keeps_source_coverage_and_rejects_bad_members(
     )
     assert grouped.render_preview() == "ab"
     assert grouped.tree_revision == 2
+
+
+def test_grouping_passes_use_the_new_frontier_for_the_next_pass() -> None:
+    inp = WorkflowIngestInput.from_text(document_id="doc", text="a")
+    # Build a synthetic three-item baseline to exercise two adaptive passes.
+    inp.collections[0].pages[0].units = [
+        SourceUnit(modality="text", page_number=1, cluster_number=0, text="a"),
+        SourceUnit(modality="text", page_number=1, cluster_number=1, text="b"),
+        SourceUnit(modality="text", page_number=1, cluster_number=2, text="c"),
+    ]
+    tree = build_document_tree(inp)
+    assert tree is not None
+    first_frontier, _ = merge_groups(
+        document_id="doc",
+        frontier=("leaf:doc|p1_t0", "leaf:doc|p1_t1", "leaf:doc|p1_t2"),
+        proposals=(GroupProposal(kind="layout:pair", members=("leaf:doc|p1_t0", "leaf:doc|p1_t1")),),
+        grouping_policy_version="v1:1",
+    )
+    grouped = apply_grouping_passes(
+        tree,
+        (
+            (GroupProposal(kind="layout:pair", members=("leaf:doc|p1_t0", "leaf:doc|p1_t1")),),
+            (GroupProposal(kind="layout:section", members=(first_frontier[0], "leaf:doc|p1_t2")),),
+        ),
+        grouping_policy_version="v1",
+    )
+    assert grouped.tree_revision == 3
 
 
 def test_prepare_ocr_workflow_emits_the_tree_at_the_existing_pipeline_boundary(tmp_path: Path) -> None:

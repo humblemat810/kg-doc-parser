@@ -55,7 +55,11 @@ from pypdf import PdfReader
 from ..llm_structured_output import build_structured_output_runnable
 from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
 from .adapters import OCRPageJSON, normalize_ocr_pages
-from .document_adapters import apply_grouping_proposals, build_document_tree
+from .document_adapters import (
+    apply_grouping_passes,
+    apply_grouping_proposals,
+    build_document_tree,
+)
 from .document_grouping import GroupProposal
 from .document_models import DocumentTree
 from .models import WorkflowExportBundle, WorkflowIngestInput
@@ -1709,6 +1713,7 @@ def run_ocr_ingest_workflow(
     deps: dict[str, object] | None = None,
     probe: WorkflowProbe | None = None,
     grouping_proposals: Sequence[GroupProposal] | None = None,
+    grouping_passes: Sequence[Sequence[GroupProposal]] | None = None,
     grouping_policy_version: str = "baseline-v1",
 ) -> tuple[_RunCompat, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
     """Run OCR preparation and then feed the normalized result into workflow ingest.
@@ -1732,14 +1737,23 @@ def run_ocr_ingest_workflow(
         ocr_candidate_models=ocr_candidate_models,
         probe=probe,
     )
-    if grouping_proposals:
+    if grouping_proposals is not None and grouping_passes is not None:
+        raise ValueError("provide grouping_proposals or grouping_passes, not both")
+    if grouping_proposals is not None or grouping_passes is not None:
         if artifacts.document_tree is None:
             raise ValueError("cannot group an OCR document with no source observations")
-        artifacts.document_tree = apply_grouping_proposals(
-            artifacts.document_tree,
-            tuple(grouping_proposals),
-            grouping_policy_version=grouping_policy_version,
-        )
+        if grouping_passes is not None:
+            artifacts.document_tree = apply_grouping_passes(
+                artifacts.document_tree,
+                tuple(tuple(group) for group in grouping_passes),
+                grouping_policy_version=grouping_policy_version,
+            )
+        else:
+            artifacts.document_tree = apply_grouping_proposals(
+                artifacts.document_tree,
+                tuple(grouping_proposals or ()),
+                grouping_policy_version=grouping_policy_version,
+            )
         _write_document_tree(artifacts.document_tree_path, artifacts.document_tree)
     run, bundle = run_ingest_workflow(
         inp=artifacts.workflow_input,

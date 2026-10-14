@@ -134,4 +134,21 @@ def apply_grouping_proposals(
     return tree.model_copy(update={"nodes": tuple(by_id.values()), "tree_revision": tree.tree_revision + 1})
 
 
-__all__ = ["build_document_tree"]
+def apply_grouping_passes(
+    tree: DocumentTree,
+    passes: tuple[tuple[GroupProposal, ...], ...],
+    *,
+    grouping_policy_version: str,
+) -> DocumentTree:
+    """Apply a bounded sequence of adaptive grouping frontier passes."""
+    current = tree
+    for pass_number, proposals in enumerate(passes, start=1):
+        current = apply_grouping_proposals(
+            current,
+            proposals,
+            grouping_policy_version=f"{grouping_policy_version}:{pass_number}",
+        )
+    return current
+
+
+__all__ = ["apply_grouping_passes", "apply_grouping_proposals", "build_document_tree"]

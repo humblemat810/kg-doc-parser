@@ -251,6 +251,7 @@ def run_ocr_source_workflow(
     document_id: str | None = None,
     title: str | None = None,
     grouping_proposals: Sequence[GroupProposal] | None = None,
+    grouping_passes: Sequence[Sequence[GroupProposal]] | None = None,
     grouping_policy_version: str = "baseline-v1",
 ) -> OcrWorkflowCommandResult:
     source_path = Path(source_path)
@@ -300,6 +301,7 @@ def run_ocr_source_workflow(
         deps={"probe": probe, **(deps or {})},
         probe=probe,
         grouping_proposals=grouping_proposals,
+        grouping_passes=grouping_passes,
         grouping_policy_version=grouping_policy_version,
     )
     _emit(
