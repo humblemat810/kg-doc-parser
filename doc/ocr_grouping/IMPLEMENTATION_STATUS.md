@@ -15,7 +15,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C06 | PASS | Adjacent, disjoint, known-member proposal validation |
 | C07 | PASS | Stable merge IDs, ordered source fingerprints, SQLite replay, and grouping-policy matching; `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` |
 | C08 | PARTIAL | Valid content-addressed media references and non-text descriptions round-trip; provider-specific media acquisition remains outside the adapter |
-| C09 | PARTIAL | Multi-page source locations and OCR-signaled continuation proposals are supported; streaming open-frontier persistence remains |
+| C09 | PARTIAL | Multi-page source locations, OCR-signaled continuation proposals, and per-pass frontier checkpoints are supported; page-by-page live grouping remains |
 | C10 | PARTIAL | Versioned grounded `Summary` model, stale-fingerprint validation, and validated summary updates are present; provider-backed generation policy remains |
 | C11 | PASS | Empty OCR observations return no tree and normalized pages carry explicit `is_blank_page` metadata; `test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items` |
 | C12 | PASS | Existing OCR models and workflow input remain unchanged; adapter is additive |
@@ -23,7 +23,7 @@ covered. `DEFERRED` means intentionally outside this implementation slice.
 | C14 | DEFERRED | Kogwistar projection remains a separate optional adapter |
 | C15 | PASS | Six lazy Docling engines, direct RapidOCR/EasyOCR, platform/CLI gating, KServe v2 transport, and process-local user-provider registration; `tests/test_workflow_ingest_ocr_providers.py` passed 16 tests (one optional-runtime skip) |
 | C16 | PASS | `SummaryPolicy` and `select_summary_targets()` bound eligible kinds, evidence size, information gain, estimated input tokens, and target count without invoking a provider; `test_summary_target_planner_is_bounded_and_skips_low_information_nodes` |
-| C17 | PARTIAL | Atomic tree artifact replacement plus versioned SQLite `document_tree_state` and `grouping_frontier_state` checkpoints; page/merge persistence is covered, while a separate summary-attempt journal remains |
+| C17 | PARTIAL | Atomic tree artifact replacement plus versioned SQLite tree/frontier checkpoints after each grouping pass; page/merge persistence is covered, while a separate summary-attempt journal remains |
 | C18 | DEFERRED | Explicit reference mentions are outside this slice |
 | C19 | PASS | `render_preview()` reads only accepted source intervals and display separators |
 | C20 | PASS | Open node kinds and heterogeneous adjacent merges are supported |

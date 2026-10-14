@@ -56,7 +56,6 @@ from ..llm_structured_output import build_structured_output_runnable
 from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
 from .adapters import OCRPageJSON, normalize_ocr_pages
 from .document_adapters import (
-    apply_grouping_passes,
     apply_grouping_proposals,
     attach_document_tree_metadata,
     build_document_tree,
@@ -1954,11 +1953,18 @@ def run_ocr_ingest_workflow(
         if artifacts.document_tree is None:
             raise ValueError("cannot group an OCR document with no source observations")
         if grouping_passes is not None:
-            artifacts.document_tree = apply_grouping_passes(
-                artifacts.document_tree,
-                tuple(tuple(group) for group in grouping_passes),
-                grouping_policy_version=grouping_policy_version,
-            )
+            state_store = OCRWorkflowStateStore(artifacts.state_db_path)
+            for pass_number, grouping_pass in enumerate(grouping_passes, start=1):
+                artifacts.document_tree = apply_grouping_proposals(
+                    artifacts.document_tree,
+                    tuple(grouping_pass),
+                    grouping_policy_version=f"{grouping_policy_version}:{pass_number}",
+                )
+                state_store.save_document_tree(
+                    document_id=document_id,
+                    tree=artifacts.document_tree,
+                    grouping_policy_version=f"{grouping_policy_version}:{pass_number}",
+                )
         else:
             artifacts.document_tree = apply_grouping_proposals(
                 artifacts.document_tree,
