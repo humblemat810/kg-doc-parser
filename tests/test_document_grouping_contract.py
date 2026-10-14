@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+import pytest
+
+from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal, merge_groups
+from kg_doc_parser.workflow_ingest.document_models import (
+    DocumentNode,
+    DocumentTree,
+    SourceItem,
+    SourceLocation,
+    SourceSlice,
+)
+
+
+def _item(item_id: str, text: str) -> SourceItem:
+    return SourceItem(
+        item_id=item_id,
+        kind="text",
+        text=text,
+        location=SourceLocation(page_index=0, accuracy="page"),
+    )
+
+
+def _leaf(node_id: str, item_id: str, text: str, *, kind: str = "paragraph") -> DocumentNode:
+    return DocumentNode(
+        node_id=node_id,
+        kind=kind,
+        parts=(SourceSlice(item_id=item_id, start=0, end=len(text)),),
+    )
+
+
+def test_document_tree_requires_exact_source_coverage() -> None:
+    item = _item("a", "same")
+    tree = DocumentTree(
+        document_id="doc",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(item,),
+        nodes=(_leaf("root", "a", "same", kind="document"),),
+    )
+    assert tree.source_fingerprint()
+
+    with pytest.raises(ValueError, match="incomplete source coverage"):
+        DocumentTree(
+            document_id="doc",
+            source_revision="r1",
+            tree_revision=1,
+            root_id="root",
+            source_items=(item,),
+            nodes=(DocumentNode(node_id="root", kind="document", parts=(SourceSlice(item_id="a", start=0, end=3),)),),
+        )
+
+
+def test_document_tree_rejects_unary_internal_nodes() -> None:
+    with pytest.raises(ValueError, match="unary"):
+        DocumentNode(node_id="root", kind="document", children=(dict(node_id="child"),))
+
+
+def test_merge_groups_is_deterministic_and_preserves_unmerged_members() -> None:
+    proposal = GroupProposal(kind="layout:paragraph", members=("a", "b"))
+    first = merge_groups(document_id="doc", frontier=("a", "b", "c"), proposals=(proposal,), grouping_policy_version="v1")
+    second = merge_groups(document_id="doc", frontier=("a", "b", "c"), proposals=(proposal,), grouping_policy_version="v1")
+    assert first == second
+    assert first[0] == (first[0][0], "c")
+    assert len(first[1][0].children) == 2
+
+
+def test_merge_groups_rejects_nonadjacent_or_overlapping_members() -> None:
+    with pytest.raises(ValueError):
+        merge_groups(
+            document_id="doc",
+            frontier=("a", "b", "c"),
+            proposals=(GroupProposal(kind="section", members=("a", "c")),),
+            grouping_policy_version="v1",
+        )
+
+
+def test_identical_text_items_remain_distinct_by_identity() -> None:
+    left = _item("left", "same")
+    right = _item("right", "same")
+    assert left.text == right.text and left.item_id != right.item_id
