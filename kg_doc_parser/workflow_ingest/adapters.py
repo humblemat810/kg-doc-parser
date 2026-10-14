@@ -30,6 +30,10 @@ class OCRNonTextObjectJSON(TypedDict, total=False):
     bb_x_max: float
     cluster_number: int
     description: str
+    source_uri: str
+    mime_type: str
+    media_sha256: str
+    media_byte_length: int
 
 
 class OCRPageJSON(TypedDict):
@@ -159,11 +163,17 @@ def normalize_ocr_pages(
                     page_number=page_number,
                     cluster_number=cluster_number,
                     description=obj.get("description"),
+                    source_uri=obj.get("source_uri"),
                     bbox=_ocr_bbox(obj),
                     # Keep the "image" space label for future routing; the
                     # current engine still embeds through a single function.
                     embedding_space="image",
-                    metadata={"participates_in_semantic_text": False},
+                    metadata={
+                        "participates_in_semantic_text": False,
+                        "mime_type": obj.get("mime_type"),
+                        "media_sha256": obj.get("media_sha256"),
+                        "media_byte_length": obj.get("media_byte_length"),
+                    },
                 )
             )
         normalized_pages.append(

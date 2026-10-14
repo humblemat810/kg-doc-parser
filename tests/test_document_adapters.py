@@ -49,6 +49,41 @@ def test_build_document_tree_keeps_nontext_observation_without_fake_media() -> N
     assert tree.source_items[0].media is None
 
 
+def test_build_document_tree_uses_only_declared_content_addressed_media() -> None:
+    digest = "a" * 64
+    inp = WorkflowIngestInput(
+        request_id="doc",
+        collections=[
+            {
+                "collection_id": "doc",
+                "title": "doc",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "units": [
+                            SourceUnit(
+                                modality="pure_image",
+                                page_number=1,
+                                source_uri="assets/figure.png",
+                                metadata={
+                                    "mime_type": "image/png",
+                                    "media_sha256": digest,
+                                    "media_byte_length": 12,
+                                },
+                            )
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+    tree = build_document_tree(inp)
+    assert tree is not None
+    assert tree.source_items[0].media is not None
+    assert tree.source_items[0].text is None
+
+
 def test_apply_grouping_proposals_keeps_source_coverage_and_rejects_bad_members() -> None:
     inp = WorkflowIngestInput(
         request_id="doc",

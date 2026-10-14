@@ -81,6 +81,7 @@ class SourceItem(FrozenModel):
     text: str | None = None
     media: MediaRef | None = None
     ocr_metadata: OCRMetadata | None = None
+    annotations: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def one_payload(self) -> SourceItem:

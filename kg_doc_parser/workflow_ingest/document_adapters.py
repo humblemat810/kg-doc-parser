@@ -1,6 +1,8 @@
 """Adapters from the existing normalized OCR records to document evidence."""
 from __future__ import annotations
 
+import re
+
 from .adapters import _allocated_cluster_numbers
 from .document_grouping import GroupProposal, merge_groups
 from .document_models import (
@@ -8,6 +10,7 @@ from .document_models import (
     ChildRef,
     DocumentNode,
     DocumentTree,
+    MediaRef,
     SourceItem,
     SourceLocation,
     SourceSlice,
@@ -39,7 +42,18 @@ def build_document_tree(
                 prefix = "t" if unit.modality in {"text", "ocr_text"} else "i"
                 item_id = f"{collection.collection_id}|p{page.page_number}_{prefix}{cluster_number}"
             text = unit.text if unit.modality in {"text", "ocr_text"} else unit.description
-            if not text:
+            media_digest = unit.metadata.get("media_sha256")
+            media_size = unit.metadata.get("media_byte_length")
+            media_mime = unit.metadata.get("mime_type")
+            has_media = (
+                unit.source_uri is not None
+                and isinstance(media_digest, str)
+                and re.fullmatch(r"[0-9a-f]{64}", media_digest) is not None
+                and isinstance(media_size, int)
+                and media_size >= 0
+                and isinstance(media_mime, str)
+            )
+            if not text and not has_media:
                 continue
             precise_bbox = (
                 unit.bbox
@@ -68,12 +82,38 @@ def build_document_tree(
                 accuracy="region" if precise_bbox is not None else "page",
             )
             kind = "text" if unit.modality in {"text", "ocr_text"} else "non_text:description"
-            items.append(SourceItem(item_id=item_id, kind=kind, text=text, location=location))
+            if has_media:
+                assert unit.source_uri is not None
+                assert isinstance(media_digest, str)
+                assert isinstance(media_size, int)
+                assert isinstance(media_mime, str)
+                items.append(
+                    SourceItem(
+                        item_id=item_id,
+                        kind=unit.modality,
+                        location=location,
+                        media=MediaRef(
+                            uri=unit.source_uri,
+                            mime_type=media_mime,
+                            sha256_hex=media_digest,
+                            byte_length=media_size,
+                        ),
+                        annotations={"description": unit.description} if unit.description else {},
+                    )
+                )
+                leaf_kind = unit.modality
+                leaf_part = SourceSlice(item_id=item_id)
+            else:
+                if text is None:
+                    raise ValueError("non-media source item requires provider text or description")
+                leaf_kind = kind
+                leaf_part = SourceSlice(item_id=item_id, start=0, end=len(text))
+                items.append(SourceItem(item_id=item_id, kind=kind, text=text, location=location))
             leaves.append(
                 DocumentNode(
                     node_id=f"leaf:{item_id}",
-                    kind=kind,
-                    parts=(SourceSlice(item_id=item_id, start=0, end=len(text)),),
+                    kind=leaf_kind,
+                    parts=(leaf_part,),
                 )
             )
     if not items:
