@@ -61,6 +61,7 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -77,6 +78,7 @@ from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     OCRImagePayload,
     ProviderEndpointConfig,
+    WorkflowIngestInput,
     WorkflowProviderSettings,
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
@@ -429,6 +431,53 @@ def test_prepare_ocr_workflow_input_resumes_after_mid_document_interruption() ->
     assert resumed.reused_pages == [1, 2, 3, 5, 6]
     assert calls == [1, 2, 3, 4, 5, 6, 4]
     assert resumed.document_tree is not None
+
+
+@pytest.mark.ci
+def test_ocr_ingest_forwards_runtime_checkpoint_resume_controls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    artifacts = SimpleNamespace(
+        workflow_input=WorkflowIngestInput.from_text(
+            document_id="ocr-runtime-resume",
+            text="A persisted OCR page",
+            title="OCR Runtime Resume",
+        ),
+        document_tree=None,
+    )
+
+    def _fake_parse_ocr_document(**kwargs: object) -> object:
+        captured["parse_kwargs"] = kwargs
+        return artifacts
+
+    def _fake_run_ingest_workflow(**kwargs: object):
+        captured["runtime_kwargs"] = kwargs
+        return SimpleNamespace(run_id="run|ocr-runtime-resume", status="suspended"), None
+
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.parsing.parse_ocr_document",
+        _fake_parse_ocr_document,
+    )
+    monkeypatch.setattr(ocr_pipeline_module, "run_ingest_workflow", _fake_run_ingest_workflow)
+
+    run, bundle, returned_artifacts = run_ocr_ingest_workflow(
+        document_id="ocr-runtime-resume",
+        title="OCR Runtime Resume",
+        output_dir=_scratch("ocr_runtime_resume") / "artifacts",
+        workflow_engine=object(),
+        conversation_engine=object(),
+        run_id="run|ocr-runtime-resume",
+        resume_from_checkpoint=True,
+    )
+
+    runtime_kwargs = captured["runtime_kwargs"]
+    assert isinstance(runtime_kwargs, dict)
+    assert runtime_kwargs["run_id"] == "run|ocr-runtime-resume"
+    assert runtime_kwargs["resume_from_checkpoint"] is True
+    assert run.status == "suspended"
+    assert bundle is None
+    assert returned_artifacts is artifacts
 
 
 @pytest.mark.ci
