@@ -860,19 +860,27 @@ def test_ocr_ingest_forwards_runtime_checkpoint_resume_controls(
         document_tree=None,
     )
 
-    def _fake_parse_ocr_document(**kwargs: object) -> object:
-        captured["parse_kwargs"] = kwargs
-        return artifacts
+    def _fake_build_preparation(**kwargs: object) -> object:
+        captured["preparation_kwargs"] = kwargs
+        return SimpleNamespace()
 
-    def _fake_run_ingest_workflow(**kwargs: object):
+    def _fake_run_ocr_root_workflow(**kwargs: object):
         captured["runtime_kwargs"] = kwargs
-        return SimpleNamespace(run_id="run|ocr-runtime-resume", status="suspended"), None
+        return (
+            SimpleNamespace(
+                run_id="run|ocr-runtime-resume",
+                status="suspended",
+                final_state={},
+            ),
+            None,
+            artifacts,
+        )
 
+    monkeypatch.setattr(ocr_pipeline_module, "_build_ocr_page_preparation", _fake_build_preparation)
     monkeypatch.setattr(
-        "kg_doc_parser.workflow_ingest.parsing.parse_ocr_document",
-        _fake_parse_ocr_document,
+        "kg_doc_parser.workflow_ingest.ocr_runtime.run_ocr_root_workflow",
+        _fake_run_ocr_root_workflow,
     )
-    monkeypatch.setattr(ocr_pipeline_module, "run_ingest_workflow", _fake_run_ingest_workflow)
 
     run, bundle, returned_artifacts = run_ocr_ingest_workflow(
         document_id="ocr-runtime-resume",
@@ -880,6 +888,7 @@ def test_ocr_ingest_forwards_runtime_checkpoint_resume_controls(
         output_dir=_scratch("ocr_runtime_resume") / "artifacts",
         workflow_engine=object(),
         conversation_engine=object(),
+        image_payloads=[OCRImagePayload(page_number=1, image_path="ignored.png")],
         run_id="run|ocr-runtime-resume",
         resume_from_checkpoint=True,
     )
