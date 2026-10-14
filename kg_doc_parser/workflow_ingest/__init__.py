@@ -24,6 +24,7 @@ from .design import (
 from .document_adapters import (
     apply_grouping_passes,
     apply_grouping_proposals,
+    apply_summary_updates,
     attach_document_tree_metadata,
     build_document_tree,
     suggest_cross_page_continuations,
@@ -241,6 +242,7 @@ __all__ = [
     "apply_cud_update",
     "apply_grouping_passes",
     "apply_grouping_proposals",
+    "apply_summary_updates",
     "attach_document_tree_metadata",
     "build_authoritative_source_map",
     "build_chat_model",

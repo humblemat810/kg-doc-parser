@@ -18,6 +18,7 @@ from .document_models import (
     SourceItem,
     SourceLocation,
     SourceSlice,
+    Summary,
 )
 from .models import WorkflowIngestInput
 
@@ -243,6 +244,27 @@ def attach_document_tree_metadata(workflow_input: WorkflowIngestInput, tree: Doc
     workflow_input.collections[0].metadata["document_tree"] = tree.model_dump(mode="json")
 
 
+def apply_summary_updates(
+    tree: DocumentTree,
+    updates: Mapping[str, Summary],
+) -> DocumentTree:
+    """Apply grounded summaries through the tree validator before persistence."""
+    if not updates:
+        return tree
+    node_ids = {node.node_id for node in tree.nodes}
+    unknown = set(updates) - node_ids
+    if unknown:
+        raise ValueError(f"summary update references unknown node(s): {sorted(unknown)}")
+    nodes = tuple(
+        node.model_copy(update={"summary": updates[node.node_id]}) if node.node_id in updates else node
+        for node in tree.nodes
+    )
+    payload = tree.model_dump(mode="json")
+    payload["nodes"] = nodes
+    payload["tree_revision"] = tree.tree_revision + 1
+    return DocumentTree.model_validate(payload)
+
+
 def apply_grouping_proposals(
     tree: DocumentTree,
     proposals: tuple[GroupProposal, ...],
@@ -302,6 +324,7 @@ def apply_grouping_passes(
 __all__ = [
     "apply_grouping_passes",
     "apply_grouping_proposals",
+    "apply_summary_updates",
     "attach_document_tree_metadata",
     "build_document_tree",
     "suggest_cross_page_continuations",

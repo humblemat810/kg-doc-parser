@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from kg_doc_parser.workflow_ingest.document_adapters import apply_summary_updates
 from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal, merge_groups
 from kg_doc_parser.workflow_ingest.document_models import (
     DocumentNode,
@@ -9,6 +10,7 @@ from kg_doc_parser.workflow_ingest.document_models import (
     SourceItem,
     SourceLocation,
     SourceSlice,
+    Summary,
 )
 
 
@@ -115,6 +117,56 @@ def test_generated_summary_requires_current_descendant_fingerprint() -> None:
     payload["nodes"][-1]["summary"]["input_fingerprint"] = "0" * 64
     with pytest.raises(ValueError, match="summary fingerprint is stale"):
         DocumentTree.model_validate(payload)
+
+
+def test_summary_updates_validate_grounding_before_tree_persistence() -> None:
+    base = DocumentTree(
+        document_id="summary-update",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(_item("a", "one"), _item("b", "two")),
+        nodes=(
+            _leaf("a-leaf", "a", "one"),
+            _leaf("b-leaf", "b", "two"),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=({"node_id": "a-leaf"}, {"node_id": "b-leaf"}),
+            ),
+        ),
+    )
+    updated = apply_summary_updates(
+        base,
+        {
+            "root": Summary(
+                status="generated",
+                text="one and two",
+                evidence_item_ids=("a", "b"),
+                provider_model="fake",
+                prompt_revision="prompt-v1",
+                input_fingerprint=base.summary_input_fingerprint("root"),
+            )
+        },
+    )
+    assert updated.tree_revision == 2
+    assert updated.nodes[-1].summary is not None
+    with pytest.raises(ValueError, match="summary fingerprint is stale"):
+        apply_summary_updates(
+            base,
+            {
+                "root": Summary(
+                    status="generated",
+                    text="stale",
+                    evidence_item_ids=("a",),
+                    provider_model="fake",
+                    prompt_revision="prompt-v1",
+                    input_fingerprint="0" * 64,
+                )
+            },
+        )
+    with pytest.raises(ValueError, match="unknown node"):
+        apply_summary_updates(base, {"missing": Summary(status="pending")})
 
 
 def test_title_and_atomic_sixty_row_table_remain_two_grounded_children() -> None:
