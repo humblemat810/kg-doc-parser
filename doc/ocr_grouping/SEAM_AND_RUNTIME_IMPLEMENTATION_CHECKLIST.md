@@ -314,9 +314,11 @@ SIGKILL, concurrency, or real-provider evidence is still absent.
 - [~] **C02 — Runtime ownership boundary:** the root run owns page, grouping,
   and semantic child invocations with stable child IDs. Prove recovery of the
   complete parent/child lineage before release.
-- [ ] **C03 — Dual-store reconciliation:** test crashes after artifact rename
-  and after SQLite/runtime checkpoint writes in both orders; recovery must
-  accept one canonical result or safely redo an unaccepted attempt.
+- [~] **C03 — Dual-store reconciliation:** a completion row without a published
+  artifact is now rejected by the reuse predicate and can be safely redone;
+  test crashes after artifact rename and after SQLite/runtime checkpoint writes
+  in both orders, including fresh-process recovery, before marking this gate
+  complete.
 - [ ] **C04 — Incremental equivalence:** compare canonical tree content, not
   timestamps, between uninterrupted batch grouping and interrupted incremental
   grouping. Completed subtrees must remain stable.
@@ -342,7 +344,7 @@ itself as proof:
 | --- | --- | --- |
 | C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38655395569`; source-checkout-only tests do not count. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs exist, but a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
-| C03 dual-store reconciliation | OPEN | Crash tests for rename-before-checkpoint and checkpoint-before-rename, plus tampered JSON rejection and deterministic recovery. |
+| C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_does_not_reuse_completion_without_published_artifact` proves checkpoint-before-artifact cannot be reused; rename-before-checkpoint adoption is also tested. Fresh-process reconciliation and a full crash harness remain open. |
 | C04 incremental equivalence | OPEN | Canonical tree comparison between uninterrupted batch and interrupted incremental grouping; exclude timestamps/run metadata. |
 | C05 true resume | PARTIAL | Same-process 100-page interruption evidence exists; SIGKILL/new-process resume, duplicate-resume race, and no redundant accepted work remain. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
