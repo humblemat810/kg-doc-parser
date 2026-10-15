@@ -88,8 +88,10 @@ S01-S12 and C01-C06 rows in
 - [~] S03-S04 preserve declared spatial precision, media provenance, and
   deterministic mixed-object ordering; live multi-object provider evidence is
   still required.
-- [ ] S05 proves accepted hierarchy reaches semantic parsing and graph export,
-  rather than surviving only as ignored metadata.
+- [~] S05 proves accepted hierarchy reaches semantic parsing and graph export,
+  rather than surviving only as ignored metadata. The export metamorphic test
+  now proves parent-child structure is consumed; persisted semantic-parser
+  publication evidence remains open.
 - [~] S06-S08 protect grouping checkpoints, preserve atomic objects, and
   invalidate summaries; monotonic generation and complete writer audit remain.
 - [~] S09-S10 verify runtime checkpoint ownership and collision-safe identity

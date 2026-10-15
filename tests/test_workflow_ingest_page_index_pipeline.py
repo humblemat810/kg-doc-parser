@@ -5,13 +5,15 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-import kg_doc_parser.workflow_ingest.page_index as page_index_module
 import pytest
 from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
 )
 from _ollama_test_helpers import ollama_available
+from kogwistar.utils.cache_backend import Memory
+
+import kg_doc_parser.workflow_ingest.page_index as page_index_module
 from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
     BlockAssignmentBatch,
@@ -33,7 +35,6 @@ from kg_doc_parser.workflow_ingest.semantics import (
     validate_semantic_tree_integrity,
 )
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
-from kogwistar.utils.cache_backend import Memory
 
 pytestmark = [pytest.mark.workflow]
 
@@ -146,6 +147,85 @@ def test_page_index_atomic_fallback_preserves_child_evidence_metadata() -> None:
         "title": "Meaningful child",
         "node_type": "SECTION",
     }
+
+
+@pytest.mark.ci
+def test_graph_export_consumes_hierarchy_for_identical_source_evidence() -> None:
+    source_text = "alpha beta gamma delta"
+    source_map = {"unit": {"text": source_text}}
+    spans = {
+        name: HydratedTextPointer(
+            source_cluster_id="unit",
+            start_char=start,
+            end_char=end,
+            verbatim_text=source_text[start : end + 1],
+        )
+        for name, start, end in (
+            ("alpha", 0, 4),
+            ("beta", 6, 9),
+            ("gamma", 11, 15),
+            ("delta", 17, 21),
+        )
+    }
+
+    def _tree(first_group: tuple[str, str], second_group: tuple[str, str]) -> SemanticNode:
+        leaves = {
+            name: SemanticNode(
+                node_id=name,
+                parent_id="group-a" if name in first_group else "group-b",
+                title=name,
+                total_content_pointers=[spans[name]],
+                level_from_root=2,
+            )
+            for name in spans
+        }
+        return SemanticNode(
+            node_id="root",
+            title="Root",
+            node_type="DOCUMENT_ROOT",
+            child_nodes=[
+                SemanticNode(
+                    node_id="group-a",
+                    parent_id="root",
+                    title="First group",
+                    level_from_root=1,
+                    child_nodes=[leaves[name] for name in first_group],
+                ),
+                SemanticNode(
+                    node_id="group-b",
+                    parent_id="root",
+                    title="Second group",
+                    level_from_root=1,
+                    child_nodes=[leaves[name] for name in second_group],
+                ),
+            ],
+        )
+
+    first = semantic_tree_to_kge_payload(
+        _tree(("alpha", "beta"), ("gamma", "delta")),
+        doc_id="hierarchy-metamorphic",
+        parser_source_map=source_map,
+    )
+    second = semantic_tree_to_kge_payload(
+        _tree(("alpha", "gamma"), ("beta", "delta")),
+        doc_id="hierarchy-metamorphic",
+        parser_source_map=source_map,
+    )
+
+    def _parent_child_pairs(payload: dict[str, object]) -> set[tuple[str, str]]:
+        edges = payload["edges"]
+        assert isinstance(edges, list)
+        return {
+            (str(edge["source_ids"][0]), str(edge["target_ids"][0]))
+            for edge in edges
+            if isinstance(edge, dict)
+        }
+
+    first_pairs = _parent_child_pairs(first)
+    second_pairs = _parent_child_pairs(second)
+    assert first_pairs != second_pairs
+    assert ("group-a", "alpha") in first_pairs
+    assert ("group-a", "gamma") in second_pairs
 
 
 @pytest.mark.ci
