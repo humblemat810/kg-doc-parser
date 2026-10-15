@@ -67,10 +67,9 @@ runtime classification to the evidence ledger below.
   after a grouping/summary checkpoint, reopen the same engines and run ID in a
   new process, and prove one lineage, no duplicate accepted result, and no
   replay of completed work. The 100-page same-process/reference regression was
-  also run against installed released Kogwistar `0.6.8` and failed after
-  530.99 seconds because the durably failed page child was rehydrated as
-  terminal. This remains blocked until the released retryable-child contract
-  is consumed; the source-checkout result is not a release substitute.
+  also run against installed released Kogwistar `0.6.9` and passed with the
+  retryable-child fix; fresh-process root recovery remains open because the
+  current evidence still uses the source checkout/runtime harness.
 
 **Track A is complete only when:** the test uses the installed Kogwistar
 package, survives a real process boundary, compares canonical output with an
@@ -119,10 +118,10 @@ whose contract crosses SQLite, Kogwistar, a provider, or graph export.
 - [x] **D-2.** Keep the installed Kogwistar API gate separate from source
   checkout compatibility; record the exact version and CI run.
 - [~] **D-3.** Merge and publish the Kogwistar retryable-child fix before
-  claiming Track A-6 or the 100-page release fixture. The fix is merged in
-  Kogwistar `main` at `c0eb92c` and tagged `v0.6.9`; the release workflow is
-  still waiting at its publish gate and PyPI still exposes `0.6.8`, so the
-  installed-release gate remains open.
+  claiming Track A-6 or the 100-page release fixture. Kogwistar `0.6.9` is
+  published on PyPI and the parser lockfile records its hashes. The installed
+  release gate is now unblocked, but the fresh-process and duplicate-resume
+  evidence is still required.
 - [ ] **D-4.** Close Track A process/recovery evidence before claiming Track B
   end-to-end seam closure.
 - [ ] **D-5.** Only after both tracks are green, bump the parser version, add
@@ -235,10 +234,11 @@ ideas:
   one accepted canonical result. Completed OCR, grouping, and summary work
   must not be accepted twice after restart; do not claim exactly-once provider
   calls across arbitrary process termination.
-  The current 100-page regression also exposes a dependency gate: released
-  Kogwistar `0.6.8` rehydrates a durably failed child as terminal instead of
-  retrying its checkpoint. The parser must consume a released Kogwistar
-  retryable-child contract (or a public equivalent) before this gate can pass;
+  The historical 100-page regression exposed a dependency gate: released
+  Kogwistar `0.6.8` rehydrated a durably failed child as terminal instead of
+  retrying its checkpoint. Published Kogwistar `0.6.9` contains the
+  retryable-child contract; the parser must verify that installed release and
+  complete fresh-process recovery before this gate can pass;
   changing the parser's child ID privately would weaken lineage and is not an
   accepted substitute.
 - **C06 - OCR quality/completeness:** valid interval coverage is necessary but
@@ -635,8 +635,9 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [~] **C05 — True resume:** prove completed OCR, grouping, and summaries are
   not rerun after a worker/process stop. Existing same-process tests cover
   checkpoint behavior but do not constitute a real process-stop/new-process
-  proof. Installed Kogwistar `0.6.8` terminal-failed-child retry is not claimed.
-  A new process/SIGKILL proof, duplicate-resume race, and artifact/database
+  proof. Installed Kogwistar `0.6.9` retry behavior is now available, but has
+  not yet been exercised through the full root process-stop path. A new
+  process/SIGKILL proof, duplicate-resume race, and artifact/database
   reconciliation remain open. The acceptance target is at-least-once execution
   with exactly one accepted canonical result, not exactly-once provider calls.
 - [~] **C06 — OCR quality/completeness:** interval coverage is necessary but not
@@ -653,7 +654,7 @@ itself as proof:
 
 | Gate | Current status | Required closure evidence |
 | --- | --- | --- |
-| C01 installed API compatibility | BLOCKED BY CORE RELEASE | Parser CI run `38720363271` reproduced a public-version mismatch in Kogwistar `0.6.9`: installed metadata is `0.6.9`, while `kogwistar.__version__` is `0.6.8`. Kogwistar `fix/release-version-0.6.10` adds the correction and a core regression test; publish and rerun the parser matrix before PASS. |
+| C01 installed API compatibility | PARTIAL / AWAITING CORE 0.6.10 | Parser CI run `38720363271` reproduced a public-version mismatch in Kogwistar `0.6.9`: installed metadata was `0.6.9`, while `kogwistar.__version__` was `0.6.8`. Kogwistar `fix/release-version-0.6.10` adds the correction and a core regression test; PR #61 is open and must merge, publish, and be re-tested before PASS. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`; a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption, and `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact` proves the public preparation path reruns a database-first incomplete page. Full root/runtime checkpoint reconciliation remains open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
@@ -725,9 +726,10 @@ is the release-blocking dependency regression. It passes in 742.02 seconds
 with the real persisted parser/runtime path and core commit `8f09fd7` supplied
 on `PYTHONPATH`; the uninterrupted and resumed canonical graph payloads are
 equal and the accepted page-call counts are asserted. The same test fails with
-released Kogwistar `0.6.8`, because that release returns a durably failed
-`ocr_pages` child as terminal. The core branch must be merged and published,
-then the parser must update its installed-package pin and rerun this test
+released Kogwistar `0.6.8`, because that release returned a durably failed
+`ocr_pages` child as terminal. Published Kogwistar `0.6.9` contains the
+retryable-child fix, but the parser must verify the installed package and then
+rerun this test
 against the released artifact. It is not converted into a skip or a
 parser-only child-ID workaround.
 

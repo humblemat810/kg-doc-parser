@@ -64,8 +64,8 @@ passed in 1030.06 seconds with merged Kogwistar source commit `c0eb92c` on
 `PYTHONPATH`. The uninterrupted and interrupted/resumed canonical graph
 payloads matched, and the injected page failure was retried without rebuilding
 accepted page work. This improves C05 evidence but does not close it: the
-Kogwistar `v0.6.9` release is tagged but not yet visible on PyPI, and a true
-fresh-process/SIGKILL recovery plus duplicate-root-resume race remain open.
+  Kogwistar `v0.6.9` is published on PyPI. A true fresh-process/SIGKILL
+  recovery plus duplicate-root-resume race remain open.
 
 The focused test
 `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_resume_reopens_state_in_a_fresh_process`
@@ -163,7 +163,7 @@ interpretation of existing evidence:
 | S02 atomic JSON publication | PARTIAL | Unique same-directory temporary files and atomic replacement are used. | Atomic replacement of one file does not make the artifact and SQLite/Kogwistar checkpoint a transaction; both crash orders need recovery tests. |
 | S06 grouping checkpoint safety | PARTIAL | Expected-revision/absence fencing, frontier consistency checks, and `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` now reject unfenced updates to an existing checkpoint. | Every writer must be audited; late-writer, monotonic generation, and crash/restart behavior remain release blockers. |
 | Runtime ownership | PARTIAL | Stable root/page/grouping/semantic child identities exist in the persisted design. | A fresh process must reopen the same parent and child lineage without a second accepted semantic generation. |
-| 100-page resume | PARTIAL / BLOCKED BY CORE RELEASE | The persisted test passes with Kogwistar core commit `8f09fd7` supplied on `PYTHONPATH`. The same `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` test was run against installed released Kogwistar `0.6.8` and failed after 530.99 seconds because the durably failed page child was rehydrated as terminal. | The released core must contain the retryable-child fix; source-checkout success is not release evidence. SIGKILL/new-process and duplicate-resume evidence are still required. |
+| 100-page resume | PARTIAL | The persisted test passes with Kogwistar core commit `c0eb92c` supplied on `PYTHONPATH`, and the retryable-child fix is published in Kogwistar `0.6.9`. Installed-release verification and SIGKILL/new-process plus duplicate-resume evidence are still required. |
 | OCR completeness | PARTIAL | Typed provider diagnostics and strict policy can reject provider loss signals. | Interval coverage alone does not detect missing figures/tables/coordinates; provider-side completeness and recovery evidence remain open. |
 
 The checklist therefore intentionally contains no green S02, S06, C02, C03,
@@ -190,7 +190,7 @@ claim from a same-process or mocked test.
 | Finding | Status | Evidence / remaining work |
 | --- | --- | --- |
 | P0 grouping checkpoint overwrite on resume | PARTIAL | Prefix pages no longer overwrite `document_tree_state`; grouping and summary persistence now atomically fence both expected revisions and expected absence. The preparation path still has a baseline SQLite compatibility path outside the grouping child, and a late compatibility writer or crash can still violate the intended ownership boundary until every writer is audited. |
-| P0 OCR and grouping are persisted Kogwistar workflow nodes | PARTIAL | A versioned root workflow now invokes persisted page, grouping, and semantic child workflows with stable child run IDs. Same-process test coverage exists, but it is not evidence of a real process stop; installed Kogwistar `0.6.8` terminal-failed-child retry is not claimed, and new-process lineage/no-double-publication evidence remain required before PASS. |
+| P0 OCR and grouping are persisted Kogwistar workflow nodes | PARTIAL | A versioned root workflow now invokes persisted page, grouping, and semantic child workflows with stable child run IDs. Same-process test coverage exists, but it is not evidence of a real process stop; new-process lineage/no-double-publication evidence remains required before PASS. |
 | P1 OCR model/config changes invalidate reuse | PARTIAL | `page_state.config_fingerprint` includes provider, model, endpoint, engine, language, and candidate list, and the reuse predicate compares it. `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages` proves the public root rejects a changed model before replay, while `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` proves the changed configuration is rejected in a fresh process. The item remains partial pending full crash/reopen evidence. |
 | P1 page artifact/database publication is crash-safe | PARTIAL | The current write path validates JSON, atomically replaces the artifact through unique same-directory temporary files, records an artifact SHA-256, rejects a well-formed tampered artifact on reuse, and adopts a valid rename-before-DB orphan. The legacy `record_page_completed()` path is now also fenced against late writers by source/config identity and pending status, with `test_ocr_page_completion_rejects_a_late_writer_after_acceptance`. `test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct restart predicates, `test_ocr_page_artifact_publish_crash_is_recoverable` injects the crash at the real publication boundary, and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves duplicate page delivery cannot replace the accepted artifact. These are still separate sub-properties, not crash-safe publication as a whole: checkpoint-before-artifact and full runtime/checkpoint reconciliation remain before PASS. |
 | P1 grouping is not quadratic for long documents | PARTIAL | The root path avoids the old per-page semantic rebuild and uses a runtime grouping child. `test_grouping_incremental_resume_matches_uninterrupted_reference` covers a controlled multi-pass case, but bounded frontier cost, monotonic ownership, a real interruption/reopen path, and a 100-page performance comparison remain open. |
@@ -245,16 +245,16 @@ claim from a same-process or mocked test.
 These require an implementation location, an exact pytest node, before/after
 behavior, and a runtime classification. C01 was previously evidenced, but the
 current released-package check found a Kogwistar `0.6.9` public-version
-mismatch. C01 is therefore blocked until the upstream `0.6.10` correction is
-published and the parser matrix is rerun. C02-C06 have partial implementation
+mismatch. C01 is awaiting the upstream `0.6.10` correction in core PR #61
+and the parser matrix rerun. C02-C06 have partial implementation
 evidence, but none is a release-gate pass yet:
 
 - [~] Verify the installed Kogwistar package and public workflow persistence
   API, rather than relying on a source checkout or import-only probe. The
-  contract test correctly caught that Kogwistar `0.6.9` metadata reports
-  `0.6.9` while its public module reports `0.6.8` in parser CI run
-  `38720363271`. Re-run the same test and CPython 3.12-3.14/PyPy 3.11 matrix
-  after Kogwistar `0.6.10` is published.
+  contract test caught that Kogwistar `0.6.9` metadata reported `0.6.9` while
+  its public module reported `0.6.8` in parser CI run `38720363271`. Re-run
+  the same test and CPython 3.12-3.14/PyPy 3.11 matrix after Kogwistar
+  `0.6.10` is published.
 - [~] Document and test one root/child ownership model, including semantic
   parser checkpoint and graph publication identities. Stable root/page/grouping/
   semantic IDs and same-process ownership tests exist; fresh-process lineage
@@ -270,8 +270,9 @@ evidence, but none is a release-gate pass yet:
 - [~] Prove at-least-once execution with exactly one accepted canonical result
   after process interruption, including duplicate-resume behavior. Duplicate
   page publication and same-process resume are covered; SIGKILL/new-process
-  resume and duplicate root-resume evidence remain open, and the released
-  Kogwistar retryable-child dependency is still a gate.
+  resume and duplicate root-resume evidence remain open; published
+  Kogwistar `0.6.9` supplies the retryable-child dependency, but its installed
+  full-root recovery still needs verification.
 - [~] Add a quality/completeness gate that detects provider omissions beyond
   source interval coverage, including non-text and coordinate-loss diagnostics.
   Typed provider-loss diagnostics and strict rejection exist; source-side
