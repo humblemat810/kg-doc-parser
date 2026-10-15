@@ -118,9 +118,11 @@ whose contract crosses SQLite, Kogwistar, a provider, or graph export.
   S02, S06, C02, C03, C04, C05, or C06 green from narrow tests.
 - [x] **D-2.** Keep the installed Kogwistar API gate separate from source
   checkout compatibility; record the exact version and CI run.
-- [ ] **D-3.** Merge and publish the Kogwistar retryable-child fix before
-  claiming Track A-6 or the 100-page release fixture. The released `0.6.8`
-  run is a recorded failure, not an omitted test.
+- [~] **D-3.** Merge and publish the Kogwistar retryable-child fix before
+  claiming Track A-6 or the 100-page release fixture. The fix is merged in
+  Kogwistar `main` at `c0eb92c` and tagged `v0.6.9`; the release workflow is
+  still waiting at its publish gate and PyPI still exposes `0.6.8`, so the
+  installed-release gate remains open.
 - [ ] **D-4.** Close Track A process/recovery evidence before claiming Track B
   end-to-end seam closure.
 - [ ] **D-5.** Only after both tracks are green, bump the parser version, add
@@ -653,6 +655,17 @@ itself as proof:
 | C05 true resume | PARTIAL / BLOCKED BY CORE RELEASE | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with core commit `8f09fd7` on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. Released Kogwistar `0.6.8` still rehydrates the failed `ocr_pages` child as terminal, so a released retryable-child runtime contract is required before claiming release recovery. SIGKILL/new-process root resume, duplicate root-resume race, and no redundant accepted OCR work also remain. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
 
+### C05 evidence correction (2026-10-15)
+
+The 100-page regression `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
+passed in 1030.06 seconds with the real persisted parser/runtime path and
+merged Kogwistar source commit `c0eb92c` supplied on `PYTHONPATH`. The
+uninterrupted and resumed canonical graph payloads matched; the injected page
+failure was retried, and accepted page work was reused. This supersedes the
+older source-checkout evidence in the C05 row, but does not close C05: PyPI
+still exposes Kogwistar `0.6.8`, and fresh-process/SIGKILL recovery, duplicate
+root-resume races, and cross-store reconciliation remain open.
+
 ### S02 correction ledger
 
 S02 must not be marked complete until all of the following are independently
@@ -692,7 +705,7 @@ still incomplete.
 - [ ] Require zero duplicate accepted commits, no stale artifacts, no fabricated
   spatial precision, and no unsupported cross-revision reuse.
 
-### Current failing release-blocking regression
+### Current release-blocking regression
 
 `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
 is the release-blocking dependency regression. It passes in 742.02 seconds
@@ -704,6 +717,12 @@ released Kogwistar `0.6.8`, because that release returns a durably failed
 then the parser must update its installed-package pin and rerun this test
 against the released artifact. It is not converted into a skip or a
 parser-only child-ID workaround.
+
+Status correction: the source-checkout failure described above has been
+resolved by merged Kogwistar `c0eb92c`/`v0.6.9`; the current run passed as
+recorded in the C05 evidence correction. The remaining blocker is publication
+and verification of the installed `0.6.9` package, not a known failure in the
+parser source path.
 
 ## Evidence Ledger Requirements
 

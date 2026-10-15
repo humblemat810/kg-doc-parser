@@ -56,6 +56,17 @@ gate currently evidenced as PASS; C02-C06 remain PARTIAL or BLOCKED, and the
 parser version must not be bumped until the open rows have implementation,
 reusable regression tests, and runtime evidence.
 
+### New recovery evidence (2026-10-15)
+
+The real persisted 100-page regression
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
+passed in 1030.06 seconds with merged Kogwistar source commit `c0eb92c` on
+`PYTHONPATH`. The uninterrupted and interrupted/resumed canonical graph
+payloads matched, and the injected page failure was retried without rebuilding
+accepted page work. This improves C05 evidence but does not close it: the
+Kogwistar `v0.6.9` release is tagged but not yet visible on PyPI, and a true
+fresh-process/SIGKILL recovery plus duplicate-root-resume race remain open.
+
 ## Review-adjusted execution checklist
 
 This is the short operational list for the two implementations. The detailed
