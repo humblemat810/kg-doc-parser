@@ -3603,12 +3603,20 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
 
     def _parse_semantic_fn(*, collection, parser_input_dict, parser_source_map):
         calls["parse"] += 1
-        captured_grouping_trees.append(parser_input_dict.get("document_tree"))
-        return _grounded_semantic_tree(
+        grouping_tree = parser_input_dict.get("document_tree")
+        captured_grouping_trees.append(grouping_tree)
+        assert isinstance(grouping_tree, dict)
+        grouping_root_id = grouping_tree.get("root_id")
+        assert isinstance(grouping_root_id, str)
+        semantic_tree = _grounded_semantic_tree(
             collection=collection,
             parser_input_dict=parser_input_dict,
             parser_source_map=parser_source_map,
         )
+        semantic_tree.child_nodes[0] = semantic_tree.child_nodes[0].model_copy(
+            update={"title": f"grouped:{grouping_root_id}"}
+        )
+        return semantic_tree
 
     settings = WorkflowProviderSettings(
         ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
@@ -3657,6 +3665,7 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
     assert second_artifacts.state_db_path.exists()
     assert SemanticNode.model_validate(second_run.final_state["semantic_tree"]).child_nodes
     assert second_run.final_state["semantic_tree"]["child_nodes"][0]["total_content_pointers"]
+    assert second_run.final_state["semantic_tree"]["child_nodes"][0]["title"] == "grouped:root"
     assert first_bundle.grouping_tree == _first_artifacts.document_tree.model_dump(mode="json")
     assert second_bundle.grouping_tree == second_artifacts.document_tree.model_dump(mode="json")
     root_trace = list(
