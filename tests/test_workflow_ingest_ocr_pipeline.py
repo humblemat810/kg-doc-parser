@@ -472,7 +472,11 @@ def test_grouping_incremental_resume_matches_uninterrupted_reference(
         (GroupProposal(kind="section", members=("leaf:item-alpha", "leaf:item-beta")),),
         (GroupProposal(kind="topic", members=(first_frontier[0], "leaf:item-gamma")),),
     )
-    policy = SummaryPolicy(eligible_kinds=("document",), minimum_source_items=1, minimum_source_chars=1)
+    policy = SummaryPolicy(
+        eligible_kinds=("document",),
+        minimum_source_items=1,
+        minimum_source_chars=1,
+    )
 
     def _reference_summary(
         *,
@@ -627,7 +631,6 @@ def test_summary_checkpoint_conflict_is_retryable_not_a_summary_warning() -> Non
                 eligible_kinds=("document",),
                 minimum_source_items=1,
                 minimum_source_chars=1,
-                minimum_information_gain_chars=0,
             ),
             generator=_summary_generator,
             grouping_policy_version="summary-v1",
@@ -1483,6 +1486,217 @@ def test_prepare_ocr_workflow_input_generates_grounded_summary_with_journal() ->
 
 
 @pytest.mark.ci
+def test_summary_cache_reuses_exact_generation_and_slice_identity() -> None:
+    scratch = _scratch("ocr_summary_cache_identity")
+    tree = DocumentTree(
+        document_id="summary-cache-doc",
+        source_revision="ocr-v1:summary-cache",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="shared",
+                kind="text",
+                text="alpha beta",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="leaf:left",
+                kind="text",
+                parts=(SourceSlice(item_id="shared", start=0, end=6),),
+            ),
+            DocumentNode(
+                node_id="leaf:right",
+                kind="text",
+                parts=(SourceSlice(item_id="shared", start=6, end=10),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(ChildRef(node_id="leaf:left"), ChildRef(node_id="leaf:right")),
+            ),
+        ),
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    initial_revision = store.save_document_tree(
+        document_id=tree.document_id,
+        tree=tree,
+        grouping_policy_version="summary-cache-v1",
+        require_no_existing_tree=True,
+    )
+    policy = SummaryPolicy(
+        eligible_kinds=("document",),
+        minimum_source_items=1,
+        minimum_source_chars=1,
+        minimum_information_gain_chars=0,
+    )
+    calls = {"count": 0}
+
+    def _generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree
+        calls["count"] += 1
+        return Summary(
+            status="generated",
+            text=f"summary:{node_id}",
+            evidence_item_ids=tuple(item.item_id for item in source_items),
+            provider_model="fake-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    generated = _generate_tree_summaries(
+        tree,
+        document_id=tree.document_id,
+        state_store=store,
+        policy=policy,
+        generator=_generator,
+        grouping_policy_version="summary-cache-v1",
+        expected_tree_revision=initial_revision,
+    )
+    root_summary = next(node.summary for node in generated.nodes if node.node_id == "root")
+    assert root_summary is not None
+    assert root_summary.evidence_slice_fingerprint == generated.summary_slice_fingerprint("root")
+
+    # Reopen the persisted tree's structure without its derived summary. The
+    # same generation key must reuse the accepted journal row, not call the
+    # provider again.
+    without_summary = generated.model_copy(
+        update={
+            "tree_revision": tree.tree_revision,
+            "nodes": tuple(node.model_copy(update={"summary": None}) for node in generated.nodes),
+        }
+    )
+    current_revision = store.document_tree_revision(document_id=tree.document_id)
+    assert current_revision is not None
+    reused = _generate_tree_summaries(
+        without_summary,
+        document_id=tree.document_id,
+        state_store=store,
+        policy=policy,
+        generator=_generator,
+        grouping_policy_version="summary-cache-v1",
+        expected_tree_revision=current_revision,
+    )
+    assert calls["count"] == 1
+    assert next(node.summary for node in reused.nodes if node.node_id == "root") == root_summary
+
+
+@pytest.mark.ci
+def test_summary_generation_fingerprint_invalidates_persisted_cache() -> None:
+    scratch = _scratch("ocr_summary_generation_fingerprint")
+    tree = DocumentTree(
+        document_id="summary-generation-doc",
+        source_revision="ocr-v1:summary-generation",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="item-a",
+                kind="text",
+                text="alpha",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+            SourceItem(
+                item_id="item-b",
+                kind="text",
+                text="beta",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="leaf-a",
+                kind="text",
+                parts=(SourceSlice(item_id="item-a", start=0, end=5),),
+            ),
+            DocumentNode(
+                node_id="leaf-b",
+                kind="text",
+                parts=(SourceSlice(item_id="item-b", start=0, end=4),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(ChildRef(node_id="leaf-a"), ChildRef(node_id="leaf-b")),
+            ),
+        ),
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    initial_revision = store.save_document_tree(
+        document_id=tree.document_id,
+        tree=tree,
+        grouping_policy_version="summary-cache-v1",
+        require_no_existing_tree=True,
+    )
+    calls = {"count": 0}
+
+    def _generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree
+        calls["count"] += 1
+        return Summary(
+            status="generated",
+            text=f"summary:{calls['count']}",
+            evidence_item_ids=tuple(item.item_id for item in source_items),
+            provider_model="fake-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    first = _generate_tree_summaries(
+        tree,
+        document_id=tree.document_id,
+        state_store=store,
+        policy=SummaryPolicy(
+            eligible_kinds=("document",),
+            minimum_source_items=1,
+            minimum_source_chars=1,
+            minimum_information_gain_chars=0,
+            generation_fingerprint="provider-a:model-a:prompt-a",
+        ),
+        generator=_generator,
+        grouping_policy_version="summary-cache-v1",
+        expected_tree_revision=initial_revision,
+    )
+    current_revision = store.document_tree_revision(document_id=tree.document_id)
+    assert current_revision is not None
+    without_summary = first.model_copy(
+        update={"nodes": tuple(node.model_copy(update={"summary": None}) for node in first.nodes)}
+    )
+    second = _generate_tree_summaries(
+        without_summary,
+        document_id=tree.document_id,
+        state_store=store,
+        policy=SummaryPolicy(
+            eligible_kinds=("document",),
+            minimum_source_items=1,
+            minimum_source_chars=1,
+            minimum_information_gain_chars=0,
+            generation_fingerprint="provider-b:model-b:prompt-b",
+        ),
+        generator=_generator,
+        grouping_policy_version="summary-cache-v1",
+        expected_tree_revision=current_revision,
+    )
+
+    assert calls["count"] == 2
+    assert next(node.summary for node in second.nodes if node.node_id == "root").text == "summary:2"
+
+
+@pytest.mark.ci
 def test_summary_failure_is_journaled_without_failing_ocr_ingestion() -> None:
     scratch = _scratch("ocr_summary_failure")
     image_paths = [scratch / "images" / f"page_{page}.png" for page in (1, 2)]
@@ -2245,6 +2459,57 @@ assert store.should_skip_page(
         content_hash="image-hash",
         artifact_path=artifact,
         config_fingerprint="provider-a/model-a",
+    )
+
+
+@pytest.mark.ci
+def test_ocr_render_reuse_requires_render_configuration_identity() -> None:
+    scratch = _scratch("ocr_render_config_identity")
+    artifact = scratch / "page-1.png"
+    artifact.write_bytes(b"rendered-page")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="render-config-doc",
+        title="Render Config",
+        source_kind="pdf",
+        total_pages=1,
+        input_fingerprint="pdf-fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="render-config-doc",
+        page_number=1,
+        stage="render",
+        content_hash="source-image",
+        model_name="rasterizer-a",
+        artifact_path=artifact,
+        config_fingerprint="renderer-a",
+    )
+    store.record_page_completed(
+        document_id="render-config-doc",
+        page_number=1,
+        stage="render",
+        content_hash="source-image",
+        artifact_path=artifact,
+        model_name="rasterizer-a",
+        attempt_index=attempt,
+        config_fingerprint="renderer-a",
+    )
+
+    assert store.should_skip_page(
+        document_id="render-config-doc",
+        page_number=1,
+        stage="render",
+        content_hash="source-image",
+        artifact_path=artifact,
+        config_fingerprint="renderer-a",
+    )
+    assert not store.should_skip_page(
+        document_id="render-config-doc",
+        page_number=1,
+        stage="render",
+        content_hash="source-image",
+        artifact_path=artifact,
+        config_fingerprint="renderer-b",
     )
 
 

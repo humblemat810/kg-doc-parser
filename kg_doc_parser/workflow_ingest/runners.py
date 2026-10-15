@@ -7,6 +7,7 @@ workflow code can also reuse the same wrappers directly.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Iterator, Mapping, Sequence
@@ -24,6 +25,8 @@ from .ocr_pipeline import (
     OCRRunner,
     OCRWorkflowArtifacts,
     PDFRasterizer,
+    SummaryGenerator,
+    SummaryPolicy,
     run_ocr_ingest_workflow,
 )
 from .page_index import PageIndexParseResult, PageIndexSourceFormat
@@ -235,6 +238,15 @@ def discover_input_files(
     return sorted({p.resolve(): p for p in files}.values(), key=lambda p: str(p))
 
 
+def _collision_safe_batch_identity(source_path: Path, stem_counts: Mapping[str, int]) -> str:
+    """Keep legacy stems when unique and fence duplicate batch identities."""
+    stem = source_path.stem
+    if stem_counts.get(stem, 0) <= 1:
+        return stem
+    digest = hashlib.sha256(str(source_path.resolve()).encode("utf-8")).hexdigest()[:16]
+    return f"{stem}-{digest}"
+
+
 def run_ocr_source_workflow(
     source_path: str | Path,
     *,
@@ -253,6 +265,8 @@ def run_ocr_source_workflow(
     grouping_proposals: Sequence[GroupProposal] | None = None,
     grouping_passes: Sequence[Sequence[GroupProposal]] | None = None,
     grouping_policy_version: str = "baseline-v1",
+    summary_policy: SummaryPolicy | None = None,
+    summary_generator: SummaryGenerator | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
 ) -> OcrWorkflowCommandResult:
@@ -305,6 +319,8 @@ def run_ocr_source_workflow(
         grouping_proposals=grouping_proposals,
         grouping_passes=grouping_passes,
         grouping_policy_version=grouping_policy_version,
+        summary_policy=summary_policy,
+        summary_generator=summary_generator,
         run_id=run_id,
         resume_from_checkpoint=resume_from_checkpoint,
     )
@@ -350,15 +366,21 @@ def run_ocr_batch_workflow(
     knowledge_engine: GraphKnowledgeEngine | None = None,
     probe: WorkflowProbe | None = None,
     deps: Mapping[str, object] | None = None,
+    summary_policy: SummaryPolicy | None = None,
+    summary_generator: SummaryGenerator | None = None,
 ) -> list[OcrWorkflowCommandResult]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     probe = _ensure_probe(output_dir, probe)
     files = discover_input_files(source_paths, allowed_suffixes=OCR_FILE_SUFFIXES, recursive=True)
+    stem_counts: dict[str, int] = {}
+    for source_path in files:
+        stem_counts[source_path.stem] = stem_counts.get(source_path.stem, 0) + 1
     _emit(probe, "workflow.batch_started", workflow_kind="ocr", file_count=len(files), output_dir=str(output_dir))
     results: list[OcrWorkflowCommandResult] = []
     for source_path in files:
-        relative_output = output_dir / source_path.stem
+        batch_identity = _collision_safe_batch_identity(source_path, stem_counts)
+        relative_output = output_dir / batch_identity
         result = run_ocr_source_workflow(
             source_path,
             output_dir=relative_output,
@@ -371,7 +393,9 @@ def run_ocr_batch_workflow(
             knowledge_engine=knowledge_engine,
             probe=probe,
             deps=deps,
-            document_id=source_path.stem,
+            summary_policy=summary_policy,
+            summary_generator=summary_generator,
+            document_id=batch_identity,
             title=source_path.stem,
         )
         results.append(result)

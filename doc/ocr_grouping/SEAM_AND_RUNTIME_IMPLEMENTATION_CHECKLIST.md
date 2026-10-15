@@ -110,6 +110,40 @@ are not satisfied by a checklist mark alone:
 - `C06` requires an explicit OCR quality/completeness gate beyond valid source
   interval coverage.
 
+### Reviewer acceptance-gate correction (2026-10-15)
+
+The following are release-blocking acceptance gates, not optional follow-up
+ideas:
+
+- **C01 - Installed API compatibility:** verify the exact installed Kogwistar
+  version and public persistence APIs used by the parser. Source-checkout
+  compatibility is insufficient.
+- **C02 - Runtime ownership boundary:** define whether semantic parsing is a
+  stage of the OCR root run or a durable child invocation. Record the parent
+  run ID, child invocation ID, checkpoint identity, and graph publication
+  identity. A function call that receives a run ID is not, by itself, a
+  persisted workflow stage.
+- **C03 - Dual-store recovery:** test crashes after artifact publication and
+  after SQLite/Kogwistar checkpoint publication. Recovery must reconcile both
+  orders without accepting a partial result or losing an accepted result.
+- **C04 - Incremental equivalence:** compare canonical tree content while
+  excluding volatile timestamps and run metadata. Completed subtrees must stay
+  stable and the incremental result must match an uninterrupted reference.
+- **C05 - True resume:** prove at-least-once provider execution with exactly
+  one accepted canonical result. Completed OCR, grouping, and summary work
+  must not be accepted twice after restart; do not claim exactly-once provider
+  calls across arbitrary process termination.
+  The current 100-page regression also exposes a dependency gate: released
+  Kogwistar `0.6.8` rehydrates a durably failed child as terminal instead of
+  retrying its checkpoint. The parser must consume a released Kogwistar
+  retryable-child contract (or a public equivalent) before this gate can pass;
+  changing the parser's child ID privately would weaken lineage and is not an
+  accepted substitute.
+- **C06 - OCR quality/completeness:** valid interval coverage is necessary but
+  cannot prove that every source region was captured. Require provider-side
+  quality/completeness signals, coordinate/media-loss diagnostics, and a
+  persisted strict-policy recovery test.
+
 The status words below describe evidence, not optimism: `PASS` means the
 release gate is proven; `PARTIAL` means useful containment exists but the
 acceptance proof is incomplete; `OPEN` means the required implementation or
@@ -221,7 +255,10 @@ test is not yet present.
 
 - [x] Include PDF SHA-256, renderer implementation/version, DPI, rotation,
   crop/configuration, page number, and raster schema in render identity.
-- [ ] Store rendered-page digest and render identity in durable state.
+- [x] Store rendered-page digest and render identity in durable state. The
+  source plan carries a versioned render identity into `page_state`, and
+  `test_ocr_render_reuse_requires_render_configuration_identity` proves the
+  reuse predicate rejects a changed renderer identity.
 - [x] Refuse a rendered-page cache hit when any render identity differs.
 - [ ] Reconcile existing rendered files against state before reuse; stale files
   must be regenerated or quarantined.
@@ -309,7 +346,7 @@ test is not yet present.
 - [~] Stop prefix pages from overwriting the canonical complete tree. The
   preparation path still has a baseline SQLite compatibility path outside the
   grouping child, so runtime ownership is not yet the only writer.
-- [x] Add expected-revision/CAS protection. `save_document_tree()` now fences
+- [~] Add expected-revision/CAS protection. `save_document_tree()` now fences
   both an observed revision and an observed absence atomically, rejects an
   orphaned frontier or a missing frontier, and the grouping runtime and summary
   persistence propagate that fence into their persisted child state. A stale
@@ -318,6 +355,8 @@ test is not yet present.
   `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`.
   and
   `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_checkpoint_conflict_is_retryable_not_a_summary_warning`.
+  This is provisional: every compatibility writer, late-writer path, and
+  crash/restart ordering must use the same guard before this row can be green.
 - [ ] Persist source fingerprint, grouping policy, accepted page frontier, tree
   digest, and last accepted runtime step.
 - [~] Restore before advancing and prove byte-equivalent no-op reruns. The
@@ -330,12 +369,18 @@ test is not yet present.
 
 - [ ] Run summaries after grouping passes, not before caller-provided grouping.
 - [~] Include exact subtree slice membership, tree revision, policy revision,
-  model revision, and prompt schema in the summary fingerprint. The grouping
-  checkpoint revision/absence fence is propagated to summary writes, but the
-  complete fingerprint and reuse evidence remain open.
-- [ ] Test two nodes using different slices of the same source item.
+  model revision, and prompt schema in the summary fingerprint. Exact slice
+  membership and `SummaryPolicy.generation_fingerprint` are now included;
+  `test_summary_cache_reuses_exact_generation_and_slice_identity` and
+  `test_summary_generation_fingerprint_invalidates_persisted_cache` cover
+  reuse and provider/model/prompt invalidation. The row remains provisional
+  until all caller/provider configuration paths supply a stable fingerprint.
+- [x] Test two nodes using different slices of the same source item.
+  `test_summary_cache_reuses_exact_generation_and_slice_identity` records the
+  exact ordered slice fingerprint rather than only source-item membership.
 - [ ] Test grouping-only changes invalidate summaries without rerunning OCR.
-- [ ] Test identical policy/input reuses summaries without another provider call.
+- [x] Test identical policy/input reuses summaries without another provider
+  call in `test_summary_cache_reuses_exact_generation_and_slice_identity`.
 
 ### S08. Dynamic grouping to semantic identity
 
@@ -395,7 +440,7 @@ test is not yet present.
 
 - [x] **C01 — Installed API compatibility:** record the installed Kogwistar
   version and verify the exact persisted invocation/checkpoint APIs used by the
-  parser on CPython 3.12-3.14 and PyPy 3.11. Parser CI run `38663529209`
+  parser on CPython 3.12-3.14 and PyPy 3.11. Parser CI run `38672474200`
   passed this matrix.
 - [~] **C02 — Runtime ownership boundary:** the root run owns page, grouping,
   and semantic child invocations with stable child IDs. Prove recovery of the
@@ -410,11 +455,10 @@ test is not yet present.
   timestamps, between uninterrupted batch grouping and interrupted incremental
   grouping. Completed subtrees must remain stable.
 - [~] **C05 — True resume:** prove completed OCR, grouping, and summaries are
-  not rerun after a worker/process stop. The same-process 100-page
-  interruption/resume test models a non-terminal process stop and proves
-  checkpoint lineage plus accepted-result equivalence; it does not claim that
-  installed Kogwistar `0.6.8` can retry a durably terminal failed child. A new
-  process/SIGKILL proof, duplicate-resume race, and artifact/database
+  not rerun after a worker/process stop. Existing same-process tests cover
+  checkpoint behavior but do not constitute a real process-stop/new-process
+  proof. Installed Kogwistar `0.6.8` terminal-failed-child retry is not claimed.
+  A new process/SIGKILL proof, duplicate-resume race, and artifact/database
   reconciliation remain open. The acceptance target is at-least-once execution
   with exactly one accepted canonical result, not exactly-once provider calls.
 - [~] **C06 — OCR quality/completeness:** interval coverage is necessary but not
@@ -431,11 +475,11 @@ itself as proof:
 
 | Gate | Current status | Required closure evidence |
 | --- | --- | --- |
-| C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38663529209`; source-checkout-only tests do not count. |
+| C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38672474200`; source-checkout-only tests do not count. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`; a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, and `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption. The inverse order and full runtime/checkpoint reconciliation remain open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
-| C05 true resume | PARTIAL | Same-process 100-page OCR process-stop/checkpoint-resume evidence and multi-pass grouping interruption/resume evidence now exist. `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. Installed Kogwistar `0.6.8` is not credited with retrying a durably terminal failed child; SIGKILL/new-process root resume, duplicate root-resume race, and no redundant accepted OCR work remain. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
+| C05 true resume | PARTIAL / BLOCKED BY CORE RELEASE | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with core commit `8f09fd7` on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. Released Kogwistar `0.6.8` still rehydrates the failed `ocr_pages` child as terminal, so a released retryable-child runtime contract is required before claiming release recovery. SIGKILL/new-process root resume, duplicate root-resume race, and no redundant accepted OCR work also remain. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
 
 ### S02 correction ledger
@@ -477,6 +521,19 @@ still incomplete.
 - [ ] Require zero duplicate accepted commits, no stale artifacts, no fabricated
   spatial precision, and no unsupported cross-revision reuse.
 
+### Current failing release-blocking regression
+
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
+is the release-blocking dependency regression. It passes in 742.02 seconds
+with the real persisted parser/runtime path and core commit `8f09fd7` supplied
+on `PYTHONPATH`; the uninterrupted and resumed canonical graph payloads are
+equal and the accepted page-call counts are asserted. The same test fails with
+released Kogwistar `0.6.8`, because that release returns a durably failed
+`ocr_pages` child as terminal. The core branch must be merged and published,
+then the parser must update its installed-package pin and rerun this test
+against the released artifact. It is not converted into a skip or a
+parser-only child-ID workaround.
+
 ## Evidence Ledger Requirements
 
 Every A, S, and C item must record all of the following before it can become
@@ -507,6 +564,6 @@ protocol.
 - [ ] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
 - [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11.
-  Parser CI run `38663529209` passed; slow/manual provider experiments remain
+  Parser CI run `38672474200` passed; slow/manual provider experiments remain
   separate gates.
 - [ ] Only after all release gates pass, update version/release notes and pins.

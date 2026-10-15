@@ -129,6 +129,7 @@ class Summary(FrozenModel):
     provider_model: str | None = None
     prompt_revision: str | None = None
     input_fingerprint: str | None = None
+    evidence_slice_fingerprint: str | None = None
 
     @model_validator(mode="after")
     def grounded(self) -> Summary:
@@ -168,6 +169,9 @@ class SummaryPolicy(FrozenModel):
     """Bound optional derived-summary work independently of OCR."""
 
     enabled: bool = True
+    # Change this whenever the summary provider, model, prompt, or other
+    # output-affecting generation configuration changes. It is cache identity.
+    generation_fingerprint: str = Field(default="summary-v1", min_length=1)
     eligible_kinds: tuple[str, ...] = (
         "table",
         "figure",
@@ -300,6 +304,10 @@ class DocumentTree(FrozenModel):
             expected = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
             if node.summary.input_fingerprint != expected:
                 raise ValueError(f"summary fingerprint is stale for node {node_id}")
+            if node.summary.evidence_slice_fingerprint is not None:
+                expected_slices = self.summary_slice_fingerprint(node_id, evidence)
+                if node.summary.evidence_slice_fingerprint != expected_slices:
+                    raise ValueError(f"summary slice fingerprint is stale for node {node_id}")
         return self
 
     def source_fingerprint(self) -> str:
@@ -329,6 +337,49 @@ class DocumentTree(FrozenModel):
             raise ValueError("summary evidence must be within the node subtree")
         payload = [items[item_id].model_dump(mode="json") for item_id in selected]
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+    def summary_slice_fingerprint(
+        self,
+        node_id: str,
+        evidence_item_ids: tuple[str, ...] | None = None,
+    ) -> str:
+        """Fingerprint the exact ordered source slices in a subtree.
+
+        ``summary_input_fingerprint`` remains the compatibility fingerprint
+        for existing persisted summaries. New summaries additionally record
+        this boundary so two nodes that use different slices of the same
+        source item cannot share an accepted summary accidentally.
+        """
+        nodes = {node.node_id: node for node in self.nodes}
+        node = nodes.get(node_id)
+        if node is None:
+            raise KeyError(node_id)
+        allowed = set(evidence_item_ids) if evidence_item_ids is not None else None
+        payload: list[dict[str, object]] = []
+
+        def visit(current_id: str) -> None:
+            current = nodes[current_id]
+            if current.parts:
+                for part_index, part in enumerate(current.parts):
+                    if allowed is None or part.item_id in allowed:
+                        payload.append(
+                            {
+                                "node_id": current_id,
+                                "part_index": part_index,
+                                "item_id": part.item_id,
+                                "start": part.start,
+                                "end": part.end,
+                                "separator_before": part.separator_before,
+                            }
+                        )
+                return
+            for child in current.children:
+                visit(child.node_id)
+
+        visit(node_id)
+        return sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
 
     def render_preview(self) -> str:
         """Render source text for inspection without changing canonical evidence."""

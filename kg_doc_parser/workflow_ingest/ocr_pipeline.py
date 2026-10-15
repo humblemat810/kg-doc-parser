@@ -408,6 +408,7 @@ def _generate_tree_summaries(
                     "tree_revision": current.tree_revision,
                     "grouping_policy_version": grouping_policy_version,
                     "summary_policy": policy_payload,
+                    "generation_fingerprint": policy.generation_fingerprint,
                     "generator": generator_name,
                 },
                 sort_keys=True,
@@ -440,12 +441,25 @@ def _generate_tree_summaries(
         collect(node_id)
         evidence_ids = tuple(sorted(covered))
         try:
-            summary = generator(
-                tree=current,
+            summary = state_store.load_completed_summary(
+                document_id=document_id,
                 node_id=node_id,
-                source_items=tuple(items[item_id] for item_id in evidence_ids),
-                input_fingerprint=evidence_fingerprint,
+                input_fingerprint=input_fingerprint,
             )
+            if summary is None:
+                summary = generator(
+                    tree=current,
+                    node_id=node_id,
+                    source_items=tuple(items[item_id] for item_id in evidence_ids),
+                    input_fingerprint=evidence_fingerprint,
+                )
+                summary = summary.model_copy(
+                    update={
+                        "evidence_slice_fingerprint": current.summary_slice_fingerprint(
+                            node_id, evidence_ids
+                        )
+                    }
+                )
             updated = apply_summary_updates(current, {node_id: summary})
             expected_tree_revision = state_store.save_document_tree(
                 document_id=document_id,
@@ -514,6 +528,7 @@ class OCRSourcePlan:
     page_sources: list[tuple[int, Path]]
     source_kind: str
     input_fingerprint: str
+    render_configuration_fingerprint: str = "render-v1"
 
 
 @dataclass(slots=True)
@@ -536,6 +551,7 @@ class OCRPageProcessingContext:
     state_store: OCRWorkflowStateStore
     probe: WorkflowProbe | None
     configuration_fingerprints: tuple[str, ...]
+    render_configuration_fingerprint: str = "render-v1"
     quality_policy: OCRQualityPolicy = field(default_factory=OCRQualityPolicy)
 
 
@@ -594,6 +610,7 @@ def _build_ocr_page_preparation(
         rendered_dir=source_plan.rendered_dir,
         legacy_dir=source_plan.legacy_dir,
         progress_path=progress_path,
+        render_configuration_fingerprint=source_plan.render_configuration_fingerprint,
     )
     candidate_models = list(ocr_candidate_models or [provider_settings.ocr.model])
     if ocr_runner is None:
@@ -643,6 +660,7 @@ def _build_ocr_page_preparation(
                 quality_policy=quality_policy or OCRQualityPolicy(),
             )["ocr_configuration_fingerprint"],
         ),
+        render_configuration_fingerprint=source_plan.render_configuration_fingerprint,
         quality_policy=quality_policy or OCRQualityPolicy(),
     )
     return OCRPagePreparation(
@@ -677,6 +695,12 @@ def _resolve_ocr_source_plan(
             rendered_dir=rendered_dir,
             rasterizer=pdf_page_rasterizer,
         )
+        render_configuration_fingerprint = str(
+            _pdf_render_manifest_payload(
+                pdf_path=pdf_source,
+                rasterizer=pdf_page_rasterizer,
+            )["render_identity"]
+        )
         page_sources = list(enumerate(rendered_paths, start=1))
         source_kind = "pdf"
         input_fingerprint = _compute_input_fingerprint(pdf_path=pdf_source)
@@ -685,6 +709,9 @@ def _resolve_ocr_source_plan(
         page_sources = _materialize_image_payloads(list(image_payloads or []), rendered_dir)
         source_kind = "image"
         input_fingerprint = _compute_input_fingerprint(page_sources=page_sources)
+        render_configuration_fingerprint = hashlib.sha256(
+            b'{"renderer":"image-materialize-v1"}'
+        ).hexdigest()
 
     legacy_dir = legacy_root / _legacy_folder_name(document_id=document_id, pdf_path=pdf_source)
     legacy_dir.mkdir(parents=True, exist_ok=True)
@@ -695,6 +722,7 @@ def _resolve_ocr_source_plan(
         page_sources=page_sources,
         source_kind=source_kind,
         input_fingerprint=input_fingerprint,
+        render_configuration_fingerprint=render_configuration_fingerprint,
     )
 
 
@@ -734,6 +762,7 @@ def _process_ocr_page(
         stage="render",
         content_hash=image_sha256,
         artifact_path=image_path,
+        config_fingerprint=context.render_configuration_fingerprint,
     ):
         _emit_ocr_event(
             probe,
@@ -749,6 +778,7 @@ def _process_ocr_page(
             content_hash=image_sha256,
             model_name="local-materialize",
             artifact_path=image_path,
+            config_fingerprint=context.render_configuration_fingerprint,
         )
         state_store.record_page_completed(
             document_id=document_id,
@@ -758,6 +788,7 @@ def _process_ocr_page(
             artifact_path=image_path,
             model_name="local-materialize",
             attempt_index=1 if state_store.get_page_state(document_id=document_id, page_number=page_number, stage="render") else None,
+            config_fingerprint=context.render_configuration_fingerprint,
         )
         _emit_ocr_event(
             probe,
@@ -1105,6 +1136,7 @@ class OCRWorkflowStateStore:
         rendered_dir: Path,
         legacy_dir: Path,
         progress_path: Path,
+        render_configuration_fingerprint: str = "render-v1",
     ) -> OCRWorkflowStateStore:
         store = cls(db_path)
         rebuilt = False
@@ -1118,6 +1150,7 @@ class OCRWorkflowStateStore:
                 rendered_dir=rendered_dir,
                 legacy_dir=legacy_dir,
                 progress_path=progress_path,
+                render_configuration_fingerprint=render_configuration_fingerprint,
             )
         else:
             store.ensure_document(
@@ -1464,6 +1497,7 @@ class OCRWorkflowStateStore:
         rendered_dir: Path,
         legacy_dir: Path,
         progress_path: Path,
+        render_configuration_fingerprint: str = "render-v1",
     ) -> bool:
         self.ensure_document(
             document_id=document_id,
@@ -1491,6 +1525,7 @@ class OCRWorkflowStateStore:
                 artifact_path=str(path),
                 last_error=None,
                 last_model=None,
+                config_fingerprint=render_configuration_fingerprint,
             )
         for page_number, json_path in _scan_legacy_json_pages(legacy_dir):
             content_hash = None
@@ -2036,6 +2071,41 @@ class OCRWorkflowStateStore:
                 ),
             )
         return attempt_index
+
+    def load_completed_summary(
+        self,
+        *,
+        document_id: str,
+        node_id: str,
+        input_fingerprint: str,
+    ) -> Summary | None:
+        """Load the latest accepted summary for one exact generation key.
+
+        Failed and pending attempts never satisfy this lookup. The JSON is
+        validated through ``Summary`` before it can be reused, so malformed
+        or incompatible journal rows become cache misses rather than accepted
+        graph content.
+        """
+        with self._session() as conn:
+            row = conn.execute(
+                """
+                SELECT summary_json
+                FROM summary_attempts
+                WHERE document_id = ? AND node_id = ? AND input_fingerprint = ?
+                  AND status IN ('generated', 'verified')
+                  AND summary_json IS NOT NULL
+                ORDER BY attempt_index DESC
+                LIMIT 1
+                """,
+                (document_id, node_id, input_fingerprint),
+            ).fetchone()
+        if row is None or row["summary_json"] is None:
+            return None
+        try:
+            payload = json.loads(str(row["summary_json"]))
+            return Summary.model_validate(payload)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
 
     def list_summary_attempts(self, *, document_id: str) -> list[JsonObject]:
         with self._session() as conn:

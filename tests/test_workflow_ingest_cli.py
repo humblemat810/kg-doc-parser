@@ -12,6 +12,7 @@ import pytest
 from kg_doc_parser.workflow_ingest import (
     OCRWorkflowArtifacts,
     ProviderEndpointConfig,
+    SummaryPolicy,
     WorkflowProviderSettings,
     runners,
 )
@@ -76,6 +77,39 @@ def test_ocr_source_workflow_emits_probe_steps(monkeypatch: pytest.MonkeyPatch) 
     kinds = [event["kind"] for event in events]
     assert "workflow.file_started" in kinds
     assert "workflow.file_finished" in kinds
+
+
+def test_ocr_source_workflow_forwards_summary_generation_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scratch = _scratch("ocr_source_summary_forwarding")
+    source = scratch / "sample.png"
+    source.write_bytes(b"fake image")
+    output_dir = scratch / "out"
+    policy = SummaryPolicy(generation_fingerprint="provider:model:prompt")
+    generator = object()
+    captured: dict[str, object] = {}
+
+    def _fake_run_ocr_ingest_workflow(**kwargs):
+        captured.update(kwargs)
+        return _FakeRun(), _FakeBundle(), _fake_ocr_artifacts(output_dir)
+
+    monkeypatch.setattr(runners, "run_ocr_ingest_workflow", _fake_run_ocr_ingest_workflow)
+    monkeypatch.setattr(
+        runners,
+        "build_default_engines",
+        lambda *args, **kwargs: (object(), object(), object()),
+    )
+
+    runners.run_ocr_source_workflow(
+        source,
+        output_dir=output_dir,
+        summary_policy=policy,
+        summary_generator=generator,
+    )
+
+    assert captured["summary_policy"] == policy
+    assert captured["summary_generator"] is generator
 
 
 def test_build_legacy_parse_semantic_fn_uses_requested_model_and_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -188,6 +222,11 @@ def test_ocr_batch_workflow_emits_one_output_root_per_file(monkeypatch: pytest.M
         return _FakeRun(), _FakeBundle(), _fake_ocr_artifacts(Path(kwargs["output_dir"]))
 
     monkeypatch.setattr(runners, "run_ocr_ingest_workflow", _fake_run_ocr_ingest_workflow)
+    monkeypatch.setattr(
+        runners,
+        "build_default_engines",
+        lambda *args, **kwargs: (object(), object(), object()),
+    )
 
     results = runners.run_ocr_batch_workflow([source_dir], output_dir=output_dir)
 
@@ -199,6 +238,38 @@ def test_ocr_batch_workflow_emits_one_output_root_per_file(monkeypatch: pytest.M
     assert "workflow.batch_finished" in kinds
     assert "workflow.file_started" in kinds
     assert "workflow.file_finished" in kinds
+
+
+def test_ocr_batch_workflow_fences_duplicate_source_stems(monkeypatch: pytest.MonkeyPatch) -> None:
+    scratch = _scratch("ocr_batch_duplicate_stems")
+    first_dir = scratch / "inputs" / "one"
+    second_dir = scratch / "inputs" / "two"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+    first = first_dir / "report.png"
+    second = second_dir / "report.png"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    output_dir = scratch / "batch-out"
+    seen: list[tuple[Path, str]] = []
+
+    def _fake_run_ocr_ingest_workflow(**kwargs):
+        seen.append((Path(kwargs["output_dir"]), str(kwargs["document_id"])))
+        return _FakeRun(), _FakeBundle(), _fake_ocr_artifacts(Path(kwargs["output_dir"]))
+
+    monkeypatch.setattr(runners, "run_ocr_ingest_workflow", _fake_run_ocr_ingest_workflow)
+    monkeypatch.setattr(
+        runners,
+        "build_default_engines",
+        lambda *args, **kwargs: (object(), object(), object()),
+    )
+
+    results = runners.run_ocr_batch_workflow([scratch / "inputs"], output_dir=output_dir)
+
+    assert len(results) == 2
+    assert len({document_id for _path, document_id in seen}) == 2
+    assert len({path for path, _document_id in seen}) == 2
+    assert all(document_id.startswith("report-") for _path, document_id in seen)
 
 
 def test_cli_page_index_delegates_to_runner(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

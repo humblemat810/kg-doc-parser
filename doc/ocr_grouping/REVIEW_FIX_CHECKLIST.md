@@ -38,11 +38,11 @@ test must not be counted as a green two-store commit protocol:
 | Subclaim | Status | Required evidence before release |
 | --- | --- | --- |
 | Provider/configuration fingerprint is part of page identity | PARTIAL | Fresh-process reuse rejection for every output-affecting provider, model, engine, and policy field, plus a persisted reopen assertion. |
-| OCR artifact SHA-256 is recorded | PASS (implementation) | Artifact metadata contains the digest after validated publication; this alone does not prove reuse safety. |
-| OCR artifact SHA-256 is enforced on completed-page reuse | PASS (focused boundary) | `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` rejects a well-formed but modified JSON artifact through the actual reuse predicate. |
-| JSON publication uses a unique temporary file and atomic replacement | PASS (file boundary) | `test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_writers` proves distinct same-directory temporary files and replacement. It does not prove a two-store commit. |
+| OCR artifact SHA-256 is recorded | PARTIAL (implementation evidence) | Artifact metadata contains the digest after validated publication; this is not, by itself, proof that every reuse path enforces it. |
+| OCR artifact SHA-256 is enforced on completed-page reuse | PARTIAL (focused boundary) | `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` rejects a well-formed but modified JSON artifact through the actual reuse predicate. Fresh-process, all-provider-field, and dual-store recovery evidence remain release gates. |
+| JSON publication uses a unique temporary file and atomic replacement | PARTIAL (file boundary) | `test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_writers` proves distinct same-directory temporary files and replacement. It does not prove a two-store commit or recovery after either commit order. |
 | Artifact and SQLite/Kogwistar checkpoint commits are crash-consistent | PARTIAL | `test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real `_process_ocr_page` path after atomic rename and before the SQLite completion update, then reopens SQLite and adopts only the source/config-matching artifact. The inverse checkpoint-before-artifact order and full Kogwistar checkpoint reconciliation remain open. |
-| Grouping checkpoint writes are fenced against late writers | PARTIAL | Expected revision/absence CAS and retryable conflict propagation are covered. Resume now also rejects a persisted frontier that disagrees with the restored tree (`tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_resume_rejects_frontier_that_disagrees_with_tree`); compatibility writers, monotonic generation, and crash/restart ordering remain open. |
+| Grouping checkpoint writes are fenced against late writers | PARTIAL | Expected revision/absence CAS and retryable conflict propagation are covered. Resume now also rejects a persisted frontier that disagrees with the restored tree (`tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_resume_rejects_frontier_that_disagrees_with_tree`); compatibility writers, monotonic generation, every late-writer path, and crash/restart ordering remain open. |
 
 The realistic recovery guarantee is at-least-once provider execution with
 exactly one accepted canonical result. The implementation must not claim
@@ -50,11 +50,11 @@ exactly-once OCR or LLM calls across arbitrary process termination.
 
 | Finding | Status | Evidence / remaining work |
 | --- | --- | --- |
-| P0 grouping checkpoint overwrite on resume | PARTIAL | Prefix pages no longer overwrite `document_tree_state`; grouping and summary persistence now atomically fence both expected revisions and expected absence. The preparation path still has a baseline SQLite compatibility path outside the grouping child, and crash recovery remains open. |
-| P0 OCR and grouping are persisted Kogwistar workflow nodes | PARTIAL | A versioned root workflow now invokes persisted page, grouping, and semantic child workflows with stable child run IDs. Process-stop checkpoint resume is covered; installed Kogwistar `0.6.8` terminal-failed-child retry is not claimed, and new-process lineage/no-double-publication evidence remain required before PASS. |
+| P0 grouping checkpoint overwrite on resume | PARTIAL | Prefix pages no longer overwrite `document_tree_state`; grouping and summary persistence now atomically fence both expected revisions and expected absence. The preparation path still has a baseline SQLite compatibility path outside the grouping child, and a late compatibility writer or crash can still violate the intended ownership boundary until every writer is audited. |
+| P0 OCR and grouping are persisted Kogwistar workflow nodes | PARTIAL | A versioned root workflow now invokes persisted page, grouping, and semantic child workflows with stable child run IDs. Same-process test coverage exists, but it is not evidence of a real process stop; installed Kogwistar `0.6.8` terminal-failed-child retry is not claimed, and new-process lineage/no-double-publication evidence remain required before PASS. |
 | P1 OCR model/config changes invalidate reuse | PARTIAL | `page_state.config_fingerprint` includes provider, model, endpoint, engine, language, and candidate list, and the reuse predicate compares it. `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages` proves the public root rejects a changed model before replay, while `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` proves the changed configuration is rejected in a fresh process. The item remains partial pending full crash/reopen evidence. |
 | P1 page artifact/database publication is crash-safe | PARTIAL | The current write path validates JSON, atomically replaces the artifact through unique same-directory temporary files, records an artifact SHA-256, rejects a well-formed tampered artifact on reuse, and adopts a valid rename-before-DB orphan. `test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct restart predicates, `test_ocr_page_artifact_publish_crash_is_recoverable` injects the crash at the real publication boundary, and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves duplicate page delivery cannot replace the accepted artifact. These are still separate sub-properties, not crash-safe publication as a whole: checkpoint-before-artifact and full runtime/checkpoint reconciliation remain before PASS. |
-| P1 grouping is not quadratic for long documents | PARTIAL | The root path avoids the old per-page semantic rebuild and uses a runtime grouping child. `test_grouping_incremental_resume_matches_uninterrupted_reference` proves a multi-pass interrupted/resumed frontier has the same canonical result as an uninterrupted reference, but bounded frontier cost, monotonic ownership, and a 100-page performance comparison remain open. |
+| P1 grouping is not quadratic for long documents | PARTIAL | The root path avoids the old per-page semantic rebuild and uses a runtime grouping child. `test_grouping_incremental_resume_matches_uninterrupted_reference` covers a controlled multi-pass case, but bounded frontier cost, monotonic ownership, a real interruption/reopen path, and a 100-page performance comparison remain open. |
 | P1 Docling preserves item positions | PARTIAL | Item provenance boxes are exported for text, tables, and pictures when Docling exposes them. Full-page Markdown remains a compatibility fallback for adapters with no positional items; live multi-item Docling coverage is still required. |
 
 ## Required follow-up before release
@@ -85,6 +85,30 @@ exactly-once OCR or LLM calls across arbitrary process termination.
   the quality policy in page cache identity. Add a public strict-policy test;
   still require persisted reopen evidence and provider-side non-text coverage
   signals before marking the gate complete.
+- [x] Include an explicit summary generation identity in cache keys. `SummaryPolicy.generation_fingerprint`
+  is part of the persisted summary key; `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_generation_fingerprint_invalidates_persisted_cache`
+  proves a provider/model/prompt identity change does not reuse an accepted summary.
+  Callers must change the fingerprint whenever output-affecting generation configuration changes.
 - [x] Run the full parser CI matrix after the P0 runtime work. Parser CI run
-  `38663529209` passed CPython 3.12-3.14 and PyPy 3.11; slow/manual provider
+  `38672474200` passed CPython 3.12-3.14 and PyPy 3.11; slow/manual provider
   experiments remain separate gates.
+
+## Reviewer-required acceptance additions
+
+These require an implementation location, an exact pytest node, before/after
+behavior, and a runtime classification. C01 is evidenced; C02-C06 remain open:
+
+- [x] Verify the installed Kogwistar package and public workflow persistence
+  API, rather than relying on a source checkout or import-only probe. Evidence:
+  `tests/test_pypy_ci_contract.py::test_installed_kogwistar_exposes_the_persisted_workflow_api`
+  and the CPython 3.12-3.14/PyPy 3.11 matrix in run `38672474200`.
+- [ ] Document and test one root/child ownership model, including semantic
+  parser checkpoint and graph publication identities.
+- [ ] Reconcile both artifact/SQLite and Kogwistar/checkpoint commit orders in
+  a fresh process.
+- [ ] Compare incremental and uninterrupted grouping using canonical content,
+  excluding volatile run metadata; prove completed subtrees remain stable.
+- [ ] Prove at-least-once execution with exactly one accepted canonical result
+  after process interruption, including duplicate-resume behavior.
+- [ ] Add a quality/completeness gate that detects provider omissions beyond
+  source interval coverage, including non-text and coordinate-loss diagnostics.
