@@ -707,9 +707,15 @@ def _resolve_ocr_source_plan(
 
     pdf_source = Path(pdf_path) if pdf_path is not None else None
     if pdf_source is not None:
+        input_fingerprint = _compute_input_fingerprint(pdf_path=pdf_source)
         # Render once per PDF so downstream OCR can work page-by-page against
         # stable page image files and the state store can resume individual pages.
-        rendered_dir = rendered_root / pdf_source.stem
+        artifact_folder = _source_artifact_folder_name(
+            document_id=document_id,
+            pdf_path=pdf_source,
+            input_fingerprint=input_fingerprint,
+        )
+        rendered_dir = rendered_root / artifact_folder
         pdf_page_rasterizer = pdf_rasterizer or _render_pdf_to_images
         rendered_paths = _render_pdf_with_identity(
             pdf_path=pdf_source,
@@ -724,7 +730,6 @@ def _resolve_ocr_source_plan(
         )
         page_sources = list(enumerate(rendered_paths, start=1))
         source_kind = "pdf"
-        input_fingerprint = _compute_input_fingerprint(pdf_path=pdf_source)
     else:
         rendered_dir = rendered_root / document_id
         page_sources = _materialize_image_payloads(list(image_payloads or []), rendered_dir)
@@ -734,7 +739,11 @@ def _resolve_ocr_source_plan(
             b'{"renderer":"image-materialize-v1"}'
         ).hexdigest()
 
-    legacy_dir = legacy_root / _legacy_folder_name(document_id=document_id, pdf_path=pdf_source)
+    legacy_dir = legacy_root / (
+        artifact_folder
+        if pdf_source is not None
+        else _legacy_folder_name(document_id=document_id, pdf_path=pdf_source)
+    )
     legacy_dir.mkdir(parents=True, exist_ok=True)
     return OCRSourcePlan(
         pdf_source=pdf_source,
@@ -2687,6 +2696,33 @@ def _legacy_folder_name(*, document_id: str, pdf_path: Path | None) -> str:
     if pdf_path is not None:
         return pdf_path.name
     return document_id
+
+
+def _source_artifact_folder_name(
+    *, document_id: str, pdf_path: Path, input_fingerprint: str
+) -> str:
+    """Return a stable, collision-resistant folder name for one PDF source.
+
+    The basename is useful when inspecting artifacts, but it is not an identity:
+    two workspaces commonly contain unrelated files named ``report.pdf``.  Keep
+    the human-readable components while suffixing the content fingerprint so
+    cached pages cannot be reused across different sources.
+    """
+
+    def _safe_component(value: str) -> str:
+        safe = "".join(
+            character if character.isalnum() or character in {"-", "_", "."} else "_"
+            for character in value
+        ).strip("._")
+        return safe[:80] or "document"
+
+    return "-".join(
+        (
+            _safe_component(document_id),
+            _safe_component(pdf_path.stem),
+            input_fingerprint[:16],
+        )
+    )
 
 
 def _write_summary(

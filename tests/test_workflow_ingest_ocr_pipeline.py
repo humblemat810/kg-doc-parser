@@ -39,9 +39,9 @@ Image case:
 PDF case:
 
     source/manual_source.pdf
-        -> render PDF page-by-page into artifacts/rendered_pages/<pdf-stem>/
+        -> render PDF page-by-page into artifacts/rendered_pages/<document>-<pdf-stem>-<digest>/
         -> OCR model call per rendered page
-        -> artifacts/legacy_split_pages/<pdf-name>/page_N.json
+        -> artifacts/legacy_split_pages/<document>-<pdf-stem>-<digest>/page_N.json
         -> artifacts/ocr-state.sqlite
         -> artifacts/ocr-progress.json
         -> normalize_ocr_pages(...)
@@ -2678,6 +2678,46 @@ def test_resolve_ocr_source_plan_uses_document_fingerprint_for_pdf_source() -> N
     assert plan.pdf_source == pdf_path
     assert plan.input_fingerprint == _compute_input_fingerprint(pdf_path=pdf_path)
     assert plan.input_fingerprint != _compute_input_fingerprint(page_sources=[(1, page_1)])
+
+
+@pytest.mark.ci
+def test_pdf_artifact_directories_do_not_collide_for_same_basename() -> None:
+    scratch = _scratch("ocr_same_basename")
+    first_pdf = scratch / "first" / "report.pdf"
+    second_pdf = scratch / "second" / "report.pdf"
+    first_pdf.parent.mkdir(parents=True)
+    second_pdf.parent.mkdir(parents=True)
+    first_pdf.write_bytes(b"%PDF-1.4\nfirst source\n")
+    second_pdf.write_bytes(b"%PDF-1.4\nsecond source\n")
+
+    def _rasterizer(source_pdf: Path, rendered_dir: Path) -> list[Path]:
+        rendered_dir.mkdir(parents=True, exist_ok=True)
+        page = rendered_dir / "page_1.png"
+        page.write_bytes(source_pdf.read_bytes())
+        return [page]
+
+    output_dir = scratch / "artifacts"
+    first = _resolve_ocr_source_plan(
+        document_id="same-document",
+        output_dir=output_dir,
+        image_payloads=None,
+        pdf_path=first_pdf,
+        pdf_rasterizer=_rasterizer,
+    )
+    second = _resolve_ocr_source_plan(
+        document_id="same-document",
+        output_dir=output_dir,
+        image_payloads=None,
+        pdf_path=second_pdf,
+        pdf_rasterizer=_rasterizer,
+    )
+
+    assert first.rendered_dir != second.rendered_dir
+    assert first.legacy_dir != second.legacy_dir
+    assert first.rendered_dir.name.startswith("same-document-report-")
+    assert second.rendered_dir.name.startswith("same-document-report-")
+    assert first.page_sources[0][1].read_bytes() == first_pdf.read_bytes()
+    assert second.page_sources[0][1].read_bytes() == second_pdf.read_bytes()
 
 
 @pytest.mark.ci
