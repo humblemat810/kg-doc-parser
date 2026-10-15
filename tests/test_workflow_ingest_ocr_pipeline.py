@@ -2509,6 +2509,56 @@ def test_ocr_page_failure_cannot_replace_a_newer_pending_attempt() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_page_completion_cannot_replace_a_newer_pending_attempt() -> None:
+    scratch = _scratch("ocr_page_completion_attempt_cas")
+    artifact = scratch / "page-1.json"
+    artifact.write_text('{"page": 1}', encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="page-completion-attempt-cas-doc",
+        title="Page Completion Attempt CAS",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    first = store.record_attempt(
+        document_id="page-completion-attempt-cas-doc",
+        page_number=1,
+        stage="render",
+        content_hash="source-a",
+        model_name="renderer",
+        artifact_path=artifact,
+        config_fingerprint="renderer-v1",
+    )
+    second = store.record_attempt(
+        document_id="page-completion-attempt-cas-doc",
+        page_number=1,
+        stage="render",
+        content_hash="source-a",
+        model_name="renderer",
+        artifact_path=artifact,
+        config_fingerprint="renderer-v1",
+    )
+    assert second == first + 1
+    assert not store.record_page_completed(
+        document_id="page-completion-attempt-cas-doc",
+        page_number=1,
+        stage="render",
+        content_hash="source-a",
+        artifact_path=artifact,
+        model_name="renderer",
+        attempt_index=first,
+        config_fingerprint="renderer-v1",
+    )
+    state = store.get_page_state(
+        document_id="page-completion-attempt-cas-doc", page_number=1, stage="render"
+    )
+    assert state is not None
+    assert state.status == "pending"
+    assert state.attempt_count == second
+
+
+@pytest.mark.ci
 def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
     scratch = _scratch("ocr_missing_artifact")
     artifact = scratch / "page-1.json"

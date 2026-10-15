@@ -1859,7 +1859,7 @@ class OCRWorkflowStateStore:
             conn.execute("BEGIN IMMEDIATE")
             state = conn.execute(
                 """
-                SELECT status, content_hash, config_fingerprint
+                SELECT status, content_hash, config_fingerprint, attempt_count
                 FROM page_state
                 WHERE document_id = ? AND page_number = ? AND stage = 'ocr'
                 """,
@@ -1870,6 +1870,7 @@ class OCRWorkflowStateStore:
                 or state["status"] != "pending"
                 or state["content_hash"] != content_hash
                 or state["config_fingerprint"] != config_fingerprint
+                or state["attempt_count"] != attempt_index
             ):
                 return False
 
@@ -1889,6 +1890,7 @@ class OCRWorkflowStateStore:
                   AND status = 'pending'
                   AND content_hash = ?
                   AND config_fingerprint = ?
+                  AND attempt_count = ?
                 """,
                 (
                     str(artifact_path),
@@ -1900,6 +1902,7 @@ class OCRWorkflowStateStore:
                     page_number,
                     content_hash,
                     config_fingerprint,
+                    attempt_index,
                 ),
             )
             if updated.rowcount != 1:
@@ -1932,7 +1935,7 @@ class OCRWorkflowStateStore:
             existing = conn.execute(
                 """
                 SELECT status, content_hash, artifact_path, config_fingerprint,
-                       artifact_sha256
+                       artifact_sha256, attempt_count
                 FROM page_state
                 WHERE document_id = ? AND page_number = ? AND stage = ?
                 """,
@@ -1948,6 +1951,10 @@ class OCRWorkflowStateStore:
                     and existing["config_fingerprint"] == config_fingerprint
                     and existing["artifact_path"]
                     == (str(artifact_path) if artifact_path is not None else None)
+                    and (
+                        attempt_index is None
+                        or existing["attempt_count"] == attempt_index
+                    )
                 )
             if existing["status"] != "pending":
                 return False
@@ -1966,6 +1973,7 @@ class OCRWorkflowStateStore:
                   AND status = 'pending'
                   AND content_hash IS ?
                   AND config_fingerprint IS ?
+                  AND (? IS NULL OR attempt_count = ?)
                 """,
                 (
                     content_hash,
@@ -1979,6 +1987,8 @@ class OCRWorkflowStateStore:
                     stage,
                     content_hash,
                     config_fingerprint,
+                    attempt_index,
+                    attempt_index,
                 ),
             )
             if updated.rowcount != 1:
