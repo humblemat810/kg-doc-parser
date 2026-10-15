@@ -448,6 +448,11 @@ def _generate_tree_summaries(
                 summary=summary,
             )
             current = updated
+        except GroupingCheckpointConflict:
+            # A stale writer must fail the workflow so the caller can restore
+            # the newer checkpoint; treating this as an optional summary error
+            # would hide a lost-write race.
+            raise
         except Exception as exc:  # noqa: BLE001
             state_store.record_summary_attempt(
                 document_id=document_id,
@@ -457,6 +462,10 @@ def _generate_tree_summaries(
                 error_message=str(exc),
             )
     return current
+
+
+class GroupingCheckpointConflict(RuntimeError):
+    """A grouping writer lost its expected checkpoint ownership."""
 
 
 @dataclass(slots=True)
@@ -1263,12 +1272,12 @@ class OCRWorkflowStateStore:
             ).fetchone()
             current_revision = None if current is None else str(current["tree_revision"])
             if require_no_existing_tree and current_revision is not None:
-                raise RuntimeError(
+                raise GroupingCheckpointConflict(
                     f"grouping checkpoint create conflict for {document_id!r}: "
                     f"found existing revision {current_revision!r}"
                 )
             if expected_tree_revision is not None and current_revision != expected_tree_revision:
-                raise RuntimeError(
+                raise GroupingCheckpointConflict(
                     f"grouping checkpoint revision conflict for {document_id!r}: "
                     f"expected {expected_tree_revision!r}, found {current_revision!r}"
                 )

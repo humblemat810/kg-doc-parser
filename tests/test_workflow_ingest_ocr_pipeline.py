@@ -103,12 +103,14 @@ from kg_doc_parser.workflow_ingest.document_models import (
     SummaryPolicy,
 )
 from kg_doc_parser.workflow_ingest.ocr_pipeline import (
+    GroupingCheckpointConflict,
     OCRPageProcessingContext,
     OCRQualityPolicy,
     OCRSourcePlan,
     OCRWorkflowStateStore,
     _compute_input_fingerprint,
     _evaluate_ocr_quality,
+    _generate_tree_summaries,
     _ocr_configuration_fingerprint,
     _ocr_page_metadata,
     _resolve_ocr_source_plan,
@@ -308,6 +310,93 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
         "apply_grouping_pass",
         "persist_grouping_result",
     }
+
+
+@pytest.mark.ci
+def test_summary_checkpoint_conflict_is_retryable_not_a_summary_warning() -> None:
+    scratch = _scratch("ocr_summary_checkpoint_conflict")
+    tree = DocumentTree(
+        document_id="summary-conflict-doc",
+        source_revision="ocr-v1:summary-conflict",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="item-a",
+                kind="text",
+                text="summary source",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+            SourceItem(
+                item_id="item-b",
+                kind="text",
+                text="second source",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="leaf-a",
+                kind="text",
+                parts=(SourceSlice(item_id="item-a", start=0, end=14),),
+            ),
+            DocumentNode(
+                node_id="leaf-b",
+                kind="text",
+                parts=(SourceSlice(item_id="item-b", start=0, end=13),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(ChildRef(node_id="leaf-a"), ChildRef(node_id="leaf-b")),
+            ),
+        ),
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    initial_revision = store.save_document_tree(
+        document_id=tree.document_id,
+        tree=tree,
+        grouping_policy_version="summary-v1",
+    )
+    store.save_document_tree(
+        document_id=tree.document_id,
+        tree=tree.model_copy(update={"tree_revision": 2}),
+        grouping_policy_version="summary-v1",
+        expected_tree_revision=initial_revision,
+    )
+
+    def _summary_generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree, source_items
+        return Summary(
+            status="generated",
+            text=f"summary:{node_id}",
+            evidence_item_ids=("item-a", "item-b"),
+            provider_model="fake-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    with pytest.raises(GroupingCheckpointConflict, match="revision conflict"):
+        _generate_tree_summaries(
+            tree,
+            document_id=tree.document_id,
+            state_store=store,
+            policy=SummaryPolicy(
+                eligible_kinds=("document",),
+                minimum_source_items=1,
+                minimum_source_chars=1,
+                minimum_information_gain_chars=0,
+            ),
+            generator=_summary_generator,
+            grouping_policy_version="summary-v1",
+            expected_tree_revision=initial_revision,
+        )
 
 
 @pytest.mark.ci

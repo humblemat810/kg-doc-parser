@@ -59,7 +59,9 @@ provider evidence is absent.
   exact test IDs, before/after behavior, and runtime classification.
 - [~] Verify every grouping checkpoint writer uses the same revision/absence
   fence. The grouping child and summary persistence paths are fenced; the
-  baseline compatibility writer and crash/restart behavior remain open.
+  stale-summary regression now proves a checkpoint conflict propagates for
+  retry; the baseline compatibility writer and crash/restart behavior remain
+  open.
 - [~] Record C06 OCR quality diagnostics as typed persisted metadata and include
   the quality policy in page cache identity. Add a public strict-policy test;
   still require persisted reopen evidence and provider-side non-text coverage

@@ -299,9 +299,12 @@ test is not yet present.
   grouping child, so runtime ownership is not yet the only writer.
 - [x] Add expected-revision/CAS protection. `save_document_tree()` now fences
   both an observed revision and an observed absence atomically; the grouping
-  runtime propagates that fence into its persisted child state. The reusable
-  regression is
+  runtime and summary persistence propagate that fence into their persisted
+  child state. A stale summary writer raises `GroupingCheckpointConflict`
+  instead of becoming a non-fatal summary warning. The reusable regressions are
   `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`.
+  and
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_checkpoint_conflict_is_retryable_not_a_summary_warning`.
 - [ ] Persist source fingerprint, grouping policy, accepted page frontier, tree
   digest, and last accepted runtime step.
 - [~] Restore before advancing and prove byte-equivalent no-op reruns. The
