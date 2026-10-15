@@ -21,6 +21,14 @@ publication.  The existing real end-to-end regression passes locally after
 deleting an accepted page artifact, proving that stale terminal checkpoint
 data is rejected rather than published.
 
+The grouping checkpoint writer now also rejects an orphaned frontier when no
+tree revision exists, including callers that do not request an explicit
+absence fence.  This closes a previously permissive compatibility path that
+could have replaced a frontier left by an interrupted tree write.  The
+regression `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`
+passes with the orphaned-frontier assertion.  S06 remains partial because
+writer-wide monotonic-generation and crash/restart evidence are still open.
+
 Parser CI run `38777972861` failed all four interpreter jobs at the installed
 Kogwistar contract gate before parser tests ran.  Therefore this change is
 locally verified but not release-verified.  Kogwistar `v0.6.10` is tagged but

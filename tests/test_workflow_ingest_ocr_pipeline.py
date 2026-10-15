@@ -2435,6 +2435,13 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
             require_no_existing_tree=True,
         )
 
+    with pytest.raises(RuntimeError, match="orphaned frontier"):
+        store.save_document_tree(
+            document_id="grouped-doc",
+            tree=tree,
+            grouping_policy_version="group-v1",
+        )
+
     inconsistent_store = OCRWorkflowStateStore(scratch / "inconsistent.sqlite")
     inconsistent_store.ensure_document(
         document_id="grouped-doc",

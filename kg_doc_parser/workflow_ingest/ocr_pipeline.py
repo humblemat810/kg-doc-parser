@@ -1390,6 +1390,11 @@ class OCRWorkflowStateStore:
                     f"grouping checkpoint create conflict for {document_id!r}: "
                     f"found existing revision {current_revision!r} or frontier"
                 )
+            if current_revision is None and has_frontier:
+                raise GroupingCheckpointConflict(
+                    f"grouping checkpoint create conflict for {document_id!r}: "
+                    "found orphaned frontier without a tree"
+                )
             if expected_tree_revision is not None and current_revision != expected_tree_revision:
                 raise GroupingCheckpointConflict(
                     f"grouping checkpoint revision conflict for {document_id!r}: "
