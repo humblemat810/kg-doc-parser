@@ -503,6 +503,75 @@ def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() ->
     assert len(reference_calls) == 100
 
 
+@pytest.mark.ci
+def test_ocr_root_resume_rejects_changed_provider_before_replaying_pages() -> None:
+    scratch = _scratch("ocr_root_resume_identity")
+    payloads: list[OCRImagePayload] = []
+    for page_number in (1, 2):
+        image_path = scratch / "source" / f"page-{page_number}.png"
+        _draw_test_image(image_path, lines=[f"Identity page {page_number}"])
+        payloads.append(OCRImagePayload(page_number=page_number, image_path=str(image_path)))
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="identity-ocr-v1"),
+        parser=ProviderEndpointConfig(provider="fake", model="identity-parser"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="identity-embed", dimension=1),
+        triage_enabled=False,
+    )
+    changed_settings = settings.model_copy(
+        update={"ocr": settings.ocr.model_copy(update={"model": "identity-ocr-v2"})}
+    )
+    engines = build_workflow_engine_triplet(scratch / "engines", "in_memory")
+    calls: list[str] = []
+
+    def _interrupting_runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        calls.append(f"v1:{page_number}")
+        if page_number == 2:
+            raise RuntimeError("simulated interruption")
+        return _fake_ocr_response(page_number, f"Identity page {page_number}")
+
+    with pytest.raises(RuntimeError, match="OCR root workflow"):
+        run_ocr_ingest_workflow(
+            document_id="ocr-root-identity-doc",
+            title="OCR Root Identity",
+            output_dir=scratch / "artifacts",
+            image_payloads=payloads,
+            provider_settings=settings,
+            workflow_engine=engines[0],
+            conversation_engine=engines[1],
+            knowledge_engine=engines[2],
+            ocr_runner=_interrupting_runner,
+            run_id="ocr|ocr-root-identity",
+        )
+    assert calls == ["v1:1", "v1:2"]
+
+    def _unexpected_runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        raise AssertionError(f"provider replayed before identity validation: {image_path}:{page_number}")
+
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        run_ocr_ingest_workflow(
+            document_id="ocr-root-identity-doc",
+            title="OCR Root Identity",
+            output_dir=scratch / "artifacts",
+            image_payloads=payloads,
+            provider_settings=changed_settings,
+            workflow_engine=engines[0],
+            conversation_engine=engines[1],
+            knowledge_engine=engines[2],
+            ocr_runner=_unexpected_runner,
+            run_id="ocr|ocr-root-identity",
+            resume_from_checkpoint=True,
+        )
+
+
 def _fake_ocr_response(page_number: int, text: str) -> OCRClusterResponse:
     return OCRClusterResponse(
         OCR_text_clusters=[
