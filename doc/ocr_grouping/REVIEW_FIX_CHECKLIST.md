@@ -245,16 +245,16 @@ claim from a same-process or mocked test.
 These require an implementation location, an exact pytest node, before/after
 behavior, and a runtime classification. C01 was previously evidenced, but the
 current released-package check found a Kogwistar `0.6.9` public-version
-mismatch. C01 is awaiting the upstream `0.6.10` correction in core PR #61
-and the parser matrix rerun. C02-C06 have partial implementation
+mismatch. Core PR #61 is now merged and tagged as `v0.6.10`; C01 is awaiting
+PyPI publication and the parser matrix rerun. C02-C06 have partial implementation
 evidence, but none is a release-gate pass yet:
 
 - [~] Verify the installed Kogwistar package and public workflow persistence
   API, rather than relying on a source checkout or import-only probe. The
   contract test caught that Kogwistar `0.6.9` metadata reported `0.6.9` while
   its public module reported `0.6.8` in parser CI run `38720363271`. Re-run
-  the same test and CPython 3.12-3.14/PyPy 3.11 matrix after Kogwistar
-  `0.6.10` is published.
+  the same test and CPython 3.12-3.14/PyPy 3.11 matrix after tagged Kogwistar
+  `v0.6.10` is visible on PyPI.
 - [~] Document and test one root/child ownership model, including semantic
   parser checkpoint and graph publication identities. Stable root/page/grouping/
   semantic IDs and same-process ownership tests exist; fresh-process lineage
