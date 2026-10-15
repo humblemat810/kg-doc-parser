@@ -256,6 +256,38 @@ def _reconcile_page_checkpoint(
     return None
 
 
+def _validate_root_page_result(
+    *,
+    page_result: Mapping[str, object],
+    context: OCRPageProcessingContext,
+    source_plan: OCRSourcePlan,
+) -> None:
+    """Fail closed if a terminal page child no longer owns valid artifacts.
+
+    A parent resume can skip a terminal child invocation.  Recheck the
+    artifact/SQLite seam here before treating the serialized child result as
+    accepted output; otherwise a deleted or tampered page artifact could be
+    replaced by stale checkpoint data without rerunning OCR.
+    """
+    sources = _page_sources(page_result)
+    cursor = _page_cursor(page_result)
+    completed = _int_list(page_result, "completed_pages")
+    raw_pages = _json_pages(page_result)
+    expected_pages = [page_number for page_number, _image_path in sources]
+    if cursor != len(sources) or completed != expected_pages or len(raw_pages) != len(sources):
+        raise RuntimeError("OCR root page child completed with an incomplete page checkpoint")
+    repair = _reconcile_page_checkpoint(
+        state=page_result,
+        context=context,
+        source_plan=source_plan,
+    )
+    if repair is not None:
+        raise RuntimeError(
+            "OCR root page checkpoint is no longer backed by accepted artifacts; "
+            "resume must retry the page child"
+        )
+
+
 def _build_page_resolver(
     *,
     context: OCRPageProcessingContext,
@@ -1031,6 +1063,11 @@ def run_ocr_root_workflow(
     page_result = final_state.get("ocr_page_result")
     if not isinstance(page_result, dict):
         raise TypeError("OCR root completed without page result")
+    _validate_root_page_result(
+        page_result=page_result,
+        context=preparation.page_context,
+        source_plan=preparation.source_plan,
+    )
     raw_pages = _json_pages(page_result)
     completed_pages = _int_list(page_result, "completed_pages")
     reused_pages = _int_list(page_result, "reused_pages")

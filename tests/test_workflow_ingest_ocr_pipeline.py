@@ -3969,6 +3969,21 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
     # rather than merely parsing the same source pages independently.
     assert first_bundle.grouping_tree == first_run.final_state["export_bundle"]["grouping_tree"]
     assert second_bundle.grouping_tree == second_run.final_state["export_bundle"]["grouping_tree"]
+    (second_artifacts.legacy_dir / "page_1.json").unlink()
+    with pytest.raises(RuntimeError, match="no longer backed by accepted artifacts"):
+        run_ocr_ingest_workflow(
+            document_id="ocr-grounded-cache-doc",
+            title="OCR Grounded Cache Doc",
+            output_dir=scratch / "artifacts",
+            image_payloads=payloads,
+            provider_settings=settings,
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            knowledge_engine=knowledge_engine,
+            ocr_runner=_runner,
+            deps={"parse_semantic_fn": _parse_semantic_fn},
+            resume_from_checkpoint=True,
+        )
     root_trace = list(
         conversation_engine.read.get_nodes(
             where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": first_run.run_id}]}
