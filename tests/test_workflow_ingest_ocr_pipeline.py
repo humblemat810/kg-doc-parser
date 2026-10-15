@@ -790,6 +790,58 @@ def test_ocr_page_resume_reopens_state_in_a_fresh_process() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process() -> None:
+    """A fresh process retries only the failed page and accepts one root result."""
+    scratch = _scratch("ocr_root_fresh_process_resume")
+    for page_number in (1, 2):
+        _draw_test_image(
+            scratch / "source" / f"page-{page_number}.png",
+            lines=[f"root page {page_number}"],
+        )
+    worker = Path(__file__).with_name("_ocr_root_fresh_process_worker.py")
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        path
+        for path in (str(repo_root), child_env.get("PYTHONPATH", ""))
+        if path
+    )
+
+    interrupted = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "interrupt"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=120,
+    )
+    assert interrupted.returncode == 17, interrupted.stderr
+    interruption = json.loads(
+        (scratch / "interrupt-result.json").read_text(encoding="utf-8")
+    )
+    assert interruption["calls"] == [1, 2]
+
+    resumed = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "resume"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=120,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    result = json.loads(
+        (scratch / "resume-result.json").read_text(encoding="utf-8")
+    )
+    assert result == {
+        "status": "succeeded",
+        "run_id": "ocr|fresh-root-document",
+        "calls": [2],
+        "has_grouping_tree": True,
+    }
+
+
+@pytest.mark.ci
 @pytest.mark.slow
 def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() -> None:
     def _make_case(name: str) -> tuple[Path, list[OCRImagePayload]]:
