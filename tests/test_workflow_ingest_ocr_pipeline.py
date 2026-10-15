@@ -60,6 +60,8 @@ import json
 import logging
 import os
 import sqlite3
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1821,6 +1823,30 @@ def test_ocr_state_rejects_stale_provider_config_or_tampered_artifact() -> None:
         artifact_path=artifact,
         config_fingerprint="provider-b/model-a",
     )
+
+    child_script = f"""
+from pathlib import Path
+from kg_doc_parser.workflow_ingest.ocr_pipeline import OCRWorkflowStateStore
+store = OCRWorkflowStateStore(Path({str(scratch / 'ocr-state.sqlite')!r}))
+assert not store.should_skip_page(
+    document_id='config-identity-doc', page_number=1, stage='ocr',
+    content_hash='image-hash', artifact_path=Path({str(artifact)!r}),
+    config_fingerprint='provider-b/model-a'
+)
+assert store.should_skip_page(
+    document_id='config-identity-doc', page_number=1, stage='ocr',
+    content_hash='image-hash', artifact_path=Path({str(artifact)!r}),
+    config_fingerprint='provider-a/model-a'
+)
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", child_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert child.returncode == 0
+
     artifact.write_text('{"page": 1, "tampered": true}', encoding="utf-8")
     assert not store.should_skip_page(
         document_id="config-identity-doc",
