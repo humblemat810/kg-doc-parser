@@ -371,6 +371,8 @@ def _generate_tree_summaries(
     policy: SummaryPolicy | None,
     generator: SummaryGenerator | None,
     grouping_policy_version: str,
+    expected_tree_revision: str | None = None,
+    require_no_existing_tree: bool = False,
 ) -> DocumentTree:
     """Run optional bounded summary generation without making OCR depend on it."""
     if generator is None or policy is None or not policy.enabled:
@@ -430,11 +432,14 @@ def _generate_tree_summaries(
                 input_fingerprint=evidence_fingerprint,
             )
             updated = apply_summary_updates(current, {node_id: summary})
-            state_store.save_document_tree(
+            expected_tree_revision = state_store.save_document_tree(
                 document_id=document_id,
                 tree=updated,
                 grouping_policy_version=grouping_policy_version,
+                expected_tree_revision=expected_tree_revision,
+                require_no_existing_tree=require_no_existing_tree,
             )
+            require_no_existing_tree = False
             state_store.record_summary_attempt(
                 document_id=document_id,
                 node_id=node_id,
@@ -994,6 +999,7 @@ def _finalize_ocr_workflow_artifacts(
                     grouping_policy_version=grouping_policy_version,
                 )
         if persist_grouping_checkpoint:
+            existing_tree_revision = state_store.document_tree_revision(document_id=document_id)
             document_tree = _generate_tree_summaries(
                 document_tree,
                 document_id=document_id,
@@ -1001,6 +1007,8 @@ def _finalize_ocr_workflow_artifacts(
                 policy=summary_policy,
                 generator=summary_generator,
                 grouping_policy_version=grouping_policy_version,
+                expected_tree_revision=existing_tree_revision,
+                require_no_existing_tree=existing_tree_revision is None,
             )
         attach_document_tree_metadata(workflow_input, document_tree)
     artifacts = OCRWorkflowArtifacts(

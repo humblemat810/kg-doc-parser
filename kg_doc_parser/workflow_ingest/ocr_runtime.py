@@ -512,7 +512,14 @@ def _register_grouping_steps(
             policy=summary_policy,
             generator=summary_generator,
             grouping_policy_version=policy_version,
+            expected_tree_revision=(
+                str(ctx.state_view["checkpoint_revision"])
+                if ctx.state_view.get("checkpoint_revision") is not None
+                else None
+            ),
+            require_no_existing_tree=bool(ctx.state_view.get("checkpoint_absent", False)),
         )
+        current_revision = state_store.document_tree_revision(document_id=document_id)
         return _success(
             "persist_grouping_result",
             state_update=[
@@ -522,6 +529,8 @@ def _register_grouping_steps(
                         "tree": updated.model_dump(mode="json"),
                         "summaries_generated": summary_generator is not None
                         and bool(summary_policy and summary_policy.enabled),
+                        "checkpoint_revision": current_revision,
+                        "checkpoint_absent": current_revision is None,
                     },
                 )
             ],

@@ -247,6 +247,27 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
             ),
         ),
     )
+    def _summary_generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        return Summary(
+            status="generated",
+            text=f"summary:{node_id}",
+            evidence_item_ids=tuple(item.item_id for item in source_items),
+            provider_model="fake-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    summary_policy = SummaryPolicy(
+        eligible_kinds=("document",),
+        minimum_source_items=1,
+        minimum_source_chars=1,
+    )
     grouped, run_id = run_grouping_workflow(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
@@ -255,6 +276,8 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
         document_id=tree.document_id,
         grouping_policy_version="test-v1",
         grouping_proposals=(GroupProposal(kind="section", members=("leaf:item-a", "leaf:item-b")),),
+        summary_policy=summary_policy,
+        summary_generator=_summary_generator,
         run_id="ocr-grouping-test-run",
     )
     assert run_id == "ocr-grouping-test-run"
@@ -267,6 +290,8 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
         document_id=tree.document_id,
         grouping_policy_version="test-v1",
         grouping_proposals=(GroupProposal(kind="section", members=("leaf:item-a", "leaf:item-b")),),
+        summary_policy=summary_policy,
+        summary_generator=_summary_generator,
         run_id=run_id,
         resume_from_checkpoint=True,
     )

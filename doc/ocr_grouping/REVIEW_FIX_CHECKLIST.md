@@ -22,12 +22,20 @@ grouping checkpoint write without monotonic generation/CAS ownership. These
 remain `PARTIAL` or `OPEN` below until a reusable regression test demonstrates
 the actual boundary.
 
+Evidence must be recorded as a ledger, not inferred from a green CI job. Each
+item records the requirement ID, implementation file/function, exact regression
+test node, the pre-fix failure or missing behavior, the post-fix assertion,
+runtime classification (standalone, mocked runtime, or persisted Kogwistar),
+and current status. `PASS` is reserved for the complete acceptance gate;
+passing a narrow subtest remains `PARTIAL` when crash, restart, concurrency, or
+provider evidence is absent.
+
 | Finding | Status | Evidence / remaining work |
 | --- | --- | --- |
-| P0 grouping checkpoint overwrite on resume | PARTIAL | Prefix pages no longer overwrite `document_tree_state`, and the checkpoint store now atomically fences both expected revisions and expected absence. The preparation path still has a baseline SQLite compatibility path outside the grouping child, and crash recovery remains open. |
+| P0 grouping checkpoint overwrite on resume | PARTIAL | Prefix pages no longer overwrite `document_tree_state`; grouping and summary persistence now atomically fence both expected revisions and expected absence. The preparation path still has a baseline SQLite compatibility path outside the grouping child, and crash recovery remains open. |
 | P0 OCR and grouping are persisted Kogwistar workflow nodes | PARTIAL | A versioned root workflow now invokes persisted page, grouping, and semantic child workflows with stable child run IDs. Same-process failed-child resume is now covered; new-process lineage and no-double-publication evidence remain required before PASS. |
 | P1 OCR model/config changes invalidate reuse | PARTIAL | `page_state.config_fingerprint` includes provider, model, endpoint, engine, language, and candidate list, and the reuse predicate compares it. `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages` proves the public root rejects a changed model before replay, while `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` proves the changed configuration is rejected in a fresh process. The item remains partial pending full crash/reopen evidence. |
-| P1 page artifact/database publication is crash-safe | PARTIAL | The current write path validates JSON, atomically replaces the artifact, records an artifact SHA-256, rejects a well-formed tampered artifact on reuse, and adopts a valid rename-before-DB orphan. This does not by itself prove crash consistency: both rename-before-DB and DB-before-rename reconciliation must be exercised in a fresh-process crash harness before PASS. |
+| P1 page artifact/database publication is crash-safe | PARTIAL | The current write path validates JSON, atomically replaces the artifact, records an artifact SHA-256, rejects a well-formed tampered artifact on reuse, and adopts a valid rename-before-DB orphan. These are separate sub-properties, not crash-safe publication as a whole: both rename-before-DB and DB-before-rename reconciliation must be exercised in a fresh-process crash harness before PASS. |
 | P1 grouping is not quadratic for long documents | PARTIAL | The root path avoids the old per-page semantic rebuild and uses a runtime grouping child, but bounded incremental frontier merges, monotonic ownership, and batch/incremental equivalence are not yet proven. |
 | P1 Docling preserves item positions | PARTIAL | Item provenance boxes are exported for text, tables, and pictures when Docling exposes them. Full-page Markdown remains a compatibility fallback for adapters with no positional items; live multi-item Docling coverage is still required. |
 
@@ -49,10 +57,13 @@ the actual boundary.
   remain open.
 - [~] Add evidence-ledger rows for C01-C06 with implementation locations,
   exact test IDs, before/after behavior, and runtime classification.
+- [~] Verify every grouping checkpoint writer uses the same revision/absence
+  fence. The grouping child and summary persistence paths are fenced; the
+  baseline compatibility writer and crash/restart behavior remain open.
 - [~] Record C06 OCR quality diagnostics as typed persisted metadata and include
   the quality policy in page cache identity. Add a public strict-policy test;
   still require persisted reopen evidence and provider-side non-text coverage
   signals before marking the gate complete.
 - [x] Run the full parser CI matrix after the P0 runtime work. Parser CI run
-  `38655395569` passed CPython 3.12-3.14 and PyPy 3.11; slow/manual provider
+  `38662058102` passed CPython 3.12-3.14 and PyPy 3.11; slow/manual provider
   experiments remain separate gates.

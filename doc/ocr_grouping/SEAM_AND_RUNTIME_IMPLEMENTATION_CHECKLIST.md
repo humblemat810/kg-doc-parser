@@ -54,6 +54,15 @@ The reviewer also identified six release gates which must remain visible:
 - **C06:** require an explicit OCR completeness/quality gate beyond interval
   coverage.
 
+The review also corrected two status interpretations that must remain visible:
+
+- A page JSON digest is enforced only when the completed-page reuse predicate
+  reads the artifact. Recording a digest, or validating a newly written file,
+  is not sufficient evidence for reuse safety.
+- Atomic file publication protects the JSON file itself, not the ordering
+  between that file and SQLite/Kogwistar checkpoint commits. Both crash orders
+  need a recovery test before S02/C03 can become a release pass.
+
 These gates are tracked in section C and the evidence ledger. A focused test
 may close a sub-item, but cannot close the parent gate when fresh-process,
 SIGKILL, concurrency, or real-provider evidence is still absent.
@@ -75,6 +84,9 @@ implementation helper or a narrow unit test is green:
   `os.replace()` protects one file write, not the two-store commit.
 - `S06` grouping checkpoint protection is partial until a monotonic generation
   or CAS guard prevents a late prefix rebuild from overwriting a newer tree.
+  The grouping and summary persistence paths now share an atomic
+  expected-revision/expected-absence fence; compatibility writers and crash
+  recovery still prevent release completion.
 - `S09` root-workflow integration is partial until a new process can reopen the
   same parent invocation, recover the same child lineage, and avoid a second
   accepted semantic generation.
@@ -293,15 +305,18 @@ test is not yet present.
 - [ ] Persist source fingerprint, grouping policy, accepted page frontier, tree
   digest, and last accepted runtime step.
 - [~] Restore before advancing and prove byte-equivalent no-op reruns. The
-  grouping runtime has a passing resume test; OCR/page and dual-store resume
-  remain unproven.
+  grouping runtime has a passing resume test. Grouping summary writes now also
+  carry the same expected revision/absence fence, but OCR/page and dual-store
+  resume remain unproven.
 - [ ] Test crash at page 63 and concurrent late writers.
 
 ### S07. Grouping to summary generation
 
 - [ ] Run summaries after grouping passes, not before caller-provided grouping.
-- [ ] Include exact subtree slice membership, tree revision, policy revision,
-  model revision, and prompt schema in the summary fingerprint.
+- [~] Include exact subtree slice membership, tree revision, policy revision,
+  model revision, and prompt schema in the summary fingerprint. The grouping
+  checkpoint revision/absence fence is propagated to summary writes, but the
+  complete fingerprint and reuse evidence remain open.
 - [ ] Test two nodes using different slices of the same source item.
 - [ ] Test grouping-only changes invalidate summaries without rerunning OCR.
 - [ ] Test identical policy/input reuses summaries without another provider call.
@@ -364,7 +379,7 @@ test is not yet present.
 
 - [x] **C01 — Installed API compatibility:** record the installed Kogwistar
   version and verify the exact persisted invocation/checkpoint APIs used by the
-  parser on CPython 3.12-3.14 and PyPy 3.11. Parser CI run `38655395569`
+  parser on CPython 3.12-3.14 and PyPy 3.11. Parser CI run `38662058102`
   passed this matrix.
 - [~] **C02 — Runtime ownership boundary:** the root run owns page, grouping,
   and semantic child invocations with stable child IDs. Prove recovery of the
@@ -398,7 +413,7 @@ itself as proof:
 
 | Gate | Current status | Required closure evidence |
 | --- | --- | --- |
-| C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38655395569`; source-checkout-only tests do not count. |
+| C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38662058102`; source-checkout-only tests do not count. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`; a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_does_not_reuse_completion_without_published_artifact` proves checkpoint-before-artifact cannot be reused; rename-before-checkpoint adoption is also tested. Fresh-process reconciliation and a full crash harness remain open. |
 | C04 incremental equivalence | OPEN | Canonical tree comparison between uninterrupted batch and interrupted incremental grouping; exclude timestamps/run metadata. |
@@ -473,6 +488,6 @@ protocol.
 - [ ] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
 - [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11.
-  Parser CI run `38655395569` passed; slow/manual provider experiments remain
+  Parser CI run `38662058102` passed; slow/manual provider experiments remain
   separate gates.
 - [ ] Only after all release gates pass, update version/release notes and pins.
