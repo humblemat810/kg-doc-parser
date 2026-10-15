@@ -61,6 +61,7 @@ from .ocr_pipeline import (
 from .service import workflow_predicates
 
 _OCR_ROOT_STATE_VERSION = "ocr-root-v2"
+_OCR_PAGE_STATE_VERSION = "ocr-page-v2"
 
 
 def _success(
@@ -164,6 +165,8 @@ def _validate_root_resume_identity(
 
 def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> dict[str, object]:
     return {
+        "ocr_page_state_version": _OCR_PAGE_STATE_VERSION,
+        "source_fingerprint": source_plan.input_fingerprint,
         "page_sources": [
             {"page_number": page_number, "image_path": str(image_path)}
             for page_number, image_path in source_plan.page_sources
@@ -173,6 +176,36 @@ def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> dict[str, object
         "completed_pages": [],
         "reused_pages": [],
     }
+
+
+def _validate_page_resume_identity(
+    state: Mapping[str, object],
+    *,
+    document_id: str,
+    source_fingerprint: str,
+    configuration_fingerprints: Sequence[str],
+) -> None:
+    """Reject a page checkpoint built from a different immutable input set."""
+    expected: dict[str, object] = {
+        "ocr_page_state_version": _OCR_PAGE_STATE_VERSION,
+        "document_id": document_id,
+        "source_fingerprint": source_fingerprint,
+        "ocr_configuration_fingerprints": list(configuration_fingerprints),
+    }
+    missing = [key for key in expected if key not in state]
+    if missing:
+        raise RuntimeError(
+            "cannot resume OCR page checkpoint without immutable identity fields: "
+            + ", ".join(sorted(missing))
+        )
+    mismatches = [
+        key for key, expected_value in expected.items() if state.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "OCR page checkpoint identity mismatch; refusing to mix persisted state for: "
+            + ", ".join(sorted(mismatches))
+        )
 
 
 def _reconcile_page_checkpoint(
@@ -233,6 +266,10 @@ def _build_page_resolver(
     resolver = MappingStepResolver()
     resolver.set_state_schema(
         {
+            "ocr_page_state_version": "u",
+            "document_id": "u",
+            "source_fingerprint": "u",
+            "ocr_configuration_fingerprints": "u",
             "page_sources": "u",
             "page_cursor": "u",
             "raw_pages": "u",
@@ -244,7 +281,12 @@ def _build_page_resolver(
 
     @resolver.register("start")
     def _start(ctx: StepContext) -> StepRunResult:
-        del ctx
+        _validate_page_resume_identity(
+            ctx.state_view,
+            document_id=context.document_id,
+            source_fingerprint=source_plan.input_fingerprint,
+            configuration_fingerprints=context.configuration_fingerprints,
+        )
         return _success("process_ocr_page")
 
     @resolver.register("process_ocr_page")
@@ -358,6 +400,12 @@ def run_ocr_page_workflow(
         trace=True,
     )
     initial_state = _page_workflow_initial_state(source_plan)
+    initial_state.update(
+        {
+            "document_id": context.document_id,
+            "ocr_configuration_fingerprints": list(context.configuration_fingerprints),
+        }
+    )
     result = (
         runtime.resume_from_latest_checkpoint(
             run_id=run_id,
@@ -669,7 +717,13 @@ def run_ocr_root_workflow(
             workflow_invocations=[
                 WorkflowInvocationRequest(
                     workflow_id=DEFAULT_OCR_PAGE_WORKFLOW_ID,
-                    initial_state=_page_workflow_initial_state(preparation.source_plan),
+                    initial_state={
+                        **_page_workflow_initial_state(preparation.source_plan),
+                        "document_id": preparation.page_context.document_id,
+                        "ocr_configuration_fingerprints": list(
+                            preparation.page_context.configuration_fingerprints
+                        ),
+                    },
                     result_state_key="ocr_page_result",
                     run_id=child_run_id,
                     invocation_key="ocr-pages-v1",
