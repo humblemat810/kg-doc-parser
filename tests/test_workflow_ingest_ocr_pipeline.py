@@ -315,6 +315,80 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
 
 
 @pytest.mark.ci
+def test_grouping_resume_rejects_frontier_that_disagrees_with_tree() -> None:
+    scratch = _scratch("ocr_grouping_frontier_mismatch")
+    workflow_engine, conversation_engine, _knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines",
+        "in_memory",
+    )
+    tree = DocumentTree(
+        document_id="grouping-frontier-mismatch-doc",
+        source_revision="ocr-v1:source-digest",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="item-a",
+                kind="text",
+                text="alpha",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+            SourceItem(
+                item_id="item-b",
+                kind="text",
+                text="beta",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="leaf:item-a",
+                kind="text",
+                parts=(SourceSlice(item_id="item-a", start=0, end=5),),
+            ),
+            DocumentNode(
+                node_id="leaf:item-b",
+                kind="text",
+                parts=(SourceSlice(item_id="item-b", start=0, end=4),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(ChildRef(node_id="leaf:item-a"), ChildRef(node_id="leaf:item-b")),
+            ),
+        ),
+    )
+    store_path = scratch / "ocr-state.sqlite"
+    store = OCRWorkflowStateStore(store_path)
+    run_grouping_workflow(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        state_store=store,
+        tree=tree,
+        document_id=tree.document_id,
+        grouping_policy_version="test-v1",
+        run_id="ocr-grouping-frontier-mismatch",
+    )
+    with sqlite3.connect(store_path) as conn:
+        conn.execute(
+            "UPDATE grouping_frontier_state SET frontier_json = ? WHERE document_id = ?",
+            (json.dumps(["not-in-tree"]), tree.document_id),
+        )
+
+    with pytest.raises(RuntimeError, match="frontier does not match the restored tree"):
+        run_grouping_workflow(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            state_store=OCRWorkflowStateStore(store_path),
+            tree=tree,
+            document_id=tree.document_id,
+            grouping_policy_version="test-v1",
+            run_id="ocr-grouping-frontier-mismatch",
+            resume_from_checkpoint=True,
+        )
+
+
+@pytest.mark.ci
 def test_summary_checkpoint_conflict_is_retryable_not_a_summary_warning() -> None:
     scratch = _scratch("ocr_summary_checkpoint_conflict")
     tree = DocumentTree(

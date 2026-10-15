@@ -42,7 +42,7 @@ test must not be counted as a green two-store commit protocol:
 | OCR artifact SHA-256 is enforced on completed-page reuse | PASS (focused boundary) | `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` rejects a well-formed but modified JSON artifact through the actual reuse predicate. |
 | JSON publication uses a unique temporary file and atomic replacement | PASS (file boundary) | `test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_writers` proves distinct same-directory temporary files and replacement. It does not prove a two-store commit. |
 | Artifact and SQLite/Kogwistar checkpoint commits are crash-consistent | OPEN | Fresh-process crash injection must cover artifact-rename-before-checkpoint and checkpoint-before-artifact, with deterministic reconciliation and no stale acceptance. |
-| Grouping checkpoint writes are fenced against late writers | PARTIAL | Expected revision/absence CAS and retryable conflict propagation are covered; compatibility writers, monotonic generation, and crash/restart ordering remain open. |
+| Grouping checkpoint writes are fenced against late writers | PARTIAL | Expected revision/absence CAS and retryable conflict propagation are covered. Resume now also rejects a persisted frontier that disagrees with the restored tree (`tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_resume_rejects_frontier_that_disagrees_with_tree`); compatibility writers, monotonic generation, and crash/restart ordering remain open. |
 
 The realistic recovery guarantee is at-least-once provider execution with
 exactly one accepted canonical result. The implementation must not claim

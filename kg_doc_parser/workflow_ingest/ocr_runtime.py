@@ -454,6 +454,27 @@ def _register_grouping_steps(
             grouping_policy_version=policy_version,
         )
         if restored is not None:
+            persisted_frontier = state_store.load_grouping_frontier(
+                document_id=document_id,
+                source_fingerprint=restored.source_fingerprint(),
+                grouping_policy_version=policy_version,
+            )
+            if persisted_frontier is None:
+                raise RuntimeError(
+                    "grouping checkpoint exists but its frontier is missing or mismatched"
+                )
+            restored_root = next(
+                node for node in restored.nodes if node.node_id == restored.root_id
+            )
+            expected_frontier = (
+                tuple(child.node_id for child in restored_root.children)
+                if restored_root.children
+                else (restored_root.node_id,)
+            )
+            if persisted_frontier != expected_frontier:
+                raise RuntimeError(
+                    "grouping checkpoint frontier does not match the restored tree"
+                )
             payload = restored.model_dump(mode="json")
             return _success(
                 "apply_grouping_pass",
