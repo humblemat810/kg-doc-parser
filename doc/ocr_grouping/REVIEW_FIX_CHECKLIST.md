@@ -53,7 +53,7 @@ exactly-once OCR or LLM calls across arbitrary process termination.
 | P0 grouping checkpoint overwrite on resume | PARTIAL | Prefix pages no longer overwrite `document_tree_state`; grouping and summary persistence now atomically fence both expected revisions and expected absence. The preparation path still has a baseline SQLite compatibility path outside the grouping child, and crash recovery remains open. |
 | P0 OCR and grouping are persisted Kogwistar workflow nodes | PARTIAL | A versioned root workflow now invokes persisted page, grouping, and semantic child workflows with stable child run IDs. Same-process failed-child resume is now covered; new-process lineage and no-double-publication evidence remain required before PASS. |
 | P1 OCR model/config changes invalidate reuse | PARTIAL | `page_state.config_fingerprint` includes provider, model, endpoint, engine, language, and candidate list, and the reuse predicate compares it. `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages` proves the public root rejects a changed model before replay, while `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` proves the changed configuration is rejected in a fresh process. The item remains partial pending full crash/reopen evidence. |
-| P1 page artifact/database publication is crash-safe | PARTIAL | The current write path validates JSON, atomically replaces the artifact through unique same-directory temporary files, records an artifact SHA-256, rejects a well-formed tampered artifact on reuse, and adopts a valid rename-before-DB orphan. Concurrent publication is covered by `test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_writers`. These are separate sub-properties, not crash-safe publication as a whole: both rename-before-DB and DB-before-rename reconciliation must be exercised in a fresh-process crash harness before PASS. |
+| P1 page artifact/database publication is crash-safe | PARTIAL | The current write path validates JSON, atomically replaces the artifact through unique same-directory temporary files, records an artifact SHA-256, rejects a well-formed tampered artifact on reuse, and adopts a valid rename-before-DB orphan. `test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` now proves both restart predicates against SQLite; `test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_writers` covers distinct temporary files. These are separate sub-properties, not crash-safe publication as a whole: injected crash ordering and full runtime/checkpoint reconciliation remain before PASS. |
 | P1 grouping is not quadratic for long documents | PARTIAL | The root path avoids the old per-page semantic rebuild and uses a runtime grouping child, but bounded incremental frontier merges, monotonic ownership, and batch/incremental equivalence are not yet proven. |
 | P1 Docling preserves item positions | PARTIAL | Item provenance boxes are exported for text, tables, and pictures when Docling exposes them. Full-page Markdown remains a compatibility fallback for adapters with no positional items; live multi-item Docling coverage is still required. |
 
@@ -70,9 +70,9 @@ exactly-once OCR or LLM calls across arbitrary process termination.
   figure boxes, including ordering and coordinate clipping.
 - [~] Add crash-window reconciliation tests for artifact rename/database commit
   ordering in both directions. The exact completed-page reuse test for a
-  tampered-but-well-formed JSON artifact and the fresh-process configuration
-  test are now present; fresh-process crash injection and two-store recovery
-  remain open.
+  tampered-but-well-formed JSON artifact, fresh-process configuration test, and
+  fresh-process two-store predicate test are now present; injected crash
+  recovery and full runtime/checkpoint reconciliation remain open.
 - [~] Add evidence-ledger rows for C01-C06 with implementation locations,
   exact test IDs, before/after behavior, and runtime classification.
 - [~] Verify every grouping checkpoint writer uses the same revision/absence

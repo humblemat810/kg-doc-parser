@@ -2135,6 +2135,114 @@ def test_ocr_state_does_not_reuse_completion_without_published_artifact() -> Non
 
 
 @pytest.mark.ci
+def test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process() -> None:
+    """Reopen both crash orders and apply the same acceptance predicates.
+
+    This is deliberately a recovery-boundary test, not a claim that a process
+    can atomically commit SQLite and a filesystem rename. A restart must reject
+    the database-first order and adopt the validated artifact-first order.
+    """
+    scratch = _scratch("ocr_two_store_fresh_process")
+    db_path = scratch / "ocr-state.sqlite"
+    missing_artifact = scratch / "db-first.json"
+    adopted_artifact = scratch / "artifact-first.json"
+    source_digest = "source-image-digest"
+    config_fingerprint = "provider-a/model-a"
+
+    store = OCRWorkflowStateStore(db_path)
+    store.ensure_document(
+        document_id="db-first-doc",
+        title="DB First",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="db-first-input",
+    )
+    attempt = store.record_attempt(
+        document_id="db-first-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        model_name="model-a",
+        artifact_path=missing_artifact,
+        config_fingerprint=config_fingerprint,
+    )
+    store.record_page_completed(
+        document_id="db-first-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        artifact_path=missing_artifact,
+        model_name="model-a",
+        attempt_index=attempt,
+        config_fingerprint=config_fingerprint,
+    )
+
+    response = _fake_ocr_response(1, "artifact-first")
+    split_page = SplitPage(
+        pdf_page_num=1,
+        metadata=SplitPageMeta(
+            ocr_model_name="model-a",
+            ocr_datetime=0.0,
+            ocr_json_version="workflow_ingest_v1",
+        ),
+        **response.model_dump(dump_format="python"),
+    )
+    artifact_payload = split_page.dump_raw(dump_format="json")
+    artifact_payload["metadata"] = {
+        **split_page.metadata.model_dump(mode="json"),
+        "source_image_sha256": source_digest,
+        "ocr_configuration_fingerprint": config_fingerprint,
+        "ocr_model_name": "model-a",
+    }
+    _write_json_atomic(adopted_artifact, artifact_payload)
+    store.ensure_document(
+        document_id="artifact-first-doc",
+        title="Artifact First",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="artifact-first-input",
+    )
+    store.record_attempt(
+        document_id="artifact-first-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        model_name="model-a",
+        artifact_path=adopted_artifact,
+        config_fingerprint=config_fingerprint,
+    )
+
+    child_script = f"""
+from pathlib import Path
+from kg_doc_parser.workflow_ingest.ocr_pipeline import OCRWorkflowStateStore
+
+store = OCRWorkflowStateStore(Path({str(db_path)!r}))
+assert not store.should_skip_page(
+    document_id='db-first-doc', page_number=1, stage='ocr',
+    content_hash={source_digest!r}, artifact_path=Path({str(missing_artifact)!r}),
+    config_fingerprint={config_fingerprint!r},
+)
+assert store.reconcile_orphan_artifact(
+    document_id='artifact-first-doc', page_number=1,
+    content_hash={source_digest!r}, artifact_path=Path({str(adopted_artifact)!r}),
+    config_fingerprints=({config_fingerprint!r},),
+)
+assert store.should_skip_page(
+    document_id='artifact-first-doc', page_number=1, stage='ocr',
+    content_hash={source_digest!r}, artifact_path=Path({str(adopted_artifact)!r}),
+    config_fingerprint={config_fingerprint!r},
+)
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", child_script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert child.returncode == 0
+
+
+@pytest.mark.ci
 def test_ocr_state_does_not_reuse_legacy_completion_without_artifact_digest() -> None:
     scratch = _scratch("ocr_missing_artifact_digest")
     artifact = scratch / "page-1.json"

@@ -421,7 +421,7 @@ itself as proof:
 | --- | --- | --- |
 | C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38663529209`; source-checkout-only tests do not count. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`; a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
-| C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_does_not_reuse_completion_without_published_artifact` proves checkpoint-before-artifact cannot be reused; rename-before-checkpoint adoption is also tested. Fresh-process reconciliation and a full crash harness remain open. |
+| C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` reopens SQLite in a fresh process and proves checkpoint-before-artifact cannot be reused while a validated artifact-first record is adopted. An injected crash harness and full runtime/checkpoint reconciliation remain open. |
 | C04 incremental equivalence | OPEN | Canonical tree comparison between uninterrupted batch and interrupted incremental grouping; exclude timestamps/run metadata. |
 | C05 true resume | PARTIAL | Same-process 100-page interruption evidence exists; SIGKILL/new-process resume, duplicate-resume race, and no redundant accepted work remain. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
