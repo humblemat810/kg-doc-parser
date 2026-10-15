@@ -972,6 +972,12 @@ def test_ocr_root_concurrent_resume_has_one_owner_and_one_result() -> None:
         result_path = scratch / f"{mode}-result.json"
         if result_path.exists():
             accepted.append(json.loads(result_path.read_text(encoding="utf-8")))
+        else:
+            error_path = scratch / f"{mode}-error.txt"
+            assert error_path.exists()
+            assert "WorkflowRunOwnershipError" in error_path.read_text(
+                encoding="utf-8"
+            )
     assert len(accepted) == 1
     assert accepted[0] == {
         "status": "succeeded",
