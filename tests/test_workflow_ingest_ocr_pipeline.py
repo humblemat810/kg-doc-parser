@@ -59,6 +59,7 @@ import importlib.util
 import json
 import logging
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -134,6 +135,14 @@ from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, Semanti
 pytestmark = [pytest.mark.workflow]
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _terminate_interrupted_worker(process: subprocess.Popen[str]) -> None:
+    """Use the strongest available process-stop primitive for recovery tests."""
+    if os.name == "posix":
+        os.kill(process.pid, signal.SIGKILL)
+    else:
+        process.terminate()
 
 
 def _scratch(name: str) -> Path:
@@ -893,7 +902,7 @@ def test_ocr_root_reopens_after_real_process_termination() -> None:
     while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.1)
     assert marker.exists(), "worker did not reach page two before termination"
-    interrupted.terminate()
+    _terminate_interrupted_worker(interrupted)
     interrupted.wait(timeout=30)
     assert interrupted.returncode != 0
 
@@ -951,7 +960,7 @@ def test_ocr_root_concurrent_resume_has_one_owner_and_one_result() -> None:
     while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.1)
     assert marker.exists(), "worker did not reach page two before termination"
-    interrupted.terminate()
+    _terminate_interrupted_worker(interrupted)
     interrupted.wait(timeout=30)
     assert interrupted.returncode != 0
 
@@ -1016,7 +1025,7 @@ def test_grouping_checkpoint_reopens_after_process_termination() -> None:
     while not marker.exists() and time.monotonic() < deadline:
         time.sleep(0.1)
     assert marker.exists(), "grouping worker did not reach the post-checkpoint stage"
-    interrupted.terminate()
+    _terminate_interrupted_worker(interrupted)
     interrupted.wait(timeout=30)
     assert interrupted.returncode != 0
 
