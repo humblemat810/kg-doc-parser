@@ -415,12 +415,6 @@ def _generate_tree_summaries(
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
-        state_store.record_summary_attempt(
-            document_id=document_id,
-            node_id=node_id,
-            input_fingerprint=input_fingerprint,
-            status="pending",
-        )
         # Recompute the node's evidence through the tree contract; the
         # generator receives only source items in that subtree.
         node_map = {node.node_id: node for node in current.nodes}
@@ -440,26 +434,53 @@ def _generate_tree_summaries(
 
         collect(node_id)
         evidence_ids = tuple(sorted(covered))
-        try:
-            summary = state_store.load_completed_summary(
+        summary = state_store.load_completed_summary(
+            document_id=document_id,
+            node_id=node_id,
+            input_fingerprint=input_fingerprint,
+        )
+        if summary is not None:
+            current_node = node_map[node_id]
+            if current_node.summary == summary:
+                # The accepted journal row already represents this exact
+                # generation. Do not create another accepted attempt or
+                # advance the tree revision on a retry.
+                continue
+            # A crash may have committed the journal row after the tree write
+            # was interrupted. Repair only the missing derived field; the
+            # accepted summary remains the single canonical journal result.
+            updated = apply_summary_updates(current, {node_id: summary})
+            expected_tree_revision = state_store.save_document_tree(
                 document_id=document_id,
-                node_id=node_id,
-                input_fingerprint=input_fingerprint,
+                tree=updated,
+                grouping_policy_version=grouping_policy_version,
+                expected_tree_revision=expected_tree_revision,
+                require_no_existing_tree=require_no_existing_tree,
             )
-            if summary is None:
-                summary = generator(
-                    tree=current,
-                    node_id=node_id,
-                    source_items=tuple(items[item_id] for item_id in evidence_ids),
-                    input_fingerprint=evidence_fingerprint,
-                )
-                summary = summary.model_copy(
-                    update={
-                        "evidence_slice_fingerprint": current.summary_slice_fingerprint(
-                            node_id, evidence_ids
-                        )
-                    }
-                )
+            require_no_existing_tree = False
+            current = updated
+            continue
+
+        state_store.record_summary_attempt(
+            document_id=document_id,
+            node_id=node_id,
+            input_fingerprint=input_fingerprint,
+            status="pending",
+        )
+        try:
+            summary = generator(
+                tree=current,
+                node_id=node_id,
+                source_items=tuple(items[item_id] for item_id in evidence_ids),
+                input_fingerprint=evidence_fingerprint,
+            )
+            summary = summary.model_copy(
+                update={
+                    "evidence_slice_fingerprint": current.summary_slice_fingerprint(
+                        node_id, evidence_ids
+                    )
+                }
+            )
             updated = apply_summary_updates(current, {node_id: summary})
             expected_tree_revision = state_store.save_document_tree(
                 document_id=document_id,

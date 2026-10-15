@@ -131,19 +131,32 @@ claim from a same-process or mocked test.
 ## Reviewer-required acceptance additions
 
 These require an implementation location, an exact pytest node, before/after
-behavior, and a runtime classification. C01 is evidenced; C02-C06 remain open:
+behavior, and a runtime classification. C01 is evidenced. C02-C06 have
+partial implementation evidence, but none is a release-gate pass yet:
 
 - [x] Verify the installed Kogwistar package and public workflow persistence
   API, rather than relying on a source checkout or import-only probe. Evidence:
   `tests/test_pypy_ci_contract.py::test_installed_kogwistar_exposes_the_persisted_workflow_api`
   and the CPython 3.12-3.14/PyPy 3.11 matrix in run `38672474200`.
-- [ ] Document and test one root/child ownership model, including semantic
-  parser checkpoint and graph publication identities.
-- [ ] Reconcile both artifact/SQLite and Kogwistar/checkpoint commit orders in
-  a fresh process.
-- [ ] Compare incremental and uninterrupted grouping using canonical content,
-  excluding volatile run metadata; prove completed subtrees remain stable.
-- [ ] Prove at-least-once execution with exactly one accepted canonical result
-  after process interruption, including duplicate-resume behavior.
-- [ ] Add a quality/completeness gate that detects provider omissions beyond
+- [~] Document and test one root/child ownership model, including semantic
+  parser checkpoint and graph publication identities. Stable root/page/grouping/
+  semantic IDs and same-process ownership tests exist; fresh-process lineage
+  and no-second-publication evidence remain open.
+- [~] Reconcile both artifact/SQLite and Kogwistar/checkpoint commit orders in
+  a fresh process. Artifact-first adoption and direct predicates exist; the
+  inverse checkpoint-first order and complete runtime reconciliation remain
+  open.
+- [~] Compare incremental and uninterrupted grouping using canonical content,
+  excluding volatile run metadata; prove completed subtrees remain stable. A
+  controlled multi-pass canonical comparison exists; bounded-frontier and
+  real interruption/reopen evidence remain open.
+- [~] Prove at-least-once execution with exactly one accepted canonical result
+  after process interruption, including duplicate-resume behavior. Duplicate
+  page publication and same-process resume are covered; SIGKILL/new-process
+  resume and duplicate root-resume evidence remain open, and the released
+  Kogwistar retryable-child dependency is still a gate.
+- [~] Add a quality/completeness gate that detects provider omissions beyond
   source interval coverage, including non-text and coordinate-loss diagnostics.
+  Typed provider-loss diagnostics and strict rejection exist; source-side
+  completeness for figures, tables, captions, and unsupported coordinates is
+  not yet proven.

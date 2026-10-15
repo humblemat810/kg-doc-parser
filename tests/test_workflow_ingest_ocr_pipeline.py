@@ -1587,6 +1587,28 @@ def test_summary_cache_reuses_exact_generation_and_slice_identity() -> None:
     )
     assert calls["count"] == 1
     assert next(node.summary for node in reused.nodes if node.node_id == "root") == root_summary
+    attempts = OCRWorkflowStateStore(scratch / "ocr-state.sqlite").list_summary_attempts(
+        document_id=tree.document_id
+    )
+    assert [attempt["status"] for attempt in attempts] == ["pending", "generated"]
+
+    # A retry with the already restored tree must be a true no-op: it must not
+    # advance the tree revision or append another accepted journal result.
+    persisted_revision = store.document_tree_revision(document_id=tree.document_id)
+    assert persisted_revision is not None
+    rerun = _generate_tree_summaries(
+        reused,
+        document_id=tree.document_id,
+        state_store=store,
+        policy=policy,
+        generator=_generator,
+        grouping_policy_version="summary-cache-v1",
+        expected_tree_revision=persisted_revision,
+    )
+    assert rerun.model_dump(mode="json") == reused.model_dump(mode="json")
+    assert store.document_tree_revision(document_id=tree.document_id) == persisted_revision
+    attempts = store.list_summary_attempts(document_id=tree.document_id)
+    assert [attempt["status"] for attempt in attempts] == ["pending", "generated"]
 
 
 @pytest.mark.ci
