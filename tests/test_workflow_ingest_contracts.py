@@ -260,7 +260,7 @@ def test_normalize_ocr_and_source_map_contract():
                         "bb_x_max": 6,
                         "bb_y_min": 7,
                         "bb_y_max": 8,
-                        "cluster_number": 0,
+                        "cluster_number": 1,
                     }
                 ],
             }
@@ -273,7 +273,7 @@ def test_normalize_ocr_and_source_map_contract():
     assert any(record.modality == "ocr_text" for record in source_map.values())
     assert any(record.modality == "image_region" for record in source_map.values())
     assert any(unit_id.endswith("_t0") for unit_id in source_map)
-    assert any(unit_id.endswith("_i0") for unit_id in source_map)
+    assert any(unit_id.endswith("_i1") for unit_id in source_map)
 
 
 @pytest.mark.ci
