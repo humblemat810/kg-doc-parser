@@ -710,10 +710,10 @@ protocol.
 - [ ] Run `git diff --check` and lock verification.
 - [ ] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
-- [~] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11.
-  The current validation run `38681712390` passed CPython 3.12, CPython 3.14,
-  and PyPy 3.11, but CPython 3.13 failed in the deterministic test step. The
-  traceback is not exposed by the unauthenticated GitHub job page, so this
-  gate remains open until the failure is reproduced and fixed; slow/manual
-  provider experiments remain separate gates.
+- [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11.
+  Parser CI run `38685108069` passed all four required jobs on commit
+  `4b8a1de`; the earlier CPython 3.13 failure in `38681712390` was reproduced
+  locally, fixed in the duplicate-worker acceptance fence, and covered by the
+  full CPython 3.13 selection. Slow/manual provider experiments remain
+  separate gates.
 - [ ] Only after all release gates pass, update version/release notes and pins.

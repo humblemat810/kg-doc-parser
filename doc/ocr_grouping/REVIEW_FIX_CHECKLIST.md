@@ -178,12 +178,12 @@ claim from a same-process or mocked test.
   is part of the persisted summary key; `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_generation_fingerprint_invalidates_persisted_cache`
   proves a provider/model/prompt identity change does not reuse an accepted summary.
   Callers must change the fingerprint whenever output-affecting generation configuration changes.
-- [~] Run the full parser CI matrix after the P0 runtime work. The current
-  validation run `38681712390` passed CPython 3.12, CPython 3.14, and PyPy
-  3.11, but CPython 3.13 failed in the deterministic test step. The GitHub
-  job page does not expose the traceback without authentication, so this
-  gate remains open until the failure is reproduced and fixed; slow/manual
-  provider experiments remain separate gates.
+- [x] Run the full parser CI matrix after the P0 runtime work. Parser CI run
+  `38685108069` passed CPython 3.12-3.14 and PyPy 3.11 on `4b8a1de`. The
+  earlier CPython 3.13 failure in `38681712390` was reproduced locally and
+  fixed by the same-identity duplicate-worker acceptance fence; the full
+  CPython 3.13 selection passed afterward. Slow/manual provider experiments
+  remain separate gates.
 
 ## Reviewer-required acceptance additions
 
