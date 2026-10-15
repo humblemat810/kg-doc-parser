@@ -388,6 +388,18 @@ def test_normalize_ocr_rejects_inverted_boxes_and_cluster_collisions():
                 }
             ],
         )
+    with pytest.raises(ValueError, match="duplicate OCR image cluster_number"):
+        normalize_ocr_pages(
+            document_id="ocr-cross-modality-duplicate-cluster",
+            title="OCR Cross Modality Duplicate Cluster",
+            pages=[
+                {
+                    "pdf_page_num": 1,
+                    "OCR_text_clusters": [{"text": "Alpha", "cluster_number": 0}],
+                    "non_text_objects": [{"description": "Figure", "cluster_number": 0}],
+                }
+            ],
+        )
 
 
 @pytest.mark.ci
