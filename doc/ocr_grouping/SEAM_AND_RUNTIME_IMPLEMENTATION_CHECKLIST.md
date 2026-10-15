@@ -63,9 +63,12 @@ SIGKILL, concurrency, or real-provider evidence is still absent.
 The following claims are explicitly **not** release-complete, even when an
 implementation helper or a narrow unit test is green:
 
-- `S02` artifact SHA-256 verification is partial until the exact reuse path
-  rejects a well-formed tampered JSON artifact and a changed provider
-  configuration in a fresh process.
+- `S02` artifact SHA-256 verification now has exact reuse-path coverage for a
+  well-formed tampered JSON artifact, and provider/configuration invalidation
+  now has fresh-process coverage in
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_rejects_stale_provider_config_or_tampered_artifact`.
+  S02 is still not release-complete because the two-store crash-order
+  reconciliation proof is missing.
 - `S02` atomic JSON publication is partial until both crash orders are
   reconciled: artifact rename before the SQLite/runtime checkpoint, and
   checkpoint publication before artifact rename. A temporary file plus
@@ -77,6 +80,23 @@ implementation helper or a narrow unit test is green:
   accepted semantic generation.
 - `C04` and `C05` remain open/partial until canonical incremental equivalence,
   SIGKILL/new-process resume, and duplicate-resume behavior are tested.
+
+The external review also adds six release gates which are tracked below. They
+are not satisfied by a checklist mark alone:
+
+- `C01` verifies the installed Kogwistar API and version, not only a source
+  checkout.
+- `C02` defines one persisted root/child ownership boundary and requires a
+  fresh process to reopen the same lineage without a second semantic
+  generation.
+- `C03` reconciles SQLite artifact commits and Kogwistar checkpoints in both
+  crash orders.
+- `C04` compares canonical incremental and uninterrupted grouping results,
+  excluding volatile run metadata.
+- `C05` proves at-least-once execution with exactly one accepted canonical
+  result after interruption, rather than claiming exactly-once provider calls.
+- `C06` requires an explicit OCR quality/completeness gate beyond valid source
+  interval coverage.
 
 The status words below describe evidence, not optimism: `PASS` means the
 release gate is proven; `PARTIAL` means useful containment exists but the
@@ -196,13 +216,14 @@ test is not yet present.
 ### S02. Source bytes to committed page JSON
 
 - [~] Store and enforce the OCR provider/config fingerprint with page state.
-  The reuse predicate compares the current fingerprint set, but the release
-  gate still needs a fresh-process regression proving that a model/engine
-  change cannot reuse a completed page from an older configuration.
-- [~] Store page artifact SHA-256 and verify it before reuse. The state store
-  rejects missing or mismatched digests, but the reviewer-required release
-  evidence for a well-formed tampered JSON artifact must still be recorded
-  against the exact reuse path.
+  The exact reuse predicate and a fresh-process regression prove that a
+  model/engine change cannot reuse a completed page from an older
+  configuration. The item remains partial only because full crash recovery is
+  not yet proven.
+- [~] Store page artifact SHA-256 and verify it before reuse. The exact
+  completed-page reuse path rejects a well-formed tampered JSON artifact in
+  `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact`; the
+  release gate still requires both crash orders to reconcile.
 - [~] Write JSON to a same-directory temporary file, flush it, and atomically
   replace the final artifact before recording completion. The write path is
   atomic, but rename-before-database and database-before-rename crash-window
@@ -296,8 +317,9 @@ test is not yet present.
 ### S09. OCR/group/summary to Kogwistar checkpoint
 
 - [~] Move all three stages into one persisted Kogwistar workflow run. The root
-  design now invokes page, grouping, and semantic child runs, but SIGKILL and
-  duplicate-resume evidence is still open.
+  design now invokes page, grouping, and semantic child runs with stable
+  identities, but fresh-process lineage, SIGKILL recovery, and
+  duplicate-resume/no-double-publication evidence are still open.
 - [~] Keep SQLite as an idempotent artifact cache, not the authoritative cursor.
   The root cursor is runtime-owned; dual-store reconciliation is still open.
 - [~] Persist step tokens and stage results in the existing conversation/runtime
@@ -349,7 +371,8 @@ test is not yet present.
   artifact is now rejected by the reuse predicate and can be safely redone;
   test crashes after artifact rename and after SQLite/runtime checkpoint writes
   in both orders, including fresh-process recovery, before marking this gate
-  complete.
+  complete. Atomic file replacement and direct order predicates are not
+  sufficient evidence by themselves.
 - [ ] **C04 — Incremental equivalence:** compare canonical tree content, not
   timestamps, between uninterrupted batch grouping and interrupted incremental
   grouping. Completed subtrees must remain stable.
@@ -385,15 +408,18 @@ itself as proof:
 S02 must not be marked complete until all of the following are independently
 demonstrated:
 
-- [~] configuration fingerprint changes prevent reuse in a fresh process;
-- [~] a well-formed but tampered OCR JSON is rejected by the reuse path;
+- [x] configuration fingerprint changes prevent reuse in a fresh process;
+- [x] a well-formed but tampered OCR JSON is rejected by the exact completed-
+  page reuse path;
 - [~] atomic rename is used for publication;
 - [ ] both artifact/checkpoint crash orders reconcile without accepting a
   partial or stale result.
 
-The current implementation has atomic publication, digest fields, and a
+The current implementation has atomic publication, digest fields, a
+fresh-process configuration fence, exact tamper rejection, and a
 rename-before-database orphan-adoption path. These are implementation facts,
-not yet a complete S02 release proof.
+not yet a complete S02 release proof because the two-store crash protocol is
+still incomplete.
 
 ## C. Required End-to-End Acceptance Fixture
 
