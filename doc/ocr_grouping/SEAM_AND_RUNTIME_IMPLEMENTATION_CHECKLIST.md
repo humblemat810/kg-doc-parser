@@ -396,7 +396,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   engines and run ID in a new process, and resumes from the persisted token.
 - [ ] Add a test that kills execution after a grouping checkpoint and proves the
   checkpoint is restored before further pages are accepted.
-- [ ] Add a duplicate-resume race test and assert one accepted commit.
+- [x] Add a duplicate-resume race test and assert one accepted commit. Covered
+  by `test_ocr_root_concurrent_resume_has_one_owner_and_one_result`, including
+  an explicit `WorkflowRunOwnershipError` for the losing worker.
 - [ ] Add a no-provider-call-on-reuse test for already committed pages.
 - [ ] Assert the final runtime graph contains no orphaned stage executions,
   duplicate accepted commits, or skipped page cursor transitions.
@@ -583,14 +585,18 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 - [~] Move all three stages into one persisted Kogwistar workflow run. The root
   design now invokes page, grouping, and semantic child runs with stable
-  identities, but fresh-process lineage, SIGKILL recovery, and
-  duplicate-resume/no-double-publication evidence are still open.
+  identities. Coordinated source-checkout tests cover fresh-process lineage,
+  process termination, and duplicate-resume ownership; installed-package and
+  Linux SIGKILL evidence remain open.
 - [~] Keep SQLite as an idempotent artifact cache, not the authoritative cursor.
   The root cursor is runtime-owned; dual-store reconciliation is still open.
 - [~] Persist step tokens and stage results in the existing conversation/runtime
   graph.
-- [ ] Test SIGKILL/reopen/resume in a new process with the same run ID.
-- [ ] Test duplicate resume, late writers, and no double publication.
+- [~] Test process termination/reopen/resume in a new process with the same run
+  ID. The host-platform termination test passes; Linux SIGKILL remains open.
+- [~] Test duplicate resume, late writers, and no double publication. The
+  duplicate-root race and page-level late-writer tests pass; full runtime
+  publication and cross-store reconciliation remain open.
 
 ### S10. Source revision to downstream graph identity
 

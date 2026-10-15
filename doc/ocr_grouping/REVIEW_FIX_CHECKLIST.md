@@ -117,8 +117,11 @@ S01-S12 and C01-C06 rows in
   and compatibility writers are audited.
 - [~] Incremental grouping is bounded by an accepted frontier and matches an
   uninterrupted canonical reference.
-- [ ] A fresh process reopens the same root run after real interruption and
+- [~] A fresh process reopens the same root run after real interruption and
   does not create a second semantic generation or duplicate graph publication.
+  Coordinated source-checkout tests cover process termination and concurrent
+  ownership fencing; installed-package, Linux SIGKILL, and full graph
+  publication verification remain open.
 - [ ] The installed released Kogwistar version supports retrying a durably
   failed child; the parser does not substitute a private child-ID workaround.
 
