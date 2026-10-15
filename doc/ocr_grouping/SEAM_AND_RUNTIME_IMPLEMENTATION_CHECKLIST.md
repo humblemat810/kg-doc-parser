@@ -111,8 +111,12 @@ test is not yet present.
   runtime dependencies only; never persist them in checkpoint state.
 - [~] Persist enough immutable request configuration to reconstruct the same
   provider/config fingerprint after a new process starts.
-- [ ] Reject a resume when source revision, OCR configuration, workflow
-  version, or grouping policy is incompatible with the saved run.
+- [~] Reject a resume when source revision, OCR configuration, workflow
+  version, or grouping policy is incompatible with the saved run. The root
+  dispatch fence and
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_rejects_missing_or_changed_immutable_identity`
+  cover the identity check; a fresh-process checkpoint/reopen test remains
+  required.
 
 ### A3. Page execution and recovery
 
@@ -368,7 +372,7 @@ itself as proof:
 | Gate | Current status | Required closure evidence |
 | --- | --- | --- |
 | C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38655395569`; source-checkout-only tests do not count. |
-| C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs exist, but a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
+| C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence exist; a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_does_not_reuse_completion_without_published_artifact` proves checkpoint-before-artifact cannot be reused; rename-before-checkpoint adoption is also tested. Fresh-process reconciliation and a full crash harness remain open. |
 | C04 incremental equivalence | OPEN | Canonical tree comparison between uninterrupted batch and interrupted incremental grouping; exclude timestamps/run metadata. |
 | C05 true resume | PARTIAL | Same-process 100-page interruption evidence exists; SIGKILL/new-process resume, duplicate-resume race, and no redundant accepted work remain. |
