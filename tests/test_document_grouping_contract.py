@@ -213,6 +213,65 @@ def test_summary_target_planner_is_bounded_and_skips_low_information_nodes() -> 
     assert select_summary_targets(tree, SummaryPolicy(enabled=False)) == ()
 
 
+def test_summary_target_planner_counts_exact_slices_not_whole_source_items() -> None:
+    source = _item("source", "alpha beta gamma")
+    tree = DocumentTree(
+        document_id="slice-budget",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(source,),
+        nodes=(
+            DocumentNode(
+                node_id="section",
+                kind="section",
+                children=(
+                    {"node_id": "first"},
+                    {"node_id": "second"},
+                ),
+            ),
+            DocumentNode(
+                node_id="first",
+                kind="paragraph",
+                parts=(SourceSlice(item_id="source", start=0, end=5),),
+            ),
+            DocumentNode(
+                node_id="second",
+                kind="paragraph",
+                parts=(SourceSlice(item_id="source", start=5, end=10),),
+            ),
+            DocumentNode(
+                node_id="tail",
+                kind="paragraph",
+                parts=(SourceSlice(item_id="source", start=10, end=16),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=({"node_id": "section"}, {"node_id": "tail"}),
+            ),
+        ),
+    )
+
+    assert select_summary_targets(
+        tree,
+        SummaryPolicy(
+            minimum_source_items=1,
+            minimum_source_chars=12,
+            minimum_information_gain_chars=0,
+        ),
+    ) == ("root",)
+    assert select_summary_targets(
+        tree,
+        SummaryPolicy(
+            minimum_source_items=1,
+            minimum_source_chars=12,
+            minimum_information_gain_chars=0,
+            eligible_kinds=("section",),
+        ),
+    ) == ()
+
+
 def test_title_and_atomic_sixty_row_table_remain_two_grounded_children() -> None:
     title = _item("title", "Report")
     table_text = "\n".join(f"row-{index}|value-{index}" for index in range(60))

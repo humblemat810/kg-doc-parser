@@ -408,7 +408,7 @@ focused test, full matrix, and exact HEAD are verified.
 | B06 | [ ] Open | Render and legacy artifact paths still need document/revision collision-resistant namespacing for same-named inputs. |
 | B07 | [~] Fixed locally; CI pending | Page numbers are required to be positive and unique, and resolved paths are deterministic. Focused tests are listed under B01. Out-of-order inputs are normalized by sorted output; conflicting duplicates fail closed. |
 | B08 | [~] Partial | `OCRQualityPolicy.reject_empty_page` now provides an explicit opt-in fail-closed gate for provider-reported empty OCR output, with `test_ocr_quality_policy_can_reject_empty_provider_output`. The default remains permissive for legitimate blank pages; independent image/text completeness checks are still needed. |
-| B09 | [ ] Open | Summary target selection does not yet prove that serialized provider evidence is bounded by the configured token budget. |
+| B09 | [~] Fixed locally; CI pending | Summary target selection now measures the exact ordered `EvidenceSlice` payload owned by each node, including partial slices of a shared source item, instead of charging the whole `SourceItem`. Regression: `test_summary_target_planner_counts_exact_slices_not_whole_source_items`. Provider serialization overhead and full CI remain open. |
 | B10 | [~] Partial | Durable artifact IDs and runtime integration exist, but accumulated `raw_pages` checkpoint serialization and linear-growth evidence remain open. |
 | B11 | [ ] Open | Render identity does not yet include all rasterizer configuration and output properties such as DPI, rotation, and Poppler identity. |
 | B12 | [ ] Open | Reference extraction remains item-local and does not yet map split mentions across ordered OCR units. |

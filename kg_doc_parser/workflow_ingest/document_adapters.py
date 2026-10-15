@@ -14,6 +14,7 @@ from .document_models import (
     ChildRef,
     DocumentNode,
     DocumentTree,
+    EvidenceSlice,
     MediaRef,
     OCRMetadata,
     SourceItem,
@@ -333,6 +334,16 @@ def apply_summary_updates(
     return DocumentTree.model_validate(payload)
 
 
+def _evidence_size(evidence: EvidenceSlice) -> int:
+    """Estimate one evidence slice without losing its exact source bounds."""
+    if evidence.text is not None:
+        return len(evidence.text)
+    media = evidence.media
+    if media is None:
+        raise ValueError("evidence slice has neither text nor media")
+    return len(media.model_dump_json())
+
+
 def select_summary_targets(
     tree: DocumentTree,
     policy: SummaryPolicy | None = None,
@@ -348,8 +359,6 @@ def select_summary_targets(
     if not policy.enabled:
         return ()
     nodes = {node.node_id: node for node in tree.nodes}
-    items = {item.item_id: item for item in tree.source_items}
-
     def descendants(node_id: str) -> set[str]:
         node = nodes[node_id]
         if node.parts:
@@ -377,12 +386,13 @@ def select_summary_targets(
     for node in tree.nodes:
         if node.parts or node.summary is not None or node.kind not in eligible:
             continue
-        item_ids = descendants(node.node_id)
-        text_chars = sum(len(items[item_id].text or "") for item_id in item_ids)
+        evidence = tree.evidence_slices(node.node_id)
+        item_ids = {slice_.item_id for slice_ in evidence}
+        text_chars = sum(_evidence_size(slice_) for slice_ in evidence)
         if len(item_ids) < policy.minimum_source_items or text_chars < policy.minimum_source_chars:
             continue
         child_sizes = [
-            sum(len(items[item_id].text or "") for item_id in descendants(child.node_id))
+            sum(_evidence_size(slice_) for slice_ in tree.evidence_slices(child.node_id))
             for child in node.children
         ]
         information_gain = text_chars - max(child_sizes, default=0)
