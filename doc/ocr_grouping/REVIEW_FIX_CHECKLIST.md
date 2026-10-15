@@ -394,17 +394,17 @@ contract.
 
 Source: `kg_doc_parser_ocr_broad_audit_2026-10-15.md`. The source review was
 static and did not prove runtime behavior. The statuses below are deliberately
-conservative and apply to the current parser branch HEAD `d40531e`. A row is
+conservative and apply to the current parser branch HEAD `c6d7c89`. A row is
 not release-complete until its
 focused test, full matrix, and exact HEAD are verified.
 
 | ID | Status | Current evidence or remaining work |
 | --- | --- | --- |
 | B01 | [~] Fixed locally; CI pending | `_materialize_image_payloads` now derives page paths, rejects rendered-directory/page symlinks, and writes byte payloads atomically. Tests: `test_materialize_image_payloads_uses_safe_atomic_page_paths`, `test_materialize_image_payloads_rejects_invalid_page_numbers_and_symlinks`. |
-| B02 | [ ] Open | Unrepresented non-text OCR units still need explicit retained placeholders or structured rejection and input-unit accounting. |
-| B03 | [ ] Open | Cross-page continuation still needs item-level kind, geometry, and text-boundary compatibility rather than page-wide flags alone. |
+| B02 | [~] Fixed locally; CI pending | `build_document_tree` now raises typed `UnrepresentedSourceUnitError` with a structured diagnostic instead of silently dropping a non-text unit that lacks a description and verified content-addressed media. Blank pages with no units remain empty. Regression: `test_build_document_tree_rejects_unrepresented_nontext_unit`; `tests/test_document_adapters.py` passes 19 tests locally. Input-unit accounting and full CI remain open. |
+| B03 | [~] Fixed locally; CI pending | `suggest_cross_page_continuations` now requires both frontier nodes to be canonical text leaves, so page-level incomplete-text flags cannot join a paragraph to a figure/table/caption description or media item. Regressions: `test_cross_page_continuation_never_merges_text_into_nontext` and `test_cross_page_continuation_suggestion_requires_ocr_boundary_signal`. Geometry and stronger paragraph-boundary evidence remain open. |
 | B04 | [ ] Open | Summary generation still needs exact owned evidence slices at the provider boundary, not only selected source-item IDs. |
-| B05 | [~] Fixed locally; CI pending | `OCRClusterResponse.spatial_accuracy` and normalized `SourceUnit.metadata` now carry an explicit page/region/line/word/character declaration. Unknown or absent precision fails closed to page accuracy; direct OCR and item-level Docling paths declare region precision. Tests: `test_synthetic_page_box_does_not_claim_region_accuracy`, `test_explicit_region_precision_is_preserved`, and the full `tests/test_document_adapters.py` file (18 passed). |
+| B05 | [~] Fixed locally; CI pending | `OCRClusterResponse.spatial_accuracy` and normalized `SourceUnit.metadata` now carry an explicit page/region/line/word/character declaration. Unknown or absent precision fails closed to page accuracy; direct OCR and item-level Docling paths declare region precision. Tests: `test_synthetic_page_box_does_not_claim_region_accuracy`, `test_explicit_region_precision_is_preserved`, and the full `tests/test_document_adapters.py` file (19 passed). |
 | B06 | [ ] Open | Render and legacy artifact paths still need document/revision collision-resistant namespacing for same-named inputs. |
 | B07 | [~] Fixed locally; CI pending | Page numbers are required to be positive and unique, and resolved paths are deterministic. Focused tests are listed under B01. Out-of-order inputs are normalized by sorted output; conflicting duplicates fail closed. |
 | B08 | [ ] Open | Default quality policy remains permissive for provider-reported quality; independent completeness and non-text checks remain needed. |

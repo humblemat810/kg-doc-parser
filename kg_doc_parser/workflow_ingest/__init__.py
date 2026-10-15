@@ -22,6 +22,8 @@ from .design import (
     ensure_ingest_workflow_design,
 )
 from .document_adapters import (
+    UnrepresentedSourceDiagnostic,
+    UnrepresentedSourceUnitError,
     apply_grouping_passes,
     apply_grouping_proposals,
     apply_summary_updates,
@@ -245,6 +247,8 @@ __all__ = [
     "SummaryGenerator",
     "SummaryPolicy",
     "TreeParseRequest",
+    "UnrepresentedSourceDiagnostic",
+    "UnrepresentedSourceUnitError",
     "UnsupportedClientOperation",
     "ValidationReport",
     "WorkflowCommandResult",

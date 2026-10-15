@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from kg_doc_parser.models import OCRClusterResponse, TextCluster
 from kg_doc_parser.workflow_ingest import (
     GroupProposal,
     OCRImagePayload,
+    UnrepresentedSourceDiagnostic,
+    UnrepresentedSourceUnitError,
     WorkflowProviderSettings,
     apply_grouping_passes,
     apply_grouping_proposals,
@@ -119,6 +122,40 @@ def test_cross_page_continuation_suggestion_requires_ocr_boundary_signal() -> No
     proposals = suggest_cross_page_continuations(tree)
     assert len(proposals) == 1
     assert proposals[0].kind == "layout:cross-page-continuation"
+
+
+def test_cross_page_continuation_never_merges_text_into_nontext() -> None:
+    inp = WorkflowIngestInput(
+        request_id="mixed-pages",
+        collections=[
+            {
+                "collection_id": "mixed-pages",
+                "title": "Mixed pages",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "metadata": {"incomplete_text": True},
+                        "units": [SourceUnit(modality="text", page_number=1, text="continued")],
+                    },
+                    {
+                        "page_number": 2,
+                        "units": [
+                            SourceUnit(
+                                modality="image_region",
+                                page_number=2,
+                                description="figure caption",
+                            )
+                        ],
+                    },
+                ],
+            }
+        ],
+    )
+
+    tree = build_document_tree(inp)
+    assert tree is not None
+    assert suggest_cross_page_continuations(tree) == ()
 
 
 def test_normalize_ocr_pages_marks_blank_pages_without_fabricating_source_items() -> None:
@@ -324,6 +361,45 @@ def test_build_document_tree_uses_only_declared_content_addressed_media() -> Non
     assert tree is not None
     assert tree.source_items[0].media is not None
     assert tree.source_items[0].text is None
+
+
+def test_build_document_tree_rejects_unrepresented_nontext_unit() -> None:
+    inp = WorkflowIngestInput(
+        request_id="doc",
+        collections=[
+            {
+                "collection_id": "doc",
+                "title": "doc",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "units": [
+                            SourceUnit(
+                                unit_id="figure-1",
+                                modality="pure_image",
+                                page_number=1,
+                                source_uri="assets/figure.png",
+                            )
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+
+    with pytest.raises(UnrepresentedSourceUnitError) as raised:
+        build_document_tree(inp)
+
+    assert raised.value.diagnostic == UnrepresentedSourceDiagnostic(
+        unit_id="figure-1",
+        page_number=1,
+        modality="pure_image",
+        reason=(
+            "non-text evidence requires a description or a verified "
+            "content-addressed media reference"
+        ),
+    )
 
 
 def test_apply_grouping_proposals_keeps_source_coverage_and_rejects_bad_members() -> None:

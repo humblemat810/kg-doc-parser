@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from itertools import pairwise
 from typing import Literal, cast
 
@@ -23,6 +24,28 @@ from .document_models import (
     extract_reference_mentions,
 )
 from .models import WorkflowIngestInput
+
+
+@dataclass(frozen=True, slots=True)
+class UnrepresentedSourceDiagnostic:
+    """Describe an OCR unit that cannot be represented losslessly."""
+
+    unit_id: str | None
+    page_number: int
+    modality: str
+    reason: str
+
+
+class UnrepresentedSourceUnitError(ValueError):
+    """Raised instead of silently dropping an OCR observation."""
+
+    def __init__(self, diagnostic: UnrepresentedSourceDiagnostic) -> None:
+        self.diagnostic = diagnostic
+        super().__init__(
+            "unrepresented OCR source unit "
+            f"{diagnostic.unit_id or '<generated>'} on page {diagnostic.page_number}: "
+            f"{diagnostic.reason}"
+        )
 
 
 def build_document_tree(
@@ -61,7 +84,19 @@ def build_document_tree(
                 and isinstance(media_mime, str)
             )
             if not text and not has_media:
-                continue
+                # Do not let a structurally valid but unrepresentable OCR unit
+                # disappear before source-coverage validation can see it.
+                raise UnrepresentedSourceUnitError(
+                    UnrepresentedSourceDiagnostic(
+                        unit_id=unit.unit_id,
+                        page_number=page.page_number,
+                        modality=unit.modality,
+                        reason=(
+                            "non-text evidence requires a description or a verified "
+                            "content-addressed media reference"
+                        ),
+                    )
+                )
             precise_bbox = (
                 unit.bbox
                 if unit.bbox is not None
@@ -241,6 +276,11 @@ def suggest_cross_page_continuations(tree: DocumentTree) -> tuple[GroupProposal,
     )
     proposals: list[GroupProposal] = []
     for previous, current in pairwise(ordered_leaves):
+        # A page-level continuation flag is only meaningful for text-backed
+        # leaves. It must never turn a figure, table, or caption into the tail
+        # of the preceding paragraph merely because it starts on the next page.
+        if previous.kind != "text" or current.kind != "text":
+            continue
         previous_pages = [
             page
             for part in previous.parts
@@ -439,6 +479,8 @@ def apply_grouping_passes(
 
 
 __all__ = [
+    "UnrepresentedSourceDiagnostic",
+    "UnrepresentedSourceUnitError",
     "apply_grouping_passes",
     "apply_grouping_proposals",
     "apply_summary_updates",
