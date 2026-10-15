@@ -232,11 +232,18 @@ def _build_export_bundle(
         doc_id=collection.collection_id,
         parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
     )
+    raw_grouping_tree = collection.metadata.get("document_tree")
+    grouping_tree: dict[str, JsonValue] | None = None
+    if raw_grouping_tree is not None:
+        if not isinstance(raw_grouping_tree, dict):
+            raise TypeError("document_tree metadata must be a JSON object")
+        grouping_tree = cast(dict[str, JsonValue], raw_grouping_tree)
     deps = runtime_deps or {}
     persistence_mode = str(ctx.state_view.get("persistence_mode", deps.get("persistence_mode", "local_debug")))
     kg_authority = str(ctx.state_view.get("kg_authority", deps.get("kg_authority", "local")))
     return WorkflowExportBundle(
         graph_payload=graph_payload,
+        grouping_tree=grouping_tree,
         authoritative_source_map=cast(
             dict[str, GroundedSourceRecord],
             ctx.state_view["authoritative_source_map"],

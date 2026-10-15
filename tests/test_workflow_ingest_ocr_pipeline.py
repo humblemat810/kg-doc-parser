@@ -3595,6 +3595,7 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
         OCRImagePayload(page_number=2, image_path=str(image_paths[1])),
     ]
     calls = {"ocr": 0, "parse": 0}
+    captured_grouping_trees: list[object] = []
 
     def _runner(image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings):
         calls["ocr"] += 1
@@ -3602,6 +3603,7 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
 
     def _parse_semantic_fn(*, collection, parser_input_dict, parser_source_map):
         calls["parse"] += 1
+        captured_grouping_trees.append(parser_input_dict.get("document_tree"))
         return _grounded_semantic_tree(
             collection=collection,
             parser_input_dict=parser_input_dict,
@@ -3649,10 +3651,14 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
     assert second_bundle is not None
     assert calls["ocr"] == 2
     assert calls["parse"] == 1
+    assert _first_artifacts.document_tree is not None
+    assert captured_grouping_trees == [_first_artifacts.document_tree.model_dump(mode="json")]
     assert second_artifacts.reused_pages == [1, 2]
     assert second_artifacts.state_db_path.exists()
     assert SemanticNode.model_validate(second_run.final_state["semantic_tree"]).child_nodes
     assert second_run.final_state["semantic_tree"]["child_nodes"][0]["total_content_pointers"]
+    assert first_bundle.grouping_tree == _first_artifacts.document_tree.model_dump(mode="json")
+    assert second_bundle.grouping_tree == second_artifacts.document_tree.model_dump(mode="json")
     root_trace = list(
         conversation_engine.read.get_nodes(
             where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": first_run.run_id}]}

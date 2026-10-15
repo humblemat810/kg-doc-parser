@@ -906,6 +906,12 @@ def run_ocr_root_workflow(
         bundle = semantic_result.get("export_bundle")
         if not isinstance(bundle, dict):
             raise TypeError("semantic child did not publish an export bundle")
+        grouped_tree = _tree(ctx.state_view)
+        exported_grouping_tree = bundle.get("grouping_tree")
+        if not isinstance(exported_grouping_tree, dict):
+            raise TypeError("semantic child did not preserve the accepted grouping tree")
+        if exported_grouping_tree != grouped_tree.model_dump(mode="json"):
+            raise ValueError("semantic child grouping tree differs from the accepted OCR grouping")
         semantic_tree = semantic_result.get("semantic_tree")
         if not isinstance(semantic_tree, dict):
             raise TypeError("semantic child did not publish a semantic tree")

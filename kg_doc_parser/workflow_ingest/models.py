@@ -1001,6 +1001,16 @@ class WorkflowExportBundle(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
     graph_payload: Annotated[dict[str, JsonValue], DtoField(), BackendField(), FrontendField(), LLMField()]
+    # The accepted OCR/grouping artifact is part of the export contract. It
+    # remains optional for ordinary parser callers that do not run OCR
+    # grouping, but OCR root workflows must populate and verify it.
+    grouping_tree: Annotated[
+        dict[str, JsonValue] | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
     authoritative_source_map: Annotated[
         dict[str, GroundedSourceRecord],
         DtoField(),

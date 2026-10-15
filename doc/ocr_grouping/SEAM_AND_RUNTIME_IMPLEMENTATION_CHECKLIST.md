@@ -492,10 +492,17 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### S05. Accepted group tree to semantic parser input
 
-- [ ] Define the typed parser input contract for accepted group hierarchy,
-  avoiding an unbounded duplicate tree inside model prompt metadata.
-- [ ] Prove that the semantic parser consumes the accepted hierarchy rather than
-  only receiving it as an ignored metadata sidecar.
+- [~] Define the typed parser input contract for accepted group hierarchy.
+  `WorkflowExportBundle.grouping_tree` is now an optional, Pydantic-validated
+  JSON artifact, and the OCR root requires it on the semantic child result.
+  The parser payload still carries the bounded tree representation for the
+  existing provider prompt contract; avoiding prompt duplication remains open.
+- [~] Prove that the semantic parser receives and preserves the accepted
+  hierarchy rather than only receiving it as an ignored metadata sidecar.
+  The semantic callback receives `parser_input_dict["document_tree"]`, export
+  carries the same canonical tree, and the root rejects missing or changed
+  trees. A provider-specific semantic interpretation test and fail-closed
+  compatibility mode are still required before this is green.
 - [~] Prove that final graph export preserves intended group relationships,
   ordered slices, and source grounding. The graph exporter emits validated
   parent-child edges; full persisted semantic-parser evidence remains open.
@@ -503,7 +510,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   trees and distinguishable export results in
   `tests/test_workflow_ingest_page_index_pipeline.py::test_graph_export_consumes_hierarchy_for_identical_source_evidence`.
 - [ ] Add an explicit compatibility mode for consumers that ignore hierarchy;
-  fail closed where hierarchy is required.
+  fail closed where hierarchy is required. The OCR root currently fails closed
+  for missing or mismatched hierarchy; ordinary parser callers remain backward
+  compatible because the export field is optional.
 
 ### S06. Grouping pass to durable checkpoint
 
