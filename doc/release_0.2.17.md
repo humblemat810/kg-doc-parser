@@ -17,6 +17,10 @@ verification must then confirm the installed package before changing that pin.
 
 - Reject grouping frontiers that survive without their document-tree revision.
 - Preserve fail-closed recovery behavior after interrupted OCR/grouping runs.
+- Keep materialized OCR page paths inside the rendered directory, reject
+  duplicate/non-positive page numbers, and publish byte payloads atomically.
+- Record the broad OCR audit as an explicit B01-B14 release ledger; unresolved
+  fidelity, quality, performance, and rasterization gates remain open.
 - Keep the existing PyPy 3.11 and CPython 3.12-3.14 compatibility contract.
 
 ## Verification required before tagging
