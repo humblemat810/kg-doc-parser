@@ -6,13 +6,13 @@ The terminal-root recovery case is now covered locally. A completed root with
 a deleted accepted page artifact is detected before terminal resume; the parser
 starts a deterministic `|recovery-N` root incarnation, reuses valid pages,
 retries the invalid page, and preserves the original logical lineage. The
-regression
-`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`
-passes in 249.03 seconds with three OCR calls, two accepted page artifacts,
-one recovery semantic parse, and `reused_pages == [2]`. Ruff and
-`git diff --check` pass. This closes the specific same-process terminal-root
-short-circuit gap, but does not close S09, dual-store crash ordering, or the
-installed-release/fresh-process gates.
+public result keeps the stable logical root ID while persisted recovery steps
+retain their incarnation suffix. The deleted-artifact regression and the
+focused fresh-process matrix pass locally, including concurrent resume, real
+process termination, and grouping termination. Ruff and `git diff --check`
+pass. This closes the specific same-process terminal-root short-circuit gap,
+but does not close the installed-release GitHub gate, dual-store crash ordering,
+or the requirement for a published core with run ownership enforcement.
 
 The parser root-finalization seam now has an additional fail-closed guard in
 `ocr_runtime.py` (`c173057`).  It rechecks page completion, accepted-page

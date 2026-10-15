@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -92,6 +93,17 @@ def _proposals(value: object) -> tuple[GroupProposal, ...]:
 def _pass_count(state: Mapping[str, object]) -> int:
     value = state.get("pass_index", 0)
     return value if type(value) is int and value >= 0 else 0
+
+
+def _recovery_generation(state: Mapping[str, object]) -> int:
+    value = state.get("ocr_page_recovery_generation", 0)
+    if value is None:
+        return 0
+    if type(value) is not int or value < 0:
+        raise ValueError(
+            "OCR page recovery generation must be a non-negative integer"
+        )
+    return value
 
 
 def _page_cursor(state: Mapping[str, object]) -> int:
@@ -871,7 +883,7 @@ def run_ocr_root_workflow(
 
     @root_resolver.register("ocr_root_invoke_pages", is_nested=True)
     def _root_invoke_pages(ctx: StepContext) -> StepRunResult:
-        recovery_generation = int(ctx.state_view.get("ocr_page_recovery_generation", 0) or 0)
+        recovery_generation = _recovery_generation(ctx.state_view)
         recovery_suffix = (
             f"|recovery-{recovery_generation}" if recovery_generation else ""
         )
@@ -913,7 +925,7 @@ def run_ocr_root_workflow(
             context=preparation.page_context,
             source_plan=preparation.source_plan,
         ):
-            generation = int(ctx.state_view.get("ocr_page_recovery_generation", 0) or 0) + 1
+            generation = _recovery_generation(ctx.state_view) + 1
             return _success(
                 "ocr_root_invoke_pages",
                 state_update=[("u", {"ocr_page_recovery_generation": generation})],
@@ -969,7 +981,7 @@ def run_ocr_root_workflow(
     def _root_invoke_grouping(ctx: StepContext) -> StepRunResult:
         tree = _tree(ctx.state_view)
         existing_revision = preparation.state_store.document_tree_revision(document_id=document_id)
-        recovery_generation = int(ctx.state_view.get("ocr_page_recovery_generation", 0) or 0)
+        recovery_generation = _recovery_generation(ctx.state_view)
         recovery_suffix = (
             f"|recovery-{recovery_generation}" if recovery_generation else ""
         )
@@ -1031,7 +1043,7 @@ def run_ocr_root_workflow(
         input_payload = ctx.state_view.get("workflow_input")
         if not isinstance(input_payload, dict):
             raise TypeError("OCR root has no semantic workflow input")
-        recovery_generation = int(ctx.state_view.get("ocr_page_recovery_generation", 0) or 0)
+        recovery_generation = _recovery_generation(ctx.state_view)
         recovery_suffix = (
             f"|recovery-{recovery_generation}" if recovery_generation else ""
         )
@@ -1178,6 +1190,11 @@ def run_ocr_root_workflow(
     )
     if result.status != "succeeded":
         raise RuntimeError(f"OCR root workflow {result.status}: {result.errors}")
+    if effective_run_id != (run_id or f"ocr|{document_id}"):
+        # Recovery uses a fresh persisted incarnation because released runtimes
+        # treat a terminal run as immutable. Keep that storage identity internal;
+        # callers continue to observe the stable logical root identity.
+        result = replace(result, run_id=run_id or f"ocr|{document_id}")
     final_state = result.final_state
     _validate_root_resume_identity(
         final_state,

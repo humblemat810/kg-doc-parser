@@ -8,15 +8,18 @@ artifact, the parser detects the broken SQLite/artifact seam before asking
 Kogwistar to resume. Because Kogwistar correctly treats a successful run as
 terminal, it starts a deterministic `|recovery-N` root incarnation while
 preserving the original logical lineage. Valid pages are reused and only the
-invalid page is retried.
+invalid page is retried; the public `RunResult.run_id` remains the stable
+logical root ID while the recovery suffix remains an internal persisted
+incarnation identity.
 
-`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`
-passes locally in 249.03 seconds: three OCR calls become two accepted page
-artifacts on the recovery run, the valid second page is reused, semantic
-parsing runs once for the recovery incarnation, and the recovery run ID is
-`<original>|recovery-1`. Ruff and `git diff --check` pass for the changed
-files. This is still source-checkout evidence, not installed-release or
-fresh-process release proof.
+The focused fresh-process matrix passes locally: the stable-lineage recovery,
+concurrent resume, real process termination, and grouping process termination
+tests pass. The deleted-artifact terminal-resume regression also passes: three
+OCR calls become two accepted page artifacts on the recovery run, the valid
+second page is reused, and semantic parsing runs once for the recovery
+incarnation. Ruff and `git diff --check` pass for the changed files. This is
+still source-checkout evidence, not installed-release or fresh-process release
+proof in GitHub CI.
 
 Commit `c173057` adds a root-finalization preflight that revalidates the
 terminal page result against the authoritative SQLite/artifact state before
