@@ -593,6 +593,7 @@ def run_grouping_workflow(
     summary_generator: SummaryGenerator | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
+    run_ownership_lease_ms: int | None = None,
 ) -> tuple[DocumentTree, str]:
     """Run grouping as a persisted Kogwistar workflow and return its tree."""
     if grouping_proposals and grouping_passes:
@@ -610,13 +611,23 @@ def run_grouping_workflow(
         summary_policy=summary_policy,
         summary_generator=summary_generator,
     )
-    runtime = WorkflowRuntime(
-        workflow_engine=workflow_engine,
-        conversation_engine=conversation_engine,
-        step_resolver=resolver.resolve,
-        predicate_registry={},
-        trace=True,
-    )
+    if run_ownership_lease_ms is None:
+        runtime = WorkflowRuntime(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            step_resolver=resolver.resolve,
+            predicate_registry={},
+            trace=True,
+        )
+    else:
+        runtime = WorkflowRuntime(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            step_resolver=resolver.resolve,
+            predicate_registry={},
+            trace=True,
+            run_ownership_lease_ms=run_ownership_lease_ms,
+        )
     effective_run_id = run_id or f"ocr-grouping|{document_id}"
     existing_revision = state_store.document_tree_revision(document_id=document_id)
     result = (

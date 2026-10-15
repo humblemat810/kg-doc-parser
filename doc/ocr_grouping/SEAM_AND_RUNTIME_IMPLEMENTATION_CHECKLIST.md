@@ -394,8 +394,11 @@ an adapter-only test, or a source-checkout-only runtime test.
   grouping, and summary stages.
 - [ ] Add a test that kills execution after page 63 of 100, reopens the same
   engines and run ID in a new process, and resumes from the persisted token.
-- [ ] Add a test that kills execution after a grouping checkpoint and proves the
-  checkpoint is restored before further pages are accepted.
+- [x] Add a test that kills execution after a grouping checkpoint and proves the
+  checkpoint is restored before further pages are accepted. Covered by
+  `test_grouping_checkpoint_reopens_after_process_termination`, which stops a
+  fresh grouping worker during summary generation and resumes the same run from
+  its persisted checkpoint.
 - [x] Add a duplicate-resume race test and assert one accepted commit. Covered
   by `test_ocr_root_concurrent_resume_has_one_owner_and_one_result`, including
   an explicit `WorkflowRunOwnershipError` for the losing worker.
@@ -593,7 +596,9 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [~] Persist step tokens and stage results in the existing conversation/runtime
   graph.
 - [~] Test process termination/reopen/resume in a new process with the same run
-  ID. The host-platform termination test passes; Linux SIGKILL remains open.
+  ID. Root and grouping host-platform termination tests pass, including
+  `test_grouping_checkpoint_reopens_after_process_termination`; Linux SIGKILL,
+  installed-package, and complete dual-store recovery evidence remain open.
 - [~] Test duplicate resume, late writers, and no double publication. The
   duplicate-root race and page-level late-writer tests pass; full runtime
   publication and cross-store reconciliation remain open.
@@ -707,6 +712,15 @@ grouping tree. This is real process-termination evidence on the host platform,
 not a callback exception simulation. It is deliberately not described as a
 Linux `SIGKILL` test, and it does not close the installed-package, duplicate
 resume, or dual-store recovery gates.
+
+The grouping checkpoint regression
+`tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_checkpoint_reopens_after_process_termination`
+also passes in 65.52 seconds. It stops a fresh grouping worker after the
+grouping checkpoint is persisted but while summary generation is in progress,
+then resumes the same run after the short ownership lease expires. The resumed
+result contains the accepted section and summary. This proves grouping
+checkpoint reopening on the host platform, but not Linux `SIGKILL`,
+installed-package recovery, or complete artifact/SQLite/runtime reconciliation.
 
 The 100-page regression `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
 passed in 1030.06 seconds with the real persisted parser/runtime path and

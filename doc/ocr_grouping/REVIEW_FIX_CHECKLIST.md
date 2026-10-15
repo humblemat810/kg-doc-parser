@@ -91,6 +91,15 @@ still depends on publishing and verifying Kogwistar `0.6.10`. Linux `SIGKILL`,
 duplicate-root-resume exclusion, and dual-store crash reconciliation remain
 release gates.
 
+The grouping checkpoint regression
+`tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_checkpoint_reopens_after_process_termination`
+passes in 65.52 seconds. It terminates a separate grouping worker after the
+checkpoint is persisted but while summary generation is in progress, then
+resumes the same run after the short ownership lease expires and recovers the
+accepted section and summary. This closes the host-platform grouping
+checkpoint subclaim; Linux `SIGKILL`, installed-package, and dual-store
+reconciliation gates remain open.
+
 The concurrent-resume regression
 `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_concurrent_resume_has_one_owner_and_one_result`
 passes in 120.70 seconds. It starts two fresh workers against the same
@@ -303,11 +312,10 @@ contract.
   controlled multi-pass canonical comparison exists; bounded-frontier and
   real interruption/reopen evidence remain open.
 - [~] Prove at-least-once execution with exactly one accepted canonical result
-  after process interruption, including duplicate-resume behavior. Duplicate
-  page publication and same-process resume are covered; SIGKILL/new-process
-  resume and duplicate root-resume evidence remain open; published
-  Kogwistar `0.6.9` supplies the retryable-child dependency, but its installed
-  full-root recovery still needs verification.
+  after process interruption, including duplicate-resume behavior. Root and
+  grouping fresh-process recovery plus the duplicate-root ownership race are
+  covered with coordinated source checkouts; Linux SIGKILL, installed-package,
+  and dual-store reconciliation evidence remain open.
 - [~] Add a quality/completeness gate that detects provider omissions beyond
   source interval coverage, including non-text and coordinate-loss diagnostics.
   Typed provider-loss diagnostics and strict rejection exist; source-side

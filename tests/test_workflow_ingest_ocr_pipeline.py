@@ -988,6 +988,56 @@ def test_ocr_root_concurrent_resume_has_one_owner_and_one_result() -> None:
 
 
 @pytest.mark.ci
+def test_grouping_checkpoint_reopens_after_process_termination() -> None:
+    """A stopped grouping worker resumes from its persisted runtime checkpoint."""
+    scratch = _scratch("ocr_grouping_process_termination")
+    worker = Path(__file__).with_name("_ocr_grouping_fresh_process_worker.py")
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        path
+        for path in (
+            str(repo_root),
+            str(repo_root.parent / "kogwistar"),
+            child_env.get("PYTHONPATH", ""),
+        )
+        if path
+    )
+
+    interrupted = subprocess.Popen(
+        [sys.executable, str(worker), str(scratch), "hold"],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    marker = scratch / "grouping-summary-started"
+    deadline = time.monotonic() + 90.0
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert marker.exists(), "grouping worker did not reach the post-checkpoint stage"
+    interrupted.terminate()
+    interrupted.wait(timeout=30)
+    assert interrupted.returncode != 0
+
+    resumed = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "resume"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=120,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    result = json.loads(
+        (scratch / "resume-result.json").read_text(encoding="utf-8")
+    )
+    assert result["run_id"] == "ocr-grouping|fresh-grouping-document"
+    assert result["section_count"] == 1
+    assert result["summary_count"] == 1
+
+
+@pytest.mark.ci
 @pytest.mark.slow
 def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() -> None:
     def _make_case(name: str) -> tuple[Path, list[OCRImagePayload]]:
