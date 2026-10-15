@@ -30,6 +30,32 @@ and current status. `PASS` is reserved for the complete acceptance gate;
 passing a narrow subtest remains `PARTIAL` when crash, restart, concurrency, or
 provider evidence is absent.
 
+### External review disposition (2026-10-15)
+
+The latest downstream review is accepted as a correction to checklist status,
+not as evidence that the implementation is complete. Two items that may look
+green when reading only the file-writing code are explicitly **PARTIAL**:
+
+- **S02 artifact SHA-256 verification:** the completed-page reuse predicate
+  rejects a well-formed tampered artifact, but the complete root path has not
+  yet proven both SQLite/artifact commit orders and runtime-checkpoint
+  reconciliation.
+- **S02 atomic JSON publication:** unique temporary files and `os.replace()`
+  protect a single file publication, but they do not form a transaction with
+  SQLite or the persisted Kogwistar checkpoint. The checkpoint-before-artifact
+  and artifact-before-checkpoint crash windows remain open.
+
+The same review confirms that the provider/configuration fingerprint is
+implemented but not release-complete until reuse is proven across every
+output-affecting field after a fresh-process reopen. S06 remains **PARTIAL**:
+expected-revision/absence fencing is useful containment, not proof of
+monotonic generation, complete writer coverage, or crash/restart safety.
+
+The release decision therefore remains unchanged: C01 is the only reviewer
+gate currently evidenced as PASS; C02-C06 remain PARTIAL or BLOCKED, and the
+parser version must not be bumped until the open rows have implementation,
+reusable regression tests, and runtime evidence.
+
 ## Review-adjusted execution checklist
 
 This is the short operational list for the two implementations. The detailed

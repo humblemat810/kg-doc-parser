@@ -155,6 +155,11 @@ The review also corrected two status interpretations that must remain visible:
   between that file and SQLite/Kogwistar checkpoint commits. Both crash orders
   need a recovery test before S02/C03 can become a release pass.
 
+The latest downstream audit reconfirms the same correction: S02's digest and
+atomic-file subclaims are useful partial protections, not complete release
+gates, and S06's CAS checks do not by themselves prove monotonic generation.
+These statements are recorded as `[~]` below rather than `[x]`.
+
 These gates are tracked in section C and the evidence ledger. A focused test
 may close a sub-item, but cannot close the parent gate when fresh-process,
 SIGKILL, concurrency, or real-provider evidence is still absent.
