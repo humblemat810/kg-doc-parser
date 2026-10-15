@@ -3916,6 +3916,10 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
     assert second_run.final_state["semantic_tree"]["child_nodes"][0]["title"] == "grouped:root"
     assert first_bundle.grouping_tree == _first_artifacts.document_tree.model_dump(mode="json")
     assert second_bundle.grouping_tree == second_artifacts.document_tree.model_dump(mode="json")
+    # The semantic child must publish the exact accepted grouping snapshot,
+    # rather than merely parsing the same source pages independently.
+    assert first_bundle.grouping_tree == first_run.final_state["export_bundle"]["grouping_tree"]
+    assert second_bundle.grouping_tree == second_run.final_state["export_bundle"]["grouping_tree"]
     root_trace = list(
         conversation_engine.read.get_nodes(
             where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": first_run.run_id}]}
