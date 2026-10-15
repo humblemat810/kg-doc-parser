@@ -394,8 +394,8 @@ contract.
 
 Source: `kg_doc_parser_ocr_broad_audit_2026-10-15.md`. The source review was
 static and did not prove runtime behavior. The statuses below are deliberately
-conservative and apply to the current parser branch HEAD `d3a04ea` plus the
-uncommitted B01/B07 regression fixes. A row is not release-complete until its
+conservative and apply to the current parser branch HEAD `322966c`. A row is
+not release-complete until its
 focused test, full matrix, and exact HEAD are verified.
 
 | ID | Status | Current evidence or remaining work |
