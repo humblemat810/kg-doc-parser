@@ -740,6 +740,13 @@ recorded in the C05 evidence correction. The remaining blocker is publication
 and verification of the installed `0.6.10` package, not a known failure in the
 parser source path.
 
+The checklist-only parser CI rerun `38729861407` failed in all four matrix
+jobs before reaching the OCR acceptance suite. The local contract reproduction
+is `tests/test_pypy_ci_contract.py::test_installed_kogwistar_exposes_the_persisted_workflow_api`:
+the installed package still exposes `kogwistar.__version__ == "0.6.8"` while
+the parser contract expects `0.6.9`. This is retained as release evidence; the
+contract is not weakened to mask the unpublished core correction.
+
 ## Evidence Ledger Requirements
 
 Every A, S, and C item must record all of the following before it can become

@@ -255,6 +255,13 @@ evidence, but none is a release-gate pass yet:
   its public module reported `0.6.8` in parser CI run `38720363271`. Re-run
   the same test and CPython 3.12-3.14/PyPy 3.11 matrix after tagged Kogwistar
   `v0.6.10` is visible on PyPI.
+
+The checklist-only rerun `38729861407` failed in all four matrix jobs before
+the OCR acceptance suite because the installed `0.6.9` package still exposes
+`kogwistar.__version__ == "0.6.8"`. The same failure is reproduced locally by
+`tests/test_pypy_ci_contract.py::test_installed_kogwistar_exposes_the_persisted_workflow_api`.
+This is evidence for the release gate, not a reason to relax the version
+contract.
 - [~] Document and test one root/child ownership model, including semantic
   parser checkpoint and graph publication identities. Stable root/page/grouping/
   semantic IDs and same-process ownership tests exist; fresh-process lineage
