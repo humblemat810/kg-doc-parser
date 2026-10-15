@@ -727,7 +727,8 @@ protocol.
 - [ ] Run `git diff --check` and lock verification.
 - [ ] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
-- [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11.
+- [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11. Parser CI
+  run `38687426899` at `1576a40` completed successfully for all four matrix jobs.
   Parser CI run `38685108069` passed all four required jobs on commit
   `4b8a1de`; the earlier CPython 3.13 failure in `38681712390` was reproduced
   locally, fixed in the duplicate-worker acceptance fence, and covered by the
