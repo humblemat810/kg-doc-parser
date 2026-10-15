@@ -94,8 +94,10 @@ S01-S12 and C01-C06 rows in
   invalidate summaries; monotonic generation and complete writer audit remain.
 - [~] S09-S10 verify runtime checkpoint ownership and collision-safe identity
   separation for same-stem, changed-path, and changed-content inputs.
-- [ ] S11-S12 cover cross-page references and reject conflicting public versus
-  internal policy values.
+- [~] S11-S12 cover cross-page references and reject conflicting public versus
+  internal policy values. Multiple reference slices now round-trip and validate
+  at the document-model boundary; downstream export and policy-conflict
+  rejection remain open.
 - [~] C06 has typed provider-loss diagnostics and strict rejection; source-side
   completeness for figures, tables, captions, and unsupported coordinates is
   not yet proven.

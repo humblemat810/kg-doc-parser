@@ -151,10 +151,16 @@ class DocumentReferenceMention(FrozenModel):
 
     mention_id: str = Field(min_length=1)
     source: SourceSlice
+    additional_sources: tuple[SourceSlice, ...] = ()
     target_kind: Literal["page", "section", "figure", "table"]
     target_label: str = Field(min_length=1, max_length=128)
     target_node_id: str | None = None
     status: Literal["pending", "resolved"] = "pending"
+
+    @property
+    def sources(self) -> tuple[SourceSlice, ...]:
+        """Return all exact source slices in their declared reading order."""
+        return (self.source, *self.additional_sources)
 
     @model_validator(mode="after")
     def valid(self) -> DocumentReferenceMention:
@@ -234,11 +240,17 @@ class DocumentTree(FrozenModel):
         if len(reference_ids) != len(set(reference_ids)):
             raise ValueError("duplicate document reference mention")
         for reference in self.references:
-            item = items.get(reference.source.item_id)
-            if item is None or item.text is None:
-                raise ValueError("reference mention must point to a text source item")
-            if reference.source.end is None or reference.source.end > len(item.text):
-                raise ValueError("reference mention exceeds source item")
+            source_keys: set[tuple[str, int | None, int | None]] = set()
+            for source in reference.sources:
+                key = (source.item_id, source.start, source.end)
+                if key in source_keys:
+                    raise ValueError("reference mention contains duplicate source slice")
+                source_keys.add(key)
+                item = items.get(source.item_id)
+                if item is None or item.text is None:
+                    raise ValueError("reference mention must point to a text source item")
+                if source.end is None or source.end > len(item.text):
+                    raise ValueError("reference mention exceeds source item")
             if reference.target_node_id is not None and reference.target_node_id not in nodes:
                 raise ValueError("reference mention target node does not exist")
         parents: dict[str, int] = defaultdict(int)

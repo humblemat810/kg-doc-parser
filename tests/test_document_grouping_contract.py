@@ -20,12 +20,12 @@ from kg_doc_parser.workflow_ingest.document_models import (
 )
 
 
-def _item(item_id: str, text: str) -> SourceItem:
+def _item(item_id: str, text: str, *, page_index: int = 0) -> SourceItem:
     return SourceItem(
         item_id=item_id,
         kind="text",
         text=text,
-        location=SourceLocation(page_index=0, accuracy="page"),
+        location=SourceLocation(page_index=page_index, accuracy="page"),
     )
 
 
@@ -374,3 +374,49 @@ def test_reference_mentions_reject_unknown_targets_and_non_text_sources() -> Non
     ]
     with pytest.raises(ValueError, match="target node"):
         DocumentTree.model_validate(payload)
+
+
+def test_reference_mention_round_trips_multiple_cross_page_source_slices() -> None:
+    first_text = "See page 2 for the continuation"
+    second_text = "Continuation on the next page"
+    base = DocumentTree(
+        document_id="cross-page-reference",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            _item("page-1", first_text, page_index=0),
+            _item("page-2", second_text, page_index=1),
+        ),
+        nodes=(
+            _leaf("page-1-leaf", "page-1", first_text),
+            _leaf("page-2-leaf", "page-2", second_text),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(
+                    {"node_id": "page-1-leaf"},
+                    {"node_id": "page-2-leaf"},
+                ),
+            ),
+        ),
+    )
+    mention = extract_reference_mentions(base)[0].model_copy(
+        update={
+            "additional_sources": (
+                SourceSlice(item_id="page-2", start=0, end=len(second_text)),
+            )
+        }
+    )
+    payload = base.model_dump(mode="json")
+    payload["references"] = [mention.model_dump(mode="json")]
+
+    restored = DocumentTree.model_validate(payload)
+    assert len(restored.references) == 1
+    assert [source.item_id for source in restored.references[0].sources] == ["page-1", "page-2"]
+    assert [source.start for source in restored.references[0].sources] == [0, 0]
+
+    duplicate = dict(payload["references"][0])
+    duplicate["additional_sources"] = [duplicate["source"]]
+    with pytest.raises(ValueError, match="duplicate source slice"):
+        DocumentTree.model_validate({**payload, "references": [duplicate]})

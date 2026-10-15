@@ -575,8 +575,14 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### S11. Explicit references across boundaries
 
-- [ ] Support references spanning clusters, lines, and pages.
-- [ ] Preserve multiple exact source slices for one reference mention.
+- [~] Support references spanning clusters, lines, and pages. The reference
+  model now accepts multiple exact source slices, including slices from
+  different page-indexed source items; parser/export integration for all
+  downstream consumers remains open.
+- [x] Preserve multiple exact source slices for one reference mention in
+  `DocumentReferenceMention.additional_sources`, validated against every
+  authoritative text item and covered by
+  `tests/test_document_grouping_contract.py::test_reference_mention_round_trips_multiple_cross_page_source_slices`.
 - [ ] Keep references outside the primary coverage partition unless explicitly
   promoted by a later workflow.
 - [ ] Test a reference split across OCR clusters and across pages.
