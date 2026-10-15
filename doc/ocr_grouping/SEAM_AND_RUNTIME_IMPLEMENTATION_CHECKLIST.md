@@ -334,6 +334,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   configuration revision. The production page path records both and the crash
   regression reopens and verifies them before adoption; broader provider and
   policy coverage remains part of the release gate.
+- [~] Fence the legacy `record_page_completed()` writer as well as the primary
+  OCR publication path. It now accepts only a pending row with matching source
+  and configuration identity, and treats an identical completed delivery as
+  idempotent; `test_ocr_page_completion_rejects_a_late_writer_after_acceptance`
+  proves a late writer cannot replace an accepted render result. This does not
+  close the two-store crash-consistency gate.
 
 ### S03. OCR response to spatial/media grounding
 

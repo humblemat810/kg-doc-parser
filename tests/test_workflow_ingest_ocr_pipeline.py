@@ -2358,6 +2358,56 @@ def test_ocr_state_fingerprint_change_discards_stale_page_and_model_state() -> N
 
 
 @pytest.mark.ci
+def test_ocr_page_completion_rejects_a_late_writer_after_acceptance() -> None:
+    scratch = _scratch("ocr_page_completion_cas")
+    artifact = scratch / "page-1.json"
+    artifact.write_text('{"page": 1}', encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="page-completion-cas-doc",
+        title="Page Completion CAS",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="page-completion-cas-doc",
+        page_number=1,
+        stage="render",
+        content_hash="image-a",
+        model_name="renderer-a",
+        artifact_path=artifact,
+        config_fingerprint="render-a",
+    )
+    assert store.record_page_completed(
+        document_id="page-completion-cas-doc",
+        page_number=1,
+        stage="render",
+        content_hash="image-a",
+        artifact_path=artifact,
+        model_name="renderer-a",
+        attempt_index=attempt,
+        config_fingerprint="render-a",
+    )
+
+    assert not store.record_page_completed(
+        document_id="page-completion-cas-doc",
+        page_number=1,
+        stage="render",
+        content_hash="image-b",
+        artifact_path=artifact,
+        model_name="renderer-b",
+        config_fingerprint="render-b",
+    )
+    state = store.get_page_state(
+        document_id="page-completion-cas-doc", page_number=1, stage="render"
+    )
+    assert state is not None
+    assert state.content_hash == "image-a"
+    assert state.config_fingerprint == "render-a"
+
+
+@pytest.mark.ci
 def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
     scratch = _scratch("ocr_missing_artifact")
     artifact = scratch / "page-1.json"

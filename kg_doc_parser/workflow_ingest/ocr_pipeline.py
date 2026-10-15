@@ -792,7 +792,7 @@ def _process_ocr_page(
             page_number=page_number,
             image_path=str(image_path),
         )
-        state_store.record_attempt(
+        render_attempt = state_store.record_attempt(
             document_id=document_id,
             page_number=page_number,
             stage="render",
@@ -808,7 +808,7 @@ def _process_ocr_page(
             content_hash=image_sha256,
             artifact_path=image_path,
             model_name="local-materialize",
-            attempt_index=1 if state_store.get_page_state(document_id=document_id, page_number=page_number, stage="render") else None,
+            attempt_index=render_attempt,
             config_fingerprint=context.render_configuration_fingerprint,
         )
         _emit_ocr_event(
@@ -1920,10 +1920,33 @@ class OCRWorkflowStateStore:
         model_name: str | None,
         attempt_index: int | None = None,
         config_fingerprint: str | None = None,
-    ) -> None:
+    ) -> bool:
         now = time.time()
         with self._session() as conn:
-            conn.execute(
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                """
+                SELECT status, content_hash, artifact_path, config_fingerprint,
+                       artifact_sha256
+                FROM page_state
+                WHERE document_id = ? AND page_number = ? AND stage = ?
+                """,
+                (document_id, page_number, stage),
+            ).fetchone()
+            if existing is None:
+                return False
+            if existing["status"] == "completed":
+                # Duplicate delivery is idempotent only when it describes the
+                # already accepted result. A late writer must not overwrite it.
+                return bool(
+                    existing["content_hash"] == content_hash
+                    and existing["config_fingerprint"] == config_fingerprint
+                    and existing["artifact_path"]
+                    == (str(artifact_path) if artifact_path is not None else None)
+                )
+            if existing["status"] != "pending":
+                return False
+            updated = conn.execute(
                 """
                 UPDATE page_state
                 SET status = 'completed',
@@ -1935,6 +1958,9 @@ class OCRWorkflowStateStore:
                     artifact_sha256 = ?,
                     last_attempted_ts = ?
                 WHERE document_id = ? AND page_number = ? AND stage = ?
+                  AND status = 'pending'
+                  AND content_hash IS ?
+                  AND config_fingerprint IS ?
                 """,
                 (
                     content_hash,
@@ -1946,8 +1972,12 @@ class OCRWorkflowStateStore:
                     document_id,
                     page_number,
                     stage,
+                    content_hash,
+                    config_fingerprint,
                 ),
             )
+            if updated.rowcount != 1:
+                return False
             if attempt_index is not None:
                 conn.execute(
                     """
@@ -1957,6 +1987,7 @@ class OCRWorkflowStateStore:
                     """,
                     (document_id, page_number, stage, attempt_index),
                 )
+            return True
 
     def record_page_failed(
         self,
