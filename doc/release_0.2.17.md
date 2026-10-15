@@ -10,7 +10,7 @@ new document tree to overwrite recoverable checkpoint state.
 
 The release remains compatible with the currently published Kogwistar
 dependency. The parser pin is intentionally unchanged until the Kogwistar
-`0.6.11` ownership-lease fix is merged and published; downstream release
+`0.6.12` ownership and typed join/resume fixes are merged and published; downstream release
 verification must then confirm the installed package before changing that pin.
 
 ## Included fixes
@@ -28,5 +28,5 @@ verification must then confirm the installed package before changing that pin.
 ## Verification required before tagging
 
 - Full parser CI on CPython 3.12-3.14 and PyPy 3.11.
-- Kogwistar `0.6.11` published and verified before any dependency-pin update.
+- Kogwistar `0.6.12` published and verified before any dependency-pin update.
 - Packaging, lock, Ruff, and parser recovery contract checks.
