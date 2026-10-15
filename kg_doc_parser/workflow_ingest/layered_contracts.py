@@ -83,7 +83,7 @@ class LayeredParseSeedResult(BaseModel):
     usage: LayeredParseUsage = Field(default_factory=LayeredParseUsage)
 
     @model_validator(mode="after")
-    def _validate_root(self) -> "LayeredParseSeedResult":
+    def _validate_root(self) -> LayeredParseSeedResult:
         validate_semantic_tree_integrity(self.root, max_depth=self.session.max_depth)
         return self
 
@@ -100,7 +100,7 @@ class LayeredParseExpandRequest(BaseModel):
     limits: LayeredParseLimits = Field(default_factory=LayeredParseLimits)
 
     @model_validator(mode="after")
-    def _validate_input_tree(self) -> "LayeredParseExpandRequest":
+    def _validate_input_tree(self) -> LayeredParseExpandRequest:
         validate_semantic_tree_integrity(
             SemanticNode.model_validate(self.semantic_tree),
             parser_source_map=cast(dict[str, dict[str, object]], self.source_map),
@@ -122,7 +122,7 @@ class LayeredParseExpandResult(BaseModel):
     usage: LayeredParseUsage = Field(default_factory=LayeredParseUsage)
 
     @model_validator(mode="after")
-    def _validate_result_tree(self) -> "LayeredParseExpandResult":
+    def _validate_result_tree(self) -> LayeredParseExpandResult:
         validate_semantic_tree_integrity(self.semantic_tree, max_depth=self.session.max_depth)
         return self
 

@@ -706,6 +706,10 @@ def _resolve_ocr_source_plan(
     legacy_root = output_dir / "legacy_split_pages"
 
     pdf_source = Path(pdf_path) if pdf_path is not None else None
+    artifact_folder = _legacy_folder_name(
+        document_id=document_id,
+        pdf_path=pdf_source,
+    )
     if pdf_source is not None:
         input_fingerprint = _compute_input_fingerprint(pdf_path=pdf_source)
         # Render once per PDF so downstream OCR can work page-by-page against
