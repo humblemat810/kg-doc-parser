@@ -1870,7 +1870,6 @@ class OCRWorkflowStateStore:
                 or state["status"] != "pending"
                 or state["content_hash"] != content_hash
                 or state["config_fingerprint"] != config_fingerprint
-                or state["attempt_count"] != attempt_index
             ):
                 return False
 
@@ -1890,7 +1889,6 @@ class OCRWorkflowStateStore:
                   AND status = 'pending'
                   AND content_hash = ?
                   AND config_fingerprint = ?
-                  AND attempt_count = ?
                 """,
                 (
                     str(artifact_path),
@@ -1902,11 +1900,23 @@ class OCRWorkflowStateStore:
                     page_number,
                     content_hash,
                     config_fingerprint,
-                    attempt_index,
                 ),
             )
             if updated.rowcount != 1:
                 return False
+            # Concurrent deliveries with the same source/configuration are
+            # equivalent candidates. Once one is accepted, close any older
+            # pending attempt records so they cannot look like live work on
+            # the next resume. Different configurations remain fenced above.
+            conn.execute(
+                """
+                UPDATE model_attempts
+                SET status = 'failed', error_message = 'superseded by accepted duplicate'
+                WHERE document_id = ? AND page_number = ? AND stage = 'ocr'
+                  AND status = 'pending' AND attempt_index <> ?
+                """,
+                (document_id, page_number, attempt_index),
+            )
             conn.execute(
                 """
                 UPDATE model_attempts

@@ -436,6 +436,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   `test_ocr_page_failure_cannot_downgrade_an_accepted_result` and
   `test_ocr_page_failure_cannot_replace_a_newer_pending_attempt` prove that a
   late failure cannot downgrade an accepted page or a newer retry.
+- [x] Give same-identity duplicate OCR deliveries first-valid-result-wins
+  semantics. `publish_ocr_page()` fences source/configuration identity while
+  allowing a concurrent duplicate with a different attempt number to publish
+  before the other worker observes the winner; superseded pending attempt
+  rows are closed. `test_duplicate_ocr_page_workers_accept_only_one_artifact`
+  passes on CPython 3.13 and the full deterministic selection.
 
 ### S03. OCR response to spatial/media grounding
 
@@ -704,7 +710,10 @@ protocol.
 - [ ] Run `git diff --check` and lock verification.
 - [ ] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
-- [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11.
-  Parser CI run `38672474200` passed; slow/manual provider experiments remain
-  separate gates.
+- [~] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11.
+  The current validation run `38681712390` passed CPython 3.12, CPython 3.14,
+  and PyPy 3.11, but CPython 3.13 failed in the deterministic test step. The
+  traceback is not exposed by the unauthenticated GitHub job page, so this
+  gate remains open until the failure is reproduced and fixed; slow/manual
+  provider experiments remain separate gates.
 - [ ] Only after all release gates pass, update version/release notes and pins.

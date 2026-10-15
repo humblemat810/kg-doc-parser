@@ -96,7 +96,7 @@ test must not be counted as a green two-store commit protocol:
 | OCR artifact SHA-256 is enforced on completed-page reuse | PARTIAL (focused boundary) | `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` rejects a well-formed but modified JSON artifact through the actual reuse predicate. Fresh-process, all-provider-field, and dual-store recovery evidence remain release gates. |
 | JSON publication uses a unique temporary file and atomic replacement | PARTIAL (file boundary) | `test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_writers` proves distinct same-directory temporary files and replacement. It does not prove a two-store commit or recovery after either commit order. |
 | Artifact and SQLite/Kogwistar checkpoint commits are crash-consistent | PARTIAL | `test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real `_process_ocr_page` path after atomic rename and before the SQLite completion update, then reopens SQLite and adopts only the source/config-matching artifact. The inverse checkpoint-before-artifact order and full Kogwistar checkpoint reconciliation remain open. |
-| Grouping/checkpoint and page-state writers are fenced against late writers | PARTIAL | Expected revision/absence CAS and retryable conflict propagation are covered. Page completion and failure now also require pending status, source/configuration identity, and attempt ownership (`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_completion_rejects_a_late_writer_after_acceptance`, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_failure_cannot_downgrade_an_accepted_result`, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_failure_cannot_replace_a_newer_pending_attempt`). Resume rejects a persisted frontier that disagrees with the restored tree (`tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_resume_rejects_frontier_that_disagrees_with_tree`); compatibility writers, monotonic generation, and crash/restart ordering remain open. |
+| Grouping/checkpoint and page-state writers are fenced against late writers | PARTIAL | Expected revision/absence CAS and retryable conflict propagation are covered. Page completion and failure require pending status, source/configuration identity, and attempt ownership; same-identity duplicate OCR deliveries use first-valid-result-wins and close superseded pending attempt rows (`tests/test_workflow_ingest_ocr_pipeline.py::test_duplicate_ocr_page_workers_accept_only_one_artifact`, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_completion_rejects_a_late_writer_after_acceptance`, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_failure_cannot_downgrade_an_accepted_result`, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_failure_cannot_replace_a_newer_pending_attempt`). Resume rejects a persisted frontier that disagrees with the restored tree (`tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_resume_rejects_frontier_that_disagrees_with_tree`); compatibility writers, monotonic generation, and crash/restart ordering remain open. |
 
 The realistic recovery guarantee is at-least-once provider execution with
 exactly one accepted canonical result. The implementation must not claim
@@ -178,9 +178,12 @@ claim from a same-process or mocked test.
   is part of the persisted summary key; `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_generation_fingerprint_invalidates_persisted_cache`
   proves a provider/model/prompt identity change does not reuse an accepted summary.
   Callers must change the fingerprint whenever output-affecting generation configuration changes.
-- [x] Run the full parser CI matrix after the P0 runtime work. Parser CI run
-  `38672474200` passed CPython 3.12-3.14 and PyPy 3.11; slow/manual provider
-  experiments remain separate gates.
+- [~] Run the full parser CI matrix after the P0 runtime work. The current
+  validation run `38681712390` passed CPython 3.12, CPython 3.14, and PyPy
+  3.11, but CPython 3.13 failed in the deterministic test step. The GitHub
+  job page does not expose the traceback without authentication, so this
+  gate remains open until the failure is reproduced and fixed; slow/manual
+  provider experiments remain separate gates.
 
 ## Reviewer-required acceptance additions
 
