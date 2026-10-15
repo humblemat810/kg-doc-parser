@@ -31,6 +31,98 @@ Every row marked `[x]` must have an evidence entry with all of these fields:
 Do not mark a row `[x]` merely because a helper exists or because a mocked
 adapter test passes.
 
+## Execution ledger: two implementation tracks
+
+Use this section as the working checklist while implementing the review. The
+runtime track must be completed before the seam track can claim end-to-end
+proof, because a seam test that never crosses a persisted runtime boundary is
+only an adapter test. Every checked item must add its exact test node and
+runtime classification to the evidence ledger below.
+
+### Track A - persisted Kogwistar runtime integration
+
+- [~] **A-1. Root ownership:** one versioned root invocation owns page OCR,
+  grouping, semantic parsing, summary generation, and final publication. Keep
+  stable parent/child invocation IDs and record the semantic checkpoint and
+  graph publication identity. The current design has stable IDs; fresh-process
+  lineage and duplicate-publication proof remain open.
+- [~] **A-2. Durable state:** persist only typed JSON state: source revision,
+  immutable configuration fingerprint, page cursor, accepted artifact IDs,
+  grouping revision/frontier, summary policy revision, and final input
+  reference. Reconstruct providers from runtime dependencies, never from a
+  checkpoint.
+- [~] **A-3. Page recovery:** prove both interruption points: after atomic
+  artifact publication and before accepted completion. Recovery must adopt or
+  retry safely, never delete accepted work, and accept only one result under
+  duplicate delivery.
+- [~] **A-4. Grouping recovery:** restore the accepted tree and frontier before
+  processing new pages. Every writer must use the same expected-revision or
+  monotonic-generation fence; no compatibility writer may use unconditional
+  upsert semantics.
+- [~] **A-5. Summary recovery:** summaries are derived, revision-fenced, and
+  independently retryable. A cache hit must not call the provider or create a
+  second accepted journal row; a failed summary must not invalidate accepted
+  OCR/grouping state.
+- [ ] **A-6. Process-boundary proof:** terminate a real worker after a page and
+  after a grouping/summary checkpoint, reopen the same engines and run ID in a
+  new process, and prove one lineage, no duplicate accepted result, and no
+  replay of completed work. This remains blocked until the released Kogwistar
+  retryable-child contract is consumed.
+
+**Track A is complete only when:** the test uses the installed Kogwistar
+package, survives a real process boundary, compares canonical output with an
+uninterrupted reference, and records at-least-once provider execution with
+exactly one accepted canonical result. Same-process or source-checkout tests
+cannot close A-6.
+
+### Track B - strict seam validation
+
+- [~] **B-1 / S01-S02 identity and artifacts:** render/page reuse includes
+  source, renderer, provider, model, engine, policy, schema, and artifact
+  digests. Validate the exact reuse path, and reconcile artifact-first and
+  checkpoint-first crash orders.
+- [~] **B-2 / S03-S04 grounding and order:** preserve provider-declared
+  coordinate precision, media identity, and one traversal covering every
+  accepted object exactly once. A full-page fallback must remain page-level,
+  never synthetic region precision.
+- [ ] **B-3 / S05 hierarchy consumption:** prove the semantic parser and final
+  graph exporter consume the accepted hierarchy, rather than receiving it as
+  ignored metadata. Add a metamorphic test with two valid trees over identical
+  source items.
+- [~] **B-4 / S06-S08 durable grouping and summaries:** fence every grouping
+  writer, preserve meaningful groups and atomic objects, invalidate summaries
+  on grouping changes, and test duplicate/replay behavior. The current CAS
+  containment is not yet monotonic-generation or crash/restart proof.
+- [~] **B-5 / S09-S10 runtime and identity:** verify the persisted root/checkpoint
+  boundary and separate document, source revision, OCR configuration, grouping
+  revision, and parse-generation identities. Add same-stem/cross-path and
+  changed-content tests.
+- [ ] **B-6 / S11-S12 references and public options:** preserve cross-cluster
+  and cross-page references, reject conflicting public/internal policies, and
+  assert the chosen policy in persisted metadata, cache keys, and export.
+- [~] **B-7 / C06 quality gate:** require typed provider loss diagnostics and
+  strict-policy persistence, then add evidence for missing figures/tables,
+  unsupported coordinates, and reopening after a strict rejection. Interval
+  coverage alone is not sufficient.
+
+**Track B is complete only when:** every S01-S12 row has an implementation
+location, a reusable regression test, before/after behavior, and an explicit
+runtime classification. A green standalone adapter test cannot close a row
+whose contract crosses SQLite, Kogwistar, a provider, or graph export.
+
+### Dependency order
+
+- [x] **D-1.** Keep the review correction ledger authoritative: do not mark
+  S02, S06, C02, C03, C04, C05, or C06 green from narrow tests.
+- [x] **D-2.** Keep the installed Kogwistar API gate separate from source
+  checkout compatibility; record the exact version and CI run.
+- [ ] **D-3.** Merge and publish the Kogwistar retryable-child fix before
+  claiming Track A-6 or the 100-page release fixture.
+- [ ] **D-4.** Close Track A process/recovery evidence before claiming Track B
+  end-to-end seam closure.
+- [ ] **D-5.** Only after both tracks are green, bump the parser version, add
+  release notes, update downstream pins, and publish.
+
 ## Audit note (2026-10-15)
 
 The external seam review found that earlier green marks overstated the
@@ -339,7 +431,11 @@ an adapter-only test, or a source-checkout-only runtime test.
   and configuration identity, and treats an identical completed delivery as
   idempotent; `test_ocr_page_completion_rejects_a_late_writer_after_acceptance`
   proves a late writer cannot replace an accepted render result. This does not
-  close the two-store crash-consistency gate.
+  close the two-store crash-consistency gate. The failure writer is now fenced
+  by pending status, source/configuration identity, and attempt ownership;
+  `test_ocr_page_failure_cannot_downgrade_an_accepted_result` and
+  `test_ocr_page_failure_cannot_replace_a_newer_pending_attempt` prove that a
+  late failure cannot downgrade an accepted page or a newer retry.
 
 ### S03. OCR response to spatial/media grounding
 

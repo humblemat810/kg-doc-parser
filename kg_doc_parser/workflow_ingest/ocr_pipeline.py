@@ -1004,6 +1004,11 @@ def _process_ocr_page(
                 page_number=page_number,
                 stage="ocr",
                 content_hash=image_sha256,
+                config_fingerprint=_ocr_configuration_fingerprint(
+                    candidate_settings,
+                    candidate_models=context.candidate_models,
+                    quality_policy=context.quality_policy,
+                ),
                 error_message=str(exc),
                 model_name=candidate_model,
                 attempt_index=attempt_index,
@@ -1996,13 +2001,21 @@ class OCRWorkflowStateStore:
         page_number: int,
         stage: str,
         content_hash: str | None,
+        config_fingerprint: str | None,
         error_message: str,
         model_name: str | None,
         attempt_index: int | None = None,
-    ) -> None:
+    ) -> bool:
+        """Record failure only for the still-owned pending attempt.
+
+        Provider calls are at-least-once. A late failure from an older worker
+        must not downgrade an accepted page or replace a newer pending retry.
+        The attempt count, source hash, configuration fingerprint, and pending
+        status together form the completion ownership fence.
+        """
         now = time.time()
         with self._session() as conn:
-            conn.execute(
+            updated = conn.execute(
                 """
                 UPDATE page_state
                 SET status = 'failed',
@@ -2011,6 +2024,10 @@ class OCRWorkflowStateStore:
                     last_model = ?,
                     last_attempted_ts = ?
                 WHERE document_id = ? AND page_number = ? AND stage = ?
+                  AND status = 'pending'
+                  AND content_hash IS ?
+                  AND config_fingerprint IS ?
+                  AND (? IS NULL OR attempt_count = ?)
                 """,
                 (
                     content_hash,
@@ -2020,9 +2037,14 @@ class OCRWorkflowStateStore:
                     document_id,
                     page_number,
                     stage,
+                    content_hash,
+                    config_fingerprint,
+                    attempt_index,
+                    attempt_index,
                 ),
             )
-            if attempt_index is not None:
+            updated_count = updated.rowcount
+            if updated_count == 1 and attempt_index is not None:
                 conn.execute(
                     """
                     UPDATE model_attempts
@@ -2031,6 +2053,7 @@ class OCRWorkflowStateStore:
                     """,
                     (error_message, document_id, page_number, stage, attempt_index),
                 )
+            return updated_count == 1
 
     def mark_document_completed(self, *, document_id: str, is_completed: bool) -> None:
         with self._session() as conn:

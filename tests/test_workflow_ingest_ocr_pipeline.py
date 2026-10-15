@@ -2408,6 +2408,107 @@ def test_ocr_page_completion_rejects_a_late_writer_after_acceptance() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_page_failure_cannot_downgrade_an_accepted_result() -> None:
+    scratch = _scratch("ocr_page_failure_cas")
+    artifact = scratch / "page-1.json"
+    artifact.write_text('{"page": 1}', encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="page-failure-cas-doc",
+        title="Page Failure CAS",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="page-failure-cas-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-a",
+        model_name="model-a",
+        artifact_path=artifact,
+        config_fingerprint="provider-a/model-a",
+    )
+    assert store.record_page_completed(
+        document_id="page-failure-cas-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-a",
+        artifact_path=artifact,
+        model_name="model-a",
+        attempt_index=attempt,
+        config_fingerprint="provider-a/model-a",
+    )
+
+    assert not store.record_page_failed(
+        document_id="page-failure-cas-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-a",
+        config_fingerprint="provider-a/model-a",
+        error_message="late provider failure",
+        model_name="model-a",
+        attempt_index=attempt,
+    )
+    state = store.get_page_state(
+        document_id="page-failure-cas-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None
+    assert state.status == "completed"
+    assert state.last_error is None
+
+
+@pytest.mark.ci
+def test_ocr_page_failure_cannot_replace_a_newer_pending_attempt() -> None:
+    scratch = _scratch("ocr_page_failure_attempt_cas")
+    artifact = scratch / "page-1.json"
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="page-failure-attempt-cas-doc",
+        title="Page Failure Attempt CAS",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    first = store.record_attempt(
+        document_id="page-failure-attempt-cas-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-a",
+        model_name="model-a",
+        artifact_path=artifact,
+        config_fingerprint="provider-a/model-a",
+    )
+    second = store.record_attempt(
+        document_id="page-failure-attempt-cas-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-a",
+        model_name="model-b",
+        artifact_path=artifact,
+        config_fingerprint="provider-b/model-b",
+    )
+    assert second == first + 1
+    assert not store.record_page_failed(
+        document_id="page-failure-attempt-cas-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-a",
+        config_fingerprint="provider-a/model-a",
+        error_message="late first-attempt failure",
+        model_name="model-a",
+        attempt_index=first,
+    )
+    state = store.get_page_state(
+        document_id="page-failure-attempt-cas-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None
+    assert state.status == "pending"
+    assert state.attempt_count == second
+    assert state.config_fingerprint == "provider-b/model-b"
+
+
+@pytest.mark.ci
 def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
     scratch = _scratch("ocr_missing_artifact")
     artifact = scratch / "page-1.json"

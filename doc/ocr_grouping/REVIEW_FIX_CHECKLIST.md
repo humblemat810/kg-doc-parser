@@ -30,6 +30,60 @@ and current status. `PASS` is reserved for the complete acceptance gate;
 passing a narrow subtest remains `PARTIAL` when crash, restart, concurrency, or
 provider evidence is absent.
 
+## Review-adjusted execution checklist
+
+This is the short operational list for the two implementations. The detailed
+S01-S12 and C01-C06 rows in
+`SEAM_AND_RUNTIME_IMPLEMENTATION_CHECKLIST.md` remain normative.
+
+### A. Kogwistar runtime integration
+
+- [~] Root/page/grouping/semantic/summary stages use one persisted ownership
+  model with stable parent/child IDs.
+- [~] Typed checkpoint state contains source/config identity, cursor, accepted
+  artifacts, grouping frontier, summary identity, and final input reference.
+- [~] Artifact-first and checkpoint-first crash recovery are reconciled and
+  tested against the same accepted-result rules.
+- [~] Grouping and summary writers use revision/generation fencing; all legacy
+  and compatibility writers are audited.
+- [~] Incremental grouping is bounded by an accepted frontier and matches an
+  uninterrupted canonical reference.
+- [ ] A fresh process reopens the same root run after real interruption and
+  does not create a second semantic generation or duplicate graph publication.
+- [ ] The installed released Kogwistar version supports retrying a durably
+  failed child; the parser does not substitute a private child-ID workaround.
+
+### B. Strict seam validation
+
+- [~] S01-S02 source/render/provider/config/artifact identities are persisted,
+  checked on reuse, and protected by atomic single-file publication.
+- [~] S02 has tamper, stale-config, orphan-adoption, and late-writer tests;
+  two-store crash-order reconciliation remains open.
+- [~] S03-S04 preserve declared spatial precision, media provenance, and
+  deterministic mixed-object ordering; live multi-object provider evidence is
+  still required.
+- [ ] S05 proves accepted hierarchy reaches semantic parsing and graph export,
+  rather than surviving only as ignored metadata.
+- [~] S06-S08 protect grouping checkpoints, preserve atomic objects, and
+  invalidate summaries; monotonic generation and complete writer audit remain.
+- [~] S09-S10 verify runtime checkpoint ownership and collision-safe identity
+  separation for same-stem, changed-path, and changed-content inputs.
+- [ ] S11-S12 cover cross-page references and reject conflicting public versus
+  internal policy values.
+- [~] C06 has typed provider-loss diagnostics and strict rejection; source-side
+  completeness for figures, tables, captions, and unsupported coordinates is
+  not yet proven.
+
+### Release decision
+
+- [x] Do not count the two previously over-optimistic S02 marks as complete.
+- [x] Do not count same-process tests as fresh-process runtime evidence.
+- [x] Do not count a stored digest as reuse enforcement without an exact reuse
+  test.
+- [x] Do not count atomic file replacement as a two-store transaction.
+- [ ] Do not bump the parser version or update downstream pins until all
+  release-blocking runtime and seam rows above are green with evidence.
+
 ## Latest audit corrections
 
 These S02 subclaims are intentionally tracked separately. A green file-write
@@ -42,7 +96,7 @@ test must not be counted as a green two-store commit protocol:
 | OCR artifact SHA-256 is enforced on completed-page reuse | PARTIAL (focused boundary) | `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` rejects a well-formed but modified JSON artifact through the actual reuse predicate. Fresh-process, all-provider-field, and dual-store recovery evidence remain release gates. |
 | JSON publication uses a unique temporary file and atomic replacement | PARTIAL (file boundary) | `test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_writers` proves distinct same-directory temporary files and replacement. It does not prove a two-store commit or recovery after either commit order. |
 | Artifact and SQLite/Kogwistar checkpoint commits are crash-consistent | PARTIAL | `test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real `_process_ocr_page` path after atomic rename and before the SQLite completion update, then reopens SQLite and adopts only the source/config-matching artifact. The inverse checkpoint-before-artifact order and full Kogwistar checkpoint reconciliation remain open. |
-| Grouping checkpoint writes are fenced against late writers | PARTIAL | Expected revision/absence CAS and retryable conflict propagation are covered. Resume now also rejects a persisted frontier that disagrees with the restored tree (`tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_resume_rejects_frontier_that_disagrees_with_tree`); compatibility writers, monotonic generation, every late-writer path, and crash/restart ordering remain open. |
+| Grouping/checkpoint and page-state writers are fenced against late writers | PARTIAL | Expected revision/absence CAS and retryable conflict propagation are covered. Page completion and failure now also require pending status, source/configuration identity, and attempt ownership (`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_completion_rejects_a_late_writer_after_acceptance`, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_failure_cannot_downgrade_an_accepted_result`, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_failure_cannot_replace_a_newer_pending_attempt`). Resume rejects a persisted frontier that disagrees with the restored tree (`tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_resume_rejects_frontier_that_disagrees_with_tree`); compatibility writers, monotonic generation, and crash/restart ordering remain open. |
 
 The realistic recovery guarantee is at-least-once provider execution with
 exactly one accepted canonical result. The implementation must not claim
