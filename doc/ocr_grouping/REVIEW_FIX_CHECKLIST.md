@@ -30,6 +30,24 @@ and current status. `PASS` is reserved for the complete acceptance gate;
 passing a narrow subtest remains `PARTIAL` when crash, restart, concurrency, or
 provider evidence is absent.
 
+## Latest audit corrections
+
+These S02 subclaims are intentionally tracked separately. A green file-write
+test must not be counted as a green two-store commit protocol:
+
+| Subclaim | Status | Required evidence before release |
+| --- | --- | --- |
+| Provider/configuration fingerprint is part of page identity | PARTIAL | Fresh-process reuse rejection for every output-affecting provider, model, engine, and policy field, plus a persisted reopen assertion. |
+| OCR artifact SHA-256 is recorded | PASS (implementation) | Artifact metadata contains the digest after validated publication; this alone does not prove reuse safety. |
+| OCR artifact SHA-256 is enforced on completed-page reuse | PASS (focused boundary) | `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` rejects a well-formed but modified JSON artifact through the actual reuse predicate. |
+| JSON publication uses a unique temporary file and atomic replacement | PASS (file boundary) | `test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_writers` proves distinct same-directory temporary files and replacement. It does not prove a two-store commit. |
+| Artifact and SQLite/Kogwistar checkpoint commits are crash-consistent | OPEN | Fresh-process crash injection must cover artifact-rename-before-checkpoint and checkpoint-before-artifact, with deterministic reconciliation and no stale acceptance. |
+| Grouping checkpoint writes are fenced against late writers | PARTIAL | Expected revision/absence CAS and retryable conflict propagation are covered; compatibility writers, monotonic generation, and crash/restart ordering remain open. |
+
+The realistic recovery guarantee is at-least-once provider execution with
+exactly one accepted canonical result. The implementation must not claim
+exactly-once OCR or LLM calls across arbitrary process termination.
+
 | Finding | Status | Evidence / remaining work |
 | --- | --- | --- |
 | P0 grouping checkpoint overwrite on resume | PARTIAL | Prefix pages no longer overwrite `document_tree_state`; grouping and summary persistence now atomically fence both expected revisions and expected absence. The preparation path still has a baseline SQLite compatibility path outside the grouping child, and crash recovery remains open. |
