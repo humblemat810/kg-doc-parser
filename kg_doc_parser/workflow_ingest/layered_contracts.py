@@ -15,6 +15,7 @@ from typing import cast
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .models import (
+    CurrentLayerContext,
     CurrentLayerResult,
     LayerChildCandidate,
     LayerFrontierItem,
@@ -287,15 +288,13 @@ def expand_layered_frontier(
     )
 
 
-def _estimate_context_tokens(context: object) -> int:
+def _estimate_context_tokens(context: CurrentLayerContext) -> int:
     """Use a deterministic conservative estimate when no tokenizer is present."""
 
-    parent_titles = getattr(context, "parent_titles", ()) or ()
-    pointers = getattr(context, "parent_content_pointers_by_id", {}) or {}
-    text = " ".join(str(title) for title in parent_titles)
-    for pointer_list in pointers.values():
+    text = " ".join(context.parent_titles)
+    for pointer_list in context.parent_content_pointers_by_id.values():
         for pointer in pointer_list:
-            text += " " + str(getattr(pointer, "verbatim_text", "") or "")
+            text += " " + pointer.verbatim_text
     return max(1, (len(text) + 3) // 4)
 
 
