@@ -301,10 +301,11 @@ test is not yet present.
   preparation path still has a baseline SQLite compatibility path outside the
   grouping child, so runtime ownership is not yet the only writer.
 - [x] Add expected-revision/CAS protection. `save_document_tree()` now fences
-  both an observed revision and an observed absence atomically; the grouping
-  runtime and summary persistence propagate that fence into their persisted
-  child state. A stale summary writer raises `GroupingCheckpointConflict`
-  instead of becoming a non-fatal summary warning. The reusable regressions are
+  both an observed revision and an observed absence atomically, rejects an
+  orphaned frontier or a missing frontier, and the grouping runtime and summary
+  persistence propagate that fence into their persisted child state. A stale
+  summary writer raises `GroupingCheckpointConflict` instead of becoming a
+  non-fatal summary warning. The reusable regressions are
   `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`.
   and
   `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_checkpoint_conflict_is_retryable_not_a_summary_warning`.

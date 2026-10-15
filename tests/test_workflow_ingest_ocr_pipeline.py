@@ -1497,6 +1497,39 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
         is None
     )
 
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute("DELETE FROM document_tree_state WHERE document_id = ?", ("grouped-doc",))
+    with pytest.raises(RuntimeError, match="create conflict.*frontier"):
+        store.save_document_tree(
+            document_id="grouped-doc",
+            tree=tree,
+            grouping_policy_version="group-v1",
+            require_no_existing_tree=True,
+        )
+
+    inconsistent_store = OCRWorkflowStateStore(scratch / "inconsistent.sqlite")
+    inconsistent_store.ensure_document(
+        document_id="grouped-doc",
+        title="Grouped",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-v1",
+    )
+    inconsistent_revision = inconsistent_store.save_document_tree(
+        document_id="grouped-doc",
+        tree=tree,
+        grouping_policy_version="group-v1",
+    )
+    with sqlite3.connect(inconsistent_store.db_path) as conn:
+        conn.execute("DELETE FROM grouping_frontier_state WHERE document_id = ?", ("grouped-doc",))
+    with pytest.raises(RuntimeError, match="frontier is missing"):
+        inconsistent_store.save_document_tree(
+            document_id="grouped-doc",
+            tree=tree,
+            grouping_policy_version="group-v1",
+            expected_tree_revision=inconsistent_revision,
+        )
+
     store.ensure_document(
         document_id="grouped-doc",
         title="Grouped",

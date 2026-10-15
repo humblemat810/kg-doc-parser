@@ -1285,16 +1285,29 @@ class OCRWorkflowStateStore:
                 "SELECT tree_revision FROM document_tree_state WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
+            current_frontier = conn.execute(
+                "SELECT document_id FROM grouping_frontier_state WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
             current_revision = None if current is None else str(current["tree_revision"])
-            if require_no_existing_tree and current_revision is not None:
+            has_frontier = current_frontier is not None
+            if require_no_existing_tree and (current_revision is not None or has_frontier):
                 raise GroupingCheckpointConflict(
                     f"grouping checkpoint create conflict for {document_id!r}: "
-                    f"found existing revision {current_revision!r}"
+                    f"found existing revision {current_revision!r} or frontier"
                 )
             if expected_tree_revision is not None and current_revision != expected_tree_revision:
                 raise GroupingCheckpointConflict(
                     f"grouping checkpoint revision conflict for {document_id!r}: "
                     f"expected {expected_tree_revision!r}, found {current_revision!r}"
+                )
+            if expected_tree_revision is not None and not has_frontier:
+                raise GroupingCheckpointConflict(
+                    f"grouping checkpoint frontier is missing for {document_id!r}"
+                )
+            if expected_tree_revision is None and current_revision is not None and not has_frontier:
+                raise GroupingCheckpointConflict(
+                    f"grouping checkpoint frontier is missing for {document_id!r}"
                 )
             conn.execute(
                 """
