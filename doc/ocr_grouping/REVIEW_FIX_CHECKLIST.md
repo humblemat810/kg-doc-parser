@@ -389,3 +389,34 @@ contract.
   a clean environment can install it and confirm the public version/API. The
   installed-package recovery gate still needs to be rerun before C05 can be
   promoted.
+
+## Broad OCR Audit Ledger (2026-10-16)
+
+Source: `kg_doc_parser_ocr_broad_audit_2026-10-15.md`. The source review was
+static and did not prove runtime behavior. The statuses below are deliberately
+conservative and apply to the current parser branch HEAD `d3a04ea` plus the
+uncommitted B01/B07 regression fixes. A row is not release-complete until its
+focused test, full matrix, and exact HEAD are verified.
+
+| ID | Status | Current evidence or remaining work |
+| --- | --- | --- |
+| B01 | [~] Fixed locally; CI pending | `_materialize_image_payloads` now derives page paths, rejects rendered-directory/page symlinks, and writes byte payloads atomically. Tests: `test_materialize_image_payloads_uses_safe_atomic_page_paths`, `test_materialize_image_payloads_rejects_invalid_page_numbers_and_symlinks`. |
+| B02 | [ ] Open | Unrepresented non-text OCR units still need explicit retained placeholders or structured rejection and input-unit accounting. |
+| B03 | [ ] Open | Cross-page continuation still needs item-level kind, geometry, and text-boundary compatibility rather than page-wide flags alone. |
+| B04 | [ ] Open | Summary generation still needs exact owned evidence slices at the provider boundary, not only selected source-item IDs. |
+| B05 | [ ] Open | Provider-declared spatial precision still needs explicit preservation so synthetic page-wide boxes cannot claim region accuracy. |
+| B06 | [ ] Open | Render and legacy artifact paths still need document/revision collision-resistant namespacing for same-named inputs. |
+| B07 | [~] Fixed locally; CI pending | Page numbers are required to be positive and unique, and resolved paths are deterministic. Focused tests are listed under B01. Out-of-order inputs are normalized by sorted output; conflicting duplicates fail closed. |
+| B08 | [ ] Open | Default quality policy remains permissive for provider-reported quality; independent completeness and non-text checks remain needed. |
+| B09 | [ ] Open | Summary target selection does not yet prove that serialized provider evidence is bounded by the configured token budget. |
+| B10 | [~] Partial | Durable artifact IDs and runtime integration exist, but accumulated `raw_pages` checkpoint serialization and linear-growth evidence remain open. |
+| B11 | [ ] Open | Render identity does not yet include all rasterizer configuration and output properties such as DPI, rotation, and Poppler identity. |
+| B12 | [ ] Open | Reference extraction remains item-local and does not yet map split mentions across ordered OCR units. |
+| B13 | [ ] Open | The default PDF path still rasterizes pages; hybrid native PDF text extraction is not implemented. |
+| B14 | [ ] Open | PDF page PNGs are still written directly and manifest reuse checks existence, not atomic publication plus decoded-image digest/properties. |
+
+This ledger is a release gate, not a claim that the branch is complete. The
+latest GitHub parser matrix run `38802566392` failed its deterministic test
+step in all four jobs, so B01/B07 and the broader release remain unverified in
+CI. Kogwistar typing fixes are on its separate `fix/workflow-run-ownership`
+branch at `bb67df5`; that branch has no PR run yet and is not treated as green.

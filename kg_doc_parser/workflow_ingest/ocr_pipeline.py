@@ -2350,28 +2350,42 @@ def _progress_bar(done: int, total: int, width: int = 20) -> str:
 
 
 def _materialize_image_payloads(image_payloads: Sequence[OCRImagePayload], rendered_dir: Path) -> list[tuple[int, Path]]:
+    if rendered_dir.is_symlink():
+        raise ValueError("OCR rendered directory must not be a symlink")
     rendered_dir.mkdir(parents=True, exist_ok=True)
     resolved: list[tuple[int, Path]] = []
+    seen_page_numbers: set[int] = set()
     for index, payload in enumerate(image_payloads, start=1):
-        page_number = int(payload.page_number or index)
+        page_number = index if payload.page_number is None else int(payload.page_number)
+        if page_number < 1:
+            raise ValueError("OCR page numbers must be positive")
+        if page_number in seen_page_numbers:
+            raise ValueError(f"duplicate OCR page number: {page_number}")
+        seen_page_numbers.add(page_number)
         suffix = ".png"
         if payload.image_path:
             src = Path(payload.image_path)
             suffix = src.suffix or ".png"
             dst = rendered_dir / f"page_{page_number}{suffix}"
+            if dst.is_symlink():
+                raise ValueError(f"OCR rendered page is a symlink: {dst.name}")
             if src.resolve() != dst.resolve():
                 shutil.copy2(src, dst)
             else:
                 dst = src
         elif payload.image_bytes_b64:
             raw = base64.b64decode(payload.image_bytes_b64)
-            filename = payload.filename or f"page_{page_number}.png"
-            dst = rendered_dir / filename
-            dst.write_bytes(raw)
+            requested_suffix = Path(payload.filename or "").suffix.lower()
+            if requested_suffix in {".bmp", ".jpeg", ".jpg", ".png", ".tif", ".tiff", ".webp"}:
+                suffix = requested_suffix
+            dst = rendered_dir / f"page_{page_number}{suffix}"
+            if dst.is_symlink():
+                raise ValueError(f"OCR rendered page is a symlink: {dst.name}")
+            _write_bytes_atomic(dst, raw)
         else:
             raise ValueError("OCRImagePayload requires image_path or image_bytes_b64")
         resolved.append((page_number, dst))
-    return resolved
+    return sorted(resolved, key=lambda item: item[0])
 
 
 def _compute_input_fingerprint(*, page_sources: Sequence[tuple[int, Path]] | None = None, pdf_path: Path | None = None) -> str:

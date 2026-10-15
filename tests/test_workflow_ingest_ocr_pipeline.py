@@ -54,6 +54,7 @@ Both manual matrix variants end in the same normalized workflow-ingest path.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import json
@@ -118,6 +119,7 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     _compute_input_fingerprint,
     _evaluate_ocr_quality,
     _generate_tree_summaries,
+    _materialize_image_payloads,
     _ocr_configuration_fingerprint,
     _ocr_page_metadata,
     _process_ocr_page,
@@ -133,6 +135,72 @@ from kg_doc_parser.workflow_ingest.ocr_runtime import (
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 
 pytestmark = [pytest.mark.workflow]
+
+
+def test_materialize_image_payloads_uses_safe_atomic_page_paths(tmp_path: Path) -> None:
+    rendered_dir = tmp_path / "rendered"
+    payload = OCRImagePayload(
+        page_number=2,
+        image_bytes_b64=base64.b64encode(b"not-a-real-image").decode("ascii"),
+        filename="../outside/escape.jpg",
+    )
+
+    resolved = _materialize_image_payloads([payload], rendered_dir)
+
+    assert resolved == [(2, rendered_dir / "page_2.jpg")]
+    assert resolved[0][1].read_bytes() == b"not-a-real-image"
+    assert not (tmp_path / "outside" / "escape.jpg").exists()
+
+
+def test_materialize_image_payloads_rejects_invalid_page_numbers_and_symlinks(
+    tmp_path: Path,
+) -> None:
+    encoded = base64.b64encode(b"image").decode("ascii")
+    with pytest.raises(ValueError, match="positive"):
+        _materialize_image_payloads(
+            [OCRImagePayload(page_number=0, image_bytes_b64=encoded)],
+            tmp_path / "invalid",
+        )
+    with pytest.raises(ValueError, match="duplicate"):
+        _materialize_image_payloads(
+            [
+                OCRImagePayload(page_number=1, image_bytes_b64=encoded),
+                OCRImagePayload(page_number=1, image_bytes_b64=encoded),
+            ],
+            tmp_path / "duplicate",
+        )
+
+    rendered_dir = tmp_path / "symlinked"
+    rendered_dir.mkdir()
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"original")
+    page_link = rendered_dir / "page_1.png"
+    try:
+        page_link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is not available in this environment")
+    with pytest.raises(ValueError, match="symlink"):
+        _materialize_image_payloads(
+            [OCRImagePayload(page_number=1, image_bytes_b64=encoded)],
+            rendered_dir,
+        )
+    assert outside.read_bytes() == b"original"
+
+    source = tmp_path / "source.png"
+    source.write_bytes(b"source")
+    copied_dir = tmp_path / "copied"
+    copied_dir.mkdir()
+    copied_link = copied_dir / "page_1.png"
+    try:
+        copied_link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is not available in this environment")
+    with pytest.raises(ValueError, match="symlink"):
+        _materialize_image_payloads(
+            [OCRImagePayload(page_number=1, image_path=str(source))],
+            copied_dir,
+        )
+    assert outside.read_bytes() == b"original"
 
 _LOGGER = logging.getLogger(__name__)
 
