@@ -77,6 +77,7 @@ from _kogwistar_test_helpers import (
 from PIL import Image, ImageDraw
 
 import kg_doc_parser.workflow_ingest.ocr_pipeline as ocr_pipeline_module
+import kg_doc_parser.workflow_ingest.ocr_runtime as ocr_runtime_module
 from kg_doc_parser.models import (
     OCRClusterResponse,
     SplitPage,
@@ -93,6 +94,7 @@ from kg_doc_parser.workflow_ingest import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
+from kg_doc_parser.workflow_ingest.document_adapters import apply_grouping_proposals
 from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal
 from kg_doc_parser.workflow_ingest.document_models import (
     ChildRef,
@@ -386,6 +388,162 @@ def test_grouping_resume_rejects_frontier_that_disagrees_with_tree() -> None:
             run_id="ocr-grouping-frontier-mismatch",
             resume_from_checkpoint=True,
         )
+
+
+@pytest.mark.ci
+def test_grouping_incremental_resume_matches_uninterrupted_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _tree(document_id: str) -> DocumentTree:
+        source_items = tuple(
+            SourceItem(
+                item_id=f"item-{name}",
+                kind="text",
+                text=name,
+                location=SourceLocation(page_index=0, accuracy="page"),
+            )
+            for name in ("alpha", "beta", "gamma")
+        )
+        return DocumentTree(
+            document_id=document_id,
+            source_revision="ocr-v1:incremental-source",
+            tree_revision=1,
+            root_id="root",
+            source_items=source_items,
+            nodes=tuple(
+                [
+                    DocumentNode(
+                        node_id=f"leaf:item-{name}",
+                        kind="text",
+                        parts=(SourceSlice(item_id=f"item-{name}", start=0, end=len(name)),),
+                    )
+                    for name in ("alpha", "beta", "gamma")
+                ]
+                + [
+                    DocumentNode(
+                        node_id="root",
+                        kind="document",
+                        children=tuple(
+                            ChildRef(node_id=f"leaf:item-{name}")
+                            for name in ("alpha", "beta", "gamma")
+                        ),
+                    )
+                ]
+            ),
+        )
+
+    def _summary_generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree
+        return Summary(
+            status="generated",
+            text=f"summary:{node_id}",
+            evidence_item_ids=tuple(item.item_id for item in source_items),
+            provider_model="fake-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    reference_scratch = _scratch("ocr_grouping_incremental_reference")
+    interrupted_scratch = _scratch("ocr_grouping_incremental_interrupted")
+    # The stores and runtime engines are separate, but equivalence must use the
+    # same logical document identity because grouping node IDs are document-scoped.
+    reference_tree = _tree("grouping-incremental-document")
+    interrupted_tree = _tree("grouping-incremental-document")
+
+    # This test intentionally uses two passes; the first pass's stable output
+    # is the frontier input for the second pass in the production workflow.
+    first = apply_grouping_proposals(
+        reference_tree,
+        (GroupProposal(kind="section", members=("leaf:item-alpha", "leaf:item-beta")),),
+        grouping_policy_version="incremental-v1:1",
+    )
+    first_root = next(node for node in first.nodes if node.node_id == first.root_id)
+    first_frontier = tuple(child.node_id for child in first_root.children)
+    assert len(first_frontier) == 2
+    passes = (
+        (GroupProposal(kind="section", members=("leaf:item-alpha", "leaf:item-beta")),),
+        (GroupProposal(kind="topic", members=(first_frontier[0], "leaf:item-gamma")),),
+    )
+    policy = SummaryPolicy(eligible_kinds=("document",), minimum_source_items=1, minimum_source_chars=1)
+
+    def _reference_summary(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        return _summary_generator(
+            tree=tree,
+            node_id=node_id,
+            source_items=source_items,
+            input_fingerprint=input_fingerprint,
+        )
+
+    ref_engines = build_workflow_engine_triplet(reference_scratch / "engines", "in_memory")
+    reference, _ = run_grouping_workflow(
+        workflow_engine=ref_engines[0],
+        conversation_engine=ref_engines[1],
+        state_store=OCRWorkflowStateStore(reference_scratch / "ocr-state.sqlite"),
+        tree=reference_tree,
+        document_id=reference_tree.document_id,
+        grouping_policy_version="incremental-v1",
+        grouping_passes=passes,
+        summary_policy=policy,
+        summary_generator=_reference_summary,
+        run_id="ocr-grouping-incremental-reference",
+    )
+
+    original_generate_tree_summaries = ocr_runtime_module._generate_tree_summaries
+    interrupted = True
+
+    def _interrupt_after_grouping(*args: object, **kwargs: object) -> DocumentTree:
+        nonlocal interrupted
+        if interrupted:
+            interrupted = False
+            raise RuntimeError("simulated interruption after grouping checkpoint")
+        return original_generate_tree_summaries(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        ocr_runtime_module,
+        "_generate_tree_summaries",
+        _interrupt_after_grouping,
+    )
+
+    int_engines = build_workflow_engine_triplet(interrupted_scratch / "engines", "in_memory")
+    with pytest.raises(RuntimeError, match="OCR grouping workflow"):
+        run_grouping_workflow(
+            workflow_engine=int_engines[0],
+            conversation_engine=int_engines[1],
+            state_store=OCRWorkflowStateStore(interrupted_scratch / "ocr-state.sqlite"),
+            tree=interrupted_tree,
+            document_id=interrupted_tree.document_id,
+            grouping_policy_version="incremental-v1",
+            grouping_passes=passes,
+            summary_policy=policy,
+            summary_generator=_summary_generator,
+            run_id="ocr-grouping-incremental-interrupted",
+        )
+    resumed, _ = run_grouping_workflow(
+        workflow_engine=int_engines[0],
+        conversation_engine=int_engines[1],
+        state_store=OCRWorkflowStateStore(interrupted_scratch / "ocr-state.sqlite"),
+        tree=interrupted_tree,
+        document_id=interrupted_tree.document_id,
+        grouping_policy_version="incremental-v1",
+        grouping_passes=passes,
+        summary_policy=policy,
+        summary_generator=_summary_generator,
+        run_id="ocr-grouping-incremental-interrupted",
+        resume_from_checkpoint=True,
+    )
+    assert resumed.model_dump(mode="json") == reference.model_dump(mode="json")
 
 
 @pytest.mark.ci
