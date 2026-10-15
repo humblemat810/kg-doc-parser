@@ -1877,10 +1877,6 @@ def test_failed_summary_is_retryable_without_replaying_ocr() -> None:
     )
     assert artifacts.document_tree is not None
     assert ocr_calls["count"] == 2
-    store = OCRWorkflowStateStore(artifacts.state_db_path)
-    revision = store.document_tree_revision(document_id="ocr-summary-retry-doc")
-    assert revision is not None
-
     def _successful_generator(
         *,
         tree: DocumentTree,
@@ -1897,22 +1893,29 @@ def test_failed_summary_is_retryable_without_replaying_ocr() -> None:
             input_fingerprint=input_fingerprint,
         )
 
-    retried = _generate_tree_summaries(
-        artifacts.document_tree,
+    retried = prepare_ocr_workflow_input(
         document_id="ocr-summary-retry-doc",
-        state_store=store,
-        policy=policy,
-        generator=_successful_generator,
-        grouping_policy_version="baseline-v1",
-        expected_tree_revision=revision,
+        title="OCR Summary Retry Doc",
+        output_dir=scratch / "artifacts",
+        image_payloads=[
+            OCRImagePayload(page_number=page, image_path=str(image_path))
+            for page, image_path in enumerate(image_paths, start=1)
+        ],
+        provider_settings=settings,
+        ocr_runner=_runner,
+        summary_policy=policy,
+        summary_generator=_successful_generator,
     )
-    root = next(node for node in retried.nodes if node.node_id == retried.root_id)
+    assert retried.document_tree is not None
+    root = next(node for node in retried.document_tree.nodes if node.node_id == retried.document_tree.root_id)
     assert root.summary is not None
     assert root.summary.text == "retry:root"
     assert ocr_calls["count"] == 2
     attempts = [
         attempt
-        for attempt in store.list_summary_attempts(document_id="ocr-summary-retry-doc")
+        for attempt in OCRWorkflowStateStore(retried.state_db_path).list_summary_attempts(
+            document_id="ocr-summary-retry-doc"
+        )
         if attempt["node_id"] == "root"
     ]
     statuses = [attempt["status"] for attempt in attempts]
