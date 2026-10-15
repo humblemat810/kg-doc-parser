@@ -13,6 +13,15 @@ boundary. Provider/configuration fingerprinting is implemented in the current
 reuse predicate, but remains PARTIAL until a fresh-process configuration-change
 test is recorded.
 
+The audit also rejects treating the following as release proof: a digest field
+that is stored but not checked by the exact completed-page reuse path; an atomic
+file replacement without a two-store reconciliation protocol; a same-process
+retry without reopening the persisted parent invocation; a root/child function
+call that is not represented in the persisted Kogwistar execution graph; or a
+grouping checkpoint write without monotonic generation/CAS ownership. These
+remain `PARTIAL` or `OPEN` below until a reusable regression test demonstrates
+the actual boundary.
+
 | Finding | Status | Evidence / remaining work |
 | --- | --- | --- |
 | P0 grouping checkpoint overwrite on resume | PARTIAL | Prefix pages no longer overwrite `document_tree_state`, but the preparation path still creates a baseline SQLite tree before the runtime-owned grouping checkpoint. Monotonic generation/CAS ownership and crash recovery remain open. |

@@ -10,14 +10,21 @@ The status below distinguishes implemented code from release evidence. In
 particular, artifact digests, atomic replacement, and same-process resume are
 not claims of complete crash consistency or fresh-process recovery.
 
+> **Identifier note:** The C01-C21 table below is the historical OCR contract
+> ledger from the grouping reference pack. It is not the same numbering as the
+> reviewer release gates C01-C06 in
+> `SEAM_AND_RUNTIME_IMPLEMENTATION_CHECKLIST.md`. The reviewer gate matrix is
+> authoritative for release readiness; a `PASS` in this historical table means
+> only that the contract-level test passed.
+
 | ID | Status | Current evidence |
 | --- | --- | --- |
-| C01 | PASS | Frozen `SourceItem`/`DocumentTree` models; `test_document_tree_requires_exact_source_coverage` |
-| C02 | PASS | Half-open interval validator; gap/overlap and duplicate coverage tests |
-| C03 | PASS | `SourceLocation` preserves page/region accuracy and declared pixels/relative/points frames; unknown frames downgrade to page accuracy; `test_unknown_ocr_coordinate_system_downgrades_to_page_accuracy` |
-| C04 | PASS | Cycle, orphan, duplicate-parent, and unary-node validation |
-| C05 | PASS | `merge_groups()` keeps unmerged frontier members |
-| C06 | PASS | Adjacent, disjoint, known-member proposal validation |
+| C01 | PASS (contract only) | Frozen `SourceItem`/`DocumentTree` models; `test_document_tree_requires_exact_source_coverage` |
+| C02 | PASS (contract only) | Half-open interval validator; gap/overlap and duplicate coverage tests |
+| C03 | PASS (contract only) | `SourceLocation` preserves page/region accuracy and declared pixels/relative/points frames; unknown frames downgrade to page accuracy; `test_unknown_ocr_coordinate_system_downgrades_to_page_accuracy` |
+| C04 | PASS (contract only) | Cycle, orphan, duplicate-parent, and unary-node validation |
+| C05 | PASS (contract only) | `merge_groups()` keeps unmerged frontier members |
+| C06 | PASS (contract only) | Adjacent, disjoint, known-member proposal validation |
 | C07 | PASS | Stable merge IDs, ordered source fingerprints, SQLite replay, and grouping-policy matching; `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` |
 | C08 | PASS | Content-addressed `MediaRef` records, captions/non-text descriptions, and page/time locations survive normalized tree and JSON round-trips without fabricated geometry; `test_multimodal_media_and_time_ranges_round_trip_without_fabricated_geometry` |
 | C09 | PARTIAL | OCR pages are normalized into one validated complete tree, apply OCR-signaled adjacent continuations, and persist the canonical tree only after complete input; prefix trees are deliberately not persisted because they could overwrite a complete resume checkpoint. Incremental frontier execution remains a follow-up. Mixed text/non-text traversal is now validated at the model and adapter boundary, but downstream grouping/export preservation remains open. |

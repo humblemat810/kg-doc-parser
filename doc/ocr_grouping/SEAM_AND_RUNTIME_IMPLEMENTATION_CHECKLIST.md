@@ -58,6 +58,31 @@ These gates are tracked in section C and the evidence ledger. A focused test
 may close a sub-item, but cannot close the parent gate when fresh-process,
 SIGKILL, concurrency, or real-provider evidence is still absent.
 
+### Reviewer correction ledger
+
+The following claims are explicitly **not** release-complete, even when an
+implementation helper or a narrow unit test is green:
+
+- `S02` artifact SHA-256 verification is partial until the exact reuse path
+  rejects a well-formed tampered JSON artifact and a changed provider
+  configuration in a fresh process.
+- `S02` atomic JSON publication is partial until both crash orders are
+  reconciled: artifact rename before the SQLite/runtime checkpoint, and
+  checkpoint publication before artifact rename. A temporary file plus
+  `os.replace()` protects one file write, not the two-store commit.
+- `S06` grouping checkpoint protection is partial until a monotonic generation
+  or CAS guard prevents a late prefix rebuild from overwriting a newer tree.
+- `S09` root-workflow integration is partial until a new process can reopen the
+  same parent invocation, recover the same child lineage, and avoid a second
+  accepted semantic generation.
+- `C04` and `C05` remain open/partial until canonical incremental equivalence,
+  SIGKILL/new-process resume, and duplicate-resume behavior are tested.
+
+The status words below describe evidence, not optimism: `PASS` means the
+release gate is proven; `PARTIAL` means useful containment exists but the
+acceptance proof is incomplete; `OPEN` means the required implementation or
+test is not yet present.
+
 ## A. Runtime Integration
 
 ### A1. Workflow design
