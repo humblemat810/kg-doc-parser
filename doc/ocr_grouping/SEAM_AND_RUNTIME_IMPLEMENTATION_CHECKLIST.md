@@ -245,13 +245,18 @@ test is not yet present.
   rename crash-window reconciliation are not yet proven.
 - [~] Validate and reconcile an artifact left behind by a crash between rename
   and database commit. A valid rename-before-DB orphan is adopted only when
-  its source-image and OCR-configuration identities match; DB-before-rename
-  and fresh-process crash-order tests remain open.
+  its source-image and OCR-configuration identities match. The real
+  `_process_ocr_page` path now has an injected crash regression,
+  `test_ocr_page_artifact_publish_crash_is_recoverable`, which proves the
+  artifact-first order is recoverable after reopening SQLite; the inverse
+  order and full root/runtime checkpoint reconciliation remain open.
 - [~] Test truncated JSON, valid JSON from another page, schema-version change,
   and crash-window recovery. Rebuild now validates `SplitPage` and leaves
   malformed/ambiguous artifacts pending; crash-window reconciliation remains.
-- [ ] Ensure the artifact records the exact source image digest and accepted OCR
-  configuration revision.
+- [~] Ensure the artifact records the exact source image digest and accepted OCR
+  configuration revision. The production page path records both and the crash
+  regression reopens and verifies them before adoption; broader provider and
+  policy coverage remains part of the release gate.
 
 ### S03. OCR response to spatial/media grounding
 
@@ -422,7 +427,7 @@ itself as proof:
 | --- | --- | --- |
 | C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38663529209`; source-checkout-only tests do not count. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`; a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
-| C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` reopens SQLite in a fresh process and proves checkpoint-before-artifact cannot be reused while a validated artifact-first record is adopted. An injected crash harness and full runtime/checkpoint reconciliation remain open. |
+| C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, and `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption. The inverse order and full runtime/checkpoint reconciliation remain open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
 | C05 true resume | PARTIAL | Same-process 100-page OCR interruption evidence and multi-pass grouping interruption/resume evidence now exist; SIGKILL/new-process resume, duplicate-resume race, and no redundant accepted OCR work remain. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
@@ -435,7 +440,8 @@ demonstrated:
 - [x] configuration fingerprint changes prevent reuse in a fresh process;
 - [x] a well-formed but tampered OCR JSON is rejected by the exact completed-
   page reuse path;
-- [~] atomic rename is used for publication;
+- [x] atomic rename is used for publication and the real page path survives an
+  injected crash immediately after publication;
 - [ ] both artifact/checkpoint crash orders reconcile without accepting a
   partial or stale result.
 

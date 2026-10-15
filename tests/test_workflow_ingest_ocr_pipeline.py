@@ -117,6 +117,7 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     _generate_tree_summaries,
     _ocr_configuration_fingerprint,
     _ocr_page_metadata,
+    _process_ocr_page,
     _resolve_ocr_source_plan,
     _write_json_atomic,
 )
@@ -2505,6 +2506,98 @@ assert store.should_skip_page(
         text=True,
     )
     assert child.returncode == 0
+
+
+@pytest.mark.ci
+def test_ocr_page_artifact_publish_crash_is_recoverable() -> None:
+    """A crash after rename and before SQLite completion is safely recoverable."""
+    scratch = _scratch("ocr_artifact_publish_crash")
+    image_path = scratch / "source" / "page-1.png"
+    _draw_test_image(image_path, lines=["crash boundary"])
+    page_json_path = scratch / "legacy" / "page-1.json"
+    page_image_path = scratch / "legacy" / "page-1.png"
+    page_json_path.parent.mkdir(parents=True, exist_ok=True)
+    page_image_path.parent.mkdir(parents=True, exist_ok=True)
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+    store_path = scratch / "ocr-state.sqlite"
+    store = OCRWorkflowStateStore(store_path)
+    config_fingerprint = ocr_pipeline_module._ocr_configuration_fingerprint(
+        settings,
+        candidate_models=["fake-ocr"],
+    )
+    context = OCRPageProcessingContext(
+        document_id="ocr-artifact-crash-doc",
+        title="OCR Artifact Crash",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-fingerprint",
+        candidate_models=["fake-ocr"],
+        provider_settings=settings,
+        ocr_page_runner=lambda _path, page_number, _settings: _fake_ocr_response(
+            page_number, "crash boundary"
+        ),
+        state_store=store,
+        probe=None,
+        configuration_fingerprints=(config_fingerprint,),
+    )
+    image_sha256 = hashlib.sha256(image_path.read_bytes()).hexdigest()
+    original_write = ocr_pipeline_module._write_json_atomic
+    interrupted = True
+
+    def _publish_then_interrupt(path: Path, payload: object) -> None:
+        nonlocal interrupted
+        original_write(path, payload)
+        if interrupted and path == page_json_path:
+            interrupted = False
+            raise KeyboardInterrupt("simulated process termination after artifact publish")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(ocr_pipeline_module, "_write_json_atomic", _publish_then_interrupt)
+    try:
+        with pytest.raises(KeyboardInterrupt, match="after artifact publish"):
+            _process_ocr_page(
+                context=context,
+                done_count=0,
+                page_number=1,
+                image_path=image_path,
+                image_sha256=image_sha256,
+                page_json_path=page_json_path,
+                page_image_path=page_image_path,
+                raw_pages=[],
+                completed_pages=[],
+                reused_pages=[],
+                page_failures=[],
+            )
+    finally:
+        monkeypatch.undo()
+
+    pending = store.get_page_state(
+        document_id=context.document_id,
+        page_number=1,
+        stage="ocr",
+    )
+    assert pending is not None and pending.status == "pending"
+    assert page_json_path.is_file()
+
+    reopened = OCRWorkflowStateStore(store_path)
+    assert reopened.reconcile_orphan_artifact(
+        document_id=context.document_id,
+        page_number=1,
+        content_hash=image_sha256,
+        artifact_path=page_json_path,
+        config_fingerprints=(config_fingerprint,),
+    )
+    assert reopened.should_skip_page(
+        document_id=context.document_id,
+        page_number=1,
+        stage="ocr",
+        content_hash=image_sha256,
+        artifact_path=page_json_path,
+        config_fingerprint=config_fingerprint,
+    )
 
 
 @pytest.mark.ci
