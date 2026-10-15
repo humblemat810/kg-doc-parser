@@ -62,7 +62,11 @@ def test_document_tree_requires_exact_source_coverage() -> None:
 
 def test_document_tree_rejects_unary_internal_nodes() -> None:
     with pytest.raises(ValueError, match="unary"):
-        DocumentNode(node_id="root", kind="document", children=({"node_id": "child"},))
+        DocumentNode(node_id="section", kind="section", children=({"node_id": "child"},))
+
+    # The synthetic document root may retain one final meaningful group so
+    # normalization does not discard that group's identity or provenance.
+    DocumentNode(node_id="root", kind="document", children=({"node_id": "section"},))
 
 
 def test_merge_groups_is_deterministic_and_preserves_unmerged_members() -> None:
