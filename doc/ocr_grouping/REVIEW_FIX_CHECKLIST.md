@@ -39,8 +39,12 @@ green when reading only the file-writing code are explicitly **PARTIAL**:
 The Kogwistar `v0.6.10` tag is now on `main`. Its PyPI release workflow has
 passed verification, wheel builds, sdist, and artifact audit, but the protected
 `pypi` deployment is still waiting for approval. The parser must continue to
-pin the published `0.6.9` package until `0.6.10` is publicly installable and a
-clean CPython/PyPy matrix verifies the released package.
+pin the published `0.6.9` package until a compatible core release is publicly
+installable and a clean CPython/PyPy matrix verifies the released package.
+The ownership-lease API exercised by the parser's fresh-process recovery tests
+is currently only on the separately pushed, unmerged
+`fix/workflow-run-ownership` core branch; it must not be attributed to
+`v0.6.10` until that branch is merged and released.
 
 - **S02 artifact SHA-256 verification:** the completed-page reuse predicate
   rejects a well-formed tampered artifact, but the complete root path has not
