@@ -355,6 +355,36 @@ def _root_page_artifacts_need_recovery(
     return False
 
 
+def _validate_existing_page_identities(
+    *,
+    context: OCRPageProcessingContext,
+    source_plan: OCRSourcePlan,
+) -> None:
+    """Reject provider changes before recovery can replay any page.
+
+    An incomplete page child may require a fresh root incarnation because a
+    completed runtime cannot be re-executed.  That recovery path must still
+    honor the original OCR configuration identity before it schedules work.
+    """
+    expected = set(context.configuration_fingerprints)
+    for page_number, _image_path in source_plan.page_sources:
+        state = context.state_store.get_page_state(
+            document_id=context.document_id,
+            page_number=page_number,
+            stage="ocr",
+        )
+        if (
+            state is not None
+            and state.config_fingerprint is not None
+            and state.config_fingerprint not in expected
+        ):
+            raise RuntimeError(
+                "OCR root checkpoint identity mismatch; refusing to mix persisted "
+                "OCR configuration for page "
+                f"{page_number}"
+            )
+
+
 def _next_root_recovery_run_id(
     *,
     conversation_engine: GraphKnowledgeEngine,
@@ -1150,6 +1180,11 @@ def run_ocr_root_workflow(
     effective_run_id = run_id or f"ocr|{document_id}"
     root_resume = resume_from_checkpoint
     recovery_generation = 0
+    if resume_from_checkpoint:
+        _validate_existing_page_identities(
+            context=preparation.page_context,
+            source_plan=preparation.source_plan,
+        )
     if resume_from_checkpoint and _root_page_artifacts_need_recovery(
         context=preparation.page_context,
         source_plan=preparation.source_plan,
