@@ -7,6 +7,7 @@ from typing import Protocol
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.typing_interfaces import ReadLike, WriteLike
+from pydantic_extension.model_slicing.mixin import use_mode
 
 DEFAULT_WORKFLOW_ID = "kg_doc_parser.ingest.v1"
 DEFAULT_OCR_WORKFLOW_ID = "kg_doc_parser.ocr.v1"
@@ -55,27 +56,28 @@ def _workflow_node(
     start: bool = False,
     terminal: bool = False,
 ) -> WorkflowNode:
-    return WorkflowNode(
-        id=node_id,
-        label=node_id.split("|")[-1],
-        type="entity",
-        doc_id=node_id,
-        summary=op,
-        properties={},
-        metadata={
-            "entity_type": "workflow_node",
-            "workflow_id": workflow_id,
-            "wf_op": op,
-            "wf_start": bool(start),
-            "wf_terminal": bool(terminal),
-            "wf_version": "v1",
-        },
-        mentions=[_grounding(workflow_id)],
-        level_from_root=0,
-        domain_id=None,
-        canonical_entity_id=None,
-        embedding=None,
-    )
+    with use_mode("backend"):
+        return WorkflowNode(
+            id=node_id,
+            label=node_id.split("|")[-1],
+            type="entity",
+            doc_id=node_id,
+            summary=op,
+            properties={},
+            metadata={
+                "entity_type": "workflow_node",
+                "workflow_id": workflow_id,
+                "wf_op": op,
+                "wf_start": bool(start),
+                "wf_terminal": bool(terminal),
+                "wf_version": "v1",
+            },
+            mentions=[_grounding(workflow_id)],
+            level_from_root=0,
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
 
 
 def _workflow_edge(
@@ -88,32 +90,33 @@ def _workflow_edge(
     is_default: bool = True,
 ) -> WorkflowEdge:
     dst_name = dst.split("|")[-1]
-    return WorkflowEdge(
-        id=edge_id,
-        label=dst_name,
-        type="relationship",
-        doc_id=edge_id,
-        summary=f"next:{dst_name}",
-        properties={},
-        source_ids=[src],
-        target_ids=[dst],
-        relation="wf_next",
-        source_edge_ids=[],
-        target_edge_ids=[],
-        metadata={
-            "entity_type": "workflow_edge",
-            "workflow_id": workflow_id,
-            "wf_priority": 100,
-            "wf_predicate": predicate,
-            "wf_is_default": is_default,
-            "wf_multiplicity": "one",
-            "wf_version": "v1",
-        },
-        mentions=[_grounding(workflow_id)],
-        domain_id=None,
-        canonical_entity_id=None,
-        embedding=None,
-    )
+    with use_mode("backend"):
+        return WorkflowEdge(
+            id=edge_id,
+            label=dst_name,
+            type="relationship",
+            doc_id=edge_id,
+            summary=f"next:{dst_name}",
+            properties={},
+            source_ids=[src],
+            target_ids=[dst],
+            relation="wf_next",
+            source_edge_ids=[],
+            target_edge_ids=[],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": workflow_id,
+                "wf_priority": 100,
+                "wf_predicate": predicate,
+                "wf_is_default": is_default,
+                "wf_multiplicity": "one",
+                "wf_version": "v1",
+            },
+            mentions=[_grounding(workflow_id)],
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
 
 
 def build_ingest_workflow_design(

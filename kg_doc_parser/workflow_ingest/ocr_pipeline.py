@@ -2940,6 +2940,7 @@ def run_ocr_ingest_workflow(
     quality_policy: OCRQualityPolicy | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
+    run_ownership_lease_ms: int | None = None,
 ) -> tuple[_RunCompat, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
     """Run OCR, grouping, and semantic ingest under one persisted root run."""
 
@@ -2980,6 +2981,7 @@ def run_ocr_ingest_workflow(
         deps=deps,
         run_id=run_id,
         resume_from_checkpoint=resume_from_checkpoint,
+        run_ownership_lease_ms=run_ownership_lease_ms,
     )
     return (
         _RunCompat(

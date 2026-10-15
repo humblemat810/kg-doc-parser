@@ -63,7 +63,7 @@ runtime classification to the evidence ledger below.
   independently retryable. A cache hit must not call the provider or create a
   second accepted journal row; a failed summary must not invalidate accepted
   OCR/grouping state.
-- [ ] **A-6. Process-boundary proof:** terminate a real worker after a page and
+- [~] **A-6. Process-boundary proof:** terminate a real worker after a page and
   after a grouping/summary checkpoint, reopen the same engines and run ID in a
   new process, and prove one lineage, no duplicate accepted result, and no
   replay of completed work. The 100-page same-process/reference regression was
@@ -71,7 +71,10 @@ runtime classification to the evidence ledger below.
   evidence. Kogwistar `0.6.10` is tagged, but installed-package verification
   remains pending until its protected PyPI deployment completes; fresh-process
   root recovery remains open because current evidence still uses the source
-  checkout/runtime harness.
+  checkout/runtime harness. The source-checkout harness now proves the
+  fresh-process root path with
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process`,
+  but that is not an installed Kogwistar release gate.
 
 **Track A is complete only when:** the test uses the installed Kogwistar
 package, survives a real process boundary, compares canonical output with an
@@ -673,6 +676,14 @@ itself as proof:
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
 
 ### C05 evidence correction (2026-10-15)
+
+The source-checkout regression
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process`
+passes in 119.67 seconds. The first subprocess interrupts after pages `[1, 2]`; a
+new process waits for the lease to expire, resumes the same root run, calls only
+page 2, and accepts the semantic graph bundle. This proves the parent/child
+workflow path and top-level graph `doc_id` contract, but it does not close the
+installed-package gate until Kogwistar `0.6.10` is available from PyPI.
 
 The 100-page regression `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
 passed in 1030.06 seconds with the real persisted parser/runtime path and

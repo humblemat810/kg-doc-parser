@@ -668,6 +668,7 @@ def run_ocr_root_workflow(
     deps: Mapping[str, object] | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
+    run_ownership_lease_ms: int | None = None,
 ) -> tuple[RunResult, WorkflowExportBundle | None, OCRWorkflowArtifacts]:
     """Run OCR, grouping, and semantic parsing under one persisted parent.
 
@@ -963,13 +964,20 @@ def run_ocr_root_workflow(
                 return semantic_resolver.resolve(operation)(ctx)
             raise ValueError(f"unsupported OCR workflow child {ctx.workflow_id!r}")
 
-    runtime = WorkflowRuntime(
-        workflow_engine=workflow_engine,
-        conversation_engine=conversation_engine,
-        step_resolver=dispatch.resolve,
-        predicate_registry=workflow_predicates(),
-        trace=True,
-    )
+    runtime_args = {
+        "workflow_engine": workflow_engine,
+        "conversation_engine": conversation_engine,
+        "step_resolver": dispatch.resolve,
+        "predicate_registry": workflow_predicates(),
+        "trace": True,
+    }
+    if run_ownership_lease_ms is None:
+        runtime = WorkflowRuntime(**runtime_args)
+    else:
+        runtime = WorkflowRuntime(
+            **runtime_args,
+            run_ownership_lease_ms=run_ownership_lease_ms,
+        )
     effective_run_id = run_id or f"ocr|{document_id}"
     result = (
         runtime.resume_from_latest_checkpoint(

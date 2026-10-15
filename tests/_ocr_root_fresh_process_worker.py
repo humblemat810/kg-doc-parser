@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
+import traceback
 from pathlib import Path
 
 from _kogwistar_test_helpers import build_workflow_engine_triplet
+from kogwistar.engine_core.rust_meta_sqlite import build_sqlite_meta_store
 
 from kg_doc_parser.models import OCRClusterResponse, TextCluster
 from kg_doc_parser.workflow_ingest import (
@@ -46,7 +50,13 @@ def _response(page_number: int) -> OCRClusterResponse:
     )
 
 
-def _semantic_tree(*, collection: object, parser_source_map: dict[str, dict[str, object]]) -> SemanticNode:
+def _semantic_tree(
+    *,
+    collection: object,
+    parser_input_dict: dict[str, object],
+    parser_source_map: dict[str, dict[str, object]],
+) -> SemanticNode:
+    del parser_input_dict
     root = SemanticNode(
         title=str(getattr(collection, "title", "Fresh Root")),
         node_type="DOCUMENT_ROOT",
@@ -79,6 +89,7 @@ def _semantic_tree(*, collection: object, parser_source_map: dict[str, dict[str,
 
 
 def main() -> int:
+    os.environ.setdefault("KOGWISTAR_IMPL_META_STORE", "python")
     scratch = Path(sys.argv[1])
     mode = sys.argv[2]
     image_payloads = [
@@ -114,7 +125,21 @@ def main() -> int:
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
         scratch / "engines", "in_memory"
     )
+    for name, engine in (
+        ("workflow", workflow_engine),
+        ("conversation", conversation_engine),
+        ("knowledge", knowledge_engine),
+    ):
+        metadata = build_sqlite_meta_store(scratch / "engines" / name, "meta.sqlite")
+        metadata.ensure_initialized()
+        engine.metadata = metadata
+        engine._phase1_enable_index_jobs = False
     try:
+        if mode == "resume":
+            # Simulate a fresh process after the crash-recovery lease expires.
+            # The production default remains long-lived; this test-only lease
+            # keeps the subprocess test bounded without bypassing ownership.
+            time.sleep(30.2)
         result, bundle, _ = run_ocr_ingest_workflow(
             document_id="fresh-root-document",
             title="Fresh Root",
@@ -128,9 +153,13 @@ def main() -> int:
             deps={"parse_semantic_fn": _semantic_tree},
             run_id="ocr|fresh-root-document",
             resume_from_checkpoint=mode == "resume",
+            run_ownership_lease_ms=30_000,
         )
     except Exception as error:
         if mode != "interrupt":
+            (scratch / "resume-error.txt").write_text(
+                traceback.format_exc(), encoding="utf-8"
+            )
             raise
         (scratch / "interrupt-result.json").write_text(
             json.dumps({"error": str(error), "calls": calls}), encoding="utf-8"

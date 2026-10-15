@@ -290,6 +290,13 @@ contract.
 
 ### Evidence update (2026-10-15)
 
+- The source-checkout fresh-process root recovery test now passes:
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process`.
+  It uses persistent SQLite metadata, waits for the short test lease to expire,
+  resumes the same root ID, retries only the failed page, and completes graph
+  publication. This improves S09/C05 evidence but does not replace the
+  installed Kogwistar `0.6.10` verification gate.
+
 - S08's final-group identity loss is fixed in
   `workflow_ingest/document_adapters.py::apply_grouping_proposals` and covered
   by `tests/test_document_adapters.py::test_final_group_keeps_identity_and_kind_under_document_root`.
