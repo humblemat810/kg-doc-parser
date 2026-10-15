@@ -36,6 +36,12 @@ The latest downstream review is accepted as a correction to checklist status,
 not as evidence that the implementation is complete. Two items that may look
 green when reading only the file-writing code are explicitly **PARTIAL**:
 
+The Kogwistar `v0.6.10` tag is now on `main`. Its PyPI release workflow has
+passed verification, wheel builds, sdist, and artifact audit, but the protected
+`pypi` deployment is still waiting for approval. The parser must continue to
+pin the published `0.6.9` package until `0.6.10` is publicly installable and a
+clean CPython/PyPy matrix verifies the released package.
+
 - **S02 artifact SHA-256 verification:** the completed-page reuse predicate
   rejects a well-formed tampered artifact, but the complete root path has not
   yet proven both SQLite/artifact commit orders and runtime-checkpoint
