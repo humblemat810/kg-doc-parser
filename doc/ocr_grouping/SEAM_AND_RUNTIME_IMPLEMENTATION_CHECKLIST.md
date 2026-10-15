@@ -67,9 +67,11 @@ runtime classification to the evidence ledger below.
   after a grouping/summary checkpoint, reopen the same engines and run ID in a
   new process, and prove one lineage, no duplicate accepted result, and no
   replay of completed work. The 100-page same-process/reference regression was
-  also run against installed released Kogwistar `0.6.9` and passed with the
-  retryable-child fix; fresh-process root recovery remains open because the
-  current evidence still uses the source checkout/runtime harness.
+  run against a coordinated source checkout and is not installed-release
+  evidence. Kogwistar `0.6.10` is tagged, but installed-package verification
+  remains pending until its protected PyPI deployment completes; fresh-process
+  root recovery remains open because current evidence still uses the source
+  checkout/runtime harness.
 
 **Track A is complete only when:** the test uses the installed Kogwistar
 package, survives a real process boundary, compares canonical output with an
@@ -118,10 +120,10 @@ whose contract crosses SQLite, Kogwistar, a provider, or graph export.
 - [x] **D-2.** Keep the installed Kogwistar API gate separate from source
   checkout compatibility; record the exact version and CI run.
 - [~] **D-3.** Merge and publish the Kogwistar retryable-child fix before
-  claiming Track A-6 or the 100-page release fixture. Kogwistar `0.6.9` is
-  published on PyPI and the parser lockfile records its hashes. The installed
-  release gate is now unblocked, but the fresh-process and duplicate-resume
-  evidence is still required.
+  claiming Track A-6 or the 100-page release fixture. Kogwistar `0.6.10` is
+  merged and tagged, but its protected PyPI deployment is still pending, so
+  the parser cannot yet verify the installed release or regenerate a release
+  lock. Fresh-process and duplicate-resume evidence is also still required.
 - [ ] **D-4.** Close Track A process/recovery evidence before claiming Track B
   end-to-end seam closure.
 - [ ] **D-5.** Only after both tracks are green, bump the parser version, add
@@ -801,7 +803,8 @@ protocol.
   document root is explicitly treated as a structural wrapper that may have
   one child; semantic grouping nodes remain subject to the two-or-more-child
   invariant. The focused adapter suite passes its grouping assertions.
-- Kogwistar `0.6.9` is now published: the specific PyPI `0.6.9` endpoint
-  reports five files uploaded at `2026-10-15T10:22:25Z`, and the parser lock
-  file has been regenerated with the published hashes. Installed-package
-  100-page recovery and fresh-process root checkpoint recovery remain open.
+- Kogwistar `0.6.10` is merged and tagged at core commit `c11efd9`, but its
+  protected PyPI deployment is still pending. The parser must not claim an
+  installed-package release gate or regenerate its release lock until
+  `kogwistar==0.6.10` is publicly installable. Installed-package 100-page
+  recovery and fresh-process root checkpoint recovery remain open.

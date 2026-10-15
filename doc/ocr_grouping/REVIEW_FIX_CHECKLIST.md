@@ -64,8 +64,9 @@ passed in 1030.06 seconds with merged Kogwistar source commit `c0eb92c` on
 `PYTHONPATH`. The uninterrupted and interrupted/resumed canonical graph
 payloads matched, and the injected page failure was retried without rebuilding
 accepted page work. This improves C05 evidence but does not close it: the
-  Kogwistar `v0.6.9` is published on PyPI. A true fresh-process/SIGKILL
-  recovery plus duplicate-root-resume race remain open.
+test used a coordinated source checkout, while Kogwistar `v0.6.10` is only
+tagged and its protected PyPI deployment is still pending. A true
+fresh-process/SIGKILL recovery plus duplicate-root-resume race remain open.
 
 The focused test
 `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_resume_reopens_state_in_a_fresh_process`
@@ -164,7 +165,7 @@ interpretation of existing evidence:
 | S05 accepted hierarchy consumption | PARTIAL | The semantic callback receives and consumes the accepted `document_tree` to derive semantic output, `WorkflowExportBundle.grouping_tree` preserves it, and the OCR root rejects a missing or changed grouping artifact. Regression: `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`. | Explicit compatibility behavior for consumers that ignore hierarchy remains open. |
 | S06 grouping checkpoint safety | PARTIAL | Expected-revision/absence fencing, frontier consistency checks, and `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` now reject unfenced updates to an existing checkpoint. | Every writer must be audited; late-writer, monotonic generation, and crash/restart behavior remain release blockers. |
 | Runtime ownership | PARTIAL | Stable root/page/grouping/semantic child identities exist in the persisted design. Core branch `fix/workflow-run-ownership` commit `817b03a` adds persisted CAS ownership leases and explicit suspended-run release, but it is not yet merged or released. | A fresh process must reopen the same parent and child lineage without a second accepted semantic generation using the published core package. |
-| 100-page resume | PARTIAL | The persisted test passes with Kogwistar core commit `c0eb92c` supplied on `PYTHONPATH`, and the retryable-child fix is published in Kogwistar `0.6.9`. Core `v0.6.10` is tagged but its protected PyPI publish is still waiting; ownership-fencing commit `817b03a` is only on an unmerged feature branch. Installed-release verification, SIGKILL/new-process, and duplicate-resume evidence are still required. |
+| 100-page resume | PARTIAL | The persisted test passes with a coordinated Kogwistar source checkout, but that is not installed-release evidence. Core `v0.6.10` is tagged and its protected PyPI publish is still waiting; ownership-fencing commit `817b03a` is only on an unmerged feature branch. Installed-release verification, SIGKILL/new-process, and duplicate-resume evidence are still required. |
 | OCR completeness | PARTIAL | Typed provider diagnostics and strict policy can reject provider loss signals. | Interval coverage alone does not detect missing figures/tables/coordinates; provider-side completeness and recovery evidence remain open. |
 
 The checklist therefore intentionally contains no green S02, S06, C02, C03,
@@ -294,6 +295,8 @@ contract.
   by `tests/test_document_adapters.py::test_final_group_keeps_identity_and_kind_under_document_root`.
   The root's one-child exception is structural only; semantic grouping nodes
   remain non-unary.
-- Kogwistar `0.6.9` is published and the parser lockfile now records its
-  published artifact hashes. The installed-package recovery gate still needs
-  to be rerun before C05 can be promoted.
+- Kogwistar `0.6.10` is merged and tagged, but its protected PyPI deployment is
+  still pending. The parser lockfile must not be updated to that release until
+  a clean environment can install it and confirm the public version/API. The
+  installed-package recovery gate still needs to be rerun before C05 can be
+  promoted.
