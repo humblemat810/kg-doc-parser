@@ -402,7 +402,10 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [x] Add a duplicate-resume race test and assert one accepted commit. Covered
   by `test_ocr_root_concurrent_resume_has_one_owner_and_one_result`, including
   an explicit `WorkflowRunOwnershipError` for the losing worker.
-- [ ] Add a no-provider-call-on-reuse test for already committed pages.
+- [x] Add a no-provider-call-on-reuse test for already committed pages. Covered
+  by `test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`, which
+  completes two pages, resumes the same root, and asserts the OCR call count
+  remains `2` while both pages are reported as reused.
 - [ ] Assert the final runtime graph contains no orphaned stage executions,
   duplicate accepted commits, or skipped page cursor transitions.
 
@@ -835,13 +838,13 @@ protocol.
 - [ ] Run `git diff --check` and lock verification.
 - [ ] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
-- [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11. Parser CI
-  run `38658488434` at `a1bc69a` completed successfully for all four matrix jobs.
-  Parser CI run `38685108069` passed all four required jobs on commit
-  `4b8a1de`; the earlier CPython 3.13 failure in `38681712390` was reproduced
-  locally, fixed in the duplicate-worker acceptance fence, and covered by the
-  full CPython 3.13 selection. Slow/manual provider experiments remain
-  separate gates.
+- [~] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11. Earlier
+  runs passed the four required jobs, but the latest pushed run `38757822459`
+  reached all four matrix jobs and failed at the existing installed-Kogwistar
+  version contract: PyPI `0.6.9` still exposes
+  `kogwistar.__version__ == "0.6.8"`. This is an upstream package-publication
+  gate, not a reason to weaken the parser contract. Slow/manual provider
+  experiments remain separate gates.
 - [ ] Only after all release gates pass, update version/release notes and pins.
 
 ### Evidence update (2026-10-15)

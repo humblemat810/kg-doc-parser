@@ -270,12 +270,13 @@ claim from a same-process or mocked test.
   is part of the persisted summary key; `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_generation_fingerprint_invalidates_persisted_cache`
   proves a provider/model/prompt identity change does not reuse an accepted summary.
   Callers must change the fingerprint whenever output-affecting generation configuration changes.
-- [x] Run the full parser CI matrix after the P0 runtime work. Parser CI run
-  `38685108069` passed CPython 3.12-3.14 and PyPy 3.11 on `4b8a1de`. The
-  earlier CPython 3.13 failure in `38681712390` was reproduced locally and
-  fixed by the same-identity duplicate-worker acceptance fence; the full
-  CPython 3.13 selection passed afterward. Slow/manual provider experiments
-  remain separate gates.
+- [~] Run the full parser CI matrix after the P0 runtime work. Earlier runs
+  passed CPython 3.12-3.14 and PyPy 3.11, but the latest pushed run
+  `38757822459` failed all four jobs at the installed-Kogwistar version
+  contract because PyPI `0.6.9` still exposes
+  `kogwistar.__version__ == "0.6.8"`. The parser contract remains strict; the
+  matrix must be rerun after Kogwistar `0.6.10` is published. Slow/manual
+  provider experiments remain separate gates.
 
 ## Reviewer-required acceptance additions
 
