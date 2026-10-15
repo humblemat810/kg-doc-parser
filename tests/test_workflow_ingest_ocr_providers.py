@@ -195,6 +195,98 @@ def test_docling_missing_runtime_fails_at_selection_boundary() -> None:
         run_docling_ocr_page(Path("missing-page.png"), 1, settings, engine="rapidocr")
 
 
+def test_docling_adapter_preserves_text_table_figure_provenance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Docling item provenance remains distinct and is clipped to page bounds."""
+    from PIL import Image
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+
+    class BBox:
+        def __init__(self, left: float, right: float, top: float, bottom: float) -> None:
+            self.l = left
+            self.r = right
+            self.t = top
+            self.b = bottom
+
+    class Provenance:
+        def __init__(self, bbox: BBox) -> None:
+            self.bbox = bbox
+
+    class Item:
+        def __init__(self, label: str, text: str, bbox: BBox) -> None:
+            self.label = label
+            self.text = text
+            self.prov = [Provenance(bbox)]
+
+    class Document:
+        def iterate_items(self) -> list[Item]:
+            return [
+                Item("text", "heading", BBox(-10, 40, 5, 20)),
+                Item("table", "| a | b |", BBox(20, 120, 25, 90)),
+                Item("picture", "", BBox(45, 70, 30, 60)),
+            ]
+
+    class Conversion:
+        document = Document()
+
+    class InputFormat:
+        IMAGE = "image"
+
+    class ImageFormatOption:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class DocumentConverter:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def convert(self, _path: str) -> Conversion:
+            return Conversion()
+
+    docling = ModuleType("docling")
+    datamodel = ModuleType("docling.datamodel")
+    base_models = ModuleType("docling.datamodel.base_models")
+    base_models.InputFormat = InputFormat  # type: ignore[attr-defined]
+    converter = ModuleType("docling.document_converter")
+    converter.DocumentConverter = DocumentConverter  # type: ignore[attr-defined]
+    converter.ImageFormatOption = ImageFormatOption  # type: ignore[attr-defined]
+    pipeline = ModuleType("docling.pipeline")
+    standard = ModuleType("docling.pipeline.standard_pdf_pipeline")
+    standard.StandardPdfPipeline = object  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "kg_doc_parser.workflow_ingest.ocr_providers._docling_pipeline_options",
+        lambda _engine: object(),
+    )
+    for name, module in {
+        "docling": docling,
+        "docling.datamodel": datamodel,
+        "docling.datamodel.base_models": base_models,
+        "docling.document_converter": converter,
+        "docling.pipeline": pipeline,
+        "docling.pipeline.standard_pdf_pipeline": standard,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    response = run_docling_ocr_page(
+        image_path,
+        1,
+        WorkflowProviderSettings(ocr=ProviderEndpointConfig(provider="docling", model="docling")),
+        engine="rapidocr",
+    )
+
+    assert [cluster.text for cluster in response.OCR_text_clusters] == ["heading"]
+    assert response.OCR_text_clusters[0].bb_x_min == 0
+    assert response.OCR_text_clusters[0].bb_x_max == 40
+    assert [item.description for item in response.non_text_objects] == ["| a | b |", "picture"]
+    assert response.non_text_objects[0].bb_x_max == 100
+    assert response.non_text_objects[0].bb_y_max == 80
+    assert response.meaningful_ordering == [0, 1, 2]
+    assert response.contains_table is True
+
+
 def test_registered_provider_is_explicit_and_process_local(tmp_path: Path) -> None:
     image_path = tmp_path / "page.png"
     image_path.write_bytes(b"image")

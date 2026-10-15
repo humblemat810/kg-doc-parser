@@ -460,7 +460,9 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [ ] Never label a synthetic full-page box as region precision.
 - [ ] Preserve media identity and location for figures, tables, and captions.
 - [ ] Record every rejected/lost non-text object with a structured diagnostic.
-- [ ] Add a mocked Docling fixture with two text regions, a table, and a figure.
+- [x] Add a mocked Docling fixture with separate text, table, and figure
+  provenance, ordering, and coordinate clipping in
+  `tests/test_workflow_ingest_ocr_providers.py::test_docling_adapter_preserves_text_table_figure_provenance`.
 - [ ] Add live-provider evidence for at least one multi-object document.
 
 ### S04. Cluster order to multimodal reading order
