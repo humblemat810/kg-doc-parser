@@ -23,6 +23,7 @@ class OCRTextClusterJSON(TypedDict, total=False):
     cluster_number: int
     text: str
     coordinate_system: str
+    spatial_accuracy: str
 
 
 class OCRNonTextObjectJSON(TypedDict, total=False):
@@ -37,6 +38,7 @@ class OCRNonTextObjectJSON(TypedDict, total=False):
     media_sha256: str
     media_byte_length: int
     coordinate_system: str
+    spatial_accuracy: str
 
 
 class OCRPageJSON(TypedDict):
@@ -51,6 +53,7 @@ class OCRPageJSON(TypedDict):
     OCR_text_clusters: NotRequired[list[OCRTextClusterJSON]]
     non_text_objects: NotRequired[list[OCRNonTextObjectJSON]]
     text: NotRequired[str]
+    spatial_accuracy: NotRequired[str]
 
 
 def _ocr_page_number(value: object) -> int:
@@ -140,6 +143,11 @@ def normalize_ocr_pages(
         page_metadata = raw_page.get("metadata", {})
         if not isinstance(page_metadata, dict):
             raise TypeError("OCR page metadata must be an object")
+        declared_page_accuracy = raw_page.get("spatial_accuracy")
+        if declared_page_accuracy is not None:
+            if not isinstance(declared_page_accuracy, str):
+                raise TypeError("OCR spatial_accuracy must be a string")
+            page_metadata = {**page_metadata, "spatial_accuracy": declared_page_accuracy}
         for key in ("incomplete_text", "incomplete_words_on_edge", "data_loss_likelihood", "scan_quality"):
             value = raw_page.get(key)
             if value is not None:
@@ -199,6 +207,9 @@ def normalize_ocr_pages(
                     metadata={
                         **page_metadata,
                         "coordinate_system": cluster.get("coordinate_system", "pixels"),
+                        "spatial_accuracy": cluster.get(
+                            "spatial_accuracy", page_metadata.get("spatial_accuracy", "page")
+                        ),
                     },
                 )
             )
@@ -224,6 +235,9 @@ def normalize_ocr_pages(
                     metadata={
                         **page_metadata,
                         "coordinate_system": obj.get("coordinate_system", "pixels"),
+                        "spatial_accuracy": obj.get(
+                            "spatial_accuracy", page_metadata.get("spatial_accuracy", "page")
+                        ),
                         "participates_in_semantic_text": False,
                         "mime_type": obj.get("mime_type"),
                         "media_sha256": obj.get("media_sha256"),

@@ -90,8 +90,10 @@ cannot close A-6.
   checkpoint-first crash orders.
 - [~] **B-2 / S03-S04 grounding and order:** preserve provider-declared
   coordinate precision, media identity, and one traversal covering every
-  accepted object exactly once. A full-page fallback must remain page-level,
-  never synthetic region precision.
+  accepted object exactly once. The OCR response and normalized source-unit
+  contracts now preserve explicit spatial precision and downgrade missing or
+  unknown declarations to page accuracy. Full provider-matrix and downstream
+  graph evidence remain open.
 - [~] **B-3 / S05 hierarchy consumption:** the graph exporter now has a
   metamorphic test with two valid trees over identical source items; persisted
   semantic-parser publication evidence remains open.

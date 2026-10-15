@@ -216,6 +216,58 @@ def test_unknown_ocr_coordinate_system_downgrades_to_page_accuracy() -> None:
     assert tree.source_items[0].location.bbox is None
 
 
+def test_synthetic_page_box_does_not_claim_region_accuracy() -> None:
+    inp = normalize_ocr_pages(
+        document_id="synthetic-page-box",
+        title="Synthetic page box",
+        pages=[
+            {
+                "pdf_page_num": 1,
+                "spatial_accuracy": "page",
+                "OCR_text_clusters": [
+                    {
+                        "cluster_number": 0,
+                        "text": "page fallback",
+                        "bb_x_max": 100,
+                        "bb_y_max": 200,
+                    }
+                ],
+                "non_text_objects": [],
+            }
+        ],
+    )
+
+    tree = build_document_tree(inp)
+    assert tree is not None
+    assert tree.source_items[0].location.accuracy == "page"
+
+
+def test_explicit_region_precision_is_preserved() -> None:
+    inp = normalize_ocr_pages(
+        document_id="declared-region",
+        title="Declared region",
+        pages=[
+            {
+                "pdf_page_num": 1,
+                "spatial_accuracy": "region",
+                "OCR_text_clusters": [
+                    {
+                        "cluster_number": 0,
+                        "text": "located text",
+                        "bb_x_max": 10,
+                        "bb_y_max": 10,
+                    }
+                ],
+                "non_text_objects": [],
+            }
+        ],
+    )
+
+    tree = build_document_tree(inp)
+    assert tree is not None
+    assert tree.source_items[0].location.accuracy == "region"
+
+
 def test_build_document_tree_keeps_nontext_observation_without_fake_media() -> None:
     inp = WorkflowIngestInput(
         request_id="doc",

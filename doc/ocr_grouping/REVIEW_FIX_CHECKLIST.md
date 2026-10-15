@@ -394,7 +394,7 @@ contract.
 
 Source: `kg_doc_parser_ocr_broad_audit_2026-10-15.md`. The source review was
 static and did not prove runtime behavior. The statuses below are deliberately
-conservative and apply to the current parser branch HEAD `556f9cf`. A row is
+conservative and apply to the current parser branch HEAD `90d2d8d`. A row is
 not release-complete until its
 focused test, full matrix, and exact HEAD are verified.
 
@@ -404,7 +404,7 @@ focused test, full matrix, and exact HEAD are verified.
 | B02 | [ ] Open | Unrepresented non-text OCR units still need explicit retained placeholders or structured rejection and input-unit accounting. |
 | B03 | [ ] Open | Cross-page continuation still needs item-level kind, geometry, and text-boundary compatibility rather than page-wide flags alone. |
 | B04 | [ ] Open | Summary generation still needs exact owned evidence slices at the provider boundary, not only selected source-item IDs. |
-| B05 | [ ] Open | Provider-declared spatial precision still needs explicit preservation so synthetic page-wide boxes cannot claim region accuracy. |
+| B05 | [~] Fixed locally; CI pending | `OCRClusterResponse.spatial_accuracy` and normalized `SourceUnit.metadata` now carry an explicit page/region/line/word/character declaration. Unknown or absent precision fails closed to page accuracy; direct OCR and item-level Docling paths declare region precision. Tests: `test_synthetic_page_box_does_not_claim_region_accuracy`, `test_explicit_region_precision_is_preserved`, and the full `tests/test_document_adapters.py` file (18 passed). |
 | B06 | [ ] Open | Render and legacy artifact paths still need document/revision collision-resistant namespacing for same-named inputs. |
 | B07 | [~] Fixed locally; CI pending | Page numbers are required to be positive and unique, and resolved paths are deterministic. Focused tests are listed under B01. Out-of-order inputs are normalized by sorted output; conflicting duplicates fail closed. |
 | B08 | [ ] Open | Default quality policy remains permissive for provider-reported quality; independent completeness and non-text checks remain needed. |
@@ -417,6 +417,7 @@ focused test, full matrix, and exact HEAD are verified.
 
 This ledger is a release gate, not a claim that the branch is complete. The
 latest GitHub parser matrix run `38807438954` failed its deterministic test
-step in all four jobs, so B01/B07 and the broader release remain unverified in
-CI. Kogwistar typing fixes are on its separate `fix/workflow-run-ownership`
-branch at `2e84c10`; that branch has no PR run yet and is not treated as green.
+step in all four jobs, so B01/B05/B07 and the broader release remain
+unverified in CI. Kogwistar typing fixes are on
+`fix/workflow-run-ownership` at `407b012`; its new run is
+`38810946312` and must complete before the downstream pin is advanced.

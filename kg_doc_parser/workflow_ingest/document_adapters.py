@@ -76,6 +76,11 @@ def build_document_tree(
             coordinate_system_literal = cast(
                 Literal["pixels", "relative", "points"], coordinate_system
             )
+            declared_accuracy = unit.metadata.get("spatial_accuracy", "page")
+            accuracy = _spatial_accuracy(
+                declared_accuracy,
+                has_bbox=precise_bbox is not None,
+            )
             printed_page_label = page.metadata.get("printed_page_number")
             if not isinstance(printed_page_label, str):
                 printed_page_label = None
@@ -93,7 +98,7 @@ def build_document_tree(
                         coordinate_system=coordinate_system_literal,
                     )
                 ),
-                accuracy="region" if precise_bbox is not None else "page",
+                accuracy=accuracy,
             )
             ocr_metadata = _ocr_metadata(unit.metadata)
             page_annotations = _page_annotations(page.metadata)
@@ -166,6 +171,26 @@ def build_document_tree(
         nodes=tuple(nodes),
     )
     return tree.model_copy(update={"references": extract_reference_mentions(tree)})
+
+
+def _spatial_accuracy(
+    value: object,
+    *,
+    has_bbox: bool,
+) -> Literal["page", "region", "line", "word", "character"]:
+    """Keep spatial precision at the provider-declared level.
+
+    A box alone is not evidence that the provider located text or media at
+    region precision: page-wide fallback boxes are common in OCR adapters.
+    Unknown or unusable declarations fail closed to page accuracy.
+    """
+    allowed = {"page", "region", "line", "word", "character"}
+    if not has_bbox or not isinstance(value, str) or value not in allowed:
+        return "page"
+    return cast(
+        Literal["page", "region", "line", "word", "character"],
+        value,
+    )
 
 
 def _ocr_metadata(metadata: Mapping[str, object]) -> OCRMetadata | None:

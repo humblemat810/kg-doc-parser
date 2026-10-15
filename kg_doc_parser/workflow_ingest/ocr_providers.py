@@ -317,6 +317,7 @@ def _direct_response(
         data_loss_likelihood=0.0,
         scan_quality="medium",
         contains_table=False,
+        spatial_accuracy="region",
     )
 
 
@@ -546,5 +547,6 @@ def run_docling_ocr_page(
         data_loss_likelihood=0.0,
         scan_quality="medium",
         contains_table=any("table" in str(getattr(item, "label", "")).lower() for item in items),
+        spatial_accuracy="region" if ordering else "page",
     )
 

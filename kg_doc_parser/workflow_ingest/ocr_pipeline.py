@@ -2588,6 +2588,7 @@ def _minimal_ocr_response_from_text(*, text: str, page_number: int, image_path: 
             data_loss_likelihood=0.0,
             scan_quality="medium",
             contains_table=False,
+            spatial_accuracy="page",
         )
     return OCRClusterResponse(
         OCR_text_clusters=[
@@ -2614,6 +2615,7 @@ def _minimal_ocr_response_from_text(*, text: str, page_number: int, image_path: 
         data_loss_likelihood=0.0,
         scan_quality="medium",
         contains_table=False,
+        spatial_accuracy="page",
     )
 
 

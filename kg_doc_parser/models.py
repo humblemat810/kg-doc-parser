@@ -51,6 +51,7 @@ if True:
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
 from typing import Literal, Self, TypeAlias
+
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_extension.model_slicing import (
     DtoType,
@@ -59,8 +60,14 @@ from pydantic_extension.model_slicing import (
 from pydantic_extension.model_slicing.mixin import DtoField
 
 JsonPrimitive = str | int | float | bool | None
-JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
+JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]  # noqa: UP040 - PyPy 3.11 support
+JsonObject: TypeAlias = dict[str, JsonValue]  # noqa: UP040 - PyPy 3.11 support
+
+
+class ModelInvariantError(ValueError):
+    """Raised when an OCR model cannot satisfy its structural contract."""
+
+
 #========================= OCR DOC
 
 # pre-validation model
@@ -115,6 +122,14 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
                                                                                       '"low", "medium" or "high". '
                                 'low: text barely legible. medium: Legible with non smooth due to pixelation. high: texts are easily and highly identifiable. ' )
     contains_table: DtoType[bool] = Field(description='Whether this page contains table. ')
+    spatial_accuracy: DtoType[Literal['page', 'region', 'line', 'word', 'character']] = Field(
+        default='page',
+        description=(
+            'The declared precision of the bounding boxes. Use page for a '
+            'synthetic page-wide fallback; providers with item-level boxes '
+            'must explicitly declare region or finer precision.'
+        ),
+    )
 
     @model_validator(mode='after')
     def check_cluster_meaningful_ordering_agreement(self) -> Self:
@@ -157,9 +172,11 @@ class SplitPage(OCRClusterResponseBc):
     def model_dump(self, *arg: object, **kwarg: object) -> JsonObject:
         return self.to_doc()
     def dump_raw(self, *arg: object, **kwarg: object) -> JsonObject:
-        return super(SplitPage, self).model_dump(exclude = ["refined_version"], *arg, **kwarg)
+        options = {**kwarg, "exclude": ["refined_version"]}
+        return super().model_dump(*arg, **options)
     def dump_supercede_parse(self, *arg: object, **kwarg: object) -> JsonObject:
-        return super(SplitPage, self).model_dump(exclude = ["refined_version", "metadata"], *arg, **kwarg)
+        options = {**kwarg, "exclude": ["refined_version", "metadata"]}
+        return super().model_dump(*arg, **options)
     @model_validator(mode="after")
     def roundtrip_invariant(self, info: ValidationInfo) -> "SplitPage":
         # Context may be None if caller didn't pass it
@@ -240,7 +257,10 @@ class SplitPage(OCRClusterResponseBc):
                     elif (i_non_ocr < len(non_ocr_cluster)) and expected_next == non_ocr_cluster[i_non_ocr].cluster_number:
                         i_non_ocr += 1
                     else:
-                        raise Exception(f'expected index {expected_next} not found in both ocr_cluster nor signature_blocks')
+                        raise ModelInvariantError(
+                            f"expected index {expected_next} not found in both "
+                            "ocr_cluster nor signature_blocks"
+                        )
                     expected_next += 1
 
             
