@@ -338,6 +338,38 @@ def _write_json_atomic(path: Path, payload: object) -> None:
     )
 
 
+def _image_file_is_valid(path: Path) -> bool:
+    """Return whether a cached image can be decoded as a complete image."""
+    try:
+        with Image.open(path) as image:
+            image.verify()
+    except (OSError, SyntaxError, ValueError):
+        return False
+    return True
+
+
+def _write_png_atomic(image: Image.Image, path: Path) -> None:
+    """Encode and publish a rasterized page without exposing partial PNG data."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name: str | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        )
+        os.close(descriptor)
+        image.save(temporary_name, "PNG")
+        if not _image_file_is_valid(Path(temporary_name)):
+            raise RuntimeError(f"rasterizer produced an invalid image for {path.name}")
+        os.replace(temporary_name, path)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+
+
 def _coalesce_cross_page_continuations(
     proposals: Sequence[GroupProposal],
 ) -> tuple[GroupProposal, ...]:
@@ -2479,7 +2511,9 @@ def _render_pdf_to_images(pdf_path: Path, rendered_dir: Path) -> list[Path]:
     output_paths: list[Path] = []
     for page_number in range(1, len(reader.pages) + 1):
         output_path = rendered_dir / f"page_{page_number}.png"
-        if not output_path.exists():
+        if output_path.is_symlink():
+            raise ValueError(f"rendered PDF page is a symlink: {output_path.name}")
+        if not output_path.is_file() or not _image_file_is_valid(output_path):
             images = convert_from_path(
                 str(pdf_path),
                 first_page=page_number,
@@ -2488,7 +2522,7 @@ def _render_pdf_to_images(pdf_path: Path, rendered_dir: Path) -> list[Path]:
             )
             if not images:
                 raise RuntimeError(f"pdf rasterizer returned no image for page {page_number}")
-            images[0].save(output_path, "PNG")
+            _write_png_atomic(images[0], output_path)
         output_paths.append(output_path)
     return output_paths
 

@@ -19,6 +19,8 @@ verification must then confirm the installed package before changing that pin.
 - Preserve fail-closed recovery behavior after interrupted OCR/grouping runs.
 - Keep materialized OCR page paths inside the rendered directory, reject
   duplicate/non-positive page numbers, and publish byte payloads atomically.
+- Validate cached PDF page images before reuse and atomically publish regenerated
+  PNGs after successful decoding.
 - Record the broad OCR audit as an explicit B01-B14 release ledger; unresolved
   fidelity, quality, performance, and rasterization gates remain open.
 - Keep the existing PyPy 3.11 and CPython 3.12-3.14 compatibility contract.

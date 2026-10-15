@@ -123,6 +123,7 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     _ocr_configuration_fingerprint,
     _ocr_page_metadata,
     _process_ocr_page,
+    _render_pdf_to_images,
     _resolve_ocr_source_plan,
     _write_json_atomic,
 )
@@ -201,6 +202,37 @@ def test_materialize_image_payloads_rejects_invalid_page_numbers_and_symlinks(
             copied_dir,
         )
     assert outside.read_bytes() == b"original"
+
+
+def test_pdf_rasterization_regenerates_corrupt_cached_page_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rendered_dir = tmp_path / "rendered"
+    rendered_dir.mkdir()
+    corrupt_page = rendered_dir / "page_1.png"
+    corrupt_page.write_bytes(b"partial-png")
+
+    class _Reader:
+        def __init__(self) -> None:
+            self.pages = [object()]
+
+    monkeypatch.setattr(ocr_pipeline_module, "PdfReader", lambda _: _Reader())
+    import pdf2image
+
+    calls: list[int] = []
+
+    def _convert(*args: object, **kwargs: object) -> list[Image.Image]:
+        calls.append(int(kwargs["first_page"]))
+        return [Image.new("RGB", (8, 8), "white")]
+
+    monkeypatch.setattr(pdf2image, "convert_from_path", _convert)
+
+    paths = _render_pdf_to_images(tmp_path / "source.pdf", rendered_dir)
+
+    assert paths == [corrupt_page]
+    assert calls == [1]
+    with Image.open(corrupt_page) as image:
+        assert image.size == (8, 8)
 
 _LOGGER = logging.getLogger(__name__)
 

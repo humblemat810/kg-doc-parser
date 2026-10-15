@@ -413,7 +413,7 @@ focused test, full matrix, and exact HEAD are verified.
 | B11 | [ ] Open | Render identity does not yet include all rasterizer configuration and output properties such as DPI, rotation, and Poppler identity. |
 | B12 | [ ] Open | Reference extraction remains item-local and does not yet map split mentions across ordered OCR units. |
 | B13 | [ ] Open | The default PDF path still rasterizes pages; hybrid native PDF text extraction is not implemented. |
-| B14 | [ ] Open | PDF page PNGs are still written directly and manifest reuse checks existence, not atomic publication plus decoded-image digest/properties. |
+| B14 | [~] Fixed locally; CI pending | `_render_pdf_to_images` now rejects page symlinks, validates cached image decoding, and publishes regenerated PNGs through a temporary file and atomic rename. Test: `test_pdf_rasterization_regenerates_corrupt_cached_page_atomically`. Manifest-level page digests and dimensions remain open. |
 
 This ledger is a release gate, not a claim that the branch is complete. The
 latest GitHub parser matrix run `38802566392` failed its deterministic test
