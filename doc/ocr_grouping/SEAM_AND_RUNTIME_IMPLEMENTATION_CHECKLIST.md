@@ -665,6 +665,12 @@ failure was retried, and accepted page work was reused. This supersedes the
 older source-checkout evidence in the C05 row, but does not close C05: PyPI
 still exposes Kogwistar `0.6.8`, and fresh-process/SIGKILL recovery, duplicate
 root-resume races, and cross-store reconciliation remain open.
+The focused fresh-process page-state test
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_resume_reopens_state_in_a_fresh_process`
+also passes in 33.32 seconds and proves accepted page reuse across
+interpreters. It intentionally does not claim runtime-checkpoint restoration:
+the test backend is in-memory, so A-6 still requires a persistent graph backend
+and a real process-boundary root resume.
 
 ### S02 correction ledger
 

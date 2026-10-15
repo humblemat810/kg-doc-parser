@@ -752,6 +752,44 @@ def test_ocr_pages_run_as_persisted_steps_and_terminal_resume_does_not_recall_pr
 
 
 @pytest.mark.ci
+def test_ocr_page_resume_reopens_state_in_a_fresh_process() -> None:
+    """A fresh process reuses accepted pages and processes only the gap."""
+    scratch = _scratch("ocr_page_fresh_process_resume")
+    for page_number, text in ((1, "fresh page one"), (2, "fresh page two")):
+        _draw_test_image(
+            scratch / "source" / f"page-{page_number}.png",
+            lines=[text],
+        )
+    worker = Path(__file__).with_name("_ocr_fresh_process_worker.py")
+    interrupted = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "interrupt"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert interrupted.returncode != 0
+    assert "fresh-process interruption" in interrupted.stderr
+
+    resumed = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "resume"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    result = json.loads(
+        (scratch / "resume-result.json").read_text(encoding="utf-8")
+    )
+    assert result == {
+        "pages": 2,
+        "completed": [1, 2],
+        "reused": [1],
+        "run_id": "ocr|fresh-process-document",
+        "calls": [2],
+    }
+
+
+@pytest.mark.ci
 @pytest.mark.slow
 def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() -> None:
     def _make_case(name: str) -> tuple[Path, list[OCRImagePayload]]:

@@ -67,6 +67,14 @@ accepted page work. This improves C05 evidence but does not close it: the
 Kogwistar `v0.6.9` release is tagged but not yet visible on PyPI, and a true
 fresh-process/SIGKILL recovery plus duplicate-root-resume race remain open.
 
+The focused test
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_resume_reopens_state_in_a_fresh_process`
+passes in 33.32 seconds and proves accepted OCR page reuse across two Python
+processes. It deliberately uses the in-memory graph backend only for the
+workflow step wrapper, so it is page-state evidence rather than proof that a
+runtime checkpoint survives process loss; persistent graph-backend recovery
+remains an open gate.
+
 ## Review-adjusted execution checklist
 
 This is the short operational list for the two implementations. The detailed

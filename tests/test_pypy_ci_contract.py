@@ -25,13 +25,13 @@ def test_parser_ci_pypy311_matrix_leg_is_required() -> None:
 def test_parser_ci_uses_the_declared_kogwistar_release() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = metadata["tool"]["poetry"]["dependencies"]["kogwistar"]
-    assert version == "0.6.8"
+    assert version == "0.6.9"
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "ref: v0.6.8" in workflow
+    assert "ref: v0.6.9" in workflow
 
     exported_requirements = (ROOT / "req.txt").read_text(encoding="utf-8")
-    assert "kogwistar==0.6.8" in exported_requirements
+    assert "kogwistar==0.6.9" in exported_requirements
 
 
 def test_installed_kogwistar_exposes_the_persisted_workflow_api() -> None:
@@ -40,7 +40,7 @@ def test_installed_kogwistar_exposes_the_persisted_workflow_api() -> None:
 
     import kogwistar
 
-    assert kogwistar.__version__ == "0.6.8"
+    assert kogwistar.__version__ == "0.6.9"
     assert WorkflowInvocationRequest is not None
     assert callable(WorkflowRuntime.resume_from_latest_checkpoint)
 
