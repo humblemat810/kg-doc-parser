@@ -288,6 +288,84 @@ def _validate_root_page_result(
         )
 
 
+def _page_result_needs_recovery(
+    *,
+    page_result: Mapping[str, object],
+    context: OCRPageProcessingContext,
+    source_plan: OCRSourcePlan,
+) -> bool:
+    """Report whether a terminal page child must be regenerated."""
+    sources = _page_sources(page_result)
+    expected_pages = [page_number for page_number, _image_path in sources]
+    if (
+        _page_cursor(page_result) != len(sources)
+        or _int_list(page_result, "completed_pages") != expected_pages
+        or len(_json_pages(page_result)) != len(sources)
+    ):
+        return True
+    return _reconcile_page_checkpoint(
+        state=page_result,
+        context=context,
+        source_plan=source_plan,
+    ) is not None
+
+
+def _root_page_artifacts_need_recovery(
+    *,
+    context: OCRPageProcessingContext,
+    source_plan: OCRSourcePlan,
+) -> bool:
+    """Detect a broken accepted page set before a terminal root resume.
+
+    Kogwistar correctly treats a succeeded run as terminal. When an artifact
+    is lost after that terminal checkpoint, create a new root incarnation
+    rather than asking the runtime to re-execute a completed run.
+    """
+    for page_number, image_path in source_plan.page_sources:
+        image_digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
+        page_path = source_plan.legacy_dir / f"page_{page_number}.json"
+        context.state_store.reconcile_orphan_artifact(
+            document_id=context.document_id,
+            page_number=page_number,
+            content_hash=image_digest,
+            artifact_path=page_path,
+            config_fingerprints=context.configuration_fingerprints,
+        )
+        if not context.state_store.should_skip_page(
+            document_id=context.document_id,
+            page_number=page_number,
+            stage="ocr",
+            content_hash=image_digest,
+            artifact_path=page_path,
+            config_fingerprint=context.configuration_fingerprints,
+        ):
+            return True
+    return False
+
+
+def _next_root_recovery_run_id(
+    *,
+    conversation_engine: GraphKnowledgeEngine,
+    base_run_id: str,
+) -> tuple[str, int]:
+    """Choose an unused deterministic root recovery incarnation."""
+    generation = 1
+    while True:
+        candidate = f"{base_run_id}|recovery-{generation}"
+        completed = conversation_engine.read.get_nodes(
+            where={
+                "$and": [
+                    {"entity_type": "workflow_completed"},
+                    {"run_id": candidate},
+                ]
+            },
+            limit=1,
+        )
+        if not completed:
+            return candidate, generation
+        generation += 1
+
+
 def _build_page_resolver(
     *,
     context: OCRPageProcessingContext,
@@ -768,6 +846,7 @@ def run_ocr_root_workflow(
     root_resolver.set_state_schema(
         {
             "ocr_page_result": "u",
+            "ocr_page_recovery_generation": "u",
             "workflow_input": "u",
             "tree": "u",
             "grouping_result": "u",
@@ -775,6 +854,7 @@ def run_ocr_root_workflow(
             "semantic_tree": "u",
             "export_bundle": "u",
             "ocr_root_state_version": "u",
+            "ocr_root_lineage_id": "u",
             "source_fingerprint": "u",
             "ocr_configuration_fingerprints": "u",
             "checkpoint_revision": "u",
@@ -791,7 +871,11 @@ def run_ocr_root_workflow(
 
     @root_resolver.register("ocr_root_invoke_pages", is_nested=True)
     def _root_invoke_pages(ctx: StepContext) -> StepRunResult:
-        child_run_id = f"{ctx.run_id}|ocr-pages"
+        recovery_generation = int(ctx.state_view.get("ocr_page_recovery_generation", 0) or 0)
+        recovery_suffix = (
+            f"|recovery-{recovery_generation}" if recovery_generation else ""
+        )
+        child_run_id = f"{ctx.run_id}|ocr-pages{recovery_suffix}"
         return RunSuccess(
             conversation_node_id=None,
             state_update=[],
@@ -807,7 +891,11 @@ def run_ocr_root_workflow(
                     },
                     result_state_key="ocr_page_result",
                     run_id=child_run_id,
-                    invocation_key="ocr-pages-v1",
+                    invocation_key=(
+                        "ocr-pages-v1"
+                        if not recovery_generation
+                        else f"ocr-pages-recovery-v{recovery_generation}"
+                    ),
                     conversation_id=f"ocr:{document_id}",
                     turn_node_id=f"ocr:{document_id}:pages",
                 )
@@ -820,6 +908,16 @@ def run_ocr_root_workflow(
         page_result = ctx.state_view.get("ocr_page_result")
         if not isinstance(page_result, dict):
             raise TypeError("OCR page child did not return a JSON state")
+        if _page_result_needs_recovery(
+            page_result=page_result,
+            context=preparation.page_context,
+            source_plan=preparation.source_plan,
+        ):
+            generation = int(ctx.state_view.get("ocr_page_recovery_generation", 0) or 0) + 1
+            return _success(
+                "ocr_root_invoke_pages",
+                state_update=[("u", {"ocr_page_recovery_generation": generation})],
+            )
         raw_pages = _json_pages(page_result)
         completed_pages = _int_list(page_result, "completed_pages")
         reused_pages = _int_list(page_result, "reused_pages")
@@ -871,6 +969,10 @@ def run_ocr_root_workflow(
     def _root_invoke_grouping(ctx: StepContext) -> StepRunResult:
         tree = _tree(ctx.state_view)
         existing_revision = preparation.state_store.document_tree_revision(document_id=document_id)
+        recovery_generation = int(ctx.state_view.get("ocr_page_recovery_generation", 0) or 0)
+        recovery_suffix = (
+            f"|recovery-{recovery_generation}" if recovery_generation else ""
+        )
         return RunSuccess(
             conversation_node_id=None,
             state_update=[],
@@ -887,8 +989,12 @@ def run_ocr_root_workflow(
                         "checkpoint_absent": existing_revision is None,
                     },
                     result_state_key="grouping_result",
-                    run_id=f"{ctx.run_id}|grouping",
-                    invocation_key="grouping-v1",
+                    run_id=f"{ctx.run_id}|grouping{recovery_suffix}",
+                    invocation_key=(
+                        "grouping-v1"
+                        if not recovery_generation
+                        else f"grouping-recovery-v{recovery_generation}"
+                    ),
                     conversation_id=f"ocr:{document_id}",
                     turn_node_id=f"ocr:{document_id}:grouping",
                 )
@@ -925,6 +1031,10 @@ def run_ocr_root_workflow(
         input_payload = ctx.state_view.get("workflow_input")
         if not isinstance(input_payload, dict):
             raise TypeError("OCR root has no semantic workflow input")
+        recovery_generation = int(ctx.state_view.get("ocr_page_recovery_generation", 0) or 0)
+        recovery_suffix = (
+            f"|recovery-{recovery_generation}" if recovery_generation else ""
+        )
         return RunSuccess(
             conversation_node_id=None,
             state_update=[],
@@ -933,8 +1043,12 @@ def run_ocr_root_workflow(
                     workflow_id=DEFAULT_WORKFLOW_ID,
                     initial_state={"input": input_payload},
                     result_state_key="semantic_result",
-                    run_id=f"{ctx.run_id}|semantic",
-                    invocation_key="semantic-v1",
+                    run_id=f"{ctx.run_id}|semantic{recovery_suffix}",
+                    invocation_key=(
+                        "semantic-v1"
+                        if not recovery_generation
+                        else f"semantic-recovery-v{recovery_generation}"
+                    ),
                     conversation_id=f"ingest:{document_id}",
                     turn_node_id=f"ingest:{document_id}:turn",
                 )
@@ -1022,6 +1136,17 @@ def run_ocr_root_workflow(
             run_ownership_lease_ms=run_ownership_lease_ms,
         )
     effective_run_id = run_id or f"ocr|{document_id}"
+    root_resume = resume_from_checkpoint
+    recovery_generation = 0
+    if resume_from_checkpoint and _root_page_artifacts_need_recovery(
+        context=preparation.page_context,
+        source_plan=preparation.source_plan,
+    ):
+        effective_run_id, recovery_generation = _next_root_recovery_run_id(
+            conversation_engine=conversation_engine,
+            base_run_id=effective_run_id,
+        )
+        root_resume = False
     result = (
         runtime.resume_from_latest_checkpoint(
             run_id=effective_run_id,
@@ -1029,7 +1154,7 @@ def run_ocr_root_workflow(
             conversation_id=f"ocr:{document_id}",
             turn_node_id=f"ocr:{document_id}:root",
         )
-        if resume_from_checkpoint
+        if root_resume
         else runtime.run(
             workflow_id=DEFAULT_OCR_WORKFLOW_ID,
             conversation_id=f"ocr:{document_id}",
@@ -1043,6 +1168,8 @@ def run_ocr_root_workflow(
                     preparation.page_context.configuration_fingerprints
                 ),
                 "grouping_policy_version": grouping_policy_version,
+                "ocr_page_recovery_generation": recovery_generation,
+                "ocr_root_lineage_id": run_id or f"ocr|{document_id}",
                 "grouping_proposals": [proposal.model_dump(mode="json") for proposal in grouping_proposals],
                 "grouping_passes": [],
             },
@@ -1058,7 +1185,7 @@ def run_ocr_root_workflow(
         source_fingerprint=preparation.source_plan.input_fingerprint,
         configuration_fingerprints=preparation.page_context.configuration_fingerprints,
         grouping_policy_version=grouping_policy_version,
-        require_match=resume_from_checkpoint,
+        require_match=root_resume,
     )
     page_result = final_state.get("ocr_page_result")
     if not isinstance(page_result, dict):

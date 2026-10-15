@@ -2,6 +2,22 @@
 
 ## Latest release-gate update (2026-10-16)
 
+The terminal-root recovery gap is now covered by an additional local change
+under verification. When a completed root run has a missing or invalid page
+artifact, the parser detects the broken SQLite/artifact seam before asking
+Kogwistar to resume. Because Kogwistar correctly treats a successful run as
+terminal, it starts a deterministic `|recovery-N` root incarnation while
+preserving the original logical lineage. Valid pages are reused and only the
+invalid page is retried.
+
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`
+passes locally in 249.03 seconds: three OCR calls become two accepted page
+artifacts on the recovery run, the valid second page is reused, semantic
+parsing runs once for the recovery incarnation, and the recovery run ID is
+`<original>|recovery-1`. Ruff and `git diff --check` pass for the changed
+files. This is still source-checkout evidence, not installed-release or
+fresh-process release proof.
+
 Commit `c173057` adds a root-finalization preflight that revalidates the
 terminal page result against the authoritative SQLite/artifact state before
 publishing the root result.  The real regression
@@ -69,7 +85,10 @@ not claims of complete crash consistency or fresh-process recovery.
 child -> root finalization.
 
 The root and child stages now use the existing Kogwistar runtime and stable
-parent/child invocation IDs. SQLite remains an artifact/cache index, not the
+parent/child invocation IDs. If a successful root is already terminal when a
+later artifact audit finds damage, the parser creates a deterministic recovery
+incarnation and records the original logical lineage instead of bypassing
+Kogwistar's terminal-run rule. SQLite remains an artifact/cache index, not the
 authoritative workflow cursor. Crash reconciliation and release-grade
 interruption evidence remain open; passing a runtime `run_id` alone is not
 treated as proof of recovery.
