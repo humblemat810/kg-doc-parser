@@ -60,6 +60,8 @@ from .ocr_pipeline import (
 )
 from .service import workflow_predicates
 
+_OCR_ROOT_STATE_VERSION = "ocr-root-v2"
+
 
 def _success(
     next_step: str | None,
@@ -123,6 +125,41 @@ def _int_list(state: Mapping[str, object], key: str) -> list[int]:
     if not isinstance(value, list) or any(type(item) is not int for item in value):
         raise ValueError(f"OCR page runtime state field {key!r} is malformed")
     return [int(item) for item in value]
+
+
+def _validate_root_resume_identity(
+    state: Mapping[str, object],
+    *,
+    document_id: str,
+    source_fingerprint: str,
+    configuration_fingerprints: Sequence[str],
+    grouping_policy_version: str,
+    require_match: bool,
+) -> None:
+    """Reject a root checkpoint built from a different immutable input set."""
+    if not require_match:
+        return
+    expected: dict[str, object] = {
+        "ocr_root_state_version": _OCR_ROOT_STATE_VERSION,
+        "document_id": document_id,
+        "source_fingerprint": source_fingerprint,
+        "ocr_configuration_fingerprints": list(configuration_fingerprints),
+        "grouping_policy_version": grouping_policy_version,
+    }
+    missing = [key for key in expected if key not in state]
+    if missing:
+        raise RuntimeError(
+            "cannot resume OCR root checkpoint without immutable identity fields: "
+            + ", ".join(sorted(missing))
+        )
+    mismatches = [
+        key for key, expected_value in expected.items() if state.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "OCR root checkpoint identity mismatch; refusing to mix persisted state for: "
+            + ", ".join(sorted(mismatches))
+        )
 
 
 def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> dict[str, object]:
@@ -610,6 +647,9 @@ def run_ocr_root_workflow(
             "semantic_result": "u",
             "semantic_tree": "u",
             "export_bundle": "u",
+            "ocr_root_state_version": "u",
+            "source_fingerprint": "u",
+            "ocr_configuration_fingerprints": "u",
             **page_resolver._state_schema,
             **semantic_resolver._state_schema,
         }
@@ -806,6 +846,14 @@ def run_ocr_root_workflow(
         @dispatch.register(op, is_nested=is_nested)
         def _dispatch(ctx: StepContext, operation: str = op) -> StepRunResult:
             if ctx.workflow_id == DEFAULT_OCR_WORKFLOW_ID:
+                _validate_root_resume_identity(
+                    ctx.state_view,
+                    document_id=document_id,
+                    source_fingerprint=preparation.source_plan.input_fingerprint,
+                    configuration_fingerprints=preparation.page_context.configuration_fingerprints,
+                    grouping_policy_version=grouping_policy_version,
+                    require_match=resume_from_checkpoint,
+                )
                 return root_resolver.resolve(operation)(ctx)
             if ctx.workflow_id == DEFAULT_OCR_PAGE_WORKFLOW_ID:
                 return page_resolver.resolve(operation)(ctx)
@@ -838,6 +886,11 @@ def run_ocr_root_workflow(
             initial_state={
                 "document_id": document_id,
                 "title": title,
+                "ocr_root_state_version": _OCR_ROOT_STATE_VERSION,
+                "source_fingerprint": preparation.source_plan.input_fingerprint,
+                "ocr_configuration_fingerprints": list(
+                    preparation.page_context.configuration_fingerprints
+                ),
                 "grouping_policy_version": grouping_policy_version,
                 "grouping_proposals": [proposal.model_dump(mode="json") for proposal in grouping_proposals],
                 "grouping_passes": [],
@@ -848,6 +901,14 @@ def run_ocr_root_workflow(
     if result.status != "succeeded":
         raise RuntimeError(f"OCR root workflow {result.status}: {result.errors}")
     final_state = result.final_state
+    _validate_root_resume_identity(
+        final_state,
+        document_id=document_id,
+        source_fingerprint=preparation.source_plan.input_fingerprint,
+        configuration_fingerprints=preparation.page_context.configuration_fingerprints,
+        grouping_policy_version=grouping_policy_version,
+        require_match=resume_from_checkpoint,
+    )
     page_result = final_state.get("ocr_page_result")
     if not isinstance(page_result, dict):
         raise TypeError("OCR root completed without page result")

@@ -114,6 +114,7 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
 )
 from kg_doc_parser.workflow_ingest.ocr_runtime import (
     _reconcile_page_checkpoint,
+    _validate_root_resume_identity,
     run_grouping_workflow,
     run_ocr_page_workflow,
 )
@@ -156,6 +157,45 @@ def _write_two_page_pdf(image_paths: list[Path], pdf_path: Path) -> None:
     first.save(pdf_path, "PDF", save_all=True, append_images=rest)
     for image in images:
         image.close()
+
+
+@pytest.mark.ci
+def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None:
+    expected = {
+        "ocr_root_state_version": "ocr-root-v2",
+        "document_id": "doc",
+        "source_fingerprint": "source-a",
+        "ocr_configuration_fingerprints": ["ocr-a"],
+        "grouping_policy_version": "group-a",
+    }
+
+    _validate_root_resume_identity(
+        expected,
+        document_id="doc",
+        source_fingerprint="source-a",
+        configuration_fingerprints=("ocr-a",),
+        grouping_policy_version="group-a",
+        require_match=True,
+    )
+    with pytest.raises(RuntimeError, match="immutable identity fields"):
+        _validate_root_resume_identity(
+            {"document_id": "doc"},
+            document_id="doc",
+            source_fingerprint="source-a",
+            configuration_fingerprints=("ocr-a",),
+            grouping_policy_version="group-a",
+            require_match=True,
+        )
+    changed = dict(expected, source_fingerprint="source-b")
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        _validate_root_resume_identity(
+            changed,
+            document_id="doc",
+            source_fingerprint="source-a",
+            configuration_fingerprints=("ocr-a",),
+            grouping_policy_version="group-a",
+            require_match=True,
+        )
 
 
 @pytest.mark.ci
