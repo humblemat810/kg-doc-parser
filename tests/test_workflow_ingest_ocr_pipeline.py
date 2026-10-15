@@ -1255,6 +1255,64 @@ def test_prepare_ocr_workflow_input_resumes_completed_pages() -> None:
 
 
 @pytest.mark.ci
+def test_prepare_ocr_workflow_retries_checkpoint_without_artifact() -> None:
+    """A database-first crash cannot make a missing OCR artifact reusable."""
+    scratch = _scratch("ocr_checkpoint_without_artifact")
+    image_path = scratch / "images" / "page_1.png"
+    _draw_test_image(image_path, lines=["checkpoint recovery"])
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+    calls: list[int] = []
+
+    def _runner(
+        _image_path: Path,
+        page_number: int,
+        _provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        calls.append(page_number)
+        return _fake_ocr_response(page_number, "checkpoint recovery")
+
+    first = prepare_ocr_workflow_input(
+        document_id="ocr-checkpoint-without-artifact",
+        title="OCR Checkpoint Without Artifact",
+        output_dir=scratch / "artifacts",
+        image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+        provider_settings=settings,
+        ocr_runner=_runner,
+    )
+    artifact = first.legacy_dir / "page_1.json"
+    assert artifact.is_file()
+    artifact.unlink()
+
+    reopened = prepare_ocr_workflow_input(
+        document_id="ocr-checkpoint-without-artifact",
+        title="OCR Checkpoint Without Artifact",
+        output_dir=scratch / "artifacts",
+        image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+        provider_settings=settings,
+        ocr_runner=_runner,
+    )
+
+    assert calls == [1, 1]
+    assert reopened.completed_pages == [1]
+    assert reopened.reused_pages == []
+    assert artifact.is_file()
+    assert OCRWorkflowStateStore(reopened.state_db_path).should_skip_page(
+        document_id="ocr-checkpoint-without-artifact",
+        page_number=1,
+        stage="ocr",
+        content_hash=hashlib.sha256(image_path.read_bytes()).hexdigest(),
+        artifact_path=artifact,
+        config_fingerprint=ocr_pipeline_module._ocr_configuration_fingerprint(
+            settings,
+            candidate_models=["fake-ocr"],
+        ),
+    )
+
+
+@pytest.mark.ci
 def test_prepare_ocr_workflow_input_resumes_after_mid_document_interruption() -> None:
     """A failed page does not discard accepted pages from a long document."""
 

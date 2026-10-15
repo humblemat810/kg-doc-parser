@@ -423,7 +423,10 @@ an adapter-only test, or a source-checkout-only runtime test.
   `_process_ocr_page` path now has an injected crash regression,
   `test_ocr_page_artifact_publish_crash_is_recoverable`, which proves the
   artifact-first order is recoverable after reopening SQLite; the inverse
-  order and full root/runtime checkpoint reconciliation remain open.
+  order has public preparation coverage in
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact`,
+  which reruns the provider after a completed SQLite row loses its artifact;
+  full root/runtime checkpoint reconciliation remains open.
 - [~] Test truncated JSON, valid JSON from another page, schema-version change,
   and crash-window recovery. Rebuild now validates `SplitPage` and leaves
   malformed/ambiguous artifacts pending; crash-window reconciliation remains.
@@ -629,7 +632,7 @@ itself as proof:
 | --- | --- | --- |
 | C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38672474200`; source-checkout-only tests do not count. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`; a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
-| C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, and `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption. The inverse order and full runtime/checkpoint reconciliation remain open. |
+| C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption, and `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact` proves the public preparation path reruns a database-first incomplete page. Full root/runtime checkpoint reconciliation remains open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
 | C05 true resume | PARTIAL / BLOCKED BY CORE RELEASE | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with core commit `8f09fd7` on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. Released Kogwistar `0.6.8` still rehydrates the failed `ocr_pages` child as terminal, so a released retryable-child runtime contract is required before claiming release recovery. SIGKILL/new-process root resume, duplicate root-resume race, and no redundant accepted OCR work also remain. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
