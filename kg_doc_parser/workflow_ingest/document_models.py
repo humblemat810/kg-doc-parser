@@ -111,6 +111,32 @@ class SourceSlice(FrozenModel):
         return self
 
 
+class EvidenceSlice(FrozenModel):
+    """The exact source-owned payload exposed to a grounded summarizer."""
+
+    item_id: str = Field(min_length=1)
+    kind: str = Field(min_length=1, max_length=128)
+    location: SourceLocation
+    text: str | None = None
+    media: MediaRef | None = None
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, ge=0)
+    separator_before: str = ""
+
+    @model_validator(mode="after")
+    def valid(self) -> EvidenceSlice:
+        if self.separator_before and not self.separator_before.isspace():
+            raise ValueError("evidence slice separators must be whitespace")
+        if (self.text is None) == (self.media is None):
+            raise ValueError("evidence slice requires exactly one text or media payload")
+        if self.text is None:
+            if self.start is not None or self.end is not None:
+                raise ValueError("media evidence slices cannot have text offsets")
+        elif self.start is None or self.end is None or self.end <= self.start:
+            raise ValueError("text evidence slices require a nonempty interval")
+        return self
+
+
 class ChildRef(FrozenModel):
     node_id: str = Field(min_length=1)
     separator_before: str = ""
@@ -395,6 +421,57 @@ class DocumentTree(FrozenModel):
         return sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
         ).hexdigest()
+
+    def evidence_slices(
+        self,
+        node_id: str,
+        evidence_item_ids: tuple[str, ...] | None = None,
+    ) -> tuple[EvidenceSlice, ...]:
+        """Return exact ordered source slices owned by a node subtree."""
+        nodes = {node.node_id: node for node in self.nodes}
+        items = {item.item_id: item for item in self.source_items}
+        if node_id not in nodes:
+            raise KeyError(node_id)
+        allowed = set(evidence_item_ids) if evidence_item_ids is not None else None
+        result: list[EvidenceSlice] = []
+
+        def visit(current_id: str) -> None:
+            current = nodes[current_id]
+            if current.parts:
+                for part in current.parts:
+                    if allowed is not None and part.item_id not in allowed:
+                        continue
+                    item = items[part.item_id]
+                    if item.text is None:
+                        result.append(
+                            EvidenceSlice(
+                                item_id=item.item_id,
+                                kind=item.kind,
+                                location=item.location,
+                                media=item.media,
+                                separator_before=part.separator_before,
+                            )
+                        )
+                    else:
+                        if part.start is None or part.end is None:
+                            raise ValueError("text evidence requires explicit source bounds")
+                        result.append(
+                            EvidenceSlice(
+                                item_id=item.item_id,
+                                kind=item.kind,
+                                location=item.location,
+                                text=item.text[part.start : part.end],
+                                start=part.start,
+                                end=part.end,
+                                separator_before=part.separator_before,
+                            )
+                        )
+                return
+            for child in current.children:
+                visit(child.node_id)
+
+        visit(node_id)
+        return tuple(result)
 
     def render_preview(self) -> str:
         """Render source text for inspection without changing canonical evidence."""

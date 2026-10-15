@@ -30,6 +30,16 @@ Source: `ocr_pipeline.py`, `_generate_tree_summaries`, whole-`SourceItem` collec
 
 The newer slice fingerprint detects changed slice ownership but the generator still receives whole SourceItems selected by item ID. **Fix:** introduce `GroundedTextSlice`/`EvidenceSlice` in generator input with exact ranges, separators, order and source location. **Test:** one item with two statements partitioned into two nodes; each summary call sees only its own part.
 
+**Current branch status (2026-10-16): fixed locally, CI pending.** The parser now
+provides immutable `EvidenceSlice` values and a typed
+`GroundedSummaryGenerator` protocol. The standalone preparation API, persisted
+grouping workflow, and root OCR workflow all thread the new boundary. The
+regression `test_grounded_summary_generator_receives_only_owned_source_slices`
+partitions one source item across two grouped nodes and verifies exact ordered
+ranges, text, separators, and source locations. The old whole-`SourceItem`
+callback remains a compatibility path; production provider migration and full
+matrix verification remain open.
+
 ### B05 — P1: Spatial precision can be overstated
 Source: `document_adapters.py`, `build_document_tree`, around lines 61–93.
 

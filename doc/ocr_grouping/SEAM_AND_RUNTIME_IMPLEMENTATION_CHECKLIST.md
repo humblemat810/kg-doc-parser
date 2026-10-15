@@ -379,9 +379,11 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [~] Run summaries after the grouping pass is accepted in runtime state; the
   final SQLite tree publication currently occurs in the following persistence
   node, so this is not yet a separate committed-revision gate.
-- [ ] Persist summary input identity including exact subtree slices, tree
+- [~] Persist summary input identity including exact subtree slices, tree
   revision, grouping policy, summary policy, provider/model revision, and prompt
-  schema revision.
+  schema revision. The new `EvidenceSlice`/`GroundedSummaryGenerator` boundary
+  exposes exact ordered ownership to opted-in providers; persisted identity and
+  full provider migration remain release gates.
 - [ ] Reuse a summary only when all those identities match.
 - [x] Make summary failure retryable without invalidating OCR or grouping.
   `tests/test_workflow_ingest_ocr_pipeline.py::test_failed_summary_is_retryable_without_replaying_ocr`
@@ -568,8 +570,11 @@ an adapter-only test, or a source-checkout-only runtime test.
   membership and `SummaryPolicy.generation_fingerprint` are now included;
   `test_summary_cache_reuses_exact_generation_and_slice_identity` and
   `test_summary_generation_fingerprint_invalidates_persisted_cache` cover
-  reuse and provider/model/prompt invalidation. The row remains provisional
-  until all caller/provider configuration paths supply a stable fingerprint.
+  reuse and provider/model/prompt invalidation. `EvidenceSlice` now exposes
+  exact ordered ranges at the grounded provider boundary, covered by
+  `test_grounded_summary_generator_receives_only_owned_source_slices`. The row
+  remains provisional until all caller/provider configuration paths supply a
+  stable fingerprint.
 - [x] Test two nodes using different slices of the same source item.
   `test_summary_cache_reuses_exact_generation_and_slice_identity` records the
   exact ordered slice fingerprint rather than only source-item membership.

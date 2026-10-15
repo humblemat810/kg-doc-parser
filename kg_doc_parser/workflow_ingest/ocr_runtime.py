@@ -45,6 +45,7 @@ from .document_models import DocumentTree, SummaryPolicy
 from .handlers import build_ingest_step_resolver
 from .models import WorkflowExportBundle, WorkflowIngestInput
 from .ocr_pipeline import (
+    GroundedSummaryGenerator,
     OCRPageJSON,
     OCRPagePreparation,
     OCRPageProcessingContext,
@@ -590,6 +591,7 @@ def _register_grouping_steps(
     state_store: OCRWorkflowStateStore,
     summary_policy: SummaryPolicy | None,
     summary_generator: SummaryGenerator | None,
+    grounded_summary_generator: GroundedSummaryGenerator | None,
 ) -> None:
     @resolver.register("start")
     def _start(ctx: StepContext) -> StepRunResult:
@@ -684,6 +686,7 @@ def _register_grouping_steps(
             state_store=state_store,
             policy=summary_policy,
             generator=summary_generator,
+            grounded_generator=grounded_summary_generator,
             grouping_policy_version=policy_version,
             expected_tree_revision=(
                 str(ctx.state_view["checkpoint_revision"])
@@ -700,7 +703,8 @@ def _register_grouping_steps(
                     "u",
                     {
                         "tree": updated.model_dump(mode="json"),
-                        "summaries_generated": summary_generator is not None
+                        "summaries_generated": (summary_generator is not None
+                        or grounded_summary_generator is not None)
                         and bool(summary_policy and summary_policy.enabled),
                         "checkpoint_revision": current_revision,
                         "checkpoint_absent": current_revision is None,
@@ -743,6 +747,7 @@ def run_grouping_workflow(
     grouping_passes: Sequence[Sequence[GroupProposal]] = (),
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
+    grounded_summary_generator: GroundedSummaryGenerator | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
     run_ownership_lease_ms: int | None = None,
@@ -762,6 +767,7 @@ def run_grouping_workflow(
         state_store=state_store,
         summary_policy=summary_policy,
         summary_generator=summary_generator,
+        grounded_summary_generator=grounded_summary_generator,
     )
     if run_ownership_lease_ms is None:
         runtime = WorkflowRuntime(
@@ -828,6 +834,7 @@ def run_ocr_root_workflow(
     grouping_passes: Sequence[Sequence[GroupProposal]] = (),
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
+    grounded_summary_generator: GroundedSummaryGenerator | None = None,
     deps: Mapping[str, object] | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
@@ -868,6 +875,7 @@ def run_ocr_root_workflow(
         state_store=preparation.state_store,
         summary_policy=summary_policy,
         summary_generator=summary_generator,
+        grounded_summary_generator=grounded_summary_generator,
     )
     graph_client = DirectRuntimeIngestClient(
         workflow_engine=workflow_engine,

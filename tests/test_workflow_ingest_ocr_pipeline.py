@@ -104,6 +104,7 @@ from kg_doc_parser.workflow_ingest.document_models import (
     ChildRef,
     DocumentNode,
     DocumentTree,
+    EvidenceSlice,
     SourceItem,
     SourceLocation,
     SourceSlice,
@@ -1952,6 +1953,104 @@ def test_prepare_ocr_workflow_input_generates_grounded_summary_with_journal() ->
 
 
 @pytest.mark.ci
+def test_grounded_summary_generator_receives_only_owned_source_slices() -> None:
+    scratch = _scratch("grounded_summary_slices")
+    tree = DocumentTree(
+        document_id="grounded-summary-doc",
+        source_revision="ocr-v1:grounded-summary",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="page-1",
+                kind="text",
+                text="alphaonebetatwo",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="section-alpha",
+                kind="section",
+                children=(ChildRef(node_id="leaf-alpha"), ChildRef(node_id="leaf-one")),
+            ),
+            DocumentNode(
+                node_id="section-beta",
+                kind="section",
+                children=(ChildRef(node_id="leaf-beta"), ChildRef(node_id="leaf-two")),
+            ),
+            DocumentNode(
+                node_id="leaf-alpha",
+                kind="text",
+                parts=(SourceSlice(item_id="page-1", start=0, end=5),),
+            ),
+            DocumentNode(
+                node_id="leaf-one",
+                kind="text",
+                parts=(SourceSlice(item_id="page-1", start=5, end=8, separator_before=" "),),
+            ),
+            DocumentNode(
+                node_id="leaf-beta",
+                kind="text",
+                parts=(SourceSlice(item_id="page-1", start=8, end=12),),
+            ),
+            DocumentNode(
+                node_id="leaf-two",
+                kind="text",
+                parts=(SourceSlice(item_id="page-1", start=12, end=15, separator_before=" "),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(
+                    ChildRef(node_id="section-alpha"),
+                    ChildRef(node_id="section-beta", separator_before=" "),
+                ),
+            ),
+        ),
+    )
+    seen: dict[str, tuple[EvidenceSlice, ...]] = {}
+
+    def grounded_generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        evidence_slices: tuple[EvidenceSlice, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        seen[node_id] = evidence_slices
+        return Summary(
+            status="generated",
+            text=f"summary:{node_id}",
+            evidence_item_ids=(evidence_slices[0].item_id,),
+            provider_model="fake-grounded-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    policy = SummaryPolicy(
+        eligible_kinds=("section",),
+        minimum_source_items=1,
+        minimum_source_chars=1,
+        minimum_information_gain_chars=0,
+    )
+    updated = _generate_tree_summaries(
+        tree,
+        document_id=tree.document_id,
+        state_store=OCRWorkflowStateStore(scratch / "ocr-state.sqlite"),
+        policy=policy,
+        generator=None,
+        grounded_generator=grounded_generator,
+        grouping_policy_version="grounded-summary-v1",
+    )
+
+    assert [slice_.text for slice_ in seen["section-alpha"]] == ["alpha", "one"]
+    assert [(slice_.start, slice_.end) for slice_ in seen["section-alpha"]] == [(0, 5), (5, 8)]
+    assert [slice_.text for slice_ in seen["section-beta"]] == ["beta", "two"]
+    assert [(slice_.start, slice_.end) for slice_ in seen["section-beta"]] == [(8, 12), (12, 15)]
+    assert all(node.summary is not None for node in updated.nodes if node.kind == "section")
+
+
 def test_summary_cache_reuses_exact_generation_and_slice_identity() -> None:
     scratch = _scratch("ocr_summary_cache_identity")
     tree = DocumentTree(

@@ -38,6 +38,7 @@ from .document_models import (
     DocumentNode,
     DocumentReferenceMention,
     DocumentTree,
+    EvidenceSlice,
     MediaRef,
     OCRMetadata,
     SourceItem,
@@ -72,6 +73,7 @@ from .models import (
     WorkflowIngestInput,
 )
 from .ocr_pipeline import (
+    GroundedSummaryGenerator,
     OCRImagePayload,
     OCRQualityDiagnostic,
     OCRQualityPolicy,
@@ -195,8 +197,10 @@ __all__ = [
     "DocumentTree",
     "DocumentTreeApiPersistenceClient",
     "EmbeddingProviderConfig",
+    "EvidenceSlice",
     "FakeChatModel",
     "GroundedSourceRecord",
+    "GroundedSummaryGenerator",
     "GroupProposal",
     "HierarchicalSummaryAssignment",
     "HierarchicalSummaryBatch",
