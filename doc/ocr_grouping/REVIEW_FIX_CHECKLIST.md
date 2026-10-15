@@ -394,7 +394,7 @@ contract.
 
 Source: `kg_doc_parser_ocr_broad_audit_2026-10-15.md`. The source review was
 static and did not prove runtime behavior. The statuses below are deliberately
-conservative and apply to the current parser branch HEAD `90d2d8d`. A row is
+conservative and apply to the current parser branch HEAD `d40531e`. A row is
 not release-complete until its
 focused test, full matrix, and exact HEAD are verified.
 
@@ -416,8 +416,9 @@ focused test, full matrix, and exact HEAD are verified.
 | B14 | [~] Fixed locally; CI pending | `_render_pdf_to_images` now rejects page symlinks, validates cached image decoding, and publishes regenerated PNGs through a temporary file and atomic rename. Test: `test_pdf_rasterization_regenerates_corrupt_cached_page_atomically`. Manifest-level page digests and dimensions remain open. |
 
 This ledger is a release gate, not a claim that the branch is complete. The
-latest GitHub parser matrix run `38807438954` failed its deterministic test
-step in all four jobs, so B01/B05/B07 and the broader release remain
-unverified in CI. Kogwistar typing fixes are on
-`fix/workflow-run-ownership` at `407b012`; its new run is
-`38810946312` and must complete before the downstream pin is advanced.
+previous parser matrix run `38809250015` failed its deterministic test step in
+all four jobs, so B01/B05/B07 and the broader release remain unverified in CI.
+The current parser commit is being checked by run `38811815564`. Kogwistar
+typing fixes are on `fix/workflow-run-ownership` at `647d9d9`; its current
+required matrix is still running and must complete before downstream pins are
+advanced.
