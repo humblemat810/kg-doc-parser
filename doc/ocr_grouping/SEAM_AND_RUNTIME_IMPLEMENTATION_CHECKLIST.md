@@ -571,7 +571,11 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [x] Test two nodes using different slices of the same source item.
   `test_summary_cache_reuses_exact_generation_and_slice_identity` records the
   exact ordered slice fingerprint rather than only source-item membership.
-- [ ] Test grouping-only changes invalidate summaries without rerunning OCR.
+- [x] Test grouping-only changes invalidate summaries without rerunning OCR.
+  `tests/test_document_adapters.py::test_grouping_change_invalidates_root_summary_without_changing_source_items`
+  proves the grouping mutation clears the root's derived summary while source
+  evidence remains unchanged; the root cache test separately proves OCR is not
+  replayed on resume.
 - [x] Test identical policy/input reuses summaries without another provider
   call in `test_summary_cache_reuses_exact_generation_and_slice_identity`.
 
@@ -585,7 +589,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   versioned.
 - [ ] Test a title plus atomic long table retaining its custom group and both
   children.
-- [ ] Test replay/idempotence of the same grouping proposal.
+- [x] Test replay/idempotence of the same grouping proposal. The stable
+  proposal identity makes duplicate delivery a no-op in
+  `test_replaying_an_accepted_grouping_proposal_is_idempotent`.
 
 ### S09. OCR/group/summary to Kogwistar checkpoint
 

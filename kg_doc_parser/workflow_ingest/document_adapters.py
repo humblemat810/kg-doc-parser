@@ -7,7 +7,7 @@ from itertools import pairwise
 from typing import Literal, cast
 
 from .adapters import _allocated_cluster_numbers
-from .document_grouping import GroupProposal, merge_groups
+from .document_grouping import GroupProposal, group_node_id, merge_groups
 from .document_models import (
     BoundingBox,
     ChildRef,
@@ -351,6 +351,26 @@ def apply_grouping_proposals(
         if proposals:
             raise ValueError("grouping proposals require an internal document frontier")
         return tree
+    by_id = {node.node_id: node for node in tree.nodes}
+    if proposals and all(
+        (
+            (existing := by_id.get(
+                group_node_id(
+                    document_id=tree.document_id,
+                    grouping_policy_version=grouping_policy_version,
+                    proposal=proposal,
+                )
+            ))
+            is not None
+            and existing.kind == proposal.kind
+            and tuple(child.node_id for child in existing.children) == proposal.members
+        )
+        for proposal in proposals
+    ):
+        # A duplicate delivery of an accepted proposal is a safe no-op. The
+        # identity and exact child sequence prevent altered proposals from
+        # being silently accepted.
+        return tree
     frontier = tuple(child.node_id for child in root.children)
     new_frontier, created = merge_groups(
         document_id=tree.document_id,
@@ -358,7 +378,6 @@ def apply_grouping_proposals(
         proposals=proposals,
         grouping_policy_version=grouping_policy_version,
     )
-    by_id = {node.node_id: node for node in tree.nodes}
     for node in created:
         by_id[node.node_id] = node
     # Keep the final meaningful group as a node.  Replacing it with the

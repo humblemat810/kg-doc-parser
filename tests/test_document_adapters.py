@@ -17,6 +17,7 @@ from kg_doc_parser.workflow_ingest import (
     prepare_ocr_workflow_input,
     suggest_cross_page_continuations,
 )
+from kg_doc_parser.workflow_ingest.document_models import Summary
 from kg_doc_parser.workflow_ingest.models import SourceUnit, WorkflowIngestInput
 
 
@@ -338,6 +339,64 @@ def test_final_group_keeps_identity_and_kind_under_document_root() -> None:
         "leaf:doc|p1_t0",
         "leaf:doc|p1_t1",
     )
+
+
+def test_replaying_an_accepted_grouping_proposal_is_idempotent() -> None:
+    inp = WorkflowIngestInput.from_text(document_id="doc", text="alpha")
+    inp.collections[0].pages[0].units = [
+        SourceUnit(modality="text", page_number=1, cluster_number=0, text="alpha"),
+        SourceUnit(modality="text", page_number=1, cluster_number=1, text="beta"),
+    ]
+    tree = build_document_tree(inp)
+    assert tree is not None
+    proposal = GroupProposal(
+        kind="layout:section",
+        members=("leaf:doc|p1_t0", "leaf:doc|p1_t1"),
+    )
+    grouped = apply_grouping_proposals(tree, (proposal,), grouping_policy_version="v1")
+    replayed = apply_grouping_proposals(grouped, (proposal,), grouping_policy_version="v1")
+    assert replayed.model_dump(mode="json") == grouped.model_dump(mode="json")
+
+
+def test_grouping_change_invalidates_root_summary_without_changing_source_items() -> None:
+    inp = WorkflowIngestInput.from_text(document_id="doc", text="alpha")
+    inp.collections[0].pages[0].units = [
+        SourceUnit(modality="text", page_number=1, cluster_number=0, text="alpha"),
+        SourceUnit(modality="text", page_number=1, cluster_number=1, text="beta"),
+    ]
+    tree = build_document_tree(inp)
+    assert tree is not None
+    summary = Summary(
+        status="generated",
+        text="old grouping summary",
+        evidence_item_ids=("doc|p1_t0", "doc|p1_t1"),
+        provider_model="fake",
+        prompt_revision="v1",
+        input_fingerprint="old",
+    )
+    tree = tree.model_copy(
+        update={
+            "nodes": tuple(
+                node.model_copy(update={"summary": summary})
+                if node.node_id == tree.root_id
+                else node
+                for node in tree.nodes
+            )
+        }
+    )
+    grouped = apply_grouping_proposals(
+        tree,
+        (
+            GroupProposal(
+                kind="layout:section",
+                members=("leaf:doc|p1_t0", "leaf:doc|p1_t1"),
+            ),
+        ),
+        grouping_policy_version="v1",
+    )
+    root = next(node for node in grouped.nodes if node.node_id == grouped.root_id)
+    assert root.summary is None
+    assert grouped.source_items == tree.source_items
 
 
 def test_grouping_passes_use_the_new_frontier_for_the_next_pass() -> None:

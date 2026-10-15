@@ -23,6 +23,21 @@ class GroupProposal(FrozenModel):
         return self
 
 
+def group_node_id(
+    *,
+    document_id: str,
+    grouping_policy_version: str,
+    proposal: GroupProposal,
+) -> str:
+    """Return the stable identity for one accepted grouping proposal."""
+    identity = json.dumps(
+        [document_id, grouping_policy_version, proposal.kind, list(proposal.members)],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return "merge:" + sha256(identity.encode()).hexdigest()[:24]
+
+
 def merge_groups(*, document_id: str, frontier: Sequence[str], proposals: Sequence[GroupProposal], grouping_policy_version: str) -> tuple[tuple[str, ...], tuple[DocumentNode, ...]]:
     if len(frontier) != len(set(frontier)) or not document_id or not grouping_policy_version:
         raise ValueError("frontier and grouping identifiers must be unique and nonempty")
@@ -35,8 +50,15 @@ def merge_groups(*, document_id: str, frontier: Sequence[str], proposals: Sequen
         if first < 0 or indexes != list(range(first, first + len(indexes))) or any(index in occupied for index in indexes):
             raise ValueError("merge must use adjacent, non-overlapping frontier members")
         occupied.update(indexes)
-        identity = json.dumps([document_id, grouping_policy_version, proposal.kind, list(proposal.members)], separators=(",", ":"), ensure_ascii=False)
-        groups[first] = (indexes[-1], proposal, "merge:" + sha256(identity.encode()).hexdigest()[:24])
+        groups[first] = (
+            indexes[-1],
+            proposal,
+            group_node_id(
+                document_id=document_id,
+                grouping_policy_version=grouping_policy_version,
+                proposal=proposal,
+            ),
+        )
     result: list[str] = []
     created: list[DocumentNode] = []
     index = 0
@@ -53,4 +75,4 @@ def merge_groups(*, document_id: str, frontier: Sequence[str], proposals: Sequen
     return tuple(result), tuple(created)
 
 
-__all__ = ["GroupProposal", "merge_groups"]
+__all__ = ["GroupProposal", "group_node_id", "merge_groups"]
