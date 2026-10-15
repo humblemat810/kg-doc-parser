@@ -549,8 +549,10 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### S08. Dynamic grouping to semantic identity
 
-- [ ] Preserve a meaningful final group when the frontier has one group; only a
-  synthetic root may be collapsed under an explicit rule.
+- [x] Preserve a meaningful final group when the frontier has one group; the
+  document root remains a structural wrapper and the accepted group identity
+  is retained below it. Covered by
+  `tests/test_document_adapters.py::test_final_group_keeps_identity_and_kind_under_document_root`.
 - [ ] Make group ID, kind, provenance, and summary transformations explicit and
   versioned.
 - [ ] Test a title plus atomic long table retaining its custom group and both
@@ -767,3 +769,15 @@ protocol.
   full CPython 3.13 selection. Slow/manual provider experiments remain
   separate gates.
 - [ ] Only after all release gates pass, update version/release notes and pins.
+
+### Evidence update (2026-10-15)
+
+- S08 final-group identity preservation is implemented in
+  `workflow_ingest/document_adapters.py::apply_grouping_proposals`. The
+  document root is explicitly treated as a structural wrapper that may have
+  one child; semantic grouping nodes remain subject to the two-or-more-child
+  invariant. The focused adapter suite passes its grouping assertions.
+- Kogwistar `0.6.9` is now published: the specific PyPI `0.6.9` endpoint
+  reports five files uploaded at `2026-10-15T10:22:25Z`, and the parser lock
+  file has been regenerated with the published hashes. Installed-package
+  100-page recovery and fresh-process root checkpoint recovery remain open.

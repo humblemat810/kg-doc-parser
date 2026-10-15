@@ -210,7 +210,10 @@ class DocumentNode(FrozenModel):
     def shape(self) -> DocumentNode:
         if bool(self.parts) == bool(self.children):
             raise ValueError("node must contain parts or children, exclusively")
-        if self.children and len(self.children) < 2:
+        # A document root is a structural wrapper and may retain one final
+        # meaningful group.  Semantic grouping nodes remain strictly
+        # branching: they must have at least two children.
+        if self.children and len(self.children) < 2 and self.kind != "document":
             raise ValueError("unary grouping nodes are not allowed")
         if len({c.node_id for c in self.children}) != len(self.children):
             raise ValueError("duplicate child in grouping node")

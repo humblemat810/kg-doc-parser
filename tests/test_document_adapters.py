@@ -301,6 +301,45 @@ def test_apply_grouping_proposals_keeps_source_coverage_and_rejects_bad_members(
     assert grouped.tree_revision == 2
 
 
+def test_final_group_keeps_identity_and_kind_under_document_root() -> None:
+    inp = WorkflowIngestInput(
+        request_id="doc",
+        collections=[
+            {
+                "collection_id": "doc",
+                "title": "doc",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "units": [
+                            SourceUnit(modality="text", page_number=1, cluster_number=0, text="a"),
+                            SourceUnit(modality="text", page_number=1, cluster_number=1, text="b"),
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+    tree = build_document_tree(inp)
+    assert tree is not None
+    grouped = apply_grouping_proposals(
+        tree,
+        (GroupProposal(kind="layout:section", members=("leaf:doc|p1_t0", "leaf:doc|p1_t1")),),
+        grouping_policy_version="v1",
+    )
+
+    root = next(node for node in grouped.nodes if node.node_id == grouped.root_id)
+    assert len(root.children) == 1
+    group_id = root.children[0].node_id
+    group = next(node for node in grouped.nodes if node.node_id == group_id)
+    assert group.kind == "layout:section"
+    assert tuple(child.node_id for child in group.children) == (
+        "leaf:doc|p1_t0",
+        "leaf:doc|p1_t1",
+    )
+
+
 def test_grouping_passes_use_the_new_frontier_for_the_next_pass() -> None:
     inp = WorkflowIngestInput.from_text(document_id="doc", text="a")
     # Build a synthetic three-item baseline to exercise two adaptive passes.

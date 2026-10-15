@@ -361,17 +361,16 @@ def apply_grouping_proposals(
     by_id = {node.node_id: node for node in tree.nodes}
     for node in created:
         by_id[node.node_id] = node
-    if len(new_frontier) == 1:
-        only = by_id[new_frontier[0]]
-        replacement = DocumentNode(node_id=tree.root_id, kind="document", children=only.children)
-        by_id.pop(only.node_id, None)
-        by_id[tree.root_id] = replacement
-    else:
-        by_id[tree.root_id] = DocumentNode(
-            node_id=tree.root_id,
-            kind="document",
-            children=tuple(ChildRef(node_id=node_id) for node_id in new_frontier),
-        )
+    # Keep the final meaningful group as a node.  Replacing it with the
+    # document root loses its identity and any derived metadata attached to
+    # the group.  The root is a structural wrapper, so it may point to the
+    # single accepted group while the group retains its real kind and source
+    # ownership.
+    by_id[tree.root_id] = DocumentNode(
+        node_id=tree.root_id,
+        kind="document",
+        children=tuple(ChildRef(node_id=node_id) for node_id in new_frontier),
+    )
     payload = tree.model_dump(mode="json")
     payload["nodes"] = tuple(by_id.values())
     payload["tree_revision"] = tree.tree_revision + 1

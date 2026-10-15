@@ -112,7 +112,8 @@ S01-S12 and C01-C06 rows in
   now proves parent-child structure is consumed; persisted semantic-parser
   publication evidence remains open.
 - [~] S06-S08 protect grouping checkpoints, preserve atomic objects, and
-  invalidate summaries; monotonic generation and complete writer audit remain.
+  invalidate summaries; S08's final-group identity loss is fixed and covered,
+  while monotonic generation and the complete writer audit remain open.
 - [~] S09-S10 verify runtime checkpoint ownership and collision-safe identity
   separation for same-stem, changed-path, and changed-content inputs.
 - [~] S11-S12 cover cross-page references and reject conflicting public versus
@@ -271,3 +272,14 @@ partial implementation evidence, but none is a release-gate pass yet:
   Typed provider-loss diagnostics and strict rejection exist; source-side
   completeness for figures, tables, captions, and unsupported coordinates is
   not yet proven.
+
+### Evidence update (2026-10-15)
+
+- S08's final-group identity loss is fixed in
+  `workflow_ingest/document_adapters.py::apply_grouping_proposals` and covered
+  by `tests/test_document_adapters.py::test_final_group_keeps_identity_and_kind_under_document_root`.
+  The root's one-child exception is structural only; semantic grouping nodes
+  remain non-unary.
+- Kogwistar `0.6.9` is published and the parser lockfile now records its
+  published artifact hashes. The installed-package recovery gate still needs
+  to be rerun before C05 can be promoted.

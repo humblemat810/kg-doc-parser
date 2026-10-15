@@ -1511,17 +1511,17 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.8"
+version = "0.6.9"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "kogwistar-0.6.8-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:acf6bdac8527e6720b9d094cb2136a0e4c3b046926d9f5cee61c7a815dcb6d03"},
-    {file = "kogwistar-0.6.8-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:18dbb79c1164203dbd8fad39eee56a0ae6b140dc5bfc04081872a6927fda52fd"},
-    {file = "kogwistar-0.6.8-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:04fb800e056a7d464e8b54757ce47785e5b5cc5a083351a18a0e23c7ffbee9b7"},
-    {file = "kogwistar-0.6.8-cp312-abi3-win_amd64.whl", hash = "sha256:5c199a90f7f78aa627a4ffd3398b3ee156e4e64d983a8c9a6ebb54c39b62b2df"},
-    {file = "kogwistar-0.6.8.tar.gz", hash = "sha256:cfa0dbbfa3aa4bec586c8a2606d6e46d9dea46e0576c188b67618a98b3aec3cf"},
+    {file = "kogwistar-0.6.9-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:a8bac3c1e8fb5340d6ab37841fab346eaa659a91cfb5aed9e24af42dfb3a1ca1"},
+    {file = "kogwistar-0.6.9-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:2f527b32f6c917e0bce178a7231b0f8b352286551559ebc556c62adf2a3809b5"},
+    {file = "kogwistar-0.6.9-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:4d042b56a7b66edfee42c23c02800d704cb8f3cf20a911a500d1ad1a59f11ab0"},
+    {file = "kogwistar-0.6.9-cp312-abi3-win_amd64.whl", hash = "sha256:27203401288c72b27e2868271b1baddf79dac9487e07dee7aaf47686e59d4a9a"},
+    {file = "kogwistar-0.6.9.tar.gz", hash = "sha256:210578b9b70a1e2d5e881e1df8d35eb4581a1441c0980fba223f51f1834ffc68"},
 ]
 
 [package.dependencies]
@@ -4384,4 +4384,4 @@ vertex = ["langchain-google-vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "d3b8ac88b1d952d712422e35325ae141db3913ec2b16ee3634e405f35f6251dc"
+content-hash = "6afb5fc78b5dd19596b984e852ee0b789457441ca52f1e9136bd749c60579949"
