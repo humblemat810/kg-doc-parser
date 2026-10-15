@@ -1923,6 +1923,12 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
             grouping_policy_version="group-v1",
             expected_tree_revision="stale-revision",
         )
+    with pytest.raises(RuntimeError, match="requires an expected tree revision"):
+        store.save_document_tree(
+            document_id="grouped-doc",
+            tree=tree,
+            grouping_policy_version="group-v1",
+        )
     assert store.load_grouping_frontier(
         document_id="grouped-doc",
         source_fingerprint=tree.source_fingerprint(),

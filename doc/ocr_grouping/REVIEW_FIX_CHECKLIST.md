@@ -48,6 +48,41 @@ The realistic recovery guarantee is at-least-once provider execution with
 exactly one accepted canonical result. The implementation must not claim
 exactly-once OCR or LLM calls across arbitrary process termination.
 
+## Reviewer reconciliation ledger (2026-10-15)
+
+The latest review does not establish new passing gates. It corrects the
+interpretation of existing evidence:
+
+| Review finding | Correct status | What is proven | What remains open |
+| --- | --- | --- | --- |
+| S02 artifact SHA-256 verification | PARTIAL | The completed-page reuse predicate rejects a well-formed tampered artifact. | Both SQLite/artifact commit orders, runtime checkpoint reconciliation, and fresh-process recovery through the complete root remain unproven. |
+| S02 atomic JSON publication | PARTIAL | Unique same-directory temporary files and atomic replacement are used. | Atomic replacement of one file does not make the artifact and SQLite/Kogwistar checkpoint a transaction; both crash orders need recovery tests. |
+| S06 grouping checkpoint safety | PARTIAL | Expected-revision/absence fencing, frontier consistency checks, and `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` now reject unfenced updates to an existing checkpoint. | Every writer must be audited; late-writer, monotonic generation, and crash/restart behavior remain release blockers. |
+| Runtime ownership | PARTIAL | Stable root/page/grouping/semantic child identities exist in the persisted design. | A fresh process must reopen the same parent and child lineage without a second accepted semantic generation. |
+| 100-page resume | PARTIAL / BLOCKED BY CORE RELEASE | The persisted test passes with Kogwistar core commit `8f09fd7` supplied on `PYTHONPATH`. | The released core must contain the retryable-child fix; SIGKILL/new-process and duplicate-resume evidence are still required. |
+| OCR completeness | PARTIAL | Typed provider diagnostics and strict policy can reject provider loss signals. | Interval coverage alone does not detect missing figures/tables/coordinates; provider-side completeness and recovery evidence remain open. |
+
+The checklist therefore intentionally contains no green S02, S06, C02, C03,
+C04, C05, or C06 release mark. A passing unit test for a sub-property is
+recorded as evidence for that sub-property only.
+
+## Required reviewer acceptance fields
+
+For each A, S, C, and P item, the implementation ledger must contain:
+
+1. Implementation: file, function, and stable source location.
+2. Regression test: exact pytest node ID and the assertion that proves the
+   contract.
+3. Before fix: reproduced failure or demonstrated missing behavior.
+4. After fix: passing result and the boundary it proves.
+5. Runtime: standalone, mocked Kogwistar, installed Kogwistar, or persisted
+   multi-process runtime.
+6. Status: verified pass, partial, blocked, failing, not implemented, or not
+   verified.
+
+Do not infer a multi-process, crash-consistency, or provider-completeness
+claim from a same-process or mocked test.
+
 | Finding | Status | Evidence / remaining work |
 | --- | --- | --- |
 | P0 grouping checkpoint overwrite on resume | PARTIAL | Prefix pages no longer overwrite `document_tree_state`; grouping and summary persistence now atomically fence both expected revisions and expected absence. The preparation path still has a baseline SQLite compatibility path outside the grouping child, and a late compatibility writer or crash can still violate the intended ownership boundary until every writer is audited. |

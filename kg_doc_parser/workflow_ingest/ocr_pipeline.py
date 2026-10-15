@@ -1364,6 +1364,11 @@ class OCRWorkflowStateStore:
                 raise GroupingCheckpointConflict(
                     f"grouping checkpoint frontier is missing for {document_id!r}"
                 )
+            if current_revision is not None and expected_tree_revision is None:
+                raise GroupingCheckpointConflict(
+                    f"grouping checkpoint update for {document_id!r} requires "
+                    "an expected tree revision"
+                )
             if expected_tree_revision is None and current_revision is not None and not has_frontier:
                 raise GroupingCheckpointConflict(
                     f"grouping checkpoint frontier is missing for {document_id!r}"

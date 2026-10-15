@@ -149,6 +149,36 @@ release gate is proven; `PARTIAL` means useful containment exists but the
 acceptance proof is incomplete; `OPEN` means the required implementation or
 test is not yet present.
 
+### Reviewer reconciliation (2026-10-15)
+
+The latest external review is accepted as a status audit, not as proof that
+the implementation is complete. The review's two S02 claims marked
+"incorrectly complete" are consistent with this ledger: neither artifact
+digest enforcement nor atomic JSON publication is a complete release gate.
+They are only sub-properties of S02 and remain `[~]` until the cross-store
+crash protocol is exercised.
+
+The following findings are explicit release blockers:
+
+- S06 must not be described as monotonic merely because it has an
+  expected-revision/absence fence. Any remaining unconditional upsert or
+  compatibility writer can still allow an older grouping result to replace a
+  newer result. S06 remains `[~]` until every writer is audited and a
+  generation/CAS regression covers the late-writer race.
+- The root workflow owns page, grouping, and semantic child identities, but a
+  same-process test is not a process-recovery proof. C02/S09 remain `[~]`
+  until a new process reopens the same parent invocation, recovers the same
+  child lineage, and demonstrates that semantic publication is not duplicated.
+- The 100-page test is useful evidence only with the retryable-child Kogwistar
+  fix supplied. It is not release evidence against the currently released
+  Kogwistar package, and it does not replace a fresh-process/SIGKILL test.
+- Interval coverage is necessary but cannot establish OCR completeness for
+  figures, tables, captions, or unsupported coordinates. C06 remains `[~]`
+  until provider-side loss diagnostics and strict-policy recovery are tested.
+
+No item in this document may be promoted to `[x]` from a static code review,
+an adapter-only test, or a source-checkout-only runtime test.
+
 ## A. Runtime Integration
 
 ### A1. Workflow design
@@ -160,8 +190,11 @@ test is not yet present.
   prepare/commit/validation sub-stages still need explicit release evidence.
 - [~] Add explicit default and failure edges for page iteration, retry,
   interruption, completed-page reuse, grouping completion, and summary failure.
-- [ ] Make the page loop bounded by persisted page numbers and source revision,
-  never by an in-memory list that disappears on process exit.
+- [x] Make the page loop bounded by persisted page numbers and source revision,
+  never by an in-memory list that disappears on process exit. The page
+  workflow persists `page_sources`, `page_cursor`, and source identity in its
+  checkpoint; `_validate_page_resume_identity` rejects a changed source before
+  page execution.
 - [x] Keep semantic parsing in the existing ingest workflow and connect the
   accepted OCR/grouping output through a typed state boundary.
 - [x] Reuse `WorkflowRuntime`, `MappingStepResolver`, runtime predicates,
@@ -215,7 +248,10 @@ test is not yet present.
   source-item digest, grouping policy version, and merge revision.
 - [x] Restore the latest valid grouping checkpoint before processing new input.
 - [~] Use CAS/expected revision or an equivalent monotonic generation guard;
-  last-writer-wins must not overwrite a newer accepted tree.
+  last-writer-wins must not overwrite a newer accepted tree. The current
+  expected-revision/absence fence is useful containment, but any unconditional
+  upsert or compatibility writer remains a release blocker until audited and
+  covered by a late-writer regression.
 - [ ] Persist an incremental merge frontier so long documents do not rebuild the
   entire prefix after every page.
 - [ ] Preserve meaningful groups, IDs, summaries, source slices, and reading
@@ -355,8 +391,9 @@ test is not yet present.
   `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`.
   and
   `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_checkpoint_conflict_is_retryable_not_a_summary_warning`.
-  This is provisional: every compatibility writer, late-writer path, and
-  crash/restart ordering must use the same guard before this row can be green.
+  Unfenced updates to an existing checkpoint now fail closed. This is
+  provisional: every compatibility writer, late-writer path, and crash/restart
+  ordering must use the same guard before this row can be green.
 - [ ] Persist source fingerprint, grouping policy, accepted page frontier, tree
   digest, and last accepted runtime step.
 - [~] Restore before advancing and prove byte-equivalent no-op reruns. The
@@ -430,7 +467,9 @@ test is not yet present.
 
 - [x] Thread grouping policy version through the public runner into parsing,
   grouping, checkpoint, summary, and export layers.
-- [ ] Expose summary policy/generator consistently at the public runner.
+- [x] Expose summary policy/generator consistently at the public runner. The
+  public OCR parse and root-workflow runners forward both values; CLI forwarding
+  is covered by `tests/test_workflow_ingest_cli.py::test_cli_forwards_summary_hooks`.
 - [ ] Reject conflicting public/internal policy values rather than silently
   falling back to `baseline-v1`.
 - [ ] Test explicit custom policy through the public API and inspect persisted
@@ -451,7 +490,7 @@ test is not yet present.
   in both orders, including fresh-process recovery, before marking this gate
   complete. Atomic file replacement and direct order predicates are not
   sufficient evidence by themselves.
-- [ ] **C04 — Incremental equivalence:** compare canonical tree content, not
+- [~] **C04 — Incremental equivalence:** compare canonical tree content, not
   timestamps, between uninterrupted batch grouping and interrupted incremental
   grouping. Completed subtrees must remain stable.
 - [~] **C05 — True resume:** prove completed OCR, grouping, and summaries are
