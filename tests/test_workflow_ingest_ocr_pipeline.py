@@ -918,6 +918,70 @@ def test_ocr_root_reopens_after_real_process_termination() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_root_concurrent_resume_has_one_owner_and_one_result() -> None:
+    """Concurrent fresh resumes cannot both accept the same root run."""
+    scratch = _scratch("ocr_root_concurrent_resume")
+    for page_number in (1, 2):
+        _draw_test_image(
+            scratch / "source" / f"page-{page_number}.png",
+            lines=[f"concurrent page {page_number}"],
+        )
+    worker = Path(__file__).with_name("_ocr_root_fresh_process_worker.py")
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        path
+        for path in (
+            str(repo_root),
+            str(repo_root.parent / "kogwistar"),
+            child_env.get("PYTHONPATH", ""),
+        )
+        if path
+    )
+
+    interrupted = subprocess.Popen(
+        [sys.executable, str(worker), str(scratch), "hold"],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    marker = scratch / "page-2-started"
+    deadline = time.monotonic() + 90.0
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert marker.exists(), "worker did not reach page two before termination"
+    interrupted.terminate()
+    interrupted.wait(timeout=30)
+    assert interrupted.returncode != 0
+
+    workers = [
+        subprocess.Popen(
+            [sys.executable, str(worker), str(scratch), mode],
+            env=child_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for mode in ("race-a", "race-b")
+    ]
+    completed = [process.wait(timeout=120) for process in workers]
+    assert sorted(completed) == [0, 1]
+
+    accepted = []
+    for mode in ("race-a", "race-b"):
+        result_path = scratch / f"{mode}-result.json"
+        if result_path.exists():
+            accepted.append(json.loads(result_path.read_text(encoding="utf-8")))
+    assert len(accepted) == 1
+    assert accepted[0] == {
+        "status": "succeeded",
+        "run_id": "ocr|fresh-root-document",
+        "calls": [2],
+        "has_grouping_tree": True,
+    }
+
+
+@pytest.mark.ci
 @pytest.mark.slow
 def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() -> None:
     def _make_case(name: str) -> tuple[Path, list[OCRImagePayload]]:

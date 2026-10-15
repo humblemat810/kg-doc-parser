@@ -91,6 +91,14 @@ still depends on publishing and verifying Kogwistar `0.6.10`. Linux `SIGKILL`,
 duplicate-root-resume exclusion, and dual-store crash reconciliation remain
 release gates.
 
+The concurrent-resume regression
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_concurrent_resume_has_one_owner_and_one_result`
+passes in 120.70 seconds. It starts two fresh workers against the same
+persisted root after process termination; exactly one exits successfully with
+the accepted page-two result and the other exits with an ownership failure.
+This closes the source-checkout duplicate-resume race subclaim, but not the
+installed-package or Linux `SIGKILL` release gates.
+
 ## Review-adjusted execution checklist
 
 This is the short operational list for the two implementations. The detailed

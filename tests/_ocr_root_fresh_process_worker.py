@@ -121,7 +121,12 @@ def main() -> int:
         if mode == "hold" and page_number == 2:
             (scratch / "page-2-started").write_text("ready", encoding="utf-8")
             time.sleep(120.0)
-        if mode == "resume" and page_number == 1:
+        if mode.startswith("race-") and page_number == 2:
+            (scratch / f"{mode}-page-2-started").write_text(
+                "ready", encoding="utf-8"
+            )
+            time.sleep(3.0)
+        if mode in {"resume", "race-a", "race-b"} and page_number == 1:
             raise AssertionError("accepted page was replayed")
         return _response(page_number)
 
@@ -138,7 +143,7 @@ def main() -> int:
         engine.metadata = metadata
         engine._phase1_enable_index_jobs = False
     try:
-        if mode == "resume":
+        if mode in {"resume", "race-a", "race-b"}:
             # Simulate a fresh process after the crash-recovery lease expires.
             # The production default remains long-lived; this test-only lease
             # keeps the subprocess test bounded without bypassing ownership.
@@ -155,12 +160,15 @@ def main() -> int:
             ocr_runner=runner,
             deps={"parse_semantic_fn": _semantic_tree},
             run_id="ocr|fresh-root-document",
-            resume_from_checkpoint=mode == "resume",
+            resume_from_checkpoint=mode in {"resume", "race-a", "race-b"},
             run_ownership_lease_ms=30_000,
         )
     except Exception as error:
         if mode != "interrupt":
-            (scratch / "resume-error.txt").write_text(
+            error_name = (
+                f"{mode}-error.txt" if mode.startswith("race-") else "resume-error.txt"
+            )
+            (scratch / error_name).write_text(
                 traceback.format_exc(), encoding="utf-8"
             )
             raise
@@ -169,9 +177,10 @@ def main() -> int:
         )
         return 17
 
-    if mode != "resume" or result.status != "succeeded" or bundle is None:
+    if mode not in {"resume", "race-a", "race-b"} or result.status != "succeeded" or bundle is None:
         raise AssertionError("fresh root resume did not produce one accepted result")
-    (scratch / "resume-result.json").write_text(
+    result_name = f"{mode}-result.json" if mode.startswith("race-") else "resume-result.json"
+    (scratch / result_name).write_text(
         json.dumps(
             {
                 "status": result.status,

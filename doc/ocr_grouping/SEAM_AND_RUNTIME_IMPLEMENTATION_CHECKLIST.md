@@ -340,13 +340,18 @@ an adapter-only test, or a source-checkout-only runtime test.
   Attempt allocation is SQLite-serialized, completed rows are not reopened by
   a racing retry, and `test_duplicate_ocr_page_workers_accept_only_one_artifact`
   proves one accepted OCR attempt and one winning artifact. Full root-level
-  duplicate resume remains open.
-- [ ] On process interruption after page commit, resume at the next incomplete
+  duplicate resume is now covered by the process-boundary race test below.
+- [~] On process interruption after page commit, resume at the next incomplete
   page without repeating accepted OCR or deleting a complete grouping result.
+  `test_ocr_root_reopens_after_real_process_termination` proves this with a
+  fresh worker; installed-package and Linux SIGKILL evidence remain open.
 - [ ] On process interruption before page commit, detect the incomplete step and
   retry it safely.
-- [ ] Support concurrent duplicate resume attempts with one accepted commit and
-  an explicit stale-token/claim failure for the loser.
+- [x] Support concurrent duplicate resume attempts with one accepted commit and
+  an explicit stale-token/claim failure for the loser. The reusable
+  `test_ocr_root_concurrent_resume_has_one_owner_and_one_result` starts two
+  fresh workers against the same persisted root and asserts exit codes `[0, 1]`
+  and exactly one accepted result.
 
 ### A4. Grouping execution
 
@@ -672,7 +677,7 @@ itself as proof:
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`. Core feature branch `fix/workflow-run-ownership` commits `817b03a` and `bc336e4` add persisted CAS ownership leases, suspend/resume fencing, and durable checkpoint metadata fallback when the graph checkpoint node is absent, but the branch is not merged or released; parser fresh-process recovery must still prove one parent lineage and no second semantic generation against the published core package. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption, and `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact` proves the public preparation path reruns a database-first incomplete page. Full root/runtime checkpoint reconciliation remains open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
-| C05 true resume | PARTIAL / BLOCKED BY CORE PUBLICATION | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with the coordinated core source checkout on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. `test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process` and `test_ocr_root_reopens_after_real_process_termination` pass with coordinated parser/core source checkouts; the latter terminates the worker after page one is committed and verifies a fresh process resumes the same root, calls only page two, and accepts one grouping result. This remains source-checkout evidence, not installed-release evidence. Core `v0.6.10` is tagged but PyPI still reports `0.6.9`; the corrected package must be published and re-tested before claiming released recovery. Duplicate root-resume race, cross-store reconciliation, Linux SIGKILL evidence, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
+| C05 true resume | PARTIAL / BLOCKED BY CORE PUBLICATION | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with the coordinated core source checkout on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. `test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process` and `test_ocr_root_reopens_after_real_process_termination` pass with coordinated parser/core source checkouts; the latter terminates the worker after page one is committed and verifies a fresh process resumes the same root, calls only page two, and accepts one grouping result. `test_ocr_root_concurrent_resume_has_one_owner_and_one_result` also passes, proving two fresh workers yield one accepted result and one ownership failure. This remains source-checkout evidence, not installed-release evidence. Core `v0.6.10` is tagged but PyPI still reports `0.6.9`; the corrected package must be published and re-tested before claiming released recovery. Cross-store reconciliation, Linux SIGKILL evidence, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
 
 ### C05 evidence correction (2026-10-15)
