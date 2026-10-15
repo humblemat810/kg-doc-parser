@@ -761,11 +761,23 @@ def test_ocr_page_resume_reopens_state_in_a_fresh_process() -> None:
             lines=[text],
         )
     worker = Path(__file__).with_name("_ocr_fresh_process_worker.py")
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        path
+        for path in (
+            str(repo_root),
+            str(repo_root.parent / "kogwistar"),
+            child_env.get("PYTHONPATH", ""),
+        )
+        if path
+    )
     interrupted = subprocess.run(
         [sys.executable, str(worker), str(scratch), "interrupt"],
         capture_output=True,
         text=True,
         check=False,
+        env=child_env,
     )
     assert interrupted.returncode != 0
     assert "fresh-process interruption" in interrupted.stderr
@@ -775,6 +787,7 @@ def test_ocr_page_resume_reopens_state_in_a_fresh_process() -> None:
         capture_output=True,
         text=True,
         check=False,
+        env=child_env,
     )
     assert resumed.returncode == 0, resumed.stderr
     result = json.loads(
@@ -803,7 +816,11 @@ def test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process() -> None:
     child_env = dict(os.environ)
     child_env["PYTHONPATH"] = os.pathsep.join(
         path
-        for path in (str(repo_root), child_env.get("PYTHONPATH", ""))
+        for path in (
+            str(repo_root),
+            str(repo_root.parent / "kogwistar"),
+            child_env.get("PYTHONPATH", ""),
+        )
         if path
     )
 
@@ -819,7 +836,7 @@ def test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process() -> None:
     interruption = json.loads(
         (scratch / "interrupt-result.json").read_text(encoding="utf-8")
     )
-    assert interruption["calls"] == [1, 2]
+    assert interruption["calls"] == [1, 2], interruption
 
     resumed = subprocess.run(
         [sys.executable, str(worker), str(scratch), "resume"],

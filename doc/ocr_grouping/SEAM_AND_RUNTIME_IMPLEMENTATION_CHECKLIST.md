@@ -668,18 +668,19 @@ itself as proof:
 
 | Gate | Current status | Required closure evidence |
 | --- | --- | --- |
-| C01 installed API compatibility | PARTIAL / AWAITING PYPI 0.6.10 | Parser CI run `38720363271` reproduced a public-version mismatch in Kogwistar `0.6.9`: installed metadata was `0.6.9`, while `kogwistar.__version__` was `0.6.8`. Core PR #61 is merged at `c11efd9` and tagged `v0.6.10`; its publish job is still waiting, so PyPI installation and the parser matrix must be re-tested before PASS. |
+| C01 installed API compatibility | PARTIAL / AWAITING PYPI 0.6.10 | Parser CI run `38720363271` reproduced a public-version mismatch in Kogwistar `0.6.9`: installed metadata was `0.6.9`, while `kogwistar.__version__` was `0.6.8`. The correction is tagged at core commit `c11efd9` as `v0.6.10`, but a PyPI query on 2026-10-15 still reports `0.6.9` as latest; installation and the parser matrix must be re-tested after publication. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`. Core feature branch `fix/workflow-run-ownership` commits `817b03a` and `bc336e4` add persisted CAS ownership leases, suspend/resume fencing, and durable checkpoint metadata fallback when the graph checkpoint node is absent, but the branch is not merged or released; parser fresh-process recovery must still prove one parent lineage and no second semantic generation against the published core package. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption, and `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact` proves the public preparation path reruns a database-first incomplete page. Full root/runtime checkpoint reconciliation remains open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
-| C05 true resume | PARTIAL / BLOCKED BY CORE PUBLICATION | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with core commit `8f09fd7` on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. Core PR #61 is merged at `c11efd9` and tagged `v0.6.10`, but its PyPI publish job is still waiting; the corrected package must be published and re-tested before claiming released recovery. Core branch `fix/workflow-run-ownership` commits `817b03a` and `bc336e4` add persisted ownership fencing and durable checkpoint metadata fallback, but are not yet merged/released. SIGKILL/new-process root resume, duplicate root-resume race, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
+| C05 true resume | PARTIAL / BLOCKED BY CORE PUBLICATION | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with the coordinated core source checkout on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. The fresh-process root test now selects both the parser and core source checkouts explicitly and passes; it is still source-checkout evidence, not installed-release evidence. Core `v0.6.10` is tagged but PyPI still reports `0.6.9`; the corrected package must be published and re-tested before claiming released recovery. Duplicate root-resume race, cross-store reconciliation, SIGKILL proof, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
 
 ### C05 evidence correction (2026-10-15)
 
 The source-checkout regression
 `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process`
-passes in 119.67 seconds. The first subprocess interrupts after pages `[1, 2]`; a
+passes in 128.89 seconds when the subprocess explicitly receives both the parser
+and Kogwistar source checkouts. The first subprocess interrupts after pages `[1, 2]`; a
 new process waits for the lease to expire, resumes the same root run, calls only
 page 2, and accepts the semantic graph bundle. This proves the parent/child
 workflow path and top-level graph `doc_id` contract, but it does not close the
@@ -694,8 +695,8 @@ older source-checkout evidence in the C05 row, but does not close C05: the
 published Kogwistar `0.6.9` package had a public-version mismatch, and
 fresh-process/SIGKILL recovery, duplicate root-resume races, and cross-store
 reconciliation remain open. The upstream correction is merged in Kogwistar at
-`c11efd9` and tagged `v0.6.10`; PyPI publication and parser verification
-remain pending.
+`c11efd9` and tagged `v0.6.10`; a PyPI query on 2026-10-15 still reports
+`0.6.9` as latest, so publication and parser verification remain pending.
 The focused fresh-process page-state test
 `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_resume_reopens_state_in_a_fresh_process`
 also passes in 33.32 seconds and proves accepted page reuse across
