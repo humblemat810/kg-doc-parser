@@ -67,5 +67,5 @@ provider evidence is absent.
   still require persisted reopen evidence and provider-side non-text coverage
   signals before marking the gate complete.
 - [x] Run the full parser CI matrix after the P0 runtime work. Parser CI run
-  `38662058102` passed CPython 3.12-3.14 and PyPy 3.11; slow/manual provider
+  `38663529209` passed CPython 3.12-3.14 and PyPy 3.11; slow/manual provider
   experiments remain separate gates.

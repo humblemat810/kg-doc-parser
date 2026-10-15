@@ -382,7 +382,7 @@ test is not yet present.
 
 - [x] **C01 — Installed API compatibility:** record the installed Kogwistar
   version and verify the exact persisted invocation/checkpoint APIs used by the
-  parser on CPython 3.12-3.14 and PyPy 3.11. Parser CI run `38662058102`
+  parser on CPython 3.12-3.14 and PyPy 3.11. Parser CI run `38663529209`
   passed this matrix.
 - [~] **C02 — Runtime ownership boundary:** the root run owns page, grouping,
   and semantic child invocations with stable child IDs. Prove recovery of the
@@ -416,7 +416,7 @@ itself as proof:
 
 | Gate | Current status | Required closure evidence |
 | --- | --- | --- |
-| C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38662058102`; source-checkout-only tests do not count. |
+| C01 installed API compatibility | PASS | Installed-package contract test and parser CI matrix `38663529209`; source-checkout-only tests do not count. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`; a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_does_not_reuse_completion_without_published_artifact` proves checkpoint-before-artifact cannot be reused; rename-before-checkpoint adoption is also tested. Fresh-process reconciliation and a full crash harness remain open. |
 | C04 incremental equivalence | OPEN | Canonical tree comparison between uninterrupted batch and interrupted incremental grouping; exclude timestamps/run metadata. |
@@ -491,6 +491,6 @@ protocol.
 - [ ] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
 - [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11.
-  Parser CI run `38662058102` passed; slow/manual provider experiments remain
+  Parser CI run `38663529209` passed; slow/manual provider experiments remain
   separate gates.
 - [ ] Only after all release gates pass, update version/release notes and pins.
