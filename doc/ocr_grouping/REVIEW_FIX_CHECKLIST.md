@@ -185,8 +185,9 @@ claim from a same-process or mocked test.
   and resume without replaying completed page work. The current focused test
   proves terminal child reuse; interruption, new-process resume, and duplicate
   resume remain open.
-- [ ] Add a mocked Docling item/provenance test with separate text, table, and
-  figure boxes, including ordering and coordinate clipping.
+- [x] Add a mocked Docling item/provenance test with separate text, table, and
+  figure boxes, including ordering and coordinate clipping. Evidence:
+  `tests/test_workflow_ingest_ocr_providers.py::test_docling_adapter_preserves_text_table_figure_provenance`.
 - [~] Add crash-window reconciliation tests for artifact rename/database commit
   ordering in both directions. The exact completed-page reuse test for a
   tampered-but-well-formed JSON artifact, fresh-process configuration test,

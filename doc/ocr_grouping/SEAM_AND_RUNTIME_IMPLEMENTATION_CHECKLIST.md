@@ -85,10 +85,9 @@ cannot close A-6.
   coordinate precision, media identity, and one traversal covering every
   accepted object exactly once. A full-page fallback must remain page-level,
   never synthetic region precision.
-- [ ] **B-3 / S05 hierarchy consumption:** prove the semantic parser and final
-  graph exporter consume the accepted hierarchy, rather than receiving it as
-  ignored metadata. Add a metamorphic test with two valid trees over identical
-  source items.
+- [~] **B-3 / S05 hierarchy consumption:** the graph exporter now has a
+  metamorphic test with two valid trees over identical source items; persisted
+  semantic-parser publication evidence remains open.
 - [~] **B-4 / S06-S08 durable grouping and summaries:** fence every grouping
   writer, preserve meaningful groups and atomic objects, invalidate summaries
   on grouping changes, and test duplicate/replay behavior. The current CAS
@@ -97,9 +96,9 @@ cannot close A-6.
   boundary and separate document, source revision, OCR configuration, grouping
   revision, and parse-generation identities. Add same-stem/cross-path and
   changed-content tests.
-- [ ] **B-6 / S11-S12 references and public options:** preserve cross-cluster
-  and cross-page references, reject conflicting public/internal policies, and
-  assert the chosen policy in persisted metadata, cache keys, and export.
+- [~] **B-6 / S11-S12 references and public options:** multi-slice
+  cross-page references now round-trip at the document-model boundary; policy
+  conflict rejection and full downstream export evidence remain open.
 - [~] **B-7 / C06 quality gate:** require typed provider loss diagnostics and
   strict-policy persistence, then add evidence for missing figures/tables,
   unsupported coordinates, and reopening after a strict rejection. Interval
