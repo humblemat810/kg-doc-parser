@@ -278,7 +278,8 @@ The following findings are explicit release blockers:
   child lineage, and demonstrates that semantic publication is not duplicated.
 - The 100-page test is useful evidence only with the retryable-child Kogwistar
   fix supplied. It is not release evidence against the currently released
-  Kogwistar package, and it does not replace a fresh-process/SIGKILL test.
+  Kogwistar package, and it does not replace a Linux `SIGKILL` test or a
+  duplicate-resume race test.
 - Interval coverage is necessary but cannot establish OCR completeness for
   figures, tables, captions, or unsupported coordinates. C06 remains `[~]`
   until provider-side loss diagnostics and strict-policy recovery are tested.
@@ -647,13 +648,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   timestamps, between uninterrupted batch grouping and interrupted incremental
   grouping. Completed subtrees must remain stable.
 - [~] **C05 — True resume:** prove completed OCR, grouping, and summaries are
-  not rerun after a worker/process stop. Existing same-process tests cover
-  checkpoint behavior but do not constitute a real process-stop/new-process
-  proof. Installed Kogwistar `0.6.9` retry behavior is now available, but has
-  not yet been exercised through the full root process-stop path. A new
-  process/SIGKILL proof, duplicate-resume race, and artifact/database
-  reconciliation remain open. The acceptance target is at-least-once execution
-  with exactly one accepted canonical result, not exactly-once provider calls.
+  not rerun after a worker/process stop. Same-process and coordinated
+  source-checkout fresh-process tests now cover checkpoint behavior, including
+  actual process termination after page one has committed. Installed-package
+  verification, duplicate-resume race, and artifact/database reconciliation
+  remain open. The acceptance target is at-least-once execution with exactly
+  one accepted canonical result, not exactly-once provider calls.
 - [~] **C06 — OCR quality/completeness:** interval coverage is necessary but not
   sufficient. `OCRQualityPolicy` records typed provider diagnostics and can
   reject incomplete text, edge-word loss, or excessive data-loss likelihood;
@@ -672,7 +672,7 @@ itself as proof:
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`. Core feature branch `fix/workflow-run-ownership` commits `817b03a` and `bc336e4` add persisted CAS ownership leases, suspend/resume fencing, and durable checkpoint metadata fallback when the graph checkpoint node is absent, but the branch is not merged or released; parser fresh-process recovery must still prove one parent lineage and no second semantic generation against the published core package. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption, and `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact` proves the public preparation path reruns a database-first incomplete page. Full root/runtime checkpoint reconciliation remains open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
-| C05 true resume | PARTIAL / BLOCKED BY CORE PUBLICATION | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with the coordinated core source checkout on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. The fresh-process root test now selects both the parser and core source checkouts explicitly and passes; it is still source-checkout evidence, not installed-release evidence. Core `v0.6.10` is tagged but PyPI still reports `0.6.9`; the corrected package must be published and re-tested before claiming released recovery. Duplicate root-resume race, cross-store reconciliation, SIGKILL proof, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
+| C05 true resume | PARTIAL / BLOCKED BY CORE PUBLICATION | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with the coordinated core source checkout on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. `test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process` and `test_ocr_root_reopens_after_real_process_termination` pass with coordinated parser/core source checkouts; the latter terminates the worker after page one is committed and verifies a fresh process resumes the same root, calls only page two, and accepts one grouping result. This remains source-checkout evidence, not installed-release evidence. Core `v0.6.10` is tagged but PyPI still reports `0.6.9`; the corrected package must be published and re-tested before claiming released recovery. Duplicate root-resume race, cross-store reconciliation, Linux SIGKILL evidence, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
 
 ### C05 evidence correction (2026-10-15)
@@ -686,6 +686,17 @@ page 2, and accepts the semantic graph bundle. This proves the parent/child
 workflow path and top-level graph `doc_id` contract, but it does not close the
 installed-package gate until Kogwistar `0.6.10` is available from PyPI.
 
+The process-boundary regression
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_reopens_after_real_process_termination`
+also passes in 117.12 seconds. It starts a separate worker, waits until page
+two is in progress after page one has been accepted, terminates that worker,
+and starts a fresh worker with the same persistent run state. The resumed
+worker reports `calls == [2]`, keeps the same root run ID, and produces a
+grouping tree. This is real process-termination evidence on the host platform,
+not a callback exception simulation. It is deliberately not described as a
+Linux `SIGKILL` test, and it does not close the installed-package, duplicate
+resume, or dual-store recovery gates.
+
 The 100-page regression `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
 passed in 1030.06 seconds with the real persisted parser/runtime path and
 merged Kogwistar source commit `c0eb92c` supplied on `PYTHONPATH`. The
@@ -693,7 +704,7 @@ uninterrupted and resumed canonical graph payloads matched; the injected page
 failure was retried, and accepted page work was reused. This supersedes the
 older source-checkout evidence in the C05 row, but does not close C05: the
 published Kogwistar `0.6.9` package had a public-version mismatch, and
-fresh-process/SIGKILL recovery, duplicate root-resume races, and cross-store
+Linux SIGKILL recovery, duplicate root-resume races, and cross-store
 reconciliation remain open. The upstream correction is merged in Kogwistar at
 `c11efd9` and tagged `v0.6.10`; a PyPI query on 2026-10-15 still reports
 `0.6.9` as latest, so publication and parser verification remain pending.

@@ -118,6 +118,9 @@ def main() -> int:
         calls.append(page_number)
         if mode == "interrupt" and page_number == 2:
             raise RuntimeError("fresh root interruption")
+        if mode == "hold" and page_number == 2:
+            (scratch / "page-2-started").write_text("ready", encoding="utf-8")
+            time.sleep(120.0)
         if mode == "resume" and page_number == 1:
             raise AssertionError("accepted page was replayed")
         return _response(page_number)

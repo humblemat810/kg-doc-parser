@@ -66,7 +66,9 @@ payloads matched, and the injected page failure was retried without rebuilding
 accepted page work. This improves C05 evidence but does not close it: the
 test used a coordinated source checkout, while Kogwistar `v0.6.10` is only
 tagged and its protected PyPI deployment is still pending. A true
-fresh-process/SIGKILL recovery plus duplicate-root-resume race remain open.
+fresh-process recovery is now covered by the coordinated source-checkout
+termination test below, but Linux SIGKILL evidence and the duplicate-root-resume
+race remain open.
 
 The focused test
 `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_resume_reopens_state_in_a_fresh_process`
@@ -75,6 +77,19 @@ processes. It deliberately uses the in-memory graph backend only for the
 workflow step wrapper, so it is page-state evidence rather than proof that a
 runtime checkpoint survives process loss; persistent graph-backend recovery
 remains an open gate.
+
+### Process-boundary recovery evidence (2026-10-15)
+
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_reopens_after_real_process_termination`
+passes in 117.12 seconds. It terminates a separate worker after page one has
+been accepted and page two has started, then launches a fresh worker with the
+same persistent state. The resumed worker calls only page two, preserves the
+same root run ID, and accepts one grouping result. This is real process
+termination evidence on the host platform, not a simulated callback failure.
+It uses coordinated parser/core source checkouts, so installed-package recovery
+still depends on publishing and verifying Kogwistar `0.6.10`. Linux `SIGKILL`,
+duplicate-root-resume exclusion, and dual-store crash reconciliation remain
+release gates.
 
 ## Review-adjusted execution checklist
 
