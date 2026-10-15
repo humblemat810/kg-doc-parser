@@ -94,6 +94,7 @@ from kg_doc_parser.workflow_ingest import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
+from kg_doc_parser.workflow_ingest.adapters import OCRPageJSON
 from kg_doc_parser.workflow_ingest.document_adapters import apply_grouping_proposals
 from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal
 from kg_doc_parser.workflow_ingest.document_models import (
@@ -2598,6 +2599,90 @@ def test_ocr_page_artifact_publish_crash_is_recoverable() -> None:
         artifact_path=page_json_path,
         config_fingerprint=config_fingerprint,
     )
+
+
+@pytest.mark.ci
+def test_duplicate_ocr_page_workers_accept_only_one_artifact() -> None:
+    """Concurrent duplicate delivery cannot replace the accepted page."""
+    scratch = _scratch("ocr_duplicate_workers")
+    image_path = scratch / "source" / "page-1.png"
+    _draw_test_image(image_path, lines=["duplicate boundary"])
+    page_json_path = scratch / "legacy" / "page-1.json"
+    page_image_path = scratch / "legacy" / "page-1.png"
+    page_json_path.parent.mkdir(parents=True, exist_ok=True)
+    page_image_path.parent.mkdir(parents=True, exist_ok=True)
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+    store_path = scratch / "ocr-state.sqlite"
+    config_fingerprint = ocr_pipeline_module._ocr_configuration_fingerprint(
+        settings,
+        candidate_models=["fake-ocr"],
+    )
+    barrier = threading.Barrier(2)
+    contexts: list[OCRPageProcessingContext] = []
+    for worker_index in (1, 2):
+        worker_store = OCRWorkflowStateStore(store_path)
+
+        def _runner(
+            _path: Path,
+            page_number: int,
+            _settings: WorkflowProviderSettings,
+            *,
+            worker: int = worker_index,
+        ) -> OCRClusterResponse:
+            barrier.wait(timeout=10)
+            return _fake_ocr_response(page_number, f"worker-{worker}")
+
+        contexts.append(
+            OCRPageProcessingContext(
+                document_id="ocr-duplicate-workers-doc",
+                title="OCR Duplicate Workers",
+                source_kind="image",
+                total_pages=1,
+                input_fingerprint="source-fingerprint",
+                candidate_models=["fake-ocr"],
+                provider_settings=settings,
+                ocr_page_runner=_runner,
+                state_store=worker_store,
+                probe=None,
+                configuration_fingerprints=(config_fingerprint,),
+            )
+        )
+    image_sha256 = hashlib.sha256(image_path.read_bytes()).hexdigest()
+
+    def _process(context: OCRPageProcessingContext) -> tuple[list[OCRPageJSON], list[int], list[int]]:
+        raw_pages: list[OCRPageJSON] = []
+        completed_pages: list[int] = []
+        reused_pages: list[int] = []
+        _process_ocr_page(
+            context=context,
+            done_count=0,
+            page_number=1,
+            image_path=image_path,
+            image_sha256=image_sha256,
+            page_json_path=page_json_path,
+            page_image_path=page_image_path,
+            raw_pages=raw_pages,
+            completed_pages=completed_pages,
+            reused_pages=reused_pages,
+            page_failures=[],
+        )
+        return raw_pages, completed_pages, reused_pages
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(_process, contexts))
+
+    assert all(result[1] == [1] for result in results)
+    assert sum(bool(result[2]) for result in results) == 1
+    persisted = json.loads(page_json_path.read_text(encoding="utf-8"))
+    assert persisted["OCR_text_clusters"][0]["text"] in {"worker-1", "worker-2"}
+    with sqlite3.connect(store_path) as connection:
+        completed_attempts = connection.execute(
+            "SELECT COUNT(*) FROM model_attempts WHERE stage = 'ocr' AND status = 'completed'"
+        ).fetchone()[0]
+    assert completed_attempts == 1
 
 
 @pytest.mark.ci

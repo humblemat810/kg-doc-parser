@@ -161,7 +161,11 @@ test is not yet present.
   Atomic publication exists; crash-window reconciliation is open.
 - [~] Record artifact digest, source image digest, provider fingerprint, schema
   version, and attempt index in the durable state.
-- [ ] Make retry and completed-page reuse idempotent under duplicate delivery.
+- [~] Make retry and completed-page reuse idempotent under duplicate delivery.
+  Attempt allocation is SQLite-serialized, completed rows are not reopened by
+  a racing retry, and `test_duplicate_ocr_page_workers_accept_only_one_artifact`
+  proves one accepted OCR attempt and one winning artifact. Full root-level
+  duplicate resume remains open.
 - [ ] On process interruption after page commit, resume at the next incomplete
   page without repeating accepted OCR or deleting a complete grouping result.
 - [ ] On process interruption before page commit, detect the incomplete step and
@@ -406,8 +410,10 @@ test is not yet present.
   timestamps, between uninterrupted batch grouping and interrupted incremental
   grouping. Completed subtrees must remain stable.
 - [~] **C05 — True resume:** prove completed OCR, grouping, and summaries are
-  not rerun after a failed child checkpoint. The same-process 100-page
-  interruption/resume test is evidence for retryable child recovery; a new
+  not rerun after a worker/process stop. The same-process 100-page
+  interruption/resume test models a non-terminal process stop and proves
+  checkpoint lineage plus accepted-result equivalence; it does not claim that
+  installed Kogwistar `0.6.8` can retry a durably terminal failed child. A new
   process/SIGKILL proof, duplicate-resume race, and artifact/database
   reconciliation remain open. The acceptance target is at-least-once execution
   with exactly one accepted canonical result, not exactly-once provider calls.
@@ -429,7 +435,7 @@ itself as proof:
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`; a fresh-process recovery test must prove one parent lineage and no second semantic generation. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, and `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption. The inverse order and full runtime/checkpoint reconciliation remain open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
-| C05 true resume | PARTIAL | Same-process 100-page OCR interruption evidence and multi-pass grouping interruption/resume evidence now exist; SIGKILL/new-process resume, duplicate-resume race, and no redundant accepted OCR work remain. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
+| C05 true resume | PARTIAL | Same-process 100-page OCR process-stop/checkpoint-resume evidence and multi-pass grouping interruption/resume evidence now exist. `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. Installed Kogwistar `0.6.8` is not credited with retrying a durably terminal failed child; SIGKILL/new-process root resume, duplicate root-resume race, and no redundant accepted OCR work remain. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
 
 ### S02 correction ledger

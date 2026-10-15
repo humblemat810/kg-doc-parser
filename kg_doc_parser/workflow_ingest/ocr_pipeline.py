@@ -877,15 +877,16 @@ def _process_ocr_page(
                 ],
             }
             # Validate before publication; the SQLite row is committed only
-            # after the complete artifact is atomically visible.
+            # after the complete artifact is atomically visible. Publication
+            # and acceptance are serialized so duplicate workers cannot
+            # replace an already accepted page.
             SplitPage.model_validate(page_payload)
-            _write_json_atomic(page_json_path, page_payload)
-            state_store.record_page_completed(
+            published = state_store.publish_ocr_page(
                 document_id=document_id,
                 page_number=page_number,
-                stage="ocr",
                 content_hash=image_sha256,
                 artifact_path=page_json_path,
+                payload=page_payload,
                 model_name=candidate_model,
                 attempt_index=attempt_index,
                 config_fingerprint=_ocr_configuration_fingerprint(
@@ -894,6 +895,31 @@ def _process_ocr_page(
                     quality_policy=context.quality_policy,
                 ),
             )
+            if not published:
+                # Another worker accepted the same page while this provider
+                # call was running. Rehydrate the winner and report reuse;
+                # never append this worker's unaccepted payload.
+                if not state_store.should_skip_page(
+                    document_id=document_id,
+                    page_number=page_number,
+                    stage="ocr",
+                    content_hash=image_sha256,
+                    artifact_path=page_json_path,
+                    config_fingerprint=context.configuration_fingerprints,
+                ):
+                    raise RuntimeError("OCR page acceptance lost without a reusable winner")
+                persisted_page = json.loads(page_json_path.read_text(encoding="utf-8"))
+                split_page = SplitPage.model_validate(persisted_page)
+                raw_page = split_page.dump_supercede_parse()
+                raw_page["meaningful_ordering"] = list(split_page.meaningful_ordering)
+                raw_page["metadata"] = persisted_page.get(
+                    "metadata", split_page.metadata.model_dump(mode="json")
+                )
+                raw_pages.append(cast(OCRPageJSON, raw_page))
+                completed_pages.append(page_number)
+                reused_pages.append(page_number)
+                page_completed = True
+                break
             # The adapter consumes plain dict pages, not the Pydantic page
             # model, so we serialize the page into the legacy-compatible shape here.
             raw_page = split_page.dump_supercede_parse()
@@ -1677,14 +1703,32 @@ class OCRWorkflowStateStore:
     ) -> int:
         now = time.time()
         with self._session() as conn:
+            # Serialize the read/allocate/insert sequence so duplicate
+            # deliveries receive distinct attempt identities.
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """
-                SELECT attempt_count
+                SELECT attempt_count, status, content_hash, artifact_path,
+                       artifact_sha256, config_fingerprint
                 FROM page_state
                 WHERE document_id = ? AND page_number = ? AND stage = ?
                 """,
                 (document_id, page_number, stage),
             ).fetchone()
+            if (
+                row is not None
+                and row["status"] == "completed"
+                and row["content_hash"] == content_hash
+                and row["config_fingerprint"] == config_fingerprint
+                and row["artifact_path"] is not None
+                and row["artifact_sha256"] is not None
+                and Path(str(row["artifact_path"])).is_file()
+                and _sha256_file(Path(str(row["artifact_path"]))) == row["artifact_sha256"]
+            ):
+                # A duplicate delivery raced past should_skip_page while the
+                # winner was committing. Keep the completed row authoritative
+                # instead of reopening it as pending.
+                return int(row["attempt_count"])
             attempt_count = int(row["attempt_count"]) + 1 if row is not None else 1
             conn.execute(
                 """
@@ -1725,6 +1769,84 @@ class OCRWorkflowStateStore:
                 (document_id, page_number, stage, attempt_count, model_name, now),
             )
         return attempt_count
+
+    def publish_ocr_page(
+        self,
+        *,
+        document_id: str,
+        page_number: int,
+        content_hash: str,
+        artifact_path: Path,
+        payload: object,
+        model_name: str,
+        attempt_index: int,
+        config_fingerprint: str,
+    ) -> bool:
+        """Atomically accept one OCR result for a pending page attempt.
+
+        Provider calls remain at-least-once, but the SQLite write lock makes
+        publication and acceptance one serialized decision. A later duplicate
+        delivery observes the completed row and must reuse the winner rather
+        than replacing its artifact.
+        """
+        with self._session() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            state = conn.execute(
+                """
+                SELECT status, content_hash, config_fingerprint
+                FROM page_state
+                WHERE document_id = ? AND page_number = ? AND stage = 'ocr'
+                """,
+                (document_id, page_number),
+            ).fetchone()
+            if (
+                state is None
+                or state["status"] != "pending"
+                or state["content_hash"] != content_hash
+                or state["config_fingerprint"] != config_fingerprint
+            ):
+                return False
+
+            _write_json_atomic(artifact_path, payload)
+            artifact_digest = _sha256_file(artifact_path)
+            updated = conn.execute(
+                """
+                UPDATE page_state
+                SET status = 'completed',
+                    artifact_path = ?,
+                    last_error = NULL,
+                    last_model = ?,
+                    config_fingerprint = ?,
+                    artifact_sha256 = ?,
+                    last_attempted_ts = ?
+                WHERE document_id = ? AND page_number = ? AND stage = 'ocr'
+                  AND status = 'pending'
+                  AND content_hash = ?
+                  AND config_fingerprint = ?
+                """,
+                (
+                    str(artifact_path),
+                    model_name,
+                    config_fingerprint,
+                    artifact_digest,
+                    time.time(),
+                    document_id,
+                    page_number,
+                    content_hash,
+                    config_fingerprint,
+                ),
+            )
+            if updated.rowcount != 1:
+                return False
+            conn.execute(
+                """
+                UPDATE model_attempts
+                SET status = 'completed', error_message = NULL
+                WHERE document_id = ? AND page_number = ? AND stage = 'ocr' AND attempt_index = ?
+                """,
+                (document_id, page_number, attempt_index),
+            )
+            return True
 
     def record_page_completed(
         self,
