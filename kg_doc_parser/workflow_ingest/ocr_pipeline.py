@@ -248,6 +248,7 @@ class OCRQualityPolicy(BaseModel):
     max_data_loss_likelihood: float = Field(default=1.0, ge=0.0, le=1.0)
     reject_incomplete_text: bool = False
     reject_incomplete_words_on_edge: bool = False
+    reject_empty_page: bool = False
 
 
 class OCRQualityDiagnostic(BaseModel):
@@ -263,6 +264,14 @@ def _evaluate_ocr_quality(
     policy: OCRQualityPolicy,
 ) -> tuple[OCRQualityDiagnostic, ...]:
     diagnostics: list[OCRQualityDiagnostic] = []
+    if response.is_empty_page:
+        diagnostics.append(
+            OCRQualityDiagnostic(
+                code="empty_ocr_output",
+                severity="error" if policy.reject_empty_page else "warning",
+                message="provider reported no OCR or non-text evidence for the page",
+            )
+        )
     if response.incomplete_text:
         diagnostics.append(
             OCRQualityDiagnostic(

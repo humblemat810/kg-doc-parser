@@ -1402,6 +1402,19 @@ def test_ocr_quality_policy_flags_and_can_reject_provider_loss_signals() -> None
 
 
 @pytest.mark.ci
+def test_ocr_quality_policy_can_reject_empty_provider_output() -> None:
+    payload = _fake_ocr_response(1, "quality signal").model_dump()
+    payload.update({"OCR_text_clusters": [], "is_empty_page": True, "meaningful_ordering": []})
+    response = OCRClusterResponse.model_validate(payload)
+
+    flagged = _evaluate_ocr_quality(response, OCRQualityPolicy())
+    assert [(item.code, item.severity) for item in flagged] == [("empty_ocr_output", "warning")]
+
+    rejected = _evaluate_ocr_quality(response, OCRQualityPolicy(reject_empty_page=True))
+    assert [(item.code, item.severity) for item in rejected] == [("empty_ocr_output", "error")]
+
+
+@pytest.mark.ci
 def test_ocr_quality_diagnostics_are_persisted_and_strict_policy_fails_closed() -> None:
     scratch = _scratch("ocr_quality_persistence")
     image_path = scratch / "images" / "page_1.png"

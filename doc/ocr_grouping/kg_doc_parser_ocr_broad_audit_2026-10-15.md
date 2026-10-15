@@ -50,6 +50,8 @@ Source: `ocr_pipeline.py`, `OCRQualityPolicy` and `_evaluate_ocr_quality`, aroun
 
 Default `max_data_loss_likelihood=1.0`; incomplete text/edge flags are warnings. Only provider-declared scores/flags are checked: a structurally valid but nearly empty OCR output can be accepted even if the image contains substantial text. **Fix:** make explicit quality modes; add independent empty-page, coverage and geometry checks; escalate suspicious results to fallback or review. **Test:** fake OCR returns empty regions for a text-heavy synthetic page, and returns a false high-quality score.
 
+**Current branch status (`c6d7c89`): partially fixed locally, CI pending.** `OCRQualityPolicy.reject_empty_page` adds a typed `empty_ocr_output` diagnostic and optional error severity; `test_ocr_quality_policy_can_reject_empty_provider_output` passes. Independent image/text completeness and geometry checks remain open.
+
 ### B09 — P1 performance: 'Bounded' summary budget does not bound provider payload
 Source: `document_adapters.py`, `select_summary_targets`, around lines 297–325, and `ocr_pipeline.py`, summary call.
 
