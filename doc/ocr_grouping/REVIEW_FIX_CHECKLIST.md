@@ -243,13 +243,18 @@ claim from a same-process or mocked test.
 ## Reviewer-required acceptance additions
 
 These require an implementation location, an exact pytest node, before/after
-behavior, and a runtime classification. C01 is evidenced. C02-C06 have
-partial implementation evidence, but none is a release-gate pass yet:
+behavior, and a runtime classification. C01 was previously evidenced, but the
+current released-package check found a Kogwistar `0.6.9` public-version
+mismatch. C01 is therefore blocked until the upstream `0.6.10` correction is
+published and the parser matrix is rerun. C02-C06 have partial implementation
+evidence, but none is a release-gate pass yet:
 
-- [x] Verify the installed Kogwistar package and public workflow persistence
-  API, rather than relying on a source checkout or import-only probe. Evidence:
-  `tests/test_pypy_ci_contract.py::test_installed_kogwistar_exposes_the_persisted_workflow_api`
-  and the CPython 3.12-3.14/PyPy 3.11 matrix in run `38672474200`.
+- [~] Verify the installed Kogwistar package and public workflow persistence
+  API, rather than relying on a source checkout or import-only probe. The
+  contract test correctly caught that Kogwistar `0.6.9` metadata reports
+  `0.6.9` while its public module reports `0.6.8` in parser CI run
+  `38720363271`. Re-run the same test and CPython 3.12-3.14/PyPy 3.11 matrix
+  after Kogwistar `0.6.10` is published.
 - [~] Document and test one root/child ownership model, including semantic
   parser checkpoint and graph publication identities. Stable root/page/grouping/
   semantic IDs and same-process ownership tests exist; fresh-process lineage
