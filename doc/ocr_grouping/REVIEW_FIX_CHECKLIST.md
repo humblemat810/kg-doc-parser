@@ -1,5 +1,21 @@
 # OCR Review Fix Checklist
 
+## Latest evidence correction (2026-10-16)
+
+The parser root-finalization seam now has an additional fail-closed guard in
+`ocr_runtime.py` (`c173057`).  It rechecks page completion, accepted-page
+coverage, and artifact/SQLite reconciliation immediately before root
+publication.  The existing real end-to-end regression passes locally after
+deleting an accepted page artifact, proving that stale terminal checkpoint
+data is rejected rather than published.
+
+Parser CI run `38777972861` failed all four interpreter jobs at the installed
+Kogwistar contract gate before parser tests ran.  Therefore this change is
+locally verified but not release-verified.  Kogwistar `v0.6.10` is tagged but
+not yet confirmed publicly installable, and the ownership lease implementation
+remains on the unmerged `fix/workflow-run-ownership` branch.  S09, C03, C05,
+and the installed-release portions of the recovery checklist remain open.
+
 This checklist tracks the six findings from the OCR provider abstraction review.
 `PASS` requires code, a focused regression test, and evidence from the actual
 runtime boundary. `PARTIAL` means containment is improved but recovery,

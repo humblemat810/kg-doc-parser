@@ -1,5 +1,25 @@
 # OCR Grouping Implementation Status
 
+## Latest release-gate update (2026-10-16)
+
+Commit `c173057` adds a root-finalization preflight that revalidates the
+terminal page result against the authoritative SQLite/artifact state before
+publishing the root result.  The real regression
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`
+passes locally and proves that deleting an accepted page artifact is rejected
+instead of silently reusing stale checkpoint data.  Ruff and `git diff --check`
+also pass, and the commit is pushed on `feat/ocr-provider-abstraction`.
+
+Parser CI run `38777972861` still failed all CPython 3.12-3.14 and PyPy 3.11
+jobs at the installed-Kogwistar contract step, before the parser test suite.
+This is a release dependency gate, not evidence that `c173057` regressed the
+parser tests.  Kogwistar `v0.6.10` is tagged at `c11efd9` but its protected
+PyPI deployment remains pending; the ownership/recovery API used by the fresh
+process tests is still only on the separately pushed, unmerged
+`fix/workflow-run-ownership` branch.  Do not bump the parser version or pin to
+that API until a compatible Kogwistar release is published and the clean
+CPython/PyPy matrix passes.
+
 This is the implementation checklist for the contract in `reference/START_HERE_AGENT_PROMPT.md`.
 `PASS` means current code and a focused test prove the requirement. `PARTIAL` means
 the contract exists but the real OCR workflow or all required modalities are not yet
