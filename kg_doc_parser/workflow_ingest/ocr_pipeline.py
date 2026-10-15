@@ -41,6 +41,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import tempfile
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
@@ -299,28 +300,42 @@ _PDF_RENDERER_VERSION = "pdf2image-pillow-v1"
 
 def _write_document_tree(path: Path, tree: DocumentTree) -> None:
     """Persist the derived tree with replace semantics for crash-safe replay."""
-    temporary = path.with_name(f"{path.name}.tmp")
-    temporary.write_text(
-        json.dumps(tree.model_dump(mode="json"), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    _write_bytes_atomic(
+        path,
+        json.dumps(tree.model_dump(mode="json"), indent=2, ensure_ascii=False).encode("utf-8"),
     )
-    temporary.replace(path)
+
+
+def _write_bytes_atomic(path: Path, payload: bytes) -> None:
+    """Publish bytes through a unique same-directory temporary file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name: str | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=str(path.parent),
+        )
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, path)
+        temporary_name = None
+    finally:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
 
 
 def _write_json_atomic(path: Path, payload: object) -> None:
     """Publish a JSON artifact only after serialization succeeds."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    try:
-        encoded = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
-        with temporary.open("wb") as stream:
-            stream.write(encoded)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+    _write_bytes_atomic(
+        path,
+        json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8"),
+    )
 
 
 def _coalesce_cross_page_continuations(

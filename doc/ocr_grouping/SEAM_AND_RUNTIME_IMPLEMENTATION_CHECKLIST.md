@@ -237,9 +237,12 @@ test is not yet present.
   `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact`; the
   release gate still requires both crash orders to reconcile.
 - [~] Write JSON to a same-directory temporary file, flush it, and atomically
-  replace the final artifact before recording completion. The write path is
-  atomic, but rename-before-database and database-before-rename crash-window
-  reconciliation are not yet proven.
+  replace the final artifact before recording completion. The shared writer
+  uses unique same-directory temporary files and flush/fsync; concurrent
+  publication is covered by
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_writers`.
+  The write path is atomic, but rename-before-database and database-before-
+  rename crash-window reconciliation are not yet proven.
 - [~] Validate and reconcile an artifact left behind by a crash between rename
   and database commit. A valid rename-before-DB orphan is adopted only when
   its source-image and OCR-configuration identities match; DB-before-rename

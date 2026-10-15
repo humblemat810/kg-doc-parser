@@ -62,6 +62,8 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1977,6 +1979,38 @@ assert store.should_skip_page(
         artifact_path=artifact,
         config_fingerprint="provider-a/model-a",
     )
+
+
+@pytest.mark.ci
+def test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_writers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scratch = _scratch("ocr_atomic_publication_race")
+    target = scratch / "page.json"
+    sources: list[str] = []
+    replace_lock = threading.Lock()
+    original_replace = os.replace
+
+    def _replace(source: str, destination: str, /) -> None:
+        with replace_lock:
+            sources.append(source)
+            original_replace(source, destination)
+
+    monkeypatch.setattr(ocr_pipeline_module.os, "replace", _replace)
+
+    def _publish(value: str) -> None:
+        _write_json_atomic(target, {"value": value, "padding": "x" * 100_000})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(_publish, value) for value in ("a", "b")]
+        for future in futures:
+            future.result()
+
+    assert len(sources) == 2
+    assert len(set(sources)) == 2
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["value"] in {"a", "b"}
+    assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
 @pytest.mark.ci
