@@ -1235,8 +1235,16 @@ class OCRWorkflowStateStore:
         tree: DocumentTree,
         grouping_policy_version: str = "baseline-v1",
         expected_tree_revision: str | None = None,
+        require_no_existing_tree: bool = False,
     ) -> str:
-        """Persist a validated tree, optionally fenced by its prior digest."""
+        """Persist a validated tree with an optional atomic revision fence.
+
+        A caller that observed no checkpoint can use
+        ``require_no_existing_tree`` to prevent a concurrent first writer from
+        being silently overwritten.
+        """
+        if require_no_existing_tree and expected_tree_revision is not None:
+            raise ValueError("absence and expected revision fences are mutually exclusive")
         tree_json = json.dumps(tree.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
         tree_revision = hashlib.sha256(tree_json.encode("utf-8")).hexdigest()
         with self._session() as conn:
@@ -1246,6 +1254,11 @@ class OCRWorkflowStateStore:
                 (document_id,),
             ).fetchone()
             current_revision = None if current is None else str(current["tree_revision"])
+            if require_no_existing_tree and current_revision is not None:
+                raise RuntimeError(
+                    f"grouping checkpoint create conflict for {document_id!r}: "
+                    f"found existing revision {current_revision!r}"
+                )
             if expected_tree_revision is not None and current_revision != expected_tree_revision:
                 raise RuntimeError(
                     f"grouping checkpoint revision conflict for {document_id!r}: "

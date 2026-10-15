@@ -463,6 +463,7 @@ def _register_grouping_steps(
                         {
                             "tree": payload,
                             "checkpoint_restored": True,
+                            "checkpoint_absent": False,
                             "checkpoint_revision": state_store.document_tree_revision(
                                 document_id=document_id
                             ),
@@ -538,6 +539,7 @@ def _register_grouping_steps(
                 if ctx.state_view.get("checkpoint_revision") is not None
                 else None
             ),
+            require_no_existing_tree=bool(ctx.state_view.get("checkpoint_absent", False)),
         )
         return _success("end", state_update=[("u", {"checkpoint_revision": revision})])
 
@@ -586,6 +588,7 @@ def run_grouping_workflow(
         trace=True,
     )
     effective_run_id = run_id or f"ocr-grouping|{document_id}"
+    existing_revision = state_store.document_tree_revision(document_id=document_id)
     result = (
         runtime.resume_from_latest_checkpoint(
             run_id=effective_run_id,
@@ -607,6 +610,8 @@ def run_grouping_workflow(
                     for current_pass in explicit_passes
                 ],
                 "pass_index": 0,
+                "checkpoint_revision": existing_revision,
+                "checkpoint_absent": existing_revision is None,
             },
             run_id=effective_run_id,
         )
@@ -698,6 +703,8 @@ def run_ocr_root_workflow(
             "ocr_root_state_version": "u",
             "source_fingerprint": "u",
             "ocr_configuration_fingerprints": "u",
+            "checkpoint_revision": "u",
+            "checkpoint_absent": "u",
             **page_resolver._state_schema,
             **semantic_resolver._state_schema,
         }
@@ -789,6 +796,7 @@ def run_ocr_root_workflow(
     @root_resolver.register("ocr_root_invoke_grouping", is_nested=True)
     def _root_invoke_grouping(ctx: StepContext) -> StepRunResult:
         tree = _tree(ctx.state_view)
+        existing_revision = preparation.state_store.document_tree_revision(document_id=document_id)
         return RunSuccess(
             conversation_node_id=None,
             state_update=[],
@@ -801,6 +809,8 @@ def run_ocr_root_workflow(
                         "grouping_policy_version": grouping_policy_version,
                         "grouping_passes": ctx.state_view.get("grouping_passes", []),
                         "pass_index": 0,
+                        "checkpoint_revision": existing_revision,
+                        "checkpoint_absent": existing_revision is None,
                     },
                     result_state_key="grouping_result",
                     run_id=f"{ctx.run_id}|grouping",

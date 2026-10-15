@@ -283,11 +283,13 @@ test is not yet present.
 ### S06. Grouping pass to durable checkpoint
 
 - [~] Stop prefix pages from overwriting the canonical complete tree. The
-  preparation path still writes a baseline SQLite tree before the grouping
-  runtime; this is not yet a monotonic runtime-owned checkpoint. The reviewer
-  finding remains open until generation/CAS ownership is exercised by the
-  persisted grouping child.
-- [ ] Add monotonic checkpoint generation and expected-revision/CAS protection.
+  preparation path still has a baseline SQLite compatibility path outside the
+  grouping child, so runtime ownership is not yet the only writer.
+- [x] Add expected-revision/CAS protection. `save_document_tree()` now fences
+  both an observed revision and an observed absence atomically; the grouping
+  runtime propagates that fence into its persisted child state. The reusable
+  regression is
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`.
 - [ ] Persist source fingerprint, grouping policy, accepted page frontier, tree
   digest, and last accepted runtime step.
 - [~] Restore before advancing and prove byte-equivalent no-op reruns. The
