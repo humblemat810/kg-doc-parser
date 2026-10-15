@@ -16,14 +16,14 @@ Source: `document_adapters.py`, `build_document_tree`, around lines 39–60, the
 
 If a unit has neither nonempty `text`/`description` nor a complete verified media reference, the builder `continue`s. The subsequent tree coverage validation accounts for constructed `SourceItem`s, *not* the discarded original OCR units. **Fix:** retain a grounded non-text/unknown placeholder or reject with a structured unrepresented-source error; create explicit rejected-unit diagnostics and compare input-unit IDs to represented IDs. **Test:** table/image with bbox but no caption or media digest; must never silently disappear.
 
-**Current branch status (`c6d7c89`): fixed locally, CI pending.** `build_document_tree` now raises `UnrepresentedSourceUnitError` carrying `UnrepresentedSourceDiagnostic` for this case. `test_build_document_tree_rejects_unrepresented_nontext_unit` proves the unit identity, page, modality, and reason are retained. The focused document-adapter suite passes 19 tests; full input-unit accounting across all adapters remains open.
+**Current branch status (`e1fb47a`): fixed locally, CI pending.** `build_document_tree` now raises `UnrepresentedSourceUnitError` carrying `UnrepresentedSourceDiagnostic` for this case. `test_build_document_tree_rejects_unrepresented_nontext_unit` proves the unit identity, page, modality, and reason are retained. The focused document-adapter suite passes 19 tests; full input-unit accounting across all adapters remains open.
 
 ### B03 — P1: False cross-page merges based on page-wide flags
 Source: `document_adapters.py`, `_page_annotations` and `suggest_cross_page_continuations`, around lines 185–235.
 
 Page-level `incomplete_text` / `incomplete_words_on_edge` annotations are copied to each source item. The continuation algorithm joins the adjacent last item on one page and first item on the next solely using a page boundary and previous item flag; it does not establish that both are text fragments from the same paragraph. A figure, caption, heading or table can be treated as a continuation. **Fix:** enforce compatible source kinds, text-specific boundary evidence, reading-order and geometry constraints, and an explicit merge-confidence/proposal stage; never use a page-wide flag as item-specific proof. **Test:** page ends with truncated paragraph then page begins with figure/caption/header before continuation; no wrong merge.
 
-**Current branch status (`c6d7c89`): partially fixed locally, CI pending.** Continuation proposals now require both frontier nodes to have the canonical `text` kind, and `test_cross_page_continuation_never_merges_text_into_nontext` passes alongside the valid text-to-text regression. Geometry and stronger item-level paragraph-boundary evidence remain open.
+**Current branch status (`e1fb47a`): partially fixed locally, CI pending.** Continuation proposals now require both frontier nodes to have the canonical `text` kind, and `test_cross_page_continuation_never_merges_text_into_nontext` passes alongside the valid text-to-text regression. Geometry and stronger item-level paragraph-boundary evidence remain open.
 
 ### B04 — P1: Group summaries receive text outside owned source slices
 Source: `ocr_pipeline.py`, `_generate_tree_summaries`, whole-`SourceItem` collection and `SummaryGenerator` contract.
@@ -50,7 +50,7 @@ Source: `ocr_pipeline.py`, `OCRQualityPolicy` and `_evaluate_ocr_quality`, aroun
 
 Default `max_data_loss_likelihood=1.0`; incomplete text/edge flags are warnings. Only provider-declared scores/flags are checked: a structurally valid but nearly empty OCR output can be accepted even if the image contains substantial text. **Fix:** make explicit quality modes; add independent empty-page, coverage and geometry checks; escalate suspicious results to fallback or review. **Test:** fake OCR returns empty regions for a text-heavy synthetic page, and returns a false high-quality score.
 
-**Current branch status (`c6d7c89`): partially fixed locally, CI pending.** `OCRQualityPolicy.reject_empty_page` adds a typed `empty_ocr_output` diagnostic and optional error severity; `test_ocr_quality_policy_can_reject_empty_provider_output` passes. Independent image/text completeness and geometry checks remain open.
+**Current branch status (`e1fb47a`): partially fixed locally, CI pending.** `OCRQualityPolicy.reject_empty_page` adds a typed `empty_ocr_output` diagnostic and optional error severity; `test_ocr_quality_policy_can_reject_empty_provider_output` passes. Independent image/text completeness and geometry checks remain open.
 
 ### B09 — P1 performance: 'Bounded' summary budget does not bound provider payload
 Source: `document_adapters.py`, `select_summary_targets`, around lines 297–325, and `ocr_pipeline.py`, summary call.

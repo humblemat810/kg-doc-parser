@@ -394,7 +394,7 @@ contract.
 
 Source: `kg_doc_parser_ocr_broad_audit_2026-10-15.md`. The source review was
 static and did not prove runtime behavior. The statuses below are deliberately
-conservative and apply to the current parser branch HEAD `c6d7c89`. A row is
+conservative and apply to the current parser branch HEAD `e1fb47a`. A row is
 not release-complete until its
 focused test, full matrix, and exact HEAD are verified.
 
