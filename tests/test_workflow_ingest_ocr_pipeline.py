@@ -1801,6 +1801,50 @@ def test_ocr_state_adopts_valid_artifact_left_before_completion_commit() -> None
 
 
 @pytest.mark.ci
+def test_ocr_state_does_not_reuse_completion_without_published_artifact() -> None:
+    """A DB completion without its artifact must be treated as an unaccepted attempt."""
+    scratch = _scratch("ocr_db_before_artifact")
+    artifact = scratch / "page-1.json"
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="db-before-artifact-doc",
+        title="DB Before Artifact",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="input-fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="db-before-artifact-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="source-image-digest",
+        model_name="model-a",
+        artifact_path=artifact,
+        config_fingerprint="provider-a/model-a",
+    )
+    store.record_page_completed(
+        document_id="db-before-artifact-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="source-image-digest",
+        artifact_path=artifact,
+        model_name="model-a",
+        attempt_index=attempt,
+        config_fingerprint="provider-a/model-a",
+    )
+
+    assert not artifact.exists()
+    assert not store.should_skip_page(
+        document_id="db-before-artifact-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="source-image-digest",
+        artifact_path=artifact,
+        config_fingerprint="provider-a/model-a",
+    )
+
+
+@pytest.mark.ci
 def test_ocr_state_does_not_reuse_legacy_completion_without_artifact_digest() -> None:
     scratch = _scratch("ocr_missing_artifact_digest")
     artifact = scratch / "page-1.json"
