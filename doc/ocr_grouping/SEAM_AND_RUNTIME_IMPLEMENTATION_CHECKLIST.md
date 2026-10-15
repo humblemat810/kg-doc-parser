@@ -66,8 +66,11 @@ runtime classification to the evidence ledger below.
 - [ ] **A-6. Process-boundary proof:** terminate a real worker after a page and
   after a grouping/summary checkpoint, reopen the same engines and run ID in a
   new process, and prove one lineage, no duplicate accepted result, and no
-  replay of completed work. This remains blocked until the released Kogwistar
-  retryable-child contract is consumed.
+  replay of completed work. The 100-page same-process/reference regression was
+  also run against installed released Kogwistar `0.6.8` and failed after
+  530.99 seconds because the durably failed page child was rehydrated as
+  terminal. This remains blocked until the released retryable-child contract
+  is consumed; the source-checkout result is not a release substitute.
 
 **Track A is complete only when:** the test uses the installed Kogwistar
 package, survives a real process boundary, compares canonical output with an
@@ -116,7 +119,8 @@ whose contract crosses SQLite, Kogwistar, a provider, or graph export.
 - [x] **D-2.** Keep the installed Kogwistar API gate separate from source
   checkout compatibility; record the exact version and CI run.
 - [ ] **D-3.** Merge and publish the Kogwistar retryable-child fix before
-  claiming Track A-6 or the 100-page release fixture.
+  claiming Track A-6 or the 100-page release fixture. The released `0.6.8`
+  run is a recorded failure, not an omitted test.
 - [ ] **D-4.** Close Track A process/recovery evidence before claiming Track B
   end-to-end seam closure.
 - [ ] **D-5.** Only after both tracks are green, bump the parser version, add
