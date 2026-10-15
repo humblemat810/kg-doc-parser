@@ -194,6 +194,10 @@ claim from a same-process or mocked test.
   fresh-process two-store predicate test, and real artifact-first crash
   injection test are now present; checkpoint-first crash recovery and full
   runtime/checkpoint reconciliation remain open.
+- [x] Prove a failed summary can be retried without replaying accepted OCR.
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_failed_summary_is_retryable_without_replaying_ocr`
+  verifies two OCR calls total and one failed plus one accepted summary
+  generation for the retried target.
 - [~] Add evidence-ledger rows for C01-C06 with implementation locations,
   exact test IDs, before/after behavior, and runtime classification.
 - [~] Verify every grouping checkpoint writer uses the same revision/absence

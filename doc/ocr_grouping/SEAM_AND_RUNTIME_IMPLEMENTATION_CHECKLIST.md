@@ -364,7 +364,10 @@ an adapter-only test, or a source-checkout-only runtime test.
   revision, grouping policy, summary policy, provider/model revision, and prompt
   schema revision.
 - [ ] Reuse a summary only when all those identities match.
-- [ ] Make summary failure retryable without invalidating OCR or grouping.
+- [x] Make summary failure retryable without invalidating OCR or grouping.
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_failed_summary_is_retryable_without_replaying_ocr`
+  proves a failed summary is retried and accepted while the two OCR pages are
+  not called again.
 - [ ] Ensure duplicate summary delivery cannot create duplicate accepted summary
   records.
 

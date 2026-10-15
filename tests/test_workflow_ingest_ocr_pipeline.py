@@ -1826,6 +1826,102 @@ def test_summary_failure_is_journaled_without_failing_ocr_ingestion() -> None:
 
 
 @pytest.mark.ci
+def test_failed_summary_is_retryable_without_replaying_ocr() -> None:
+    scratch = _scratch("ocr_summary_retry")
+    image_paths = [scratch / "images" / f"page_{page}.png" for page in (1, 2)]
+    for page, image_path in enumerate(image_paths, start=1):
+        _draw_test_image(image_path, lines=[f"Summary retry page {page}"])
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+    ocr_calls = {"count": 0}
+
+    def _runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        ocr_calls["count"] += 1
+        return _fake_ocr_response(page_number, f"Summary retry page {page_number}")
+
+    policy = SummaryPolicy(
+        eligible_kinds=("document",),
+        minimum_source_items=1,
+        minimum_source_chars=1,
+    )
+
+    def _failed_generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree, node_id, source_items, input_fingerprint
+        raise RuntimeError("transient summary outage")
+
+    artifacts = prepare_ocr_workflow_input(
+        document_id="ocr-summary-retry-doc",
+        title="OCR Summary Retry Doc",
+        output_dir=scratch / "artifacts",
+        image_payloads=[
+            OCRImagePayload(page_number=page, image_path=str(image_path))
+            for page, image_path in enumerate(image_paths, start=1)
+        ],
+        provider_settings=settings,
+        ocr_runner=_runner,
+        summary_policy=policy,
+        summary_generator=_failed_generator,
+    )
+    assert artifacts.document_tree is not None
+    assert ocr_calls["count"] == 2
+    store = OCRWorkflowStateStore(artifacts.state_db_path)
+    revision = store.document_tree_revision(document_id="ocr-summary-retry-doc")
+    assert revision is not None
+
+    def _successful_generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        return Summary(
+            status="generated",
+            text=f"retry:{node_id}",
+            evidence_item_ids=tuple(item.item_id for item in source_items),
+            provider_model="fake-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    retried = _generate_tree_summaries(
+        artifacts.document_tree,
+        document_id="ocr-summary-retry-doc",
+        state_store=store,
+        policy=policy,
+        generator=_successful_generator,
+        grouping_policy_version="baseline-v1",
+        expected_tree_revision=revision,
+    )
+    root = next(node for node in retried.nodes if node.node_id == retried.root_id)
+    assert root.summary is not None
+    assert root.summary.text == "retry:root"
+    assert ocr_calls["count"] == 2
+    attempts = [
+        attempt
+        for attempt in store.list_summary_attempts(document_id="ocr-summary-retry-doc")
+        if attempt["node_id"] == "root"
+    ]
+    statuses = [attempt["status"] for attempt in attempts]
+    assert statuses.count("pending") == 2
+    assert statuses.count("failed") == 1
+    assert statuses.count("generated") == 1
+
+
+@pytest.mark.ci
 def test_prepare_ocr_workflow_input_rebuilds_state_db_from_existing_artifacts() -> None:
     scratch = _scratch("ocr_rebuild")
     image_path = scratch / "images" / "page_1.png"
