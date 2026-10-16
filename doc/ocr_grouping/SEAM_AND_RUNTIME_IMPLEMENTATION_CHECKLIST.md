@@ -1124,3 +1124,12 @@ protocol.
   proves the non-live command emits a JSON object with a provider list. This
   closes the report serialization seam only, not provider-output validation or
   live OCR completeness.
+
+### Typed persisted-state and optional-backend seam (2026-10-16)
+
+- [x] Commit `cddb7de` narrows workflow-state object reads to
+  `Mapping[str, JsonValue]` after the persisted JSON boundary, and isolates
+  the probe-only CLI regression from optional Chroma engine construction.
+  Ruff and targeted Pyright report no errors; the focused workflow/CLI set
+  passes (`4 passed`). This closes the typed state and test-dependency seams
+  only; it does not claim the full repository typing or runtime release gates.
