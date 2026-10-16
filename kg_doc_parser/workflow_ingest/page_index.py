@@ -310,7 +310,7 @@ class PageIndexParseResult:
     parser_input_dict: JsonObject
     parser_source_map: dict[str, JsonObject]
     semantic_tree: SemanticNode
-    coverage: dict[str, object]
+    coverage: dict[str, JsonValue]
     diagnostics: PageIndexDiagnostics
 
 
@@ -3095,6 +3095,6 @@ def parse_page_index_document(
         parser_input_dict=parser_input_dict,
         parser_source_map=parser_source_map,
         semantic_tree=semantic_tree,
-        coverage=cast(dict[str, object], coverage),
+        coverage=coverage,
         diagnostics=diagnostics,
     )

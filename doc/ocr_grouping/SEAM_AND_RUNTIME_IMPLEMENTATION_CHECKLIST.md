@@ -12,6 +12,14 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+PageIndex coverage now retains the existing `dict[str, JsonValue]` contract
+from `compute_pointer_coverage()` through `PageIndexParseResult`; the prior
+publication cast to `dict[str, object]` was removed. Ruff, the PageIndex suite,
+and the diff check pass locally. This is a typing-only seam; recovery and
+release gates remain open.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 OCR runtime page-source decoding now has one typed `_PageSourceState`
 boundary shared by checkpoint validation and page execution. Malformed page
 numbers, missing paths, and empty paths are rejected by reusable regression

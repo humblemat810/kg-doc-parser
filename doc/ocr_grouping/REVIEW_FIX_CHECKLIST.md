@@ -12,6 +12,13 @@ remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+PageIndex coverage preserves its existing `dict[str, JsonValue]` contract from
+calculation through the public parse result; an unnecessary widening cast was
+removed. Ruff, the PageIndex suite, and the diff check pass locally. This does
+not close the broader recovery or release gates.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 OCR runtime page-source decoding now uses one typed `_PageSourceState`
 decoder for both persisted-state validation and execution. Regression coverage
 rejects malformed page numbers and paths (`4 passed`); this narrows a resume
