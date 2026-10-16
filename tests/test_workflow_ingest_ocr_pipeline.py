@@ -131,8 +131,8 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     _pdf_render_manifest_payload,
     _process_ocr_page,
     _render_pdf_to_images,
-    _summary_generator_identity,
     _resolve_ocr_source_plan,
+    _summary_generator_identity,
     _write_json_atomic,
     _write_png_atomic,
 )
@@ -2350,10 +2350,11 @@ def test_grounded_summary_generator_receives_only_owned_source_slices() -> None:
         minimum_source_chars=1,
         minimum_information_gain_chars=0,
     )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
     updated = _generate_tree_summaries(
         tree,
         document_id=tree.document_id,
-        state_store=OCRWorkflowStateStore(scratch / "ocr-state.sqlite"),
+        state_store=store,
         policy=policy,
         generator=None,
         grounded_generator=grounded_generator,
@@ -2365,6 +2366,52 @@ def test_grounded_summary_generator_receives_only_owned_source_slices() -> None:
     assert [slice_.text for slice_ in seen["section-beta"]] == ["beta", "two"]
     assert [(slice_.start, slice_.end) for slice_ in seen["section-beta"]] == [(8, 12), (12, 15)]
     assert all(node.summary is not None for node in updated.nodes if node.kind == "section")
+
+    second_seen: set[str] = set()
+
+    def second_grounded_generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        evidence_slices: tuple[EvidenceSlice, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree, evidence_slices
+        second_seen.add(node_id)
+        return Summary(
+            status="generated",
+            text=f"second-summary:{node_id}",
+            evidence_item_ids=("page-1",),
+            provider_model="second-grounded-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    without_summary = updated.model_copy(
+        update={
+            "tree_revision": tree.tree_revision,
+            "nodes": tuple(node.model_copy(update={"summary": None}) for node in updated.nodes),
+        }
+    )
+    current_revision = store.document_tree_revision(document_id=tree.document_id)
+    assert current_revision is not None
+    second_updated = _generate_tree_summaries(
+        without_summary,
+        document_id=tree.document_id,
+        state_store=store,
+        policy=policy,
+        generator=None,
+        grounded_generator=second_grounded_generator,
+        grouping_policy_version="grounded-summary-v1",
+        expected_tree_revision=current_revision,
+    )
+    assert second_seen == {"section-alpha", "section-beta"}
+    assert all(
+        node.summary is not None
+        and node.summary.provider_model == "second-grounded-summary"
+        for node in second_updated.nodes
+        if node.kind == "section"
+    )
 
 
 def test_summary_cache_reuses_exact_generation_and_slice_identity() -> None:

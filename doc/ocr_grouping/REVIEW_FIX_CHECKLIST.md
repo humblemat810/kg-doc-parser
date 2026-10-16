@@ -478,7 +478,11 @@ claim from a same-process or mocked test.
 - [x] Include an explicit summary generation identity in cache keys. `SummaryPolicy.generation_fingerprint`
   is part of the persisted summary key; `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_generation_fingerprint_invalidates_persisted_cache`
   proves a provider/model/prompt identity change does not reuse an accepted summary.
-  Callers must change the fingerprint whenever output-affecting generation configuration changes.
+  `test_grounded_summary_generator_receives_only_owned_source_slices` now also
+  runs two distinct grounded generator callables against the same persisted
+  state and proves the second implementation cannot reuse the first accepted
+  result. Callers must change the fingerprint whenever output-affecting
+  generation configuration changes.
 - [~] Run the full parser CI matrix after the P0 runtime work. Earlier runs
   passed CPython 3.12-3.14 and PyPy 3.11, but the latest pushed run
   `38757822459` failed all four jobs at the installed-Kogwistar version
