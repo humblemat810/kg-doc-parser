@@ -564,6 +564,29 @@ def test_grouping_wrapper_preserves_failed_nested_workflow_diagnostics(
         )
 
 
+def _assert_concurrent_resume_loser_error(error_text: str) -> None:
+    assert (
+        "WorkflowRunOwnershipError" in error_text
+        or "Nested workflow 'kg_doc_parser.ocr_grouping.v1' returned status 'failure'"
+        in error_text
+    )
+
+
+@pytest.mark.parametrize(
+    "error_text",
+    [
+        "WorkflowRunOwnershipError: run is owned by another worker",
+        (
+            "RuntimeError: OCR root workflow failure: "
+            "[\"Nested workflow 'kg_doc_parser.ocr_grouping.v1' returned status 'failure'\"]"
+        ),
+    ],
+)
+def test_concurrent_resume_loser_errors_are_fail_closed(error_text: str) -> None:
+    """Only the two ownership-loss surfaces are valid for a losing resume."""
+    _assert_concurrent_resume_loser_error(error_text)
+
+
 @pytest.mark.ci
 def test_grouping_resume_rejects_frontier_that_disagrees_with_tree() -> None:
     scratch = _scratch("ocr_grouping_frontier_mismatch")
@@ -1260,11 +1283,7 @@ def test_ocr_root_concurrent_resume_has_one_owner_and_one_result() -> None:
             # return it through the already-started nested grouping child as
             # a failed parent invocation.  Both paths are fail-closed; the
             # contract under test is that only one process accepts the root.
-            assert (
-                "WorkflowRunOwnershipError" in error_text
-                or "Nested workflow 'kg_doc_parser.ocr_grouping.v1' returned status 'failure'"
-                in error_text
-            )
+            _assert_concurrent_resume_loser_error(error_text)
     assert len(accepted) == 1
     assert accepted[0] == {
         "status": "succeeded",
