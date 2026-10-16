@@ -699,7 +699,8 @@ def _build_page_resolver(
             source_plan=source_plan,
         )
         if repair is not None:
-            return _success("process_ocr_page", state_update=[("u", repair)])
+            repair_update: StateUpdate = ("u", dict(repair))
+            return _success("process_ocr_page", state_update=[repair_update])
         sources = _page_sources(state)
         cursor = _page_cursor(state)
         if cursor >= len(sources):
