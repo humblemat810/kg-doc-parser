@@ -1635,12 +1635,18 @@ class OCRWorkflowStateStore:
             input_fingerprint=input_fingerprint,
         )
         rebuilt_any = False
-        progress_payload: JsonObject = {}
+        progress_payload: OCRWorkflowProgress | None = None
         if progress_path.exists():
-            progress_payload = _read_json_object(progress_path)
-        progress_pages = progress_payload.get("pages", {})
-        if not isinstance(progress_pages, dict):
-            progress_pages = {}
+            raw_progress = _read_json_object(progress_path)
+            try:
+                progress_payload = OCRWorkflowProgress.model_validate(raw_progress)
+            except ValueError:
+                # A damaged progress report is advisory only. The SQLite
+                # rebuild must continue without trusting unvalidated fields.
+                progress_payload = None
+        progress_pages: dict[str, OCRPageProgress] = (
+            progress_payload.pages if progress_payload is not None else {}
+        )
         for page_number, path in _scan_rendered_pages(rendered_dir):
             rebuilt_any = True
             self._upsert_page_state(
@@ -1658,10 +1664,8 @@ class OCRWorkflowStateStore:
         for page_number, json_path in _scan_legacy_json_pages(legacy_dir):
             content_hash = None
             record = progress_pages.get(str(page_number))
-            if isinstance(record, dict):
-                candidate_hash = record.get("image_sha256")
-                if isinstance(candidate_hash, str) and _is_sha256_digest(candidate_hash):
-                    content_hash = candidate_hash
+            if record is not None and _is_sha256_digest(record.image_sha256):
+                content_hash = record.image_sha256
             if content_hash is None:
                 content_hash = _find_matching_render_hash(rendered_dir, legacy_dir, page_number)
             config_fingerprint: str | None = None

@@ -9,6 +9,11 @@ non-integer values without coercion. Focused grouping-resume and provider-
 identity tests pass after this change; this improves static checking and does
 not change the persisted JSON contract.
 
+The SQLite rebuild seam now validates the advisory progress report through
+`OCRWorkflowProgress`/`OCRPageProgress` before reading page hashes; malformed
+progress remains advisory and cannot supply untyped values to state rebuild.
+The corrupt-progress and invalid-hash rebuild regressions pass.
+
 Parser branch CI run `38870392775` completed successfully on CPython 3.12,
 3.13, 3.14, and PyPy 3.11. The branch head has since advanced to the typing
 commit under verification; a new CI run for that exact SHA remains required
