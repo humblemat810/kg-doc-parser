@@ -12,6 +12,14 @@ remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+Commits `e9ca370` and `e62c68a` remove remaining PageIndex helper return
+annotations widened to `dict[str, object]` and constrain node metadata to the
+JSON contract. PageIndex passed locally (`71 passed, 8 skipped`) plus two
+focused metadata tests; Ruff and `git diff --check` also pass. This remains
+local seam evidence, not full Pyright or runtime-release evidence.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 Commits `bff3f70`, `621acdf`, and `77913f1` remove additional internal
 `dict[str, object]` widening from source-map excerpts, layer-child grouping,
 and boundary assembly. Focused tests, Ruff, and `git diff --check` pass

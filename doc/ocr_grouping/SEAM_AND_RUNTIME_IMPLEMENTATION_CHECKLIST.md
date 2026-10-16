@@ -12,6 +12,14 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+Commits `e9ca370` and `e62c68a` align PageIndex outline/refinement helpers
+with the existing `PageIndexDiagnostics` JSON contract and constrain semantic
+node metadata to `JsonObject`. The full PageIndex suite passed locally (`71
+passed, 8 skipped`), and focused metadata tests passed (`2 passed`); Ruff and
+the diff check are clean. Remote CI and release gates remain pending.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 Commits `bff3f70`, `621acdf`, and `77913f1` narrow source-map excerpts,
 layer child candidates, accepted boundary units, and accepted cutpoints to
 typed records. The affected focused tests pass locally, as do Ruff and the
