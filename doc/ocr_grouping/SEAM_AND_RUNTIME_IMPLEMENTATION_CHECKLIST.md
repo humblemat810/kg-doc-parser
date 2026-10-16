@@ -274,9 +274,14 @@ whose contract crosses SQLite, Kogwistar, a provider, or graph export.
   and
   `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_checkpoint_reopens_after_process_termination`
   both pass; the broader focused grouping/runtime run passed 6 tests.
-- [~] Remote Parser CI run `38883695001` / `#280` is still in progress.
-  This update does not close A-6, S02, C03, C05, Linux SIGKILL, installed
-  package, or full graph-publication evidence.
+- [x] Parser CI run `38913382069` / `#321` verified commit `c3f3f92`.
+  The concurrent-resume regression accepts direct ownership loss and stable
+  wrapped nested-workflow failures, while rejecting unrelated failures as
+  ownership errors. This closes only that error-classification regression.
+- [~] Parser CI run `38913709355` / `#322` is still in progress for
+  `e130e26` (the typed `WorkflowProviderSettings` contract). This update does
+  not close A-6, S02, C03, C05, Linux SIGKILL, installed-package, or full
+  graph-publication evidence.
 
 The external seam review found that earlier green marks overstated the
 evidence for artifact integrity and runtime ownership. Those marks are

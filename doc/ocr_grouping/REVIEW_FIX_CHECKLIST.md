@@ -625,3 +625,11 @@ release is available.
 - [~] `91c20db` removes redundant `hasattr` checks from concrete
   `ChatGeneration` paths and fixes logger shutdown/Ruff issues. Focused tests,
   Ruff, and changed-file Pyright pass locally; Parser CI #318 is still running.
+- [x] Parser CI #321 verified `c3f3f92`, which adds regression coverage for
+  wrapped concurrent-resume failures. Direct ownership loss remains
+  distinguishable from fail-closed nested grouping failures, and unrelated
+  nested failures are not mislabeled as ownership loss.
+- [~] Parser CI #322 is still running for `e130e26`, which exposes the
+  `WorkflowProviderSettings` contract to the OCR root workflow without adding
+  a runtime dependency cycle. Do not mark this seam verified until the full
+  matrix completes.
