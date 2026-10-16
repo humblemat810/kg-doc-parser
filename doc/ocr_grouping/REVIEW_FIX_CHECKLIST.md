@@ -605,19 +605,23 @@ release is available.
 
 ### Typed response and semantic-node seam evidence (2026-10-16)
 
-- [~] `98d8153` narrows LangChain usage/model/generation/response metadata
+- [x] Parser CI #316 verified `98d8153`, which narrows LangChain usage/model/generation/response metadata
   through runtime-checkable Protocols. The focused accounting regressions
   cover valid SDK-like payloads and malformed ordinary messages; local Ruff,
   tests, and `git diff --check` passed. Full CI evidence was pending when this
   ledger entry was written.
-- [~] `86a7179` adds the shared `sdk_boundary.raw_content()` contract and
+- [x] Parser CI #316 verified `86a7179`, which adds the shared
+  `sdk_boundary.raw_content()` contract and
   routes OCR/pipeline content extraction through it. The regression confirms
   mappings are not mistaken for SDK message carriers and empty content is
   preserved. Local focused tests and lint checks passed; full CI remained
-  pending.
-- [~] `2780377` makes semantic tree/integrity node shapes explicit
+  passed in the full run.
+- [x] Parser CI #316 verified `2780377`, which makes semantic tree/integrity node shapes explicit
   runtime-checkable Protocols and removes untyped dynamic attribute access from
   validator helpers. Pointer, layerwise, legacy-invariant, and fixture-payload
   tests passed locally, together with changed-file Pyright, Ruff, and diff
   checks. This is seam evidence, not closure of the repository-wide typing
   backlog or the runtime/recovery gates.
+- [~] `91c20db` removes redundant `hasattr` checks from concrete
+  `ChatGeneration` paths and fixes logger shutdown/Ruff issues. Focused tests,
+  Ruff, and changed-file Pyright pass locally; Parser CI #318 is still running.
