@@ -660,8 +660,8 @@ release is available.
   regression `tests/test_workflow_ingest_cli.py::test_cli_optional_namespace_value_validates_dynamic_namespace_fields`
   covers missing, valid, and wrong-typed values. Focused tests and Ruff pass;
   changed-module Pyright reports zero errors. The preceding parser CI #331
-  (`38919154090`) passed all four supported interpreter jobs; CI #332 for this
-  commit remains pending. This closes only the CLI namespace seam, not the
+  (`38919154090`) passed all four supported interpreter jobs; CI #332
+  (`38919826283`) also passed. This closes only the CLI namespace seam, not the
   repository-wide typing backlog.
 
 ### Recovery matrix revalidation (2026-10-16)
@@ -673,3 +673,12 @@ release is available.
   valid artifact. This is real subprocess-backed evidence, but it does not
   close the separate Linux `SIGKILL`, installed-release, or full dual-store
   reconciliation release gates.
+
+### Typed OCR smoke-report seam (2026-10-16)
+
+- [x] Parser CI #335 (`38920780847`) verified commit `2f975b9`. Capability and
+  live-result reports now use `JsonObject`/`JsonValue` rather than
+  `dict[str, object]`; `test_ocr_provider_smoke_writes_typed_json_report`
+  proves the non-live command emits a JSON object with a provider list. This
+  closes the report serialization seam only, not provider-output validation or
+  live OCR completeness.
