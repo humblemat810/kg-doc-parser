@@ -235,9 +235,15 @@ def normalize_ocr_pages(
                 for cluster_number in ordering
                 if cluster_number in non_text_numbers
             ]
+            ordering_status = "declared"
         else:
             ordered_text_clusters = text_clusters
             ordered_non_text_objects = non_text_objects
+            ordering_status = (
+                "ambiguous_provider_order"
+                if text_clusters and non_text_objects
+                else "single_modality_order"
+            )
         for cluster in ordered_text_clusters:
             if not isinstance(cluster, dict):
                 raise TypeError("each OCR text cluster must be an object")
@@ -307,6 +313,7 @@ def normalize_ocr_pages(
                 units=units,
                 metadata={
                     **page_metadata,
+                    "ordering_status": ordering_status,
                     "printed_page_number": raw_page.get("printed_page_number"),
                     "contains_table": raw_page.get("contains_table"),
                     "is_blank_page": not units,

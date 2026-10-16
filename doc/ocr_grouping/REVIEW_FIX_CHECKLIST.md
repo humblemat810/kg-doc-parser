@@ -533,8 +533,10 @@ S01-S12 and C01-C06 rows in
 - [~] S02 has tamper, stale-config, orphan-adoption, and late-writer tests;
   two-store crash-order reconciliation remains open.
 - [~] S03-S04 preserve declared spatial precision, media provenance, and
-  deterministic mixed-object ordering; live multi-object provider evidence is
-  still required.
+  deterministic mixed-object ordering; mixed pages without declared ordering
+  now record `ordering_status="ambiguous_provider_order"` instead of silently
+  implying text-before-non-text order. Live multi-object provider evidence and
+  caption permutation coverage are still required.
 - [~] S05 proves accepted hierarchy reaches semantic parsing and graph export,
   rather than surviving only as ignored metadata. The export metamorphic test
   now proves parent-child structure is consumed; persisted semantic-parser

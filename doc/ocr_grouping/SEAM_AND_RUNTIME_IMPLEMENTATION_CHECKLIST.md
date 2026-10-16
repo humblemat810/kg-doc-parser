@@ -870,8 +870,11 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [~] Preserve order through normalization, grouping, serialization, and graph
   export. Normalization is tested, but grouping/export and a real multi-object
   provider fixture are not yet evidenced.
-- [ ] Represent ambiguous provider order explicitly instead of silently
-  appending non-text objects after text.
+- [x] Represent ambiguous provider order explicitly instead of silently
+  appending non-text objects after text. When `meaningful_ordering` is absent
+  for a mixed page, normalized page metadata records
+  `ordering_status="ambiguous_provider_order"`; declared ordering records
+  `ordering_status="declared"`.
 - [~] Test text A, figure, caption, text B and deliberate child permutation.
   The current test covers text/figure/text; caption permutation and rejection
   diagnostics remain open.

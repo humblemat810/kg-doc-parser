@@ -227,6 +227,24 @@ def test_normalize_ocr_pages_preserves_unified_text_and_nontext_order() -> None:
     assert [unit.modality for unit in units] == ["ocr_text", "image_region", "ocr_text"]
 
 
+def test_normalize_ocr_pages_marks_mixed_provider_order_as_ambiguous() -> None:
+    inp = normalize_ocr_pages(
+        document_id="ambiguous-order-doc",
+        title="Ambiguous order",
+        pages=[
+            {
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [{"cluster_number": 0, "text": "text"}],
+                "non_text_objects": [{"cluster_number": 1, "description": "figure"}],
+            }
+        ],
+    )
+
+    assert inp.collections[0].pages[0].metadata["ordering_status"] == (
+        "ambiguous_provider_order"
+    )
+
+
 def test_unknown_ocr_coordinate_system_downgrades_to_page_accuracy() -> None:
     inp = normalize_ocr_pages(
         document_id="unknown-coordinates",
