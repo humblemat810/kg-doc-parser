@@ -747,3 +747,8 @@ release is available.
   Production and dedicated-test Pyright report zero errors, Ruff passes, and the
   regression passes (`1 passed`). Remote CI for this commit is pending; the
   pre-existing broad state-edge test file is not treated as clean evidence.
+- [~] Commit `9e0631a` narrows document source and summary fingerprint payloads
+  through the shared JSON-safe object helper instead of retaining
+  `list[dict[str, object]]`. Document-model Pyright and Ruff pass, and the
+  fingerprint regressions pass (`2 passed`). Remote CI for this commit is
+  pending.

@@ -1200,3 +1200,7 @@ protocol.
   semantic-tree coercion and adds a dedicated regression module. Production and
   dedicated-test Pyright report zero errors, Ruff passes, and the regression
   passes (`1 passed`); remote CI remains pending.
+- [~] Commit `9e0631a` narrows document source and summary fingerprint payloads
+  through the shared JSON-safe object helper instead of `list[dict[str, object]]`.
+  Document-model Pyright and Ruff pass, and fingerprint regressions pass
+  (`2 passed`); remote CI remains pending.
