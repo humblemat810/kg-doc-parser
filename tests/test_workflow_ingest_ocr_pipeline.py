@@ -87,7 +87,12 @@ from kg_doc_parser.models import (
     SplitPageMeta,
     TextCluster,
 )
-from kg_doc_parser.ocr import RawOCRResponse, _raw_content, regen_doc
+from kg_doc_parser.ocr import (
+    RawOCRResponse,
+    _raw_content,
+    _raw_usage_metadata,
+    regen_doc,
+)
 from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     OCRImagePayload,
@@ -99,7 +104,6 @@ from kg_doc_parser.workflow_ingest import (
 )
 from kg_doc_parser.workflow_ingest.adapters import OCRPageJSON
 from kg_doc_parser.workflow_ingest.document_adapters import apply_grouping_proposals
-from kg_doc_parser.workflow_ingest.sdk_boundary import ContentCarrier, raw_content
 from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal
 from kg_doc_parser.workflow_ingest.document_models import (
     ChildRef,
@@ -139,6 +143,7 @@ from kg_doc_parser.workflow_ingest.ocr_runtime import (
     run_grouping_workflow,
     run_ocr_page_workflow,
 )
+from kg_doc_parser.workflow_ingest.sdk_boundary import ContentCarrier, raw_content
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 
 pytestmark = [pytest.mark.workflow]
@@ -1097,6 +1102,15 @@ def test_shared_sdk_content_boundary_preserves_mapping_and_empty_content_rules()
     assert raw_content(provider_message) == "ocr text"
     assert raw_content(empty_message) is empty_message
     assert raw_content(mapping_payload) is mapping_payload
+
+
+def test_ocr_usage_metadata_boundary_rejects_mapping_and_missing_payloads() -> None:
+    sdk_response = SimpleNamespace(usage_metadata={"input_tokens": 4})
+    mapping_payload = {"usage_metadata": {"input_tokens": 9}}
+
+    assert _raw_usage_metadata(sdk_response) == {"input_tokens": 4}
+    assert _raw_usage_metadata(mapping_payload) is None
+    assert _raw_usage_metadata(None) is None
 
 
 def test_json_pages_rejects_malformed_persisted_page_shape() -> None:

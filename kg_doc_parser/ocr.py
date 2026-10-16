@@ -6,6 +6,7 @@ if True:
     logger.addHandler(logging.NullHandler())
     ocr_json_version = "0.1"
 import base64
+import json
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from typing import (
@@ -16,6 +17,7 @@ from typing import (
     Self,
     TypedDict,
     cast,
+    runtime_checkable,
 )
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -34,7 +36,6 @@ try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover
     from typing import TypeAlias
-import json
 
 from kogwistar.llm_tasks.providers import SupportsStructuredOutput
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -50,14 +51,27 @@ from pydantic_extension.model_slicing import (
 from pydantic_extension.model_slicing.mixin import DtoField
 
 from .pdf2png import RawFileLoader
+from .utils.langchain import GeminiCostCallbackHandler, get_gemini_callback_cost
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 from .workflow_ingest.sdk_boundary import raw_content
-from .utils.langchain import GeminiCostCallbackHandler, get_gemini_callback_cost
 
 PastCompatibleSplitPage: TypeAlias = SplitPage
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
+
+
+@runtime_checkable
+class _UsageMetadataCarrier(Protocol):
+    usage_metadata: object
+
+
+def _raw_usage_metadata(value: object) -> object | None:
+    """Read optional provider usage without treating mappings as SDK messages."""
+
+    if isinstance(value, _UsageMetadataCarrier):
+        return value.usage_metadata
+    return None
 
 
 class StructuredOutputPayload(TypedDict):
@@ -226,10 +240,7 @@ def get_first_round_response(
                                             )
                     
                     
-                    if hasattr(raw_response,"usage_metadata"):
-                        usage_metadata.append(raw_response.usage_metadata)
-                    else:
-                        usage_metadata.append(None)
+                    usage_metadata.append(_raw_usage_metadata(raw_response))
                     response_with_raw = cast(StructuredOutputPayload, after_parse.invoke(raw_response))
                     response: RawOCRResponse | OCRClusterResponse | None
                     response1 = cast(RawOCRResponse | None, response_with_raw.get('parsed'))
