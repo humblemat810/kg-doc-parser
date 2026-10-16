@@ -41,6 +41,7 @@ from .parser_core import (
 from .parsing import parse_page_index_document, parse_tree_document
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
+from .serialization import JsonObject
 from .semantics import HydratedTextPointer, SemanticNode
 from .service import build_default_engines
 
@@ -80,8 +81,8 @@ class PageIndexWorkflowCommandResult(WorkflowCommandResult):
 @dataclass(slots=True)
 class LayerwiseWorkflowCommandResult(WorkflowCommandResult):
     tree: LegacySemanticNode | None = None
-    source_map: dict[str, dict[str, object]] | None = None
-    graph_payload: dict[str, object] | None = None
+    source_map: ParserSourceMap | None = None
+    graph_payload: JsonObject | None = None
 
 
 def _fallback_parse_semantic_fn(
@@ -183,8 +184,8 @@ def build_legacy_parse_semantic_fn(
     def _parse_semantic_fn(
         *,
         collection: SourceCollectionLike,
-        parser_input_dict: dict[str, object],
-        parser_source_map: dict[str, dict[str, object]],
+        parser_input_dict: ParserPayload,
+        parser_source_map: ParserSourceMap,
         model_names: list[str] | None = None,
     ) -> object:
         env_overrides = {

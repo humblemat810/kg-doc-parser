@@ -40,6 +40,7 @@ from .page_index import (
     parse_page_index_document as _parse_page_index_document,
 )
 from .probe import WorkflowProbe
+from .parser_core import ParserSourceMap
 from .providers import ProviderDiagnosticsSink, WorkflowProviderSettings
 
 if TYPE_CHECKING:
@@ -50,7 +51,7 @@ if TYPE_CHECKING:
 ParseMode = Literal["ocr", "page_index", "tree"]
 OCRParseResult = OCRWorkflowArtifacts
 PageIndexParseResultType = PageIndexParseResult
-TreeParseResult = tuple["LegacySemanticNode", dict[str, dict[str, object]]]
+TreeParseResult = tuple["LegacySemanticNode", ParserSourceMap]
 ParseDocumentResult = OCRParseResult | PageIndexParseResultType | TreeParseResult
 
 

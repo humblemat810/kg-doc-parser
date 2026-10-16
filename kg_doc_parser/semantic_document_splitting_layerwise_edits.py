@@ -94,7 +94,7 @@ except ImportError:  # pragma: no cover
 import math
 import os
 from collections import deque
-from collections.abc import Callable, Generator, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from typing import ClassVar, ParamSpec, Protocol, TypeVar, cast
 from uuid import UUID
@@ -3267,7 +3267,7 @@ def parse_doc(
 def semantic_tree_to_kge_payload(
     root: "SemanticNode",
     *,
-    parser_source_map: dict[str, dict[str, object]] | None = None,
+    parser_source_map: Mapping[str, Mapping[str, object]] | None = None,
     doc_id: str | None = None,
     insertion_method: str = "semantic_document_parser_v1",
 ) -> dict[str, Any]:
