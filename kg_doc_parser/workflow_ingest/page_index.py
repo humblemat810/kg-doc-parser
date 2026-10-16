@@ -1754,7 +1754,7 @@ def _llm_page_outline(
     callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
-) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     assignment_mode_prefix = "ollama" if provider_settings.parser.provider == "ollama" else "llm"
     if not candidates:
