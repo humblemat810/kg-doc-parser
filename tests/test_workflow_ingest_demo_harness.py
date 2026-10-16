@@ -23,7 +23,7 @@ from kg_doc_parser.workflow_ingest import (
     workflow_cache_namespace,
 )
 from kg_doc_parser.workflow_ingest.clients import _json_int
-from kg_doc_parser.workflow_ingest.demo_harness import _start_subprocess_server
+from kg_doc_parser.workflow_ingest.demo_harness import _DemoHttpResponse, _start_subprocess_server
 
 
 def _scratch(name: str) -> Path:
@@ -341,6 +341,11 @@ def test_document_tree_client_rejects_malformed_canonical_response_fields():
                 },
             )()
         )
+
+
+def test_demo_http_response_rejects_objects_without_typed_response_protocol():
+    with pytest.raises(TypeError, match="does not expose the required fields"):
+        _DemoHttpResponse(object())
 
 
 def test_document_tree_client_rejects_non_list_graph_records():

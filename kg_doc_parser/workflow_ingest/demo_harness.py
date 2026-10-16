@@ -26,7 +26,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from .cache import WorkflowLLMCallCache, workflow_cache_namespace
 from .clients import (
@@ -66,20 +66,29 @@ class _ExternalPost(Protocol):
     def __call__(self, url: str, *, json: JsonValue | None = None) -> object: ...
 
 
+@runtime_checkable
+class _ExternalHttpResponse(Protocol):
+    """Minimal response shape accepted from a third-party HTTP client."""
+
+    status_code: object
+    text: object
+
+    def json(self) -> object: ...
+
+
 class _DemoHttpResponse:
     """Normalize a third-party response at the demo transport boundary."""
 
     def __init__(self, response: object) -> None:
-        status_code = getattr(response, "status_code", None)
-        text = getattr(response, "text", None)
-        json_method = getattr(response, "json", None)
-        if not isinstance(status_code, int) or not isinstance(text, str):
+        if not isinstance(response, _ExternalHttpResponse):
             raise TypeError("demo HTTP response does not expose the required fields")
-        if not callable(json_method):
-            raise TypeError("demo HTTP response does not expose json()")
+        status_code = response.status_code
+        text = response.text
+        if not isinstance(status_code, int) or not isinstance(text, str):
+            raise TypeError("demo HTTP response fields have invalid types")
         self.status_code = status_code
         self.text = text
-        self._json_method: Callable[[], object] = json_method
+        self._json_method: Callable[[], object] = response.json
 
     def json(self) -> object:
         return self._json_method()
