@@ -1,5 +1,22 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-16, commits `a438cdb` and `f56ddc5`)
+
+The page-index callback accounting seam now uses runtime-checkable protocols
+instead of untyped callback attribute access. Excerpt refinement now rejects a
+strict substring for a terminal leaf, preventing a model from dropping
+authoritative punctuation or creating an uncovered source interval. Dedicated
+regression coverage and the full page-index module pass (`71 passed, 8
+skipped`); provider/cache coverage passes (`21 passed`). The shared
+`ModelDumpLike` protocol is also used by JSON serialization and the workflow
+cache.
+
+Parser CI run `#295` (`38893492822`) passed all four jobs on CPython 3.12,
+3.13, 3.14, and PyPy 3.11. These changes close the page-index terminal
+coverage regression and improve typing at two internal seams; they do not
+close dual-store reconciliation, Linux SIGKILL recovery, OCR completeness,
+long-document frontier equivalence, or the release gates.
+
 ## Latest evidence update (2026-10-16, commit `35a0383`)
 
 The concurrent fresh-process resume regression now accepts both runtime

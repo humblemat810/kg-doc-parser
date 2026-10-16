@@ -1,5 +1,20 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-16, commits `a438cdb` and `f56ddc5`)
+
+Page-index refinement now fails closed when a proposed terminal leaf excerpt
+is a strict substring of the authoritative leaf span. A regression test proves
+that dropped punctuation does not reduce terminal coverage and that the exact
+source text remains persisted. Callback accounting and model serialization
+also use typed protocols instead of untyped attribute probes. The full
+page-index suite passes (`71 passed, 8 skipped`) and provider/cache coverage
+passes (`21 passed`).
+
+Parser CI run `#295` (`38893492822`) passed CPython 3.12, 3.13, 3.14, and
+PyPy 3.11. This is verified evidence for the changed seams only; crash-order
+reconciliation, Linux SIGKILL recovery, OCR completeness, long-document
+equivalence, and release readiness remain partial or open.
+
 ## Latest evidence update (2026-10-16, commit `35a0383`)
 
 The concurrent fresh-process resume regression now recognizes both valid
