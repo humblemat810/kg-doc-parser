@@ -19,6 +19,15 @@ the local recovery and seam test evidence to remote-CI verified. It does not
 close the semantic-publication, dual-store crash-order, OCR-completeness,
 package-wide typing, or release gates.
 
+## Latest remote CI promotion (2026-10-17)
+
+Parser CI run `38949951639` passed on commit `cbd9f15` for CPython 3.12,
+CPython 3.13, CPython 3.14, and PyPy 3.11. The provider-order metadata
+regression and the complete selected parser matrix are therefore green on all
+supported interpreters. This does not close the semantic-publication,
+dual-store crash-order, OCR-completeness, package-wide typing, or release
+gates.
+
 ## Latest evidence update (2026-10-17, commit `a0332d1`, pending CI)
 
 Parser-core cache namespaces now use the JSON-safe `JsonValue` contract for

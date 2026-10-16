@@ -20,6 +20,15 @@ the repository matrix as well as locally. Semantic publication, dual-store
 crash-order reconciliation, OCR completeness, package-wide typing, and
 release gates remain open.
 
+## Latest remote CI promotion (2026-10-17)
+
+Parser CI run `38949951639` passed on commit `cbd9f15` for CPython 3.12,
+CPython 3.13, CPython 3.14, and PyPy 3.11. The explicit ambiguous-provider-
+ordering regression and the selected parser matrix are therefore green on all
+supported interpreters. Semantic publication, dual-store crash-order
+reconciliation, OCR completeness, package-wide typing, and release gates
+remain open.
+
 ## Latest evidence update (2026-10-17, commit `a0332d1`, pending CI)
 
 Proposal/review cache namespaces now accept only JSON-safe `JsonValue` values,
