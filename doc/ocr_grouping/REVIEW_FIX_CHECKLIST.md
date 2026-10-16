@@ -1,5 +1,15 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-16, commit `4009bc9`)
+
+Added reusable parametrized coverage for the two valid concurrent-resume
+loser errors: direct ownership loss and a nested grouping failure wrapped by
+the root workflow. The long subprocess race test now uses that same assertion.
+Parser CI run `#300` (`38898230216`) passed CPython 3.12, 3.13, 3.14, and
+PyPy 3.11. This is narrow regression evidence only; crash-order reconciliation,
+true process recovery, OCR completeness, long-document equivalence, and release
+readiness remain partial or open.
+
 ## Latest evidence update (2026-10-16, commits `94bc900` and `22603c3`)
 
 Added a reusable regression for failed nested workflow results: the grouping

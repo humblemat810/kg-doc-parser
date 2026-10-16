@@ -1,5 +1,17 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-16, commit `4009bc9`)
+
+The concurrent fresh-process resume regression now has reusable coverage for
+both valid fail-closed loser surfaces: a direct `WorkflowRunOwnershipError`
+and a wrapped nested grouping failure after the competing lease is lost. The
+subprocess race test reuses the same assertion, so an unrelated worker error
+cannot be accepted as the expected ownership-loss path. Parser CI run `#300`
+(`38898230216`) passed CPython 3.12, 3.13, 3.14, and PyPy 3.11. This closes
+only the regression-test coverage item; dual-store reconciliation, Linux
+SIGKILL recovery, OCR completeness, long-document equivalence, and release
+gates remain open.
+
 ## Latest evidence update (2026-10-16, commits `94bc900` and `22603c3`)
 
 The grouping wrapper now has a deterministic regression proving that a failed
