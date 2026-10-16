@@ -1033,3 +1033,16 @@ protocol.
   source, while runtime state stores only stable page identity and progress.
   Focused compact-state, terminal-resume, and fresh-process tests pass; CI and
   large-document size measurements remain pending.
+
+### Typed provider metadata seam regression (2026-10-16)
+
+- [~] Fixed locally; CI pending. `document_ingester_logger.py` now narrows
+  optional provider `usage_metadata` through `_UsageMetadataCarrier` and
+  `_message_usage_metadata()` instead of reading it with an untyped `getattr`
+  boundary. Invalid metadata fails closed to an empty mapping.
+- Regression:
+  `tests/test_document_ingester_logger.py::test_message_usage_metadata_narrows_optional_provider_extension`
+  covers a valid SDK-like carrier, an ordinary LangChain message, and a
+  malformed list payload. The focused test, Ruff CI selection, and
+  `git diff --check` pass locally. Parser CI runs #311 and #312 remain
+  pending, so this seam is not yet a verified release gate.

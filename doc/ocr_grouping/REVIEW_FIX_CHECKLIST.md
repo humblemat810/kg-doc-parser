@@ -590,3 +590,15 @@ remaining cross-store, provider-matrix, and crash-window gates are still open.
 Kogwistar runtime fixes are on `fix/workflow-run-ownership`; downstream pins
 must not advance until the required remote matrix is green and the corrected
 release is available.
+
+### Typed provider metadata seam regression (2026-10-16)
+
+- [~] Fixed locally; CI pending. `document_ingester_logger.py` now narrows
+  optional provider `usage_metadata` through `_UsageMetadataCarrier` and
+  `_message_usage_metadata()` instead of reading it with an untyped `getattr`
+  boundary. Invalid metadata fails closed to an empty mapping.
+- Regression:
+  `tests/test_document_ingester_logger.py::test_message_usage_metadata_narrows_optional_provider_extension`
+  verifies valid SDK-like metadata, ordinary messages, and malformed list
+  payloads. The focused test, Ruff CI selection, and `git diff --check` pass
+  locally; parser CI runs #311 and #312 remain pending.
