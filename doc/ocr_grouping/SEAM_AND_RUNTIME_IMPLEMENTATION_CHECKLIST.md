@@ -1,5 +1,16 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-16, commit `35a0383`)
+
+The concurrent fresh-process resume regression now accepts both runtime
+ownership-loss representations: a direct `WorkflowRunOwnershipError` and a
+fail-closed nested grouping failure when the competing lease is lost after
+the parent has already entered a child workflow. The exact regression passed
+locally in 95.16 seconds. Parser CI run `#292` (`38890341276`) passed all four
+jobs on CPython 3.12, 3.13, 3.14, and PyPy 3.11. This corrects test
+diagnostics only; it does not promote the dual-store, Linux SIGKILL, OCR
+completeness, or long-document release gates.
+
 ## Latest evidence update (2026-10-16, commit `77e7fd5`)
 
 The typed OCR checkpoint-repair update now constructs an explicit

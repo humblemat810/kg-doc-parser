@@ -1,5 +1,15 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-16, commit `35a0383`)
+
+The concurrent fresh-process resume regression now recognizes both valid
+fail-closed ownership-loss paths: direct `WorkflowRunOwnershipError` and a
+nested grouping failure after lease loss. The exact test passed locally in
+95.16 seconds. Parser CI run `#292` (`38890341276`) passed CPython 3.12,
+3.13, 3.14, and PyPy 3.11. This is a test-diagnostic correction and does not
+close the remaining crash-order, Linux SIGKILL, OCR completeness, or
+long-document evidence gates.
+
 ## Latest evidence update (2026-10-16, commit `77e7fd5`)
 
 The OCR runtime state-update seam now preserves the concrete `StateUpdate`
