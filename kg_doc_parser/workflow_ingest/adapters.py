@@ -67,9 +67,9 @@ def _validated_ocr_page_json(
     page_number = value.get("pdf_page_num", default_page_number)
     if type(page_number) is int:
         if page_number < 1:
-            raise TypeError("OCR page pdf_page_num must be a positive integer")
+            raise ValueError("OCR page pdf_page_num must be a positive integer")
     elif not (isinstance(page_number, str) and page_number.strip().isdigit()):
-        raise TypeError("OCR page pdf_page_num must be a positive integer")
+        raise ValueError("OCR page pdf_page_num must be a positive integer")
     scalar_types: dict[str, type[object] | tuple[type[object], ...]] = {
         "printed_page_number": str,
         "contains_table": bool,
