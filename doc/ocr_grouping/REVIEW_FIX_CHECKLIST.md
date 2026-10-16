@@ -2,6 +2,10 @@
 
 ## Current status ledger
 
+The live status is maintained in
+[`OCR_STATUS_LEDGER.md`](OCR_STATUS_LEDGER.md). This document is the fixed
+requirements and review record; do not append progress sections here.
+
 This table is the only active checklist summary. Update these existing rows in
 place; do not append a new requirement or a new progress row after a test run.
 The detailed requirement rows later in this file remain the source of the
@@ -33,10 +37,9 @@ the commit history and diff show historical progress. Keep a short dated note
 only when it records a materially different verification environment or a
 regression that cannot be represented by the existing row.
 
-The dated sections below are retained as an immutable audit trail. They are
-not additional requirements, must not be counted as checklist items, and must
-not be extended with another "latest update". If new evidence changes a row,
-edit the row in the current ledger and let the commit diff record the change.
+The dated sections below are frozen historical context. They are not additional
+requirements and must not be extended. If new evidence changes a status, edit
+`OCR_STATUS_LEDGER.md` and let the commit diff record the change.
 
 ## Historical evidence log (retained for context; do not append)
 

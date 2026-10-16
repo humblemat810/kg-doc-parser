@@ -2,6 +2,10 @@
 
 ## Current status ledger
 
+The live status is maintained in
+[`OCR_STATUS_LEDGER.md`](OCR_STATUS_LEDGER.md). This document is the fixed
+requirements and review record; do not append progress sections here.
+
 This is the only active status summary for the implementation. The A, B, S,
 and C requirements below are fixed acceptance criteria. Update their existing
 rows in place; do not append a new checklist item or a new "latest evidence"
