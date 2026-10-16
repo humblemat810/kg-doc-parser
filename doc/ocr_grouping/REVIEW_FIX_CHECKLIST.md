@@ -708,3 +708,15 @@ release is available.
   modules pass Pyright, the CI Ruff selection passes, and the focused suite
   passes (`17 passed`). CI for `b61f428` remains in progress; full release
   readiness is not claimed.
+
+### Persisted-state and legacy runner contract (2026-10-16)
+
+- [x] Commit `8b8d3fb` adds fail-closed persisted parser payload, source-map,
+  and object-map decoding for invalid keys and entries, with a reusable
+  regression test and zero changed-module Pyright errors. This closes the
+  decoder boundary only; it does not close the repository-wide typing sweep.
+- [x] Commit `9341bd4` aligns the legacy facade, runner result, and graph export
+  source-map types using `ParserSourceMap` and read-only mappings. Changed
+  modules pass Pyright and the focused legacy workflow selection passes
+  (`2 passed`). Full Ruff/CI and release readiness remain open because the
+  legacy monolith has unrelated existing Ruff findings.

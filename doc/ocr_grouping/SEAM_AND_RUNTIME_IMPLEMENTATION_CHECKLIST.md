@@ -1156,3 +1156,19 @@ protocol.
   modules, the CI Ruff selection passes, and the focused source-map/PageIndex
   suite passes (`17 passed`). CI for `b61f428` is still in progress; this
   evidence does not close the full CI or release gates.
+
+### Persisted-state and legacy runner contract (2026-10-16)
+
+- [x] Commit `8b8d3fb` makes persisted parser payload, source-map, and
+  object-map decoders fail closed on non-JSON keys and malformed entries
+  instead of stringifying keys or silently dropping invalid state. The new
+  regression test `test_handler_persisted_parser_objects_reject_non_json_keys_and_entries`
+  and the existing malformed-state selection pass (`2 passed`). Changed
+  handler and PageIndex modules report zero Pyright errors.
+- [x] Commit `9341bd4` aligns the legacy parsing facade, runner result, and
+  graph export boundary on `ParserSourceMap`; legacy export accepts read-only
+  mappings so the JSON-specific map is not widened back to
+  `dict[str, dict[str, object]]`. Changed parsing, runner, and legacy export
+  modules report zero Pyright errors; the focused legacy workflow selection
+  passes (`2 passed`). The legacy monolith still has pre-existing broad Ruff
+  violations outside this change, and full CI remains the release gate.
