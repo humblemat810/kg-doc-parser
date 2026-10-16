@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import StorageBackend
@@ -39,10 +39,70 @@ WorkflowState = Mapping[str, object]
 WorkflowPredicates = dict[str, Predicate]
 
 
+class _LayerContext(TypedDict, total=False):
+    metadata: Mapping[str, object]
+    parent_node_ids: list[str]
+
+
+class _LayerReview(TypedDict, total=False):
+    metadata: Mapping[str, object]
+    satisfied: bool
+    coverage_ok: bool
+    overlap_conflicts: list[object]
+    coverage_gap_notes: list[object]
+    duplicate_child_notes: list[object]
+    structural_issues: list[object]
+    validation_diagnostics: list[object]
+
+
+class _LayerChild(TypedDict, total=False):
+    parent_node_id: str
+
+
+class _LayerResult(TypedDict, total=False):
+    satisfied: bool
+    children: list[_LayerChild]
+
+
 def _string_set(value: object) -> set[str]:
     if not isinstance(value, (list, tuple, set, frozenset)):
         return set()
     return {str(item) for item in value}
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item) for item in value]
+
+
+def _mapping(value: object) -> Mapping[str, object]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _context(state: WorkflowState) -> _LayerContext:
+    value = state.get("current_layer_context")
+    return cast(_LayerContext, value) if isinstance(value, Mapping) else {}
+
+
+def _metadata(state: WorkflowState) -> Mapping[str, object]:
+    return _mapping(_context(state).get("metadata"))
+
+
+def _review(state: WorkflowState) -> _LayerReview:
+    value = state.get("current_layer_review")
+    return cast(_LayerReview, value) if isinstance(value, Mapping) else {}
+
+
+def _result(state: WorkflowState) -> _LayerResult:
+    value = state.get("current_layer_result")
+    return cast(_LayerResult, value) if isinstance(value, Mapping) else {}
+
+
+def _children(value: object) -> list[_LayerChild]:
+    if not isinstance(value, list):
+        return []
+    return [cast(_LayerChild, child) for child in value if isinstance(child, Mapping)]
 
 
 def workflow_predicates() -> WorkflowPredicates:
@@ -52,14 +112,6 @@ def workflow_predicates() -> WorkflowPredicates:
     never controls the route directly, and a retry cannot re-enable a method
     that the satisfaction check disabled.
     """
-
-    def _context(state: WorkflowState) -> dict[str, object]:
-        value = state.get("current_layer_context")
-        return value if isinstance(value, dict) else {}
-
-    def _metadata(state: WorkflowState) -> dict[str, object]:
-        value = _context(state).get("metadata")
-        return value if isinstance(value, dict) else {}
 
     def _strategy_name(edge: WorkflowEdgeInfo) -> str:
         target = str(edge.dst).split("|")[-1]
@@ -71,7 +123,7 @@ def workflow_predicates() -> WorkflowPredicates:
 
     def _selected_strategy(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del result
-        return str(_metadata(state).get("parse_strategy")) == _strategy_name(edge)
+        return str(_metadata(state).get("parse_strategy", "")) == _strategy_name(edge)
 
     def _failed_with_remaining(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
@@ -88,41 +140,37 @@ def workflow_predicates() -> WorkflowPredicates:
 
     def _commit_candidates_valid(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
-        review = state.get("current_layer_review")
-        return isinstance(review, dict) and bool(review.get("metadata", {}).get("commit_validation")) and review.get("satisfied") is True
+        review = _review(state)
+        metadata = _mapping(review.get("metadata"))
+        return bool(metadata.get("commit_validation")) and review.get("satisfied") is True
 
     def _commit_candidates_invalid(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
-        review = state.get("current_layer_review")
-        return isinstance(review, dict) and bool(review.get("metadata", {}).get("commit_validation")) and review.get("satisfied") is False
+        review = _review(state)
+        metadata = _mapping(review.get("metadata"))
+        return bool(metadata.get("commit_validation")) and review.get("satisfied") is False
 
     def _batch_has_repair_candidates(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
         context = _context(state)
-        review = state.get("current_layer_review")
-        result = state.get("current_layer_result")
-        if not isinstance(review, dict) or not isinstance(result, dict):
+        review = _review(state)
+        result = _result(state)
+        if _mapping(review.get("metadata")).get("review_failure"):
             return False
-        if review.get("metadata", {}).get("review_failure"):
+        parent_ids = set(_string_list(context.get("parent_node_ids")))
+        children = _children(result.get("children"))
+        if len(parent_ids) < 2 or not children:
             return False
-        parent_ids = context.get("parent_node_ids")
-        children = result.get("children")
-        if not isinstance(parent_ids, list) or len(parent_ids) < 2 or not isinstance(children, list):
-            return False
-        return any(
-            isinstance(child, dict) and child.get("parent_node_id") in parent_ids
-            for child in children
-        )
+        return any(child.get("parent_node_id") in parent_ids for child in children)
 
     def _satisfied(edge: WorkflowEdgeInfo, state: WorkflowState, result: object) -> bool:
         del edge, result
-        review = state.get("current_layer_review")
-        result = state.get("current_layer_result")
-        if not isinstance(review, dict) or not isinstance(result, dict):
-            return False
+        review = _review(state)
+        result = _result(state)
+        metadata = _mapping(review.get("metadata"))
         return (
             review.get("coverage_ok") is True
-            and not review.get("metadata", {}).get("review_failure")
+            and not metadata.get("review_failure")
             and bool(result.get("satisfied", False))
             and not review.get("overlap_conflicts")
             and not review.get("coverage_gap_notes")
