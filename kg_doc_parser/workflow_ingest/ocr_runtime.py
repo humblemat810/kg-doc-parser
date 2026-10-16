@@ -163,6 +163,7 @@ StateStringKey = Literal[
     "checkpoint_revision",
 ]
 StateBoolKey = Literal["checkpoint_absent", "checkpoint_restored", "summaries_generated"]
+ResumeIdentityValue = str | list[str]
 
 
 class _OCRWorkflowState(TypedDict, total=False):
@@ -428,7 +429,7 @@ def _validate_root_resume_identity(
     """Reject a root checkpoint built from a different immutable input set."""
     if not require_match:
         return
-    expected: dict[str, object] = {
+    expected: dict[str, ResumeIdentityValue] = {
         "ocr_root_state_version": _OCR_ROOT_STATE_VERSION,
         "document_id": document_id,
         "source_fingerprint": source_fingerprint,
