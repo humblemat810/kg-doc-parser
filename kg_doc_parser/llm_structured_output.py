@@ -6,6 +6,8 @@ from kogwistar.llm_tasks.providers import (
     SupportsStructuredOutput,
 )
 
+from .workflow_ingest.serialization import JsonValue
+
 class StructuredModelLike(Protocol):
     """Compatibility contract across released Core provider exports."""
 
@@ -13,7 +15,7 @@ class StructuredModelLike(Protocol):
     def model_validate(cls, payload: object, /) -> Self: ...
 
     @classmethod
-    def model_json_schema(cls) -> dict[str, object]: ...
+    def model_json_schema(cls) -> dict[str, JsonValue]: ...
 
 # Keep the historical parser names as aliases, but use the core contracts as
 # the single source of truth for provider/schema compatibility.
