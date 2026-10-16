@@ -69,7 +69,7 @@ from .ocr_pipeline import (
     _write_document_tree,
     _write_summary,
 )
-from .serialization import JsonObject, decode_json_object
+from .serialization import JsonObject, decode_json_object, decode_json_value
 from .service import workflow_predicates
 
 if TYPE_CHECKING:
@@ -261,10 +261,20 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
     if not all(isinstance(key, str) for key in value):
         raise TypeError("OCR workflow state keys must be strings")
 
-    # Copy the mapping before narrowing it.  Returning the original mapping
-    # after validation would make the type contract purely a cast: later code
-    # could still observe mutable, unnormalised containers from a checkpoint.
-    state = cast(_OCRWorkflowState, dict(value))
+    # Decode application state before narrowing its known fields. Kogwistar
+    # also injects reserved underscore-prefixed runtime plumbing keys (for
+    # example, invocation paths) that are deliberately not JSON checkpoint
+    # state and may use opaque mapping-proxy values. Unknown application keys
+    # still cross the same JSON boundary as known keys.
+    decoded_state: dict[str, object] = {}
+    for key, field in value.items():
+        if key.startswith("_"):
+            decoded_state[key] = field
+        else:
+            decoded_state[key] = decode_json_value(
+                field, label=f"OCR workflow state.{key}"
+            )
+    state = cast(_OCRWorkflowState, decoded_state)
 
     string_keys = (
         "ocr_page_state_version",
