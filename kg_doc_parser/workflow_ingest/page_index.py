@@ -39,7 +39,7 @@ import re
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from kogwistar.id_provider import stable_id
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
@@ -82,6 +82,20 @@ class PageIndexTraceLogger(Protocol):
     """Receive bounded diagnostic messages from page-index parsing."""
 
     def __call__(self, message: str, /) -> None: ...
+
+
+@runtime_checkable
+class ProviderCallCounter(Protocol):
+    """Optional callback accounting exposed by provider test/telemetry sinks."""
+
+    recorded_call_count: int | None
+
+
+@runtime_checkable
+class ProviderCallRecorder(ProviderCallCounter, Protocol):
+    """Optional callback hook for adapters that bypass LangChain callbacks."""
+
+    def record_untracked_call(self, call_key: str, /) -> None: ...
 
 
 PageIndexMode = Literal[
@@ -141,10 +155,11 @@ def _object_int(value: object, default: int) -> int:
 def _callback_call_counts(callbacks: list[object] | None) -> dict[int, int | None]:
     """Snapshot callback accounting before a provider invocation."""
 
-    return {
-        id(callback): getattr(callback, "recorded_call_count", None)
-        for callback in callbacks or []
-    }
+    counts: dict[int, int | None] = {}
+    for callback in callbacks or []:
+        counter = callback if isinstance(callback, ProviderCallCounter) else None
+        counts[id(callback)] = counter.recorded_call_count if counter is not None else None
+    return counts
 
 
 def _notify_untracked_provider_call(
@@ -155,13 +170,13 @@ def _notify_untracked_provider_call(
     """Account for successful adapters that do not emit LangChain callbacks."""
 
     for callback in callbacks or []:
-        recorder = getattr(callback, "record_untracked_call", None)
-        if not callable(recorder):
+        recorder = callback if isinstance(callback, ProviderCallRecorder) else None
+        if recorder is None:
             continue
         before = before_counts.get(id(callback))
-        after = getattr(callback, "recorded_call_count", None)
+        after = recorder.recorded_call_count
         if before is not None and after == before:
-            recorder(call_key)
+            recorder.record_untracked_call(call_key)
 
 
 class PageIndexBlockSpec(BaseModel):
@@ -1447,6 +1462,14 @@ def _refine_page_index_block_excerpts(
         if _normalize_page_index_excerpt(proposed) == _normalize_page_index_excerpt(page_text):
             diagnostics["refine_excerpts_rejected"] += 1
             continue
+        normalized_current = _normalize_page_index_excerpt(current_excerpt)
+        normalized_proposed = _normalize_page_index_excerpt(proposed)
+        if not original_spec.child_nodes and normalized_proposed in normalized_current:
+            # A leaf owns its complete terminal source interval.  Accepting a
+            # strict substring here would create an uncovered source gap even
+            # though the proposed text is a valid substring of the old excerpt.
+            diagnostics["refine_excerpts_rejected"] += 1
+            continue
         try:
             _resolve_pointer(unit_id=unit_id, page_text=page_text, excerpt=proposed)
         except Exception:  # noqa: BLE001 - an invalid grounded pointer rejects only this candidate.
@@ -1467,7 +1490,6 @@ def _refine_page_index_block_excerpts(
             for sibling_index, sibling in enumerate(parent_nodes)
             if sibling_index != path[-1] and _normalize_page_index_excerpt(sibling.excerpt)
         }
-        normalized_proposed = _normalize_page_index_excerpt(proposed)
         if normalized_proposed in ancestor_excerpts:
             diagnostics["refine_excerpts_rejected"] += 1
             continue

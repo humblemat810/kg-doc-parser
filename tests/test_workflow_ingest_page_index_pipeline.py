@@ -2054,7 +2054,7 @@ def test_page_index_refinement_disabled_by_default_preserves_behavior(monkeypatc
     assert default_result.diagnostics["refine_excerpts_attempted"] == 0
 
 
-def test_page_index_refinement_accepts_shorter_exact_substring(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_page_index_refinement_rejects_shorter_leaf_substring(monkeypatch: pytest.MonkeyPatch) -> None:
     raw_text = "# Root\n\nIntro paragraph.\n\n## Child\n\n- Term item\n"
     refinement = page_index_module.ExcerptRefinementBatch(
         suggestions=[
@@ -2094,10 +2094,10 @@ def test_page_index_refinement_accepts_shorter_exact_substring(monkeypatch: pyte
         provider_settings=provider_settings,
     )
 
-    assert refined[0].child_nodes[0].excerpt == "Intro paragraph"
+    assert refined[0].child_nodes[0].excerpt == "Intro paragraph."
     assert diagnostics["refine_excerpts_enabled"] is True
-    assert diagnostics["refine_excerpts_accepted"] == 1
-    assert diagnostics["refine_excerpts_rejected"] == 0
+    assert diagnostics["refine_excerpts_accepted"] == 0
+    assert diagnostics["refine_excerpts_rejected"] == 1
     assert diagnostics["refine_excerpts_fallback"] is False
 
 
@@ -2291,10 +2291,64 @@ def test_page_index_refinement_reports_counts(monkeypatch: pytest.MonkeyPatch) -
 
     assert result.diagnostics["refine_excerpts_enabled"] is True
     assert result.diagnostics["refine_excerpts_attempted"] == 2
-    assert result.diagnostics["refine_excerpts_accepted"] == 1
-    assert result.diagnostics["refine_excerpts_rejected"] == 0
+    assert result.diagnostics["refine_excerpts_accepted"] == 0
+    assert result.diagnostics["refine_excerpts_rejected"] == 1
     assert result.diagnostics["refine_excerpts_fallback"] is False
     assert usage_callback.call_keys == ["page-1-first", "refine-page-1"]
+
+
+def test_page_index_refinement_preserves_terminal_coverage_when_punctuation_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shorter model excerpt must not remove authoritative terminal text."""
+    raw_text = "# Root\n\nIntro paragraph.\n"
+    assignments = BlockAssignmentBatch(
+        assignments=[
+            BlockAssignment(block_id="p0001-b001", parent_id=None, node_type="SECTION", title="Root"),
+            BlockAssignment(
+                block_id="p0001-b002",
+                parent_id="p0001-b001",
+                node_type="PARAGRAPH",
+                title="Intro paragraph",
+            ),
+        ]
+    )
+    refinement = page_index_module.ExcerptRefinementBatch(
+        suggestions=[
+            page_index_module.ExcerptRefinementSuggestion(
+                path_id="0.0", excerpt="Intro paragraph"
+            ),
+        ]
+    )
+    _install_fake_page_index_chat(
+        monkeypatch,
+        assignment_payload=assignments,
+        refinement_payload=refinement,
+    )
+
+    result = parse_page_index_document(
+        document_id="page-index-refinement-terminal-coverage",
+        title="Page Index Document",
+        raw_text=raw_text,
+        source_format="markdown",
+        mode="openai",
+        provider_settings=WorkflowProviderSettings(
+            parser=ProviderEndpointConfig(provider="openai", model="fake")
+        ),
+        refine_excerpts=True,
+    )
+
+    assert result.coverage["overall"] == pytest.approx(1.0)
+    assert result.diagnostics["refine_excerpts_accepted"] == 0
+    assert result.diagnostics["refine_excerpts_rejected"] == 1
+    pending = [result.semantic_tree]
+    pointers = []
+    while pending:
+        node = pending.pop()
+        pointers.extend(node.total_content_pointers)
+        pointers.extend(node.aggregate_content_pointers)
+        pending.extend(node.child_nodes)
+    assert any(pointer.verbatim_text == "Intro paragraph." for pointer in pointers)
 
 
 def test_page_index_ollama_flat_but_shallow_assignment_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
