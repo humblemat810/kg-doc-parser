@@ -12,6 +12,14 @@ remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+Layerwise boundary prompt and lookup payloads now use typed records for parent
+IDs, source spans, excerpts, and legal cutpoints instead of
+`dict[str, object]`. The existing layerwise suite, Ruff, and the diff check
+pass locally; arbitrary provider responses remain isolated at the external
+structured-output boundary.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 PageIndex assignment and block-spec debug payload builders now preserve typed
 `JsonObject` output instead of widening deterministic trace records to
 `dict[str, object]`. Ruff, the PageIndex suite, and the diff check pass

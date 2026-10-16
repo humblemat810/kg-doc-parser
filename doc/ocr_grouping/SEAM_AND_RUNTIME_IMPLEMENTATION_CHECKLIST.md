@@ -12,6 +12,14 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+The layerwise boundary prompt now uses typed `_BoundaryPromptCandidate`,
+`_BoundaryLegalCutpoint`, and `_BoundaryLookupCandidate` records instead of
+`dict[str, object]` for deterministic parent/span/cutpoint payloads. The
+existing layerwise test suite, Ruff, and the diff check pass locally. Provider
+responses remain dynamic only at the external structured-output boundary.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 PageIndex assignment and block-spec debug payload builders now return typed
 `JsonObject` records, preserving the deterministic JSON contract used by trace
 and retry diagnostics. Ruff, the PageIndex suite, and the diff check pass

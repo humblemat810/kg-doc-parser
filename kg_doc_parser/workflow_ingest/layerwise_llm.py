@@ -116,6 +116,37 @@ class LayerwiseLLMCallbacks(TypedDict):
     allow_review: bool
 
 
+class _BoundaryPointerSpan(TypedDict):
+    start_char: int
+    end_char: int
+
+
+class _BoundaryLegalCutpoint(TypedDict):
+    candidate_id: str
+    cut_offset: int
+    boundary_kind: str
+    confidence: float
+    reason: str
+    text_before_cut: str
+    text_after_cut: str
+    text_before_cut_preview: str
+    text_after_cut_preview: str
+    preview: str
+
+
+class _BoundaryPromptCandidate(TypedDict):
+    parent_node_id: str
+    source_cluster_id: str
+    pointer_excerpt: str
+    pointer_span: _BoundaryPointerSpan
+    legal_cutpoints: list[_BoundaryLegalCutpoint]
+
+
+class _BoundaryLookupCandidate(_BoundaryLegalCutpoint):
+    parent_node_id: str
+    source_cluster_id: str
+
+
 LayerwiseCallback = LayerwiseLLMCallbacks
 
 
@@ -605,10 +636,10 @@ def _boundary_prompt_candidate_context(
     current_layer_context: CurrentLayerContext,
     parser_source_map: Mapping[str, Mapping[str, object]],
     max_points: int = 128,
-) -> list[dict[str, object]]:
+) -> list[_BoundaryPromptCandidate]:
     parent_ids = list(current_layer_context.parent_node_ids)
     pointers_by_id = dict(current_layer_context.parent_content_pointers_by_id)
-    candidates: list[dict[str, object]] = []
+    candidates: list[_BoundaryPromptCandidate] = []
     for parent_id in parent_ids:
         for pointer in _object_list(pointers_by_id.get(parent_id)):
             text = _pointer_text(pointer, parser_source_map=parser_source_map)
@@ -665,9 +696,9 @@ def _boundary_prompt_candidate_context(
 
 
 def _boundary_candidate_lookup(
-    boundary_candidates: list[dict[str, object]],
-) -> dict[str, dict[str, object]]:
-    lookup: dict[str, dict[str, object]] = {}
+    boundary_candidates: list[_BoundaryPromptCandidate],
+) -> dict[str, _BoundaryLookupCandidate]:
+    lookup: dict[str, _BoundaryLookupCandidate] = {}
     for parent in boundary_candidates:
         parent_node_id = str(parent.get("parent_node_id") or "")
         source_cluster_id = str(parent.get("source_cluster_id") or "")
@@ -688,7 +719,7 @@ def _boundary_candidate_lookup(
 def _normalize_boundary_cutpoints_from_candidates(
     parsed: LLMBoundaryProposalBatch,
     *,
-    candidate_lookup: dict[str, dict[str, object]],
+    candidate_lookup: dict[str, _BoundaryLookupCandidate],
 ) -> LLMBoundaryProposalBatch:
     normalized: list[BoundaryCutpoint] = []
     for cutpoint in parsed.cutpoints:
