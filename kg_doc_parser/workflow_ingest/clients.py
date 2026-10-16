@@ -78,6 +78,7 @@ class HttpResponseLike(Protocol):
     """Small response surface required from an HTTP transport adapter."""
 
     status_code: int
+    text: str
 
     def json(self) -> object: ...
 
@@ -254,11 +255,10 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
         if self.base_url and not endpoint.startswith("http://") and not endpoint.startswith("https://"):
             endpoint = f"{self.base_url}{endpoint}"
         response = self.client.post(endpoint, json=payload)
-        status_code = int(getattr(response, "status_code", 500))
+        status_code = response.status_code
         if status_code >= 400:
-            body = getattr(response, "text", "")
             raise RuntimeError(
-                f"canonical server persistence failed: status={status_code} body={body}"
+                f"canonical server persistence failed: status={status_code} body={response.text}"
             )
         response_payload = response.json()
         if not isinstance(response_payload, Mapping):
