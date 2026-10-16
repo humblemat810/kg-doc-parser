@@ -99,6 +99,7 @@ from kg_doc_parser.workflow_ingest import (
 )
 from kg_doc_parser.workflow_ingest.adapters import OCRPageJSON
 from kg_doc_parser.workflow_ingest.document_adapters import apply_grouping_proposals
+from kg_doc_parser.workflow_ingest.sdk_boundary import ContentCarrier, raw_content
 from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal
 from kg_doc_parser.workflow_ingest.document_models import (
     ChildRef,
@@ -1085,6 +1086,17 @@ def test_raw_ocr_content_narrows_sdk_content_without_stringifying_other_values()
     mapping_payload = {"content": "already decoded"}
     assert _raw_content(mapping_payload) is mapping_payload
     assert _raw_content(None) is None
+
+
+def test_shared_sdk_content_boundary_preserves_mapping_and_empty_content_rules() -> None:
+    provider_message = SimpleNamespace(content="ocr text")
+    empty_message = SimpleNamespace(content=None)
+    mapping_payload = {"content": "already decoded"}
+
+    assert isinstance(provider_message, ContentCarrier)
+    assert raw_content(provider_message) == "ocr text"
+    assert raw_content(empty_message) is empty_message
+    assert raw_content(mapping_payload) is mapping_payload
 
 
 def test_json_pages_rejects_malformed_persisted_page_shape() -> None:

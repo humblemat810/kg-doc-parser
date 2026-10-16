@@ -86,6 +86,7 @@ from .providers import (
     invoke_with_timeout,
 )
 from .serialization import JsonValue
+from .sdk_boundary import raw_content
 from .service import _RunCompat
 
 _LOGGER = logging.getLogger(__name__)
@@ -2838,7 +2839,7 @@ def _coerce_ocr_response(payload: object) -> OCRClusterResponse:
             return OCRClusterResponse.model_validate(parsed)
         raw = payload.get("raw")
         if raw is not None:
-            content = getattr(raw, "content", raw)
+            content = raw_content(raw)
             if isinstance(content, str):
                 return OCRClusterResponse.model_validate(json.loads(content))
             if isinstance(content, list):
@@ -2850,7 +2851,7 @@ def _coerce_ocr_response(payload: object) -> OCRClusterResponse:
 
 def _extract_message_text(raw: object) -> str:
     """Extract plain text from LangChain raw message content."""
-    content = getattr(raw, "content", raw)
+    content = raw_content(raw)
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):

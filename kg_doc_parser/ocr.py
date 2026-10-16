@@ -16,7 +16,6 @@ from typing import (
     Self,
     TypedDict,
     cast,
-    runtime_checkable,
 )
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -52,6 +51,7 @@ from pydantic_extension.model_slicing.mixin import DtoField
 
 from .pdf2png import RawFileLoader
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+from .workflow_ingest.sdk_boundary import raw_content
 from .utils.langchain import GeminiCostCallbackHandler, get_gemini_callback_cost
 
 PastCompatibleSplitPage: TypeAlias = SplitPage
@@ -64,12 +64,6 @@ class StructuredOutputPayload(TypedDict):
     parsed: NotRequired[BaseModel | None]
     raw: NotRequired[object]
     parsing_error: NotRequired[object]
-
-
-@runtime_checkable
-class _ContentCarrier(Protocol):
-    @property
-    def content(self) -> object: ...
 
 
 def _build_ocr_llm(
@@ -211,10 +205,7 @@ class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
 
 def _raw_content(value: object) -> object | None:
     """Extract raw SDK content without pretending it is a parsed OCR model."""
-    if isinstance(value, _ContentCarrier):
-        content = value.content
-        return content if content is not None else value
-    return value
+    return raw_content(value)
 
 
 def get_first_round_response(
