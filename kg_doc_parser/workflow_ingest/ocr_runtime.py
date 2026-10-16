@@ -61,6 +61,7 @@ from .ocr_pipeline import (
     _write_document_tree,
     _write_summary,
 )
+from .serialization import JsonObject
 from .service import workflow_predicates
 
 _OCR_ROOT_STATE_VERSION = "ocr-root-v2"
@@ -79,7 +80,7 @@ class _OCRWorkflowState(TypedDict, total=False):
     source_fingerprint: str
     ocr_configuration_fingerprints: list[str]
     grouping_policy_version: str
-    tree: dict[str, object]
+    tree: JsonObject
     pass_index: int
     ocr_page_recovery_generation: int
     page_cursor: int
@@ -90,8 +91,13 @@ class _OCRWorkflowState(TypedDict, total=False):
     reused_pages: list[int]
     last_failed_page: int
     checkpoint_revision: str
-    ocr_page_result: dict[str, object]
-    export_bundle: dict[str, object]
+    grouping_passes: list[list[JsonObject]]
+    workflow_input: JsonObject
+    grouping_result: JsonObject
+    semantic_result: JsonObject
+    semantic_tree: JsonObject
+    ocr_page_result: JsonObject
+    export_bundle: JsonObject
 
 
 def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
@@ -101,6 +107,15 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
     values at each use.  The TypedDict keeps known keys from degrading to
     ``object`` after the boundary has been crossed.
     """
+    return cast(_OCRWorkflowState, value)
+
+
+def _typed_child_state(value: object, *, label: str) -> _OCRWorkflowState:
+    """Validate and narrow a JSON child-state payload at a workflow seam."""
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) for key in value
+    ):
+        raise TypeError(f"{label} did not return a JSON object state")
     return cast(_OCRWorkflowState, value)
 
 
@@ -116,11 +131,11 @@ def _success(
     )
 
 
-def _tree(state: Mapping[str, object]) -> DocumentTree:
+def _tree(state: _OCRWorkflowState) -> DocumentTree:
     payload = state.get("tree")
     if not isinstance(payload, dict) or not all(isinstance(key, str) for key in payload):
         raise TypeError("OCR grouping runtime state has no tree")
-    return DocumentTree.model_validate(cast(dict[str, object], payload))
+    return DocumentTree.model_validate(payload)
 
 
 def _proposals(value: object) -> tuple[GroupProposal, ...]:
@@ -129,12 +144,12 @@ def _proposals(value: object) -> tuple[GroupProposal, ...]:
     return tuple(GroupProposal.model_validate(item) for item in value)
 
 
-def _pass_count(state: Mapping[str, object]) -> int:
+def _pass_count(state: _OCRWorkflowState) -> int:
     value = state.get("pass_index", 0)
     return value if type(value) is int and value >= 0 else 0
 
 
-def _recovery_generation(state: Mapping[str, object]) -> int:
+def _recovery_generation(state: _OCRWorkflowState) -> int:
     value = state.get("ocr_page_recovery_generation", 0)
     if value is None:
         return 0
@@ -145,12 +160,12 @@ def _recovery_generation(state: Mapping[str, object]) -> int:
     return value
 
 
-def _page_cursor(state: Mapping[str, object]) -> int:
+def _page_cursor(state: _OCRWorkflowState) -> int:
     value = state.get("page_cursor", 0)
     return value if type(value) is int and value >= 0 else 0
 
 
-def _page_sources(state: Mapping[str, object]) -> list[tuple[int, Path]]:
+def _page_sources(state: _OCRWorkflowState) -> list[tuple[int, Path]]:
     value = state.get("page_sources", [])
     if not isinstance(value, list):
         raise TypeError("OCR page runtime state has no page source list")
@@ -168,7 +183,7 @@ def _page_sources(state: Mapping[str, object]) -> list[tuple[int, Path]]:
     return sources
 
 
-def _json_pages(state: Mapping[str, object]) -> list[OCRPageJSON]:
+def _json_pages(state: _OCRWorkflowState) -> list[OCRPageJSON]:
     """Load accepted pages without copying their payload into every checkpoint.
 
     ``raw_pages`` is retained as a compatibility path for checkpoints created
@@ -199,7 +214,7 @@ def _json_pages(state: Mapping[str, object]) -> list[OCRPageJSON]:
     return pages
 
 
-def _int_list(state: Mapping[str, object], key: str) -> list[int]:
+def _int_list(state: _OCRWorkflowState, key: str) -> list[int]:
     value = state.get(key, [])
     if not isinstance(value, list) or any(type(item) is not int for item in value):
         raise ValueError(f"OCR page runtime state field {key!r} is malformed")
@@ -207,7 +222,7 @@ def _int_list(state: Mapping[str, object], key: str) -> list[int]:
 
 
 def _validate_root_resume_identity(
-    state: Mapping[str, object],
+    state: _OCRWorkflowState,
     *,
     document_id: str,
     source_fingerprint: str,
@@ -257,7 +272,7 @@ def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> _OCRWorkflowStat
 
 
 def _validate_page_resume_identity(
-    state: Mapping[str, object],
+    state: _OCRWorkflowState,
     *,
     document_id: str,
     source_fingerprint: str,
@@ -288,7 +303,7 @@ def _validate_page_resume_identity(
 
 def _reconcile_page_checkpoint(
     *,
-    state: Mapping[str, object],
+    state: _OCRWorkflowState,
     context: OCRPageProcessingContext,
     source_plan: OCRSourcePlan,
 ) -> dict[str, object] | None:
@@ -339,7 +354,7 @@ def _reconcile_page_checkpoint(
 
 def _validate_root_page_result(
     *,
-    page_result: Mapping[str, object],
+    page_result: _OCRWorkflowState,
     context: OCRPageProcessingContext,
     source_plan: OCRSourcePlan,
 ) -> None:
@@ -371,7 +386,7 @@ def _validate_root_page_result(
 
 def _page_result_needs_recovery(
     *,
-    page_result: Mapping[str, object],
+    page_result: _OCRWorkflowState,
     context: OCRPageProcessingContext,
     source_plan: OCRSourcePlan,
 ) -> bool:
@@ -504,7 +519,7 @@ def _build_page_resolver(
     @resolver.register("start")
     def _start(ctx: StepContext) -> StepRunResult:
         _validate_page_resume_identity(
-            ctx.state_view,
+            _typed_state(ctx.state_view),
             document_id=context.document_id,
             source_fingerprint=source_plan.input_fingerprint,
             configuration_fingerprints=context.configuration_fingerprints,
@@ -513,21 +528,22 @@ def _build_page_resolver(
 
     @resolver.register("process_ocr_page")
     def _process(ctx: StepContext) -> StepRunResult:
+        state = _typed_state(ctx.state_view)
         repair = _reconcile_page_checkpoint(
-            state=ctx.state_view,
+            state=state,
             context=context,
             source_plan=source_plan,
         )
         if repair is not None:
             return _success("process_ocr_page", state_update=[("u", repair)])
-        sources = _page_sources(ctx.state_view)
-        cursor = _page_cursor(ctx.state_view)
+        sources = _page_sources(state)
+        cursor = _page_cursor(state)
         if cursor >= len(sources):
             return _success("finalize_ocr_pages")
         page_number, image_path = sources[cursor]
-        raw_pages = _json_pages(ctx.state_view)
-        completed_pages = _int_list(ctx.state_view, "completed_pages")
-        reused_pages = _int_list(ctx.state_view, "reused_pages")
+        raw_pages = _json_pages(state)
+        completed_pages = _int_list(state, "completed_pages")
+        reused_pages = _int_list(state, "reused_pages")
         failures: list[int] = []
         _process_ocr_page(
             context=context,
@@ -646,9 +662,9 @@ def run_ocr_page_workflow(
     if result.status != "succeeded":
         raise RuntimeError(f"OCR page workflow {result.status}: {result.errors}")
     return (
-        _json_pages(result.final_state),
-        _int_list(result.final_state, "completed_pages"),
-        _int_list(result.final_state, "reused_pages"),
+        _json_pages(_typed_state(result.final_state)),
+        _int_list(_typed_state(result.final_state), "completed_pages"),
+        _int_list(_typed_state(result.final_state), "reused_pages"),
         result.run_id,
     )
 
@@ -891,7 +907,7 @@ def run_grouping_workflow(
     )
     if result.status != "succeeded":
         raise RuntimeError(f"OCR grouping workflow {result.status}: {result.errors}")
-    return _tree(result.final_state), result.run_id
+    return _tree(_typed_state(result.final_state)), result.run_id
 
 
 def run_ocr_root_workflow(
@@ -1031,9 +1047,10 @@ def run_ocr_root_workflow(
     @root_resolver.register("ocr_root_prepare_grouping_input")
     def _root_prepare_grouping(ctx: StepContext) -> StepRunResult:
         state = _typed_state(ctx.state_view)
-        page_result = state.get("ocr_page_result")
-        if not isinstance(page_result, dict):
-            raise TypeError("OCR page child did not return a JSON state")
+        page_result = _typed_child_state(
+            state.get("ocr_page_result"),
+            label="OCR page child",
+        )
         if _page_result_needs_recovery(
             page_result=page_result,
             context=preparation.page_context,
@@ -1132,9 +1149,10 @@ def run_ocr_root_workflow(
     @root_resolver.register("ocr_root_prepare_semantic_input")
     def _root_prepare_semantic(ctx: StepContext) -> StepRunResult:
         state = _typed_state(ctx.state_view)
-        grouping_result = state.get("grouping_result")
-        if not isinstance(grouping_result, dict):
-            raise TypeError("grouping child did not return a JSON state")
+        grouping_result = _typed_child_state(
+            state.get("grouping_result"),
+            label="grouping child",
+        )
         grouped_tree = _tree(grouping_result)
         workflow_input_payload = state.get("workflow_input")
         if not isinstance(workflow_input_payload, dict):
@@ -1191,9 +1209,10 @@ def run_ocr_root_workflow(
     @root_resolver.register("ocr_root_finalize")
     def _root_finalize(ctx: StepContext) -> StepRunResult:
         state = _typed_state(ctx.state_view)
-        semantic_result = state.get("semantic_result")
-        if not isinstance(semantic_result, dict):
-            raise TypeError("semantic child did not return a JSON state")
+        semantic_result = _typed_child_state(
+            state.get("semantic_result"),
+            label="semantic child",
+        )
         bundle = semantic_result.get("export_bundle")
         if not isinstance(bundle, dict):
             raise TypeError("semantic child did not publish an export bundle")
@@ -1238,7 +1257,7 @@ def run_ocr_root_workflow(
         def _dispatch(ctx: StepContext, operation: str = op) -> StepRunResult:
             if ctx.workflow_id == DEFAULT_OCR_WORKFLOW_ID:
                 _validate_root_resume_identity(
-                    ctx.state_view,
+                    _typed_state(ctx.state_view),
                     document_id=document_id,
                     source_fingerprint=preparation.source_plan.input_fingerprint,
                     configuration_fingerprints=preparation.page_context.configuration_fingerprints,
@@ -1321,7 +1340,7 @@ def run_ocr_root_workflow(
         # treat a terminal run as immutable. Keep that storage identity internal;
         # callers continue to observe the stable logical root identity.
         result = replace(result, run_id=run_id or f"ocr|{document_id}")
-    final_state = result.final_state
+    final_state = _typed_state(result.final_state)
     _validate_root_resume_identity(
         final_state,
         document_id=document_id,
@@ -1330,9 +1349,10 @@ def run_ocr_root_workflow(
         grouping_policy_version=grouping_policy_version,
         require_match=root_resume,
     )
-    page_result = final_state.get("ocr_page_result")
-    if not isinstance(page_result, dict):
-        raise TypeError("OCR root completed without page result")
+    page_result = _typed_child_state(
+        final_state.get("ocr_page_result"),
+        label="OCR root page child",
+    )
     _validate_root_page_result(
         page_result=page_result,
         context=preparation.page_context,
@@ -1365,7 +1385,10 @@ def run_ocr_root_workflow(
         persist_grouping_checkpoint=False,
         grouping_policy_version=grouping_policy_version,
     )
-    artifacts.workflow_input = WorkflowIngestInput.model_validate(final_state["workflow_input"])
+    workflow_input_payload = final_state.get("workflow_input")
+    if not isinstance(workflow_input_payload, dict):
+        raise TypeError("OCR root completed without workflow input")
+    artifacts.workflow_input = WorkflowIngestInput.model_validate(workflow_input_payload)
     artifacts.document_tree = grouped_tree
     _write_document_tree(preparation.source_plan.legacy_dir / "document-tree.json", grouped_tree)
     _write_summary(

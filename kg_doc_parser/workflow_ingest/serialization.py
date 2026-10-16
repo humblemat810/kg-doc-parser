@@ -19,6 +19,7 @@ JsonValue = TypeAliasType(  # noqa: UP040
     "JsonValue",
     JsonScalar | list["JsonValue"] | dict[str, "JsonValue"],
 )
+JsonObject = dict[str, JsonValue]
 
 
 class ModelDumpLike(Protocol):
@@ -83,4 +84,4 @@ def safe_json_dumps(
     )
 
 
-__all__ = ["JsonValue", "json_safe", "safe_json_dumps"]
+__all__ = ["JsonObject", "JsonValue", "json_safe", "safe_json_dumps"]
