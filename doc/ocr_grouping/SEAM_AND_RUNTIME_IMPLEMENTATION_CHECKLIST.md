@@ -1092,3 +1092,14 @@ protocol.
   local parser-package Pyright scan reports `0 errors, 0 warnings, 0
   informations`, and focused OCR/PDF/correction regressions pass. Parser CI
   #329 (`38918021548`) must pass before this becomes `[x]`.
+
+### Typed CLI namespace seam (2026-10-16)
+
+- [x] Commit `d72682d` replaces six untyped optional CLI `getattr` reads with
+  the generic, runtime-checked `_optional_namespace_value` accessor. The
+  regression `tests/test_workflow_ingest_cli.py::test_cli_optional_namespace_value_validates_dynamic_namespace_fields`
+  covers missing, valid, and wrong-typed values. Focused tests and Ruff pass;
+  changed-module Pyright reports zero errors. The preceding parser CI #331
+  (`38919154090`) passed all four supported interpreter jobs; CI #332 for this
+  commit remains pending. This closes only the CLI namespace seam, not the
+  repository-wide typing backlog.
