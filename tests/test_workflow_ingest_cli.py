@@ -82,6 +82,13 @@ def test_ocr_source_workflow_emits_probe_steps(monkeypatch: pytest.MonkeyPatch) 
         return _FakeRun(), _FakeBundle(), _fake_ocr_artifacts(output_dir)
 
     monkeypatch.setattr(runners, "run_ocr_ingest_workflow", _fake_run_ocr_ingest_workflow)
+    # The workflow call is fully replaced above; avoid constructing the
+    # optional Chroma-backed default engines in this probe-only test.
+    monkeypatch.setattr(
+        runners,
+        "build_default_engines",
+        lambda *args, **kwargs: (object(), object(), object()),
+    )
 
     result = runners.run_ocr_source_workflow(source, output_dir=output_dir)
 

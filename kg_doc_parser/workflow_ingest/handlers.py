@@ -157,11 +157,16 @@ def _state_string_list(value: object) -> list[str]:
     return list(value)
 
 
-def _state_mapping(value: object) -> Mapping[str, object]:
-    """Narrow a JSON-like state value before reading named fields."""
+def _state_mapping(value: object) -> Mapping[str, JsonValue]:
+    """Narrow a persisted JSON object before reading named fields.
 
-    if isinstance(value, Mapping):
-        return value
+    Runtime state is decoded from JSON at this boundary.  Keeping the value
+    as ``Mapping[str, JsonValue]`` makes nested reads use the actual JSON sum
+    type instead of widening every ``.get`` result to ``object``.
+    """
+
+    if isinstance(value, Mapping) and all(isinstance(key, str) for key in value):
+        return cast(Mapping[str, JsonValue], value)
     return {}
 
 
