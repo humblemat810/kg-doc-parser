@@ -375,6 +375,24 @@ _PDF_RENDER_MANIFEST_VERSION = 1
 _PDF_RENDERER_VERSION = "pdf2image-pillow-v1"
 
 
+class _PDFRenderPageEntry(TypedDict):
+    page_number: int
+    filename: str
+    sha256: str
+    dimensions: list[int]
+
+
+class _PDFRenderManifest(TypedDict, total=False):
+    manifest_version: int
+    pdf_sha256: str
+    renderer_version: str
+    rasterizer: str
+    rasterizer_configuration: str
+    pdf_page_count: int | None
+    render_identity: str
+    pages: list[_PDFRenderPageEntry]
+
+
 def _write_document_tree(path: Path, tree: DocumentTree) -> None:
     """Persist the derived tree with replace semantics for crash-safe replay."""
     _write_bytes_atomic(
@@ -2530,7 +2548,7 @@ def _pdf_render_manifest_payload(
     *,
     pdf_path: Path,
     rasterizer: PDFRasterizer,
-) -> JsonObject:
+) -> _PDFRenderManifest:
     """Describe the exact PDF/rendering inputs behind cached page images."""
     rasterizer_name = type(rasterizer).__qualname__
     rasterizer_module = type(rasterizer).__module__
@@ -2552,7 +2570,7 @@ def _pdf_render_manifest_payload(
         # Injected/fake rasterizers may intentionally use placeholder PDF bytes.
         # A valid PDF gets a count; an unreadable placeholder remains compatible.
         page_count = None
-    config: JsonObject = {
+    config: _PDFRenderManifest = {
         "manifest_version": _PDF_RENDER_MANIFEST_VERSION,
         "pdf_sha256": _sha256_file(pdf_path),
         "renderer_version": _PDF_RENDERER_VERSION,
@@ -2563,6 +2581,72 @@ def _pdf_render_manifest_payload(
     encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
     config["render_identity"] = hashlib.sha256(encoded).hexdigest()
     return config
+
+
+def _decode_pdf_render_manifest(value: object) -> _PDFRenderManifest | None:
+    """Narrow a persisted render manifest before using cache identity fields."""
+    if not isinstance(value, dict):
+        return None
+    required_strings = (
+        "pdf_sha256",
+        "renderer_version",
+        "rasterizer",
+        "rasterizer_configuration",
+        "render_identity",
+    )
+    if any(not isinstance(value.get(key), str) for key in required_strings):
+        return None
+    manifest_version = value.get("manifest_version")
+    page_count = value.get("pdf_page_count")
+    if not isinstance(manifest_version, int) or isinstance(manifest_version, bool):
+        return None
+    if page_count is not None and (
+        not isinstance(page_count, int) or isinstance(page_count, bool)
+    ):
+        return None
+    raw_pages = value.get("pages")
+    if raw_pages is not None and not isinstance(raw_pages, list):
+        return None
+    pages: list[_PDFRenderPageEntry] = []
+    for raw_page in raw_pages or []:
+        if not isinstance(raw_page, dict):
+            return None
+        page_number = raw_page.get("page_number")
+        filename = raw_page.get("filename")
+        sha256 = raw_page.get("sha256")
+        dimensions = raw_page.get("dimensions")
+        if (
+            not isinstance(page_number, int)
+            or isinstance(page_number, bool)
+            or not isinstance(filename, str)
+            or not isinstance(sha256, str)
+            or not isinstance(dimensions, list)
+            or any(
+                not isinstance(dimension, int) or isinstance(dimension, bool)
+                for dimension in dimensions
+            )
+        ):
+            return None
+        pages.append(
+            {
+                "page_number": page_number,
+                "filename": filename,
+                "sha256": sha256,
+                "dimensions": dimensions,
+            }
+        )
+    manifest: _PDFRenderManifest = {
+        "manifest_version": manifest_version,
+        "pdf_sha256": value["pdf_sha256"],
+        "renderer_version": value["renderer_version"],
+        "rasterizer": value["rasterizer"],
+        "rasterizer_configuration": value["rasterizer_configuration"],
+        "pdf_page_count": page_count,
+        "render_identity": value["render_identity"],
+    }
+    if raw_pages is not None:
+        manifest["pages"] = pages
+    return manifest
 
 
 def _builtin_pdf_rasterizer_configuration() -> str:
@@ -2600,24 +2684,20 @@ def _render_pdf_with_identity(
     rendered_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = rendered_dir / "render-manifest.json"
     expected = _pdf_render_manifest_payload(pdf_path=pdf_path, rasterizer=rasterizer)
-    existing: dict[str, object] | None = None
+    existing: _PDFRenderManifest | None = None
     if manifest_path.exists():
         try:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict):
-                existing = payload
+            existing = _decode_pdf_render_manifest(payload)
         except (OSError, ValueError):
             existing = None
     paths: list[Path] = []
     if existing is not None and all(existing.get(key) == value for key, value in expected.items()):
         page_entries = existing.get("pages")
-        if isinstance(page_entries, list):
+        if page_entries is not None:
             candidate_paths: list[Path] = []
             valid = True
             for entry in page_entries:
-                if not isinstance(entry, dict):
-                    valid = False
-                    break
                 filename = entry.get("filename")
                 if not isinstance(filename, str) or Path(filename).name != filename:
                     valid = False
@@ -2647,16 +2727,7 @@ def _render_pdf_with_identity(
                 and not isinstance(expected_page_count_value, bool)
                 else None
             )
-            page_numbers_raw = [
-                entry.get("page_number")
-                for entry in page_entries
-                if isinstance(entry, dict)
-            ]
-            page_numbers = [
-                value
-                for value in page_numbers_raw
-                if isinstance(value, int) and not isinstance(value, bool)
-            ]
+            page_numbers = [entry["page_number"] for entry in page_entries]
             valid = valid and (
                 expected_page_count is None
                 or (
@@ -2677,7 +2748,7 @@ def _render_pdf_with_identity(
         for path in paths:
             if path.is_symlink() or not path.is_file() or not _image_file_is_valid(path):
                 raise RuntimeError(f"pdf rasterizer returned an invalid page image: {path}")
-        page_entries = []
+        page_entries: list[_PDFRenderPageEntry] = []
         for page_number, path in enumerate(paths, start=1):
             with Image.open(path) as image:
                 dimensions = [image.width, image.height]
@@ -2689,7 +2760,7 @@ def _render_pdf_with_identity(
                     "dimensions": dimensions,
                 }
             )
-        complete_manifest = {**expected, "pages": page_entries}
+        complete_manifest: _PDFRenderManifest = {**expected, "pages": page_entries}
         _write_json_atomic(manifest_path, complete_manifest)
     return paths
 
