@@ -12,6 +12,14 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+PageIndex diagnostics and salvage results now use `PageIndexDiagnostics`, a
+`dict[str, JsonValue]` contract, for known JSON-safe values instead of
+`dict[str, object]`. Ruff, the PageIndex test command, and the diff check pass
+locally; changed-module Pyright remains unavailable locally because of the
+Windows Node launcher `EPERM` issue. CI evidence for this slice is pending.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 Provider-call diagnostics now use a shared scalar-value contract across OCR,
 layerwise, PageIndex, and strategy boundaries. A regression confirms nested
 provider metadata is reduced to JSON-safe scalar diagnostics rather than

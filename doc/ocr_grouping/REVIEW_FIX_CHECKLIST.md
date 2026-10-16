@@ -12,6 +12,14 @@ remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+PageIndex diagnostics and salvage results now use the typed JSON-value alias
+`PageIndexDiagnostics` instead of `dict[str, object]` at the validated output
+boundary. Ruff, the PageIndex test command, and the diff check pass locally;
+CI evidence for this slice is pending and the broader runtime/release gates
+remain open.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 Provider-call diagnostics now have one shared scalar-value contract across OCR,
 layerwise, PageIndex, and strategy boundaries. The regression
 `test_provider_diagnostics_are_json_safe_scalar_records` verifies that nested

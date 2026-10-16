@@ -124,9 +124,10 @@ PageIndexNodeType = Literal[
     "TABLE_ROW",
 ]
 PageIndexSourceRole = Literal["heading", "content"]
+PageIndexDiagnostics = dict[str, JsonValue]
 
 
-def _increment_diagnostic(diagnostics: dict[str, object], key: str, amount: int = 1) -> None:
+def _increment_diagnostic(diagnostics: PageIndexDiagnostics, key: str, amount: int = 1) -> None:
     current = diagnostics.get(key)
     current_count = current if type(current) is int and current >= 0 else 0
     diagnostics[key] = current_count + amount
@@ -310,7 +311,7 @@ class PageIndexParseResult:
     parser_source_map: dict[str, JsonObject]
     semantic_tree: SemanticNode
     coverage: dict[str, object]
-    diagnostics: dict[str, object]
+    diagnostics: PageIndexDiagnostics
 
 
 @dataclass(slots=True)
@@ -1021,7 +1022,7 @@ def _salvage_page_index_assignments(
     candidates: list[CandidateBlock],
     assignments: list[BlockAssignment],
     page_text: str,
-) -> tuple[list[BlockAssignment] | None, dict[str, object]]:
+) -> tuple[list[BlockAssignment] | None, PageIndexDiagnostics]:
     """Keep valid provider branches while replacing locally invalid blocks.
 
     Salvage is deliberately conservative: the assignment set must still cover
@@ -1538,7 +1539,7 @@ def _refine_page_index_summaries_hierarchically(
     """
 
     paths = list(_iter_page_index_block_specs_with_paths(block_specs))
-    diagnostics: dict[str, object] = {
+    diagnostics: PageIndexDiagnostics = {
         "hierarchical_summary_enabled": True,
         "hierarchical_summary_attempted": len(paths),
         "hierarchical_summary_accepted": 0,
