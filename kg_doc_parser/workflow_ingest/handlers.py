@@ -93,9 +93,9 @@ def _strategy_attempt(state_view: Mapping[str, object], strategy: str) -> int:
 def _parser_payload(value: object) -> ParserPayload:
     """Decode one JSON object from runtime state into parser payload shape."""
 
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise TypeError("parser payload must be a JSON object")
-    return dict(value)
+    return cast(ParserPayload, value)
 
 
 def _parser_source_map(value: object | None) -> ParserSourceMap:
@@ -103,13 +103,13 @@ def _parser_source_map(value: object | None) -> ParserSourceMap:
 
     if value is None:
         return {}
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise TypeError("parser source map must be a JSON object")
     source_map: ParserSourceMap = {}
     for cluster_id, payload in value.items():
-        if not isinstance(payload, dict):
+        if not isinstance(payload, dict) or not all(isinstance(key, str) for key in payload):
             raise TypeError(f"parser source cluster {cluster_id!r} must be a JSON object")
-        source_map[str(cluster_id)] = dict(payload)
+        source_map[cluster_id] = cast(ParserPayload, payload)
     return source_map
 
 
@@ -129,11 +129,14 @@ def _correct_parser_pointer(
 def _state_object_map(value: object) -> dict[str, dict[str, JsonValue]]:
     if not isinstance(value, dict):
         return {}
-    return {
-        str(key): cast(dict[str, JsonValue], item)
-        for key, item in value.items()
-        if isinstance(item, dict)
-    }
+    objects: dict[str, dict[str, JsonValue]] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError("workflow state object map contains a non-string key")
+        if not isinstance(item, dict) or not all(isinstance(item_key, str) for item_key in item):
+            raise TypeError(f"workflow state object map entry {key!r} is malformed")
+        objects[key] = cast(dict[str, JsonValue], item)
+    return objects
 
 
 def _state_object_list(value: object) -> list[dict[str, JsonValue]]:

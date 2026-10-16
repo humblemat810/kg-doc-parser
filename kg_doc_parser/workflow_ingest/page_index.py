@@ -60,7 +60,7 @@ from .models import (
     SourceUnit,
     WorkflowIngestInput,
 )
-from .parser_core import finalize_semantic_tree
+from .parser_core import ParserSourceMap, finalize_semantic_tree
 from .providers import (
     ProviderDiagnosticsSink,
     WorkflowProviderSettings,
@@ -2613,7 +2613,7 @@ def parse_page_index_layer(
     parent_id: str,
     parent_title: str,
     parent_pointers: list[HydratedTextPointer],
-    parser_source_map: dict[str, dict[str, object]],
+    parser_source_map: ParserSourceMap,
     source_format: PageIndexSourceFormat = "text",
     summary_enabled: bool = True,
 ) -> list[LayerChildCandidate]:

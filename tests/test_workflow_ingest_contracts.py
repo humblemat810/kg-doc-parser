@@ -22,6 +22,9 @@ from kg_doc_parser.workflow_ingest.clients import (
 )
 from kg_doc_parser.workflow_ingest.design import build_ingest_workflow_design
 from kg_doc_parser.workflow_ingest.handlers import (
+    _parser_payload,
+    _parser_source_map,
+    _state_object_map,
     _state_object_list,
     _state_string_list,
 )
@@ -88,6 +91,16 @@ def test_handler_persisted_lists_reject_malformed_item_types() -> None:
         _state_object_list([{"valid": True}, "not-an-object"])
     with pytest.raises(TypeError, match="string list contains a non-string item"):
         _state_string_list(["valid", 3])
+
+
+@pytest.mark.ci
+def test_handler_persisted_parser_objects_reject_non_json_keys_and_entries() -> None:
+    with pytest.raises(TypeError, match="parser payload must be a JSON object"):
+        _parser_payload({1: "not-a-json-key"})
+    with pytest.raises(TypeError, match="parser source cluster.*must be a JSON object"):
+        _parser_source_map({"cluster": {1: "not-a-json-key"}})
+    with pytest.raises(TypeError, match="object map entry.*is malformed"):
+        _state_object_map({"cluster": {1: "not-a-json-key"}})
 
 
 def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):
