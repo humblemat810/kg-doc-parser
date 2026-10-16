@@ -13,6 +13,16 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .serialization import JsonObject, json_safe
+
+
+def _model_json_object(model: BaseModel) -> JsonObject:
+    """Return a Pydantic model dump narrowed to canonical JSON object data."""
+    value = json_safe(model.model_dump(mode="json"))
+    if not isinstance(value, dict):
+        raise TypeError("document model dump must be a JSON object")
+    return value
+
 
 class FrozenModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -341,7 +351,7 @@ class DocumentTree(FrozenModel):
             if node.summary is None or node.summary.status not in {"generated", "verified"}:
                 continue
             evidence = node.summary.evidence_item_ids
-            payload = [items[item_id].model_dump(mode="json") for item_id in sorted(evidence)]
+            payload = [_model_json_object(items[item_id]) for item_id in sorted(evidence)]
             expected = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
             if node.summary.input_fingerprint != expected:
                 raise ValueError(f"summary fingerprint is stale for node {node_id}")
@@ -352,7 +362,7 @@ class DocumentTree(FrozenModel):
         return self
 
     def source_fingerprint(self) -> str:
-        payload = [item.model_dump(mode="json") for item in self.source_items]
+        payload = [_model_json_object(item) for item in self.source_items]
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def summary_input_fingerprint(self, node_id: str, evidence_item_ids: tuple[str, ...] | None = None) -> str:
@@ -376,7 +386,7 @@ class DocumentTree(FrozenModel):
         selected = tuple(sorted(evidence_item_ids if evidence_item_ids is not None else covered))
         if set(selected) - covered:
             raise ValueError("summary evidence must be within the node subtree")
-        payload = [items[item_id].model_dump(mode="json") for item_id in selected]
+        payload = [_model_json_object(items[item_id]) for item_id in selected]
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def summary_slice_fingerprint(
@@ -396,7 +406,7 @@ class DocumentTree(FrozenModel):
         if node is None:
             raise KeyError(node_id)
         allowed = set(evidence_item_ids) if evidence_item_ids is not None else None
-        payload: list[dict[str, object]] = []
+        payload: list[JsonObject] = []
 
         def visit(current_id: str) -> None:
             current = nodes[current_id]
