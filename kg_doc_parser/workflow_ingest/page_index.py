@@ -2336,7 +2336,7 @@ def _make_semantic_node(
     level_from_root: int,
     pointers: list[HydratedTextPointer],
     summary: str = "",
-    metadata: dict[str, object] | None = None,
+    metadata: JsonObject | None = None,
 ) -> SemanticNode:
     return SemanticNode(
         title=title,
