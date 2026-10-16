@@ -28,11 +28,11 @@ def decode_json_value(value: object, *, label: str = "value") -> JsonValue:
             decode_json_value(item, label=f"{label}[{index}]")
             for index, item in enumerate(value)
         ]
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         decoded: JsonObject = {}
         for key, item in value.items():
             if not isinstance(key, str):
-                raise TypeError(f"{label} contains a non-string object key")
+                raise TypeError(f"{label} must be a JSON object with string keys")
             decoded[key] = decode_json_value(item, label=f"{label}.{key}")
         return decoded
     raise TypeError(f"{label} is not JSON serializable: {type(value).__name__}")

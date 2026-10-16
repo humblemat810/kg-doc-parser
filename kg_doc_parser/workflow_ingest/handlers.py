@@ -130,9 +130,18 @@ def _state_object_map(value: object) -> dict[str, dict[str, JsonValue]]:
     for key, item in value.items():
         if not isinstance(key, str):
             raise TypeError("workflow state object map contains a non-string key")
-        if not isinstance(item, dict) or not all(isinstance(item_key, str) for item_key in item):
-            raise TypeError(f"workflow state object map entry {key!r} is malformed")
-        objects[key] = cast(dict[str, JsonValue], item)
+        try:
+            objects[key] = decode_json_object(
+                item, label=f"workflow state object map entry {key!r}"
+            )
+        except TypeError as exc:
+            if not isinstance(item, dict) or not all(
+                isinstance(item_key, str) for item_key in item
+            ):
+                raise TypeError(
+                    f"workflow state object map entry {key!r} is malformed"
+                ) from exc
+            raise
     return objects
 
 
@@ -144,7 +153,7 @@ def _state_object_list(value: object) -> list[dict[str, JsonValue]]:
     for item in value:
         if not isinstance(item, dict) or not all(isinstance(key, str) for key in item):
             raise TypeError("workflow state object list contains a malformed item")
-        objects.append(cast(dict[str, JsonValue], item))
+        objects.append(decode_json_object(item, label="workflow state object list item"))
     return objects
 
 
@@ -166,7 +175,7 @@ def _state_mapping(value: object) -> Mapping[str, JsonValue]:
     """
 
     if isinstance(value, Mapping) and all(isinstance(key, str) for key in value):
-        return cast(Mapping[str, JsonValue], value)
+        return decode_json_object(value, label="workflow state mapping")
     return {}
 
 
