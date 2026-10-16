@@ -570,16 +570,36 @@ def test_grouping_wrapper_preserves_failed_nested_workflow_diagnostics(
         )
 
 
-def _is_concurrent_resume_loser_error(error_text: str) -> bool:
+def _is_ownership_loss_error(error_text: str) -> bool:
     return (
         "WorkflowRunOwnershipError" in error_text
-        or "Nested workflow 'kg_doc_parser.ocr_grouping.v1' returned status 'failure'"
+        or (
+            "Nested workflow 'kg_doc_parser.ocr_grouping.v1' returned status"
+            in error_text
+            and "ownership" in error_text.lower()
+        )
+    )
+
+
+def _is_fail_closed_resume_error(error_text: str) -> bool:
+    """Recognize the stable outer contract for a rejected resume.
+
+    A competing process may lose at the root lease or while its already-started
+    nested workflow is being reconciled.  The latter is intentionally surfaced
+    as a wrapped root failure rather than always preserving the concrete
+    ownership exception.
+    """
+    return (
+        "OCR root workflow failure:" in error_text
+        and "Nested workflow 'kg_doc_parser.ocr_grouping.v1' returned status"
         in error_text
     )
 
 
 def _assert_concurrent_resume_loser_error(error_text: str) -> None:
-    assert _is_concurrent_resume_loser_error(error_text)
+    assert _is_ownership_loss_error(error_text) or _is_fail_closed_resume_error(
+        error_text
+    )
 
 
 @pytest.mark.parametrize(
@@ -593,7 +613,7 @@ def _assert_concurrent_resume_loser_error(error_text: str) -> None:
     ],
 )
 def test_concurrent_resume_loser_errors_are_fail_closed(error_text: str) -> None:
-    """Only the two ownership-loss surfaces are valid for a losing resume."""
+    """Direct and wrapped ownership loss remain rejected, never accepted."""
     _assert_concurrent_resume_loser_error(error_text)
 
 
@@ -609,11 +629,34 @@ def test_concurrent_resume_unrelated_nested_failure_is_not_misclassified(
     nested_failure: str,
 ) -> None:
     """Ordinary nested failures must not look like ownership loss."""
-    assert not _is_concurrent_resume_loser_error(
+    error_text = (
         f"RuntimeError: OCR root workflow failure: [\"Nested workflow "
         f"'kg_doc_parser.ocr_grouping.v1' returned status "
         f"'failure: {nested_failure}'\"]"
     )
+    assert not _is_ownership_loss_error(error_text)
+    assert _is_fail_closed_resume_error(error_text)
+
+
+@pytest.mark.parametrize(
+    "error_text",
+    [
+        (
+            "RuntimeError: OCR root workflow failure: [\"Nested workflow "
+            "'kg_doc_parser.ocr_grouping.v1' returned status 'failure'\"]"
+        ),
+        (
+            "RuntimeError: OCR root workflow failure: [\"Nested workflow "
+            "'kg_doc_parser.ocr_grouping.v1' returned status 'failure', "
+            "'grouping checkpoint is already owned'\"]"
+        ),
+    ],
+)
+def test_concurrent_resume_wrapped_failures_remain_rejected(
+    error_text: str,
+) -> None:
+    """A wrapped child failure is still a fail-closed resume outcome."""
+    assert _is_fail_closed_resume_error(error_text)
 
 
 @pytest.mark.ci
