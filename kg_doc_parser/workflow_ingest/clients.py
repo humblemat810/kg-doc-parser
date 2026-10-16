@@ -86,6 +86,44 @@ def _state_json(value: Mapping[str, object]) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], dict(value))
 
 
+def _decode_canonical_response(value: object) -> _CanonicalResponsePayload:
+    """Validate the small response contract used by canonical persistence."""
+    if not isinstance(value, Mapping):
+        raise TypeError("canonical server persistence returned a non-object JSON body")
+
+    decoded: _CanonicalResponsePayload = {}
+    status = value.get("status")
+    if status is not None:
+        if not isinstance(status, str):
+            raise TypeError("canonical server persistence response status must be a string")
+        decoded["status"] = status
+
+    engine_result = value.get("engine_result")
+    if engine_result is not None:
+        if not isinstance(engine_result, Mapping):
+            raise TypeError("canonical server persistence engine_result must be an object")
+        decoded_engine: _EngineResultPayload = {}
+        for key in ("nodes_added", "edges_added"):
+            counter = engine_result.get(key)
+            if counter is not None:
+                if not (type(counter) is int or isinstance(counter, str)):
+                    raise TypeError(
+                        f"canonical server persistence engine_result {key!r} must be an integer or string"
+                    )
+                decoded_engine[key] = counter
+        decoded["engine_result"] = decoded_engine
+
+    for key in ("inserted_nodes", "inserted_edges"):
+        counter = value.get(key)
+        if counter is not None:
+            if not (type(counter) is int or isinstance(counter, str)):
+                raise TypeError(
+                    f"canonical server persistence response {key!r} must be an integer or string"
+                )
+            decoded[key] = counter
+    return decoded
+
+
 class HttpResponseLike(Protocol):
     """Small response surface required from an HTTP transport adapter."""
 
@@ -272,15 +310,9 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
                 f"canonical server persistence failed: status={status_code} body={response.text}"
             )
         response_payload = response.json()
-        if not isinstance(response_payload, Mapping):
-            raise TypeError("canonical server persistence returned a non-object JSON body")
-        response_json = cast(_CanonicalResponsePayload, response_payload)
+        response_json = _decode_canonical_response(response_payload)
         raw_engine_result = response_json.get("engine_result")
-        engine_result = (
-            cast(_EngineResultPayload, raw_engine_result)
-            if isinstance(raw_engine_result, Mapping)
-            else {}
-        )
+        engine_result = raw_engine_result if raw_engine_result is not None else {}
         status = response_json.get("status", "")
         return CanonicalGraphWriteResult(
             persistence_mode="server_canonical",

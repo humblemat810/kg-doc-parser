@@ -309,6 +309,40 @@ def test_document_tree_client_adapts_export_ids_to_temp_batch_tokens():
     assert payload["edges"][0]["target_ids"] == ["nn:2"]
 
 
+def test_document_tree_client_rejects_malformed_canonical_response_fields():
+    class _MalformedResponseClient(_CaptureHttpClient):
+        def post(self, endpoint: str, json: dict):
+            self.calls.append((endpoint, json))
+
+            class _Response:
+                status_code = 200
+                text = "ok"
+
+                @staticmethod
+                def json():
+                    return {"status": "ok", "engine_result": []}
+
+            return _Response()
+
+    persistence_client = DocumentTreeApiPersistenceClient(
+        client=_MalformedResponseClient(), transport="test"
+    )
+    with pytest.raises(TypeError, match="engine_result must be an object"):
+        persistence_client.persist_graph_payload(
+            type(
+                "_Bundle",
+                (),
+                {
+                    "graph_payload": {
+                        "doc_id": "doc-1",
+                        "nodes": [{"id": "n1"}],
+                        "edges": [],
+                    }
+                },
+            )()
+        )
+
+
 def test_document_tree_client_rejects_non_list_graph_records():
     client = _CaptureHttpClient()
     persistence_client = DocumentTreeApiPersistenceClient(client=client, transport="test")
