@@ -1431,3 +1431,13 @@ protocol.
   exception handlers, and unused range state. The legacy module imports, the
   selected `E7,E9,F` Ruff rules, and `git diff --check` pass. Full legacy
   Ruff still reports pre-existing `E402` import-order debt and remains open.
+
+### Installed-core concurrent resume evidence (2026-10-17)
+
+- [x] With installed Kogwistar `0.6.12` (package metadata and module version
+  agree), `test_ocr_root_concurrent_resume_has_one_owner_and_one_result` passed
+  locally in `95.28s`. The test terminates an interrupted worker, starts two
+  fresh workers against the same persisted root, and asserts one accepted
+  result plus one ownership failure. This closes the installed-package local
+  concurrent-resume evidence gap only; Linux SIGKILL, remote matrix, and full
+  dual-store reconciliation remain open.
