@@ -663,3 +663,13 @@ release is available.
   (`38919154090`) passed all four supported interpreter jobs; CI #332 for this
   commit remains pending. This closes only the CLI namespace seam, not the
   repository-wide typing backlog.
+
+### Recovery matrix revalidation (2026-10-16)
+
+- [x] The isolated local recovery matrix passed **11 tests** in 145.04s with
+  `-p no:cacheprovider`: concurrent root resume has one owner/result,
+  grouping resumes after process termination, fresh-process two-store recovery
+  predicates hold, and artifact publication crash recovery adopts only the
+  valid artifact. This is real subprocess-backed evidence, but it does not
+  close the separate Linux `SIGKILL`, installed-release, or full dual-store
+  reconciliation release gates.
