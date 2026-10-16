@@ -36,7 +36,7 @@ from .models import (
     WorkflowIngestInput,
 )
 from .probe import WorkflowProbe, emit_probe_event
-from .serialization import JsonValue, ModelDumpLike
+from .serialization import JsonValue, ModelDumpLike, json_safe
 
 
 class UnsupportedClientOperation(RuntimeError):
@@ -164,19 +164,20 @@ class CanonicalGraphPersistenceClient(ABC):
         raise NotImplementedError
 
 
-def _jsonable_payload(value: object) -> object:
+def _jsonable_payload(value: object) -> JsonValue:
     if isinstance(value, ModelDumpLike):
         try:
-            return value.model_dump(field_mode="backend", dump_format="json")
+            dumped = value.model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return value.model_dump()
+            dumped = value.model_dump()
+        return _jsonable_payload(dumped)
     if isinstance(value, Mapping):
         return {str(k): _jsonable_payload(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_jsonable_payload(item) for item in value]
     if isinstance(value, tuple):
         return [_jsonable_payload(item) for item in value]
-    return value
+    return json_safe(value)
 
 
 def _record_list(value: object, *, field_name: str) -> list[JsonObject]:
