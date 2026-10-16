@@ -2491,6 +2491,39 @@ def test_summary_cache_reuses_exact_generation_and_slice_identity() -> None:
     assert [attempt["status"] for attempt in attempts] == ["pending", "generated"]
 
 
+def test_duplicate_accepted_summary_delivery_is_idempotent() -> None:
+    scratch = _scratch("ocr_summary_duplicate_delivery")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    summary = Summary(
+        status="generated",
+        text="stable summary",
+        evidence_item_ids=("item-a",),
+        provider_model="fake-summary",
+        prompt_revision="summary-v1",
+        input_fingerprint="evidence-fingerprint",
+    )
+
+    first_index = store.record_summary_attempt(
+        document_id="duplicate-summary-doc",
+        node_id="root",
+        input_fingerprint="generation-fingerprint",
+        status="generated",
+        summary=summary,
+    )
+    second_index = store.record_summary_attempt(
+        document_id="duplicate-summary-doc",
+        node_id="root",
+        input_fingerprint="generation-fingerprint",
+        status="generated",
+        summary=summary,
+    )
+
+    assert second_index == first_index
+    attempts = store.list_summary_attempts(document_id="duplicate-summary-doc")
+    assert len(attempts) == 1
+    assert attempts[0]["status"] == "generated"
+
+
 @pytest.mark.ci
 def test_summary_generation_fingerprint_invalidates_persisted_cache() -> None:
     scratch = _scratch("ocr_summary_generation_fingerprint")

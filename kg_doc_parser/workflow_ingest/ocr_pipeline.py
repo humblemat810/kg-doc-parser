@@ -2317,6 +2317,25 @@ class OCRWorkflowStateStore:
             else None
         )
         with self._session() as conn:
+            if status in {"generated", "verified"}:
+                # Accepted summaries are canonical for an exact generation
+                # identity. Serialize the check with the insert so duplicate
+                # delivery cannot create a second accepted journal row.
+                conn.execute("BEGIN IMMEDIATE")
+                accepted = conn.execute(
+                    """
+                    SELECT attempt_index
+                    FROM summary_attempts
+                    WHERE document_id = ? AND node_id = ?
+                      AND input_fingerprint = ?
+                      AND status IN ('generated', 'verified')
+                    ORDER BY attempt_index DESC
+                    LIMIT 1
+                    """,
+                    (document_id, node_id, input_fingerprint),
+                ).fetchone()
+                if accepted is not None:
+                    return int(accepted["attempt_index"])
             row = conn.execute(
                 """
                 SELECT COALESCE(MAX(attempt_index), 0) AS last_attempt
