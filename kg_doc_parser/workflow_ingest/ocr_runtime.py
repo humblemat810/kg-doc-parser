@@ -479,7 +479,10 @@ def _json_pages(state: _OCRWorkflowState) -> list[OCRPageJSON]:
     if value is not None:
         if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
             raise ValueError("OCR page runtime raw page state is malformed")
-        return [_validated_ocr_page_json(item) for item in value]
+        return [
+            _validated_ocr_page_json(item, strict_page_number_types=True)
+            for item in value
+        ]
 
     legacy_dir_value = state.get("legacy_dir")
     if not isinstance(legacy_dir_value, str) or not legacy_dir_value:

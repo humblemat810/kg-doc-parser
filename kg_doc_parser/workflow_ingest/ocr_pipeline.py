@@ -3139,7 +3139,7 @@ def _write_summary(
     provider_settings: WorkflowProviderSettings,
     state_store: OCRWorkflowStateStore,
 ) -> None:
-    payload: dict[str, object] = {
+    payload: JsonObject = {
         "document_id": document_id,
         "ocr_provider": provider_settings.ocr.provider,
         "ocr_model": provider_settings.ocr.model,

@@ -60,6 +60,7 @@ def _validated_ocr_page_json(
     value: object,
     *,
     default_page_number: int | None = None,
+    strict_page_number_types: bool = False,
 ) -> OCRPageJSON:
     """Validate the top-level shape before narrowing persisted OCR JSON."""
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
@@ -68,8 +69,13 @@ def _validated_ocr_page_json(
     if type(page_number) is int:
         if page_number < 1:
             raise ValueError("OCR page pdf_page_num must be a positive integer")
-    elif not (isinstance(page_number, str) and page_number.strip().isdigit()):
-        raise ValueError("OCR page pdf_page_num must be a positive integer")
+    elif isinstance(page_number, str):
+        if not page_number.strip().isdigit():
+            error_type = TypeError if strict_page_number_types else ValueError
+            raise error_type("OCR page pdf_page_num must be a positive integer")
+    else:
+        error_type = TypeError if strict_page_number_types else ValueError
+        raise error_type("OCR page pdf_page_num must be a positive integer")
     scalar_types: dict[str, type[object] | tuple[type[object], ...]] = {
         "printed_page_number": str,
         "contains_table": bool,
