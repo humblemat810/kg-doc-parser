@@ -13,7 +13,7 @@ from typing import TypeVar, cast
 from kogwistar.id_provider import stable_id
 
 from .probe import WorkflowProbe, emit_probe_event
-from .serialization import ModelDumpLike
+from .serialization import JsonValue, ModelDumpLike, json_safe
 
 T = TypeVar("T")
 CACHE_CONTRACT_VERSION = 2
@@ -21,7 +21,7 @@ _PACKAGE_NAME = "graph-knowledge-doc-parser"
 _CACHE_WRITE_LOCK = threading.Lock()
 
 
-def workflow_cache_namespace(provider_settings: object | None = None) -> dict[str, object]:
+def workflow_cache_namespace(provider_settings: object | None = None) -> dict[str, JsonValue]:
     """Return stable, non-secret identity for workflow LLM cache entries.
 
     The request fingerprint remains responsible for source and prompt inputs.
@@ -49,17 +49,18 @@ def workflow_cache_namespace(provider_settings: object | None = None) -> dict[st
     }
 
 
-def _jsonable(value: object) -> object:
+def _jsonable(value: object) -> JsonValue:
     if isinstance(value, ModelDumpLike):
         try:
-            return value.model_dump(field_mode="backend", dump_format="json")
+            dumped = value.model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return value.model_dump()
+            dumped = value.model_dump()
+        return _jsonable(dumped)
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
-    return value
+    return json_safe(value)
 
 
 class WorkflowLLMCallCache:
