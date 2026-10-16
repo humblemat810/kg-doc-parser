@@ -17,6 +17,16 @@ to reach grouping conversion. The focused regression passes (`1 passed`), Ruff
 and `git diff --check` pass, and branch CI run `38941361615` is in progress.
 This is a verified local seam fix, not yet a remote-CI promotion.
 
+## Latest evidence update (2026-10-17, commits `5e0b133`, `39ab248`, `dd371b3`, pending CI)
+
+Workflow command `extra` results and cache namespace/request fingerprints now
+use explicit JSON-safe contracts. Semantic graph export normalizes opaque
+construction-time metadata through `json_safe` before emitting typed node and
+edge records. CLI runner tests pass locally (`11 passed`), cache/fixture tests
+pass (`56 passed, 4 skipped`), and pointer/legacy/fixture tests pass (`65
+passed`); Ruff and `git diff --check` pass. Remote CI and the broader
+recovery/release gates remain pending.
+
 ## CI promotion update (2026-10-17)
 
 Parser CI passed all four supported interpreter jobs for `87c0074` in run
