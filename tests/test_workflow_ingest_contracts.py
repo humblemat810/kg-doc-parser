@@ -32,6 +32,10 @@ from kg_doc_parser.workflow_ingest.handlers import (
     _state_string_list,
 )
 from kg_doc_parser.ocr import _structured_output_payload, get_page_json
+from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
+    _legacy_mapping,
+    _legacy_object_list,
+)
 from kg_doc_parser.workflow_ingest.models import (
     BoundingBox,
     GroundedSourceRecord,
@@ -132,6 +136,16 @@ def test_legacy_ocr_structured_output_envelope_is_runtime_checked() -> None:
 
     with pytest.raises(TypeError, match="structured OCR output parsed value"):
         _structured_output_payload({"parsed": {"text": "not a model"}})
+
+
+@pytest.mark.ci
+def test_legacy_graph_helpers_validate_mapping_key_types() -> None:
+    assert _legacy_mapping({"id": "node-1"}, label="node") == {"id": "node-1"}
+
+    with pytest.raises(TypeError, match="must have string keys"):
+        _legacy_mapping({1: "node-1"}, label="node")
+    with pytest.raises(TypeError, match="must have string keys"):
+        _legacy_object_list([{1: "node-1"}], label="nodes")
 
 
 def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):

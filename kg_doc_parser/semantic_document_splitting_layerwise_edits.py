@@ -3406,7 +3406,10 @@ def _legacy_object_list(value: object, *, label: str) -> list[Mapping[str, objec
 
     if not isinstance(value, list) or not all(isinstance(item, Mapping) for item in value):
         raise TypeError(f"legacy graph field {label!r} must be a list of objects")
-    return [cast(Mapping[str, object], item) for item in value]
+    return [
+        _legacy_mapping(item, label=f"{label}[{index}]")
+        for index, item in enumerate(value)
+    ]
 
 
 def _legacy_string_list(value: object, *, label: str) -> list[str]:
@@ -3420,7 +3423,9 @@ def _legacy_mapping(value: object, *, label: str) -> Mapping[str, object]:
         return {}
     if not isinstance(value, Mapping):
         raise TypeError(f"legacy graph field {label!r} must be an object")
-    return cast(Mapping[str, object], value)
+    if not all(isinstance(key, str) for key in value):
+        raise TypeError(f"legacy graph field {label!r} must have string keys")
+    return dict(value)
 
 
 def _legacy_string(value: object, *, label: str, default: str | None = None) -> str:

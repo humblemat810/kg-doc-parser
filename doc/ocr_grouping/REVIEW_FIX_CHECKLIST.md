@@ -979,3 +979,9 @@ release is available.
   the retry path. The malformed-envelope, malformed-page, and persisted-payload
   regressions pass (`3 passed`); changed-file Ruff and `git diff --check` pass.
   Full Pyright, remote CI, and release readiness remain open.
+- [x] Legacy graph reconstruction helpers now validate mapping keys and
+  materialize typed string-key mappings instead of returning unchecked casts.
+  The malformed-key helper regressions pass (`3 passed`); Ruff passes on the
+  changed test surface. The legacy monolith still has pre-existing `E402`
+  import-order debt, so full module Ruff, Pyright, remote CI, and release
+  readiness remain open.
