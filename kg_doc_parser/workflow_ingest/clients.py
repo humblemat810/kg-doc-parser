@@ -83,7 +83,10 @@ def _workflow_probe(deps: Mapping[str, object] | None) -> WorkflowProbe | None:
 
 
 def _state_json(value: Mapping[str, object]) -> dict[str, JsonValue]:
-    return cast(dict[str, JsonValue], dict(value))
+    normalized = json_safe(value)
+    if not isinstance(normalized, dict):
+        raise TypeError("workflow state must serialize to a JSON object")
+    return normalized
 
 
 def _decode_canonical_response(value: object) -> _CanonicalResponsePayload:
