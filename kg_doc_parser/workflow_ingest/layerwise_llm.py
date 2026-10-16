@@ -147,6 +147,20 @@ class _BoundaryLookupCandidate(_BoundaryLegalCutpoint):
     source_cluster_id: str
 
 
+class _PointerExcerpt(TypedDict):
+    source_cluster_id: str
+    start_char: int | None
+    end_char: int | None
+    verbatim_text: str
+
+
+class _ParentContextExcerpt(TypedDict):
+    parent_node_id: str
+    title: str | None
+    pointer_count: int
+    pointer_excerpt: list[_PointerExcerpt]
+
+
 LayerwiseCallback = LayerwiseLLMCallbacks
 
 
@@ -941,10 +955,12 @@ def _pointer_excerpt(
     pointer: object,
     *,
     parser_source_map: Mapping[str, Mapping[str, object]],
-) -> dict[str, object]:
+) -> _PointerExcerpt:
     source_cluster_id = _pointer_source_cluster_id(pointer)
-    start_char = _pointer_field(pointer, "start_char")
-    end_char = _pointer_field(pointer, "end_char")
+    raw_start_char = _pointer_field(pointer, "start_char")
+    raw_end_char = _pointer_field(pointer, "end_char")
+    start_char = raw_start_char if type(raw_start_char) is int else None
+    end_char = raw_end_char if type(raw_end_char) is int else None
     excerpt = ""
     record = parser_source_map.get(source_cluster_id) or parser_source_map.get(str(source_cluster_id))
     if record is not None and type(start_char) is int and type(end_char) is int:
@@ -964,11 +980,11 @@ def _parent_context_excerpt(
     *,
     current_layer_context: CurrentLayerContext,
     parser_source_map: Mapping[str, Mapping[str, object]],
-) -> list[dict[str, object]]:
+) -> list[_ParentContextExcerpt]:
     parent_ids = list(current_layer_context.parent_node_ids)
     parent_titles = list(current_layer_context.parent_titles)
     pointers_by_id = dict(current_layer_context.parent_content_pointers_by_id)
-    parents: list[dict[str, object]] = []
+    parents: list[_ParentContextExcerpt] = []
     for index, parent_id in enumerate(parent_ids):
         title = parent_titles[index] if index < len(parent_titles) else None
         pointers = list(pointers_by_id.get(parent_id) or [])
