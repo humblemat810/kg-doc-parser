@@ -278,10 +278,10 @@ whose contract crosses SQLite, Kogwistar, a provider, or graph export.
   The concurrent-resume regression accepts direct ownership loss and stable
   wrapped nested-workflow failures, while rejecting unrelated failures as
   ownership errors. This closes only that error-classification regression.
-- [~] Parser CI run `38913709355` / `#322` is still in progress for
-  `e130e26` (the typed `WorkflowProviderSettings` contract). This update does
-  not close A-6, S02, C03, C05, Linux SIGKILL, installed-package, or full
-  graph-publication evidence.
+- [x] Parser CI run `38913709355` / `#322` verified `e130e26` across CPython
+  3.12-3.14 and PyPy 3.11. The typed `WorkflowProviderSettings` contract is
+  now covered by the full matrix. This update does not close A-6, S02, C03,
+  C05, Linux SIGKILL, installed-package, or full graph-publication evidence.
 
 The external seam review found that earlier green marks overstated the
 evidence for artifact integrity and runtime ownership. Those marks are

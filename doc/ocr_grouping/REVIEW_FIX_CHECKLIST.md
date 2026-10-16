@@ -629,7 +629,6 @@ release is available.
   wrapped concurrent-resume failures. Direct ownership loss remains
   distinguishable from fail-closed nested grouping failures, and unrelated
   nested failures are not mislabeled as ownership loss.
-- [~] Parser CI #322 is still running for `e130e26`, which exposes the
-  `WorkflowProviderSettings` contract to the OCR root workflow without adding
-  a runtime dependency cycle. Do not mark this seam verified until the full
-  matrix completes.
+- [x] Parser CI #322 (`38913709355`) verified `e130e26` across CPython
+  3.12-3.14 and PyPy 3.11. It exposes the `WorkflowProviderSettings` contract
+  to the OCR root workflow without adding a runtime dependency cycle.
