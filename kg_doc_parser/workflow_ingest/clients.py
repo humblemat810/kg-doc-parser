@@ -230,7 +230,7 @@ def _json_int(value: object, default: int = 0) -> int:
     return default
 
 
-def _to_temp_id_graph_payload(graph_payload: Mapping[str, object]) -> JsonObject:
+def _to_temp_id_graph_payload(graph_payload: Mapping[str, JsonValue]) -> JsonObject:
     """Adapt a canonical export bundle into the server's batch-temp-id contract."""
 
     nodes = _record_list(graph_payload.get("nodes", []), field_name="nodes")
