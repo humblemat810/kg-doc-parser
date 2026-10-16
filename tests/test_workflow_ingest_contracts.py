@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -22,6 +23,7 @@ from kg_doc_parser.workflow_ingest.clients import (
 )
 from kg_doc_parser.workflow_ingest.design import build_ingest_workflow_design
 from kg_doc_parser.workflow_ingest.handlers import (
+    _build_export_bundle,
     _parser_payload,
     _parser_source_map,
     _state_object_map,
@@ -704,6 +706,36 @@ def test_fake_workflow_validation_failure_is_structured(workflow_backend_kind):
     assert all(count >= 1 for count in attempt_counts.values())
     history = run.final_state["strategy_execution_history"]
     assert any(event["event"] == "selected" for event in history)
+
+
+@pytest.mark.ci
+def test_export_rejects_opaque_nested_grouping_metadata() -> None:
+    base = WorkflowIngestInput.from_text(
+        document_id="opaque-grouping-doc",
+        text="A small document",
+        title="Opaque grouping",
+    )
+    collection = base.collections[0].model_copy(
+        update={"metadata": {"document_tree": {"nodes": [{"summary": object()}]}}}
+    )
+    inp = base.model_copy(update={"collections": [collection]})
+    ctx = SimpleNamespace(
+        state_view={
+            "normalized_input": inp,
+            "semantic_tree": SemanticNode(
+                title="Opaque grouping",
+                node_type="DOCUMENT_ROOT",
+                total_content_pointers=[],
+                child_nodes=[],
+                level_from_root=0,
+            ),
+            "parser_source_map": {},
+            "authoritative_source_map": {},
+        }
+    )
+
+    with pytest.raises(TypeError, match="document_tree metadata.*JSON serializable"):
+        _build_export_bundle(ctx=ctx)
 
 
 @pytest.mark.ci

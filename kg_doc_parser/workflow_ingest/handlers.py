@@ -280,9 +280,10 @@ def _build_export_bundle(
     raw_grouping_tree = collection.metadata.get("document_tree")
     grouping_tree: dict[str, JsonValue] | None = None
     if raw_grouping_tree is not None:
-        if not isinstance(raw_grouping_tree, dict):
-            raise TypeError("document_tree metadata must be a JSON object")
-        grouping_tree = cast(dict[str, JsonValue], raw_grouping_tree)
+        grouping_tree = decode_json_object(
+            raw_grouping_tree,
+            label="document_tree metadata",
+        )
     deps = runtime_deps or {}
     grouping_contract: Literal["optional", "required"] = (
         "required" if deps.get("require_grouping_tree") is True else "optional"
