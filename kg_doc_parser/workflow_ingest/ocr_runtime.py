@@ -94,6 +94,16 @@ class _OCRWorkflowState(TypedDict, total=False):
     export_bundle: dict[str, object]
 
 
+def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
+    """Narrow persisted workflow state once at the runtime boundary.
+
+    Checkpoint payloads are decoded from JSON, so the runtime still validates
+    values at each use.  The TypedDict keeps known keys from degrading to
+    ``object`` after the boundary has been crossed.
+    """
+    return cast(_OCRWorkflowState, value)
+
+
 def _success(
     next_step: str | None,
     *,
@@ -657,9 +667,10 @@ def _register_grouping_steps(
 
     @resolver.register("restore_grouping_checkpoint")
     def _restore(ctx: StepContext) -> StepRunResult:
-        tree = _tree(ctx.state_view)
-        document_id = str(ctx.state_view.get("document_id", tree.document_id))
-        policy_version = str(ctx.state_view.get("grouping_policy_version", "baseline-v1"))
+        state = _typed_state(ctx.state_view)
+        tree = _tree(state)
+        document_id = str(state.get("document_id", tree.document_id))
+        policy_version = str(state.get("grouping_policy_version", "baseline-v1"))
         restored = state_store.load_document_tree(
             document_id=document_id,
             source_fingerprint=tree.source_fingerprint(),
@@ -710,13 +721,14 @@ def _register_grouping_steps(
 
     @resolver.register("apply_grouping_pass")
     def _apply(ctx: StepContext) -> StepRunResult:
-        tree = _tree(ctx.state_view)
-        pass_index = _pass_count(ctx.state_view)
-        raw_passes = ctx.state_view.get("grouping_passes", [])
+        state = _typed_state(ctx.state_view)
+        tree = _tree(state)
+        pass_index = _pass_count(state)
+        raw_passes = state.get("grouping_passes", [])
         passes = raw_passes if isinstance(raw_passes, list) else []
         if pass_index < len(passes):
             proposals = _proposals(passes[pass_index])
-            policy_version = str(ctx.state_view.get("grouping_policy_version", "baseline-v1"))
+            policy_version = str(state.get("grouping_policy_version", "baseline-v1"))
             tree = apply_grouping_proposals(
                 tree,
                 proposals,
@@ -735,9 +747,11 @@ def _register_grouping_steps(
 
     @resolver.register("generate_grouping_summaries")
     def _summaries(ctx: StepContext) -> StepRunResult:
-        tree = _tree(ctx.state_view)
-        document_id = str(ctx.state_view.get("document_id", tree.document_id))
-        policy_version = str(ctx.state_view.get("grouping_policy_version", "baseline-v1"))
+        state = _typed_state(ctx.state_view)
+        tree = _tree(state)
+        document_id = str(state.get("document_id", tree.document_id))
+        policy_version = str(state.get("grouping_policy_version", "baseline-v1"))
+        checkpoint_revision = state.get("checkpoint_revision")
         updated = _generate_tree_summaries(
             tree,
             document_id=document_id,
@@ -747,11 +761,11 @@ def _register_grouping_steps(
             grounded_generator=grounded_summary_generator,
             grouping_policy_version=policy_version,
             expected_tree_revision=(
-                str(ctx.state_view["checkpoint_revision"])
-                if ctx.state_view.get("checkpoint_revision") is not None
+                str(checkpoint_revision)
+                if checkpoint_revision is not None
                 else None
             ),
-            require_no_existing_tree=bool(ctx.state_view.get("checkpoint_absent", False)),
+            require_no_existing_tree=bool(state.get("checkpoint_absent", False)),
         )
         current_revision = state_store.document_tree_revision(document_id=document_id)
         return _success(
@@ -773,17 +787,19 @@ def _register_grouping_steps(
 
     @resolver.register("persist_grouping_result")
     def _persist(ctx: StepContext) -> StepRunResult:
-        tree = _tree(ctx.state_view)
+        state = _typed_state(ctx.state_view)
+        tree = _tree(state)
+        checkpoint_revision = state.get("checkpoint_revision")
         revision = state_store.save_document_tree(
-            document_id=str(ctx.state_view.get("document_id", tree.document_id)),
+            document_id=str(state.get("document_id", tree.document_id)),
             tree=tree,
-            grouping_policy_version=str(ctx.state_view.get("grouping_policy_version", "baseline-v1")),
+            grouping_policy_version=str(state.get("grouping_policy_version", "baseline-v1")),
             expected_tree_revision=(
-                str(ctx.state_view["checkpoint_revision"])
-                if ctx.state_view.get("checkpoint_revision") is not None
+                str(checkpoint_revision)
+                if checkpoint_revision is not None
                 else None
             ),
-            require_no_existing_tree=bool(ctx.state_view.get("checkpoint_absent", False)),
+            require_no_existing_tree=bool(state.get("checkpoint_absent", False)),
         )
         return _success("end", state_update=[("u", {"checkpoint_revision": revision})])
 
@@ -979,7 +995,8 @@ def run_ocr_root_workflow(
 
     @root_resolver.register("ocr_root_invoke_pages", is_nested=True)
     def _root_invoke_pages(ctx: StepContext) -> StepRunResult:
-        recovery_generation = _recovery_generation(ctx.state_view)
+        state = _typed_state(ctx.state_view)
+        recovery_generation = _recovery_generation(state)
         recovery_suffix = (
             f"|recovery-{recovery_generation}" if recovery_generation else ""
         )
@@ -1013,7 +1030,8 @@ def run_ocr_root_workflow(
 
     @root_resolver.register("ocr_root_prepare_grouping_input")
     def _root_prepare_grouping(ctx: StepContext) -> StepRunResult:
-        page_result = ctx.state_view.get("ocr_page_result")
+        state = _typed_state(ctx.state_view)
+        page_result = state.get("ocr_page_result")
         if not isinstance(page_result, dict):
             raise TypeError("OCR page child did not return a JSON state")
         if _page_result_needs_recovery(
@@ -1021,7 +1039,7 @@ def run_ocr_root_workflow(
             context=preparation.page_context,
             source_plan=preparation.source_plan,
         ):
-            generation = _recovery_generation(ctx.state_view) + 1
+            generation = _recovery_generation(state) + 1
             return _success(
                 "ocr_root_invoke_pages",
                 state_update=[("u", {"ocr_page_recovery_generation": generation})],
@@ -1075,9 +1093,10 @@ def run_ocr_root_workflow(
 
     @root_resolver.register("ocr_root_invoke_grouping", is_nested=True)
     def _root_invoke_grouping(ctx: StepContext) -> StepRunResult:
-        tree = _tree(ctx.state_view)
+        state = _typed_state(ctx.state_view)
+        tree = _tree(state)
         existing_revision = preparation.state_store.document_tree_revision(document_id=document_id)
-        recovery_generation = _recovery_generation(ctx.state_view)
+        recovery_generation = _recovery_generation(state)
         recovery_suffix = (
             f"|recovery-{recovery_generation}" if recovery_generation else ""
         )
@@ -1091,7 +1110,7 @@ def run_ocr_root_workflow(
                         "document_id": document_id,
                         "tree": tree.model_dump(mode="json"),
                         "grouping_policy_version": grouping_policy_version,
-                        "grouping_passes": ctx.state_view.get("grouping_passes", []),
+                        "grouping_passes": state.get("grouping_passes", []),
                         "pass_index": 0,
                         "checkpoint_revision": existing_revision,
                         "checkpoint_absent": existing_revision is None,
@@ -1112,11 +1131,15 @@ def run_ocr_root_workflow(
 
     @root_resolver.register("ocr_root_prepare_semantic_input")
     def _root_prepare_semantic(ctx: StepContext) -> StepRunResult:
-        grouping_result = ctx.state_view.get("grouping_result")
+        state = _typed_state(ctx.state_view)
+        grouping_result = state.get("grouping_result")
         if not isinstance(grouping_result, dict):
             raise TypeError("grouping child did not return a JSON state")
         grouped_tree = _tree(grouping_result)
-        workflow_input = WorkflowIngestInput.model_validate(ctx.state_view["workflow_input"])
+        workflow_input_payload = state.get("workflow_input")
+        if not isinstance(workflow_input_payload, dict):
+            raise TypeError("OCR root has no persisted semantic workflow input")
+        workflow_input = WorkflowIngestInput.model_validate(workflow_input_payload)
         attach_document_tree_metadata(workflow_input, grouped_tree)
         _write_document_tree(preparation.source_plan.legacy_dir / "document-tree.json", grouped_tree)
         return _success(
@@ -1136,10 +1159,11 @@ def run_ocr_root_workflow(
 
     @root_resolver.register("ocr_root_invoke_semantic", is_nested=True)
     def _root_invoke_semantic(ctx: StepContext) -> StepRunResult:
-        input_payload = ctx.state_view.get("workflow_input")
+        state = _typed_state(ctx.state_view)
+        input_payload = state.get("workflow_input")
         if not isinstance(input_payload, dict):
             raise TypeError("OCR root has no semantic workflow input")
-        recovery_generation = _recovery_generation(ctx.state_view)
+        recovery_generation = _recovery_generation(state)
         recovery_suffix = (
             f"|recovery-{recovery_generation}" if recovery_generation else ""
         )
@@ -1166,13 +1190,14 @@ def run_ocr_root_workflow(
 
     @root_resolver.register("ocr_root_finalize")
     def _root_finalize(ctx: StepContext) -> StepRunResult:
-        semantic_result = ctx.state_view.get("semantic_result")
+        state = _typed_state(ctx.state_view)
+        semantic_result = state.get("semantic_result")
         if not isinstance(semantic_result, dict):
             raise TypeError("semantic child did not return a JSON state")
         bundle = semantic_result.get("export_bundle")
         if not isinstance(bundle, dict):
             raise TypeError("semantic child did not publish an export bundle")
-        grouped_tree = _tree(ctx.state_view)
+        grouped_tree = _tree(state)
         exported_grouping_tree = bundle.get("grouping_tree")
         if not isinstance(exported_grouping_tree, dict):
             raise TypeError("semantic child did not preserve the accepted grouping tree")
