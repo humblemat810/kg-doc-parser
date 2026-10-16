@@ -82,6 +82,7 @@ NOTES
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import sqlite3
@@ -91,7 +92,7 @@ import traceback
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Lock
 from typing import Protocol, runtime_checkable
 from uuid import UUID
@@ -102,6 +103,8 @@ from langchain_core.outputs.chat_generation import ChatGeneration
 from langchain_core.outputs.llm_result import LLMResult
 
 from kg_doc_parser.workflow_ingest.serialization import safe_json_dumps
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class TextRedactor(Protocol):
@@ -374,9 +377,9 @@ class SQLiteIngestEventWriter:
                 with closing(conn.execute("PRAGMA wal_checkpoint;")):
                     pass
                 conn.commit()
-        except Exception:
+        except (OSError, sqlite3.Error) as exc:
             # Swallow writer shutdown errors; don't crash application exit.
-            pass
+            _LOGGER.debug("telemetry writer checkpoint failed during shutdown: %r", exc)
 
     def _flush(self, batch: list[_IngestEvent]) -> None:
         rows = [
@@ -440,7 +443,7 @@ def _best_effort_error_location(exc: BaseException) -> tuple[str | None, int | N
 
 def _utc_now_iso() -> str:
     """UTC ISO timestamp with timezone, suitable for sqlite TEXT."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ---------------------------
@@ -684,7 +687,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         # LangChain response.generations: List[List[Generation]]
         for gen_list in response.generations:
             for gen in gen_list:
-                if isinstance(gen, ChatGeneration) and hasattr(gen, "message"):
+                if isinstance(gen, ChatGeneration):
                     msg = gen.message
                     # Gemini usage_metadata is an optional provider extension.
                     usage = _message_usage_metadata(msg)
@@ -734,7 +737,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                         item["text"] = self._clip(str(gen.text))
 
                     # Chat-y
-                    if isinstance(gen, ChatGeneration) and hasattr(gen, "message"):
+                    if isinstance(gen, ChatGeneration):
                         msg = gen.message
                         item["message"] = {
                             "type": msg.type,

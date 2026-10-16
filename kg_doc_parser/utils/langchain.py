@@ -195,7 +195,7 @@ class GeminiCostCallbackHandler(BaseCallbackHandler):
             for gen in generation:
                 # Check if the generation object is a ChatGeneration instance
                 # and has the 'usage_metadata' attribute.
-                if isinstance(gen, ChatGeneration) and hasattr(gen, 'message'):
+                if isinstance(gen, ChatGeneration):
                     message = gen.message
                     usage_metadata = _usage_metadata(message)
                     if usage_metadata is not None:
