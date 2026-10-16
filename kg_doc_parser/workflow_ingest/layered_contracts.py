@@ -10,7 +10,6 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -22,6 +21,7 @@ from .models import (
     ParseSessionState,
 )
 from .parser_core import (
+    ParserSourceMap,
     ProposeLayerFn,
     commit_layer_children,
     enqueue_next_layer_frontier,
@@ -104,7 +104,7 @@ class LayeredParseExpandRequest(BaseModel):
     def _validate_input_tree(self) -> LayeredParseExpandRequest:
         validate_semantic_tree_integrity(
             SemanticNode.model_validate(self.semantic_tree),
-            parser_source_map=cast(dict[str, dict[str, object]], self.source_map),
+            parser_source_map=self.source_map,
             max_depth=min(self.limits.max_depth, self.session.max_depth),
         )
         return self
@@ -298,13 +298,10 @@ def _estimate_context_tokens(context: CurrentLayerContext) -> int:
     return max(1, (len(text) + 3) // 4)
 
 
-def _parser_source_map(source_map: LayeredSourceMap) -> dict[str, dict[str, object]]:
-    """Adapt JSON-safe DTO records to the parser core's open payload contract."""
+def _parser_source_map(source_map: LayeredSourceMap) -> ParserSourceMap:
+    """Return the DTO source map without widening its JSON value contract."""
 
-    return {
-        source_id: cast(dict[str, object], dict(record))
-        for source_id, record in source_map.items()
-    }
+    return dict(source_map)
 
 
 def _model_or_mapping(value: Mapping[str, JsonValue], name: str) -> _LayeredCollection:
