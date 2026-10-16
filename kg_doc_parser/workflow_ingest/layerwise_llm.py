@@ -55,8 +55,8 @@ def _bounded_retry_delay(*, attempt_number: int, retry_budget: int, provider_set
 
     if attempt_number >= retry_budget:
         return 0.0
-    base = float(getattr(provider_settings.parser, "retry_backoff_seconds", 0.0) or 0.0)
-    maximum = float(getattr(provider_settings.parser, "retry_backoff_max_seconds", 0.0) or 0.0)
+    base = float(provider_settings.parser.retry_backoff_seconds or 0.0)
+    maximum = float(provider_settings.parser.retry_backoff_max_seconds or 0.0)
     return min(maximum, base * (2 ** max(0, attempt_number - 1))) if maximum else 0.0
 
 
@@ -590,12 +590,12 @@ def _boundary_candidates_for_pointer(
 
 def _boundary_prompt_candidate_context(
     *,
-    current_layer_context: object,
+    current_layer_context: CurrentLayerContext,
     parser_source_map: dict[str, dict[str, object]],
     max_points: int = 128,
 ) -> list[dict[str, object]]:
-    parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
-    pointers_by_id = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
+    parent_ids = list(current_layer_context.parent_node_ids)
+    pointers_by_id = dict(current_layer_context.parent_content_pointers_by_id)
     candidates: list[dict[str, object]] = []
     for parent_id in parent_ids:
         for pointer in _object_list(pointers_by_id.get(parent_id)):
@@ -814,10 +814,10 @@ def _resolve_boundary_anchor(
 def _repair_boundary_cutpoint_from_source(
     cutpoint: BoundaryCutpoint,
     *,
-    current_layer_context: object,
+    current_layer_context: CurrentLayerContext,
     parser_source_map: dict[str, dict[str, object]],
 ) -> BoundaryCutpoint | None:
-    parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
+    parent_pointers = dict(current_layer_context.parent_content_pointers_by_id)
     pointer = None
     for parent_pointer in list(parent_pointers.get(cutpoint.parent_node_id) or []):
         if _pointer_source_cluster_id(parent_pointer) == cutpoint.source_cluster_id:
@@ -915,12 +915,12 @@ def _pointer_excerpt(pointer: object, *, parser_source_map: dict[str, dict[str, 
 
 def _parent_context_excerpt(
     *,
-    current_layer_context: object,
+    current_layer_context: CurrentLayerContext,
     parser_source_map: dict[str, dict[str, object]],
 ) -> list[dict[str, object]]:
-    parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
-    parent_titles = list(getattr(current_layer_context, "parent_titles", []) or [])
-    pointers_by_id = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
+    parent_ids = list(current_layer_context.parent_node_ids)
+    parent_titles = list(current_layer_context.parent_titles)
+    pointers_by_id = dict(current_layer_context.parent_content_pointers_by_id)
     parents: list[dict[str, object]] = []
     for index, parent_id in enumerate(parent_ids):
         title = parent_titles[index] if index < len(parent_titles) else None
@@ -939,10 +939,12 @@ def _parent_context_excerpt(
     return parents
 
 
-def _proposal_attempt_context(*, parse_session: object, current_layer_context: object) -> dict[str, object]:
-    parse_session_dump = _object_dict(_dump_model(parse_session) if parse_session is not None else {})
+def _proposal_attempt_context(
+    *, parse_session: ParseSessionState, current_layer_context: CurrentLayerContext
+) -> dict[str, object]:
+    parse_session_dump = _object_dict(_dump_model(parse_session))
     attempts = _object_dict(parse_session_dump.get("layer_attempts"))
-    depth_key = str(getattr(current_layer_context, "depth", 0))
+    depth_key = str(current_layer_context.depth)
     return {
         "attempt_number_for_depth": _offset_value(attempts.get(depth_key), 0) + 1,
         "attempts_by_depth": attempts,
@@ -956,7 +958,7 @@ def _proposal_attempt_context(*, parse_session: object, current_layer_context: o
 def _proposal_validation_reason(
     *,
     parsed: object,
-    current_layer_context: object,
+    current_layer_context: CurrentLayerContext,
     parser_source_map: dict[str, dict[str, object]],
 ) -> str | None:
     children = list(getattr(parsed, "children", []) or [])
@@ -999,8 +1001,8 @@ def _proposal_validation_reason(
                 return _proposal_pointer_validation_reason(exc)
     parent_titles = dict(
         zip(
-            list(getattr(current_layer_context, "parent_node_ids", []) or []),
-            list(getattr(current_layer_context, "parent_titles", []) or []),
+            current_layer_context.parent_node_ids,
+            current_layer_context.parent_titles,
             strict=False,
         )
     )
@@ -1096,12 +1098,12 @@ def _boundary_refinement_targets(
 
 def _boundary_refinement_prompt_context(
     *,
-    current_layer_context: object,
+    current_layer_context: CurrentLayerContext,
     parser_source_map: dict[str, dict[str, object]],
     target: BoundaryCutpoint,
 ) -> dict[str, object]:
-    parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
-    parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
+    parent_ids = list(current_layer_context.parent_node_ids)
+    parent_pointers = dict(current_layer_context.parent_content_pointers_by_id)
     target_parent_pointers = list(parent_pointers.get(target.parent_node_id) or [])
     target_pointer = None
     for pointer in target_parent_pointers:
