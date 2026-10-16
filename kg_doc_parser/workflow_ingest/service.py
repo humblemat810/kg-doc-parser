@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import StorageBackend
@@ -15,6 +15,7 @@ from .design import DEFAULT_WORKFLOW_ID
 from .handlers import build_ingest_step_resolver
 from .models import IngestRunResult, WorkflowExportBundle, WorkflowIngestInput
 from .providers import WorkflowProviderSettings, build_embedding_function
+from .serialization import JsonValue
 
 if TYPE_CHECKING:
     from kogwistar.runtime.contract import Predicate, WorkflowEdgeInfo
@@ -40,7 +41,7 @@ WorkflowPredicates = dict[str, Predicate]
 
 
 class _LayerContext(TypedDict, total=False):
-    metadata: Mapping[str, object]
+    metadata: _LayerMetadata
     parent_node_ids: list[str]
 
 
@@ -55,11 +56,11 @@ class _LayerReview(TypedDict, total=False):
     metadata: _LayerMetadata
     satisfied: bool
     coverage_ok: bool
-    overlap_conflicts: list[object]
-    coverage_gap_notes: list[object]
-    duplicate_child_notes: list[object]
-    structural_issues: list[object]
-    validation_diagnostics: list[object]
+    overlap_conflicts: list[JsonValue]
+    coverage_gap_notes: list[JsonValue]
+    duplicate_child_notes: list[JsonValue]
+    structural_issues: list[JsonValue]
+    validation_diagnostics: list[JsonValue]
 
 
 class _LayerChild(TypedDict, total=False):
@@ -83,8 +84,12 @@ def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
-def _mapping(value: object) -> Mapping[str, object]:
-    return value if isinstance(value, Mapping) else {}
+def _mapping(value: object) -> Mapping[str, JsonValue]:
+    """Narrow a persisted layer payload to the JSON value union."""
+
+    if isinstance(value, Mapping) and all(isinstance(key, str) for key in value):
+        return cast(Mapping[str, JsonValue], value)
+    return {}
 
 
 def _metadata_mapping(value: object) -> _LayerMetadata:
