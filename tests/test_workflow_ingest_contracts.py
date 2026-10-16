@@ -447,6 +447,24 @@ def test_normalize_ocr_rejects_malformed_coordinates_and_clusters(field, value):
 
 
 @pytest.mark.ci
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("text", 42), ("description", 42), ("media_byte_length", "1024")],
+)
+def test_normalize_ocr_rejects_malformed_nested_cluster_fields(field, value) -> None:
+    page = {
+        "pdf_page_num": 1,
+        "OCR_text_clusters": [{"text": "Alpha", "cluster_number": 0}],
+        "non_text_objects": [{"description": "Figure", "cluster_number": 1}],
+    }
+    target = page["OCR_text_clusters"][0] if field == "text" else page["non_text_objects"][0]
+    target[field] = value
+
+    with pytest.raises(TypeError, match="must be"):
+        normalize_ocr_pages(document_id="ocr-invalid-nested", title="OCR", pages=[page])
+
+
+@pytest.mark.ci
 def test_normalize_ocr_rejects_inverted_boxes_and_cluster_collisions():
     with pytest.raises(ValueError, match="minimums"):
         normalize_ocr_pages(

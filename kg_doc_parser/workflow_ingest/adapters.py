@@ -44,7 +44,7 @@ class OCRNonTextObjectJSON(TypedDict, total=False):
 class OCRPageJSON(TypedDict):
     """Serialized OCR page payload produced by the OCR preparation layer."""
 
-    pdf_page_num: int
+    pdf_page_num: int | str
     printed_page_number: NotRequired[str]
     contains_table: NotRequired[bool]
     is_blank_page: NotRequired[bool]
@@ -65,7 +65,10 @@ def _validated_ocr_page_json(
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise TypeError("OCR page payload must be a JSON object")
     page_number = value.get("pdf_page_num", default_page_number)
-    if type(page_number) is not int or page_number < 1:
+    if type(page_number) is int:
+        if page_number < 1:
+            raise TypeError("OCR page pdf_page_num must be a positive integer")
+    elif not (isinstance(page_number, str) and page_number.strip().isdigit()):
         raise TypeError("OCR page pdf_page_num must be a positive integer")
     scalar_types: dict[str, type[object] | tuple[type[object], ...]] = {
         "printed_page_number": str,
@@ -99,7 +102,33 @@ def _validated_ocr_page_json(
                 for item in field
             )
         ):
-            raise TypeError(f"OCR page field {key!r} must be a list of JSON objects")
+            if not isinstance(field, list):
+                raise TypeError("OCR cluster collections must be lists")
+            label = "text cluster" if key == "OCR_text_clusters" else "non-text object"
+            raise TypeError(f"each OCR {label} must be an object")
+        if isinstance(field, list):
+            for index, item in enumerate(field):
+                if not isinstance(item, dict):
+                    continue
+                for item_key in (
+                    "text",
+                    "description",
+                    "source_uri",
+                    "mime_type",
+                    "media_sha256",
+                    "coordinate_system",
+                    "spatial_accuracy",
+                ):
+                    item_value = item.get(item_key)
+                    if item_value is not None and not isinstance(item_value, str):
+                        raise TypeError(
+                            f"OCR page field {key}[{index}].{item_key!r} must be a string"
+                        )
+                media_length = item.get("media_byte_length")
+                if media_length is not None and type(media_length) is not int:
+                    raise TypeError(
+                        f"OCR page field {key}[{index}].'media_byte_length' must be an integer"
+                    )
     if "pdf_page_num" not in value:
         return cast(OCRPageJSON, {**value, "pdf_page_num": page_number})
     return cast(OCRPageJSON, value)
@@ -179,6 +208,7 @@ def normalize_ocr_pages(
             raise TypeError("each OCR page must be an object")
         if "pdf_page_num" not in raw_page:
             raise ValueError("each OCR page requires pdf_page_num")
+        raw_page = _validated_ocr_page_json(raw_page)
         page_number = _ocr_page_number(raw_page["pdf_page_num"])
         if page_number in seen_page_numbers:
             raise ValueError(f"duplicate OCR pdf_page_num: {page_number}")
