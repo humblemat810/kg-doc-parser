@@ -12,6 +12,7 @@ from kogwistar.runtime.models import (
     RunSuspended,
     StateUpdate,
     StepRunResult,
+    get_route_next_names,
 )
 from kogwistar.runtime.runtime import StepContext
 
@@ -403,7 +404,7 @@ def _register_step(
                 "workflow.step_finished",
                 step=step_name,
                 status=status,
-                route_next=list(getattr(result, "_route_next", []) or []),
+                route_next=get_route_next_names(result),
                 **_probe_snapshot(dict(ctx.state_view)),
             )
             return result
@@ -762,9 +763,7 @@ def register_layerwise_parser_steps(
         if configured_batch_size is None:
             settings = runtime_deps.get("provider_settings")
             configured_batch_size = (
-                getattr(settings, "layer_frontier_batch_size", None)
-                if settings is not None
-                else 1
+                settings.layer_frontier_batch_size if settings is not None else 1
             )
         raw_frontier = ctx.state_view.get("layer_frontier_queue")
         frontier_items = raw_frontier if isinstance(raw_frontier, list) else []

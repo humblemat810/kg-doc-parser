@@ -17,10 +17,10 @@ from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowLLMCallCache,
     WorkflowProviderSettings,
-    workflow_cache_namespace,
     build_chat_model,
     build_embedding_function,
     run_demo_harness,
+    workflow_cache_namespace,
 )
 from kg_doc_parser.workflow_ingest.clients import _json_int
 from kg_doc_parser.workflow_ingest.demo_harness import _start_subprocess_server
@@ -433,6 +433,13 @@ def test_demo_harness_writes_probe_summary_and_cache():
     assert "workflow.run_started" in kinds
     assert "workflow.step_started" in kinds
     assert "workflow.step_finished" in kinds
+    finished = [event for event in events if event["kind"] == "workflow.step_finished"]
+    assert finished
+    assert all(isinstance(event.get("route_next"), list) for event in finished)
+    assert all(
+        all(isinstance(step, str) for step in event["route_next"])
+        for event in finished
+    )
     assert "workflow.persistence_result" in kinds
     assert "workflow.llm_cache_miss" in kinds
     assert "demo.finished" in kinds
