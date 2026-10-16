@@ -179,6 +179,15 @@ class _BoundaryReviewDecisionSummary(TypedDict):
     reason: str
 
 
+class _ProposalAttemptContext(TypedDict):
+    attempt_number_for_depth: int
+    attempts_by_depth: dict[str, int]
+    strategy_history: list[SplitStrategy]
+    fallback_split_strategy: SplitStrategy | None
+    workflow_mode: Literal["workflow_layered", "legacy_compat"] | None
+    prior_review: dict[str, JsonValue]
+
+
 class _PointerExcerpt(TypedDict):
     source_cluster_id: str
     start_char: int | None
@@ -1036,7 +1045,7 @@ def _parent_context_excerpt(
 
 def _proposal_attempt_context(
     *, parse_session: ParseSessionState | None, current_layer_context: CurrentLayerContext
-) -> dict[str, object]:
+) -> _ProposalAttemptContext:
     if parse_session is None:
         return {
             "attempt_number_for_depth": 1,
@@ -1046,16 +1055,14 @@ def _proposal_attempt_context(
             "workflow_mode": None,
             "prior_review": {},
         }
-    parse_session_dump = _object_dict(_dump_model(parse_session))
-    attempts = _object_dict(parse_session_dump.get("layer_attempts"))
     depth_key = str(current_layer_context.depth)
     return {
-        "attempt_number_for_depth": _offset_value(attempts.get(depth_key), 0) + 1,
-        "attempts_by_depth": attempts,
-        "strategy_history": _object_list(parse_session_dump.get("strategy_history")),
-        "fallback_split_strategy": parse_session_dump.get("fallback_split_strategy"),
-        "workflow_mode": parse_session_dump.get("mode"),
-        "prior_review": parse_session_dump.get("last_review") or {},
+        "attempt_number_for_depth": parse_session.layer_attempts.get(depth_key, 0) + 1,
+        "attempts_by_depth": dict(parse_session.layer_attempts),
+        "strategy_history": list(parse_session.strategy_history),
+        "fallback_split_strategy": parse_session.fallback_split_strategy,
+        "workflow_mode": parse_session.mode,
+        "prior_review": dict(parse_session.last_review),
     }
 
 
