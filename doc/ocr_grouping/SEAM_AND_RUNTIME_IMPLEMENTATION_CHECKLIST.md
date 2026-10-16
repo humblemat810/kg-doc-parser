@@ -1426,3 +1426,8 @@ protocol.
   isolation selection passes (`4 passed`); changed-module Ruff passes. This
   closes the handler JSON boundary only, not repository-wide typing or release
   gates.
+- [x] Commit `ba8e485` removes concrete legacy parser quality defects: the dead
+  invalid `HydratedTextPointerLLM` alias, unused export intermediates, bare
+  exception handlers, and unused range state. The legacy module imports, the
+  selected `E7,E9,F` Ruff rules, and `git diff --check` pass. Full legacy
+  Ruff still reports pre-existing `E402` import-order debt and remains open.
