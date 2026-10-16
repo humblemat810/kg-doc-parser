@@ -12,6 +12,13 @@ remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+PageIndex assignment and block-spec debug payload builders now preserve typed
+`JsonObject` output instead of widening deterministic trace records to
+`dict[str, object]`. Ruff, the PageIndex suite, and the diff check pass
+locally; no parser behavior changed.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 PageIndex coverage preserves its existing `dict[str, JsonValue]` contract from
 calculation through the public parse result; an unnecessary widening cast was
 removed. Ruff, the PageIndex suite, and the diff check pass locally. This does

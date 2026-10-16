@@ -336,7 +336,7 @@ class _BlockSpan:
     heading_level: int | None = None
 
 
-def _page_index_assignment_debug_payload(assignments: list[BlockAssignment]) -> list[dict[str, object]]:
+def _page_index_assignment_debug_payload(assignments: list[BlockAssignment]) -> list[JsonObject]:
     return [
         {
             "block_id": assignment.block_id,
@@ -348,8 +348,8 @@ def _page_index_assignment_debug_payload(assignments: list[BlockAssignment]) -> 
     ]
 
 
-def _page_index_block_spec_debug_payload(block_specs: list[PageIndexBlockSpec]) -> list[dict[str, object]]:
-    def _walk(spec: PageIndexBlockSpec, *, path: str) -> dict[str, object]:
+def _page_index_block_spec_debug_payload(block_specs: list[PageIndexBlockSpec]) -> list[JsonObject]:
+    def _walk(spec: PageIndexBlockSpec, *, path: str) -> JsonObject:
         return {
             "path": path,
             "title": spec.title,

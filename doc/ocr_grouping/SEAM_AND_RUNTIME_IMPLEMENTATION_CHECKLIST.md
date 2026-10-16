@@ -12,6 +12,13 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+PageIndex assignment and block-spec debug payload builders now return typed
+`JsonObject` records, preserving the deterministic JSON contract used by trace
+and retry diagnostics. Ruff, the PageIndex suite, and the diff check pass
+locally; no parsing behavior changed.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 PageIndex coverage now retains the existing `dict[str, JsonValue]` contract
 from `compute_pointer_coverage()` through `PageIndexParseResult`; the prior
 publication cast to `dict[str, object]` was removed. Ruff, the PageIndex suite,
