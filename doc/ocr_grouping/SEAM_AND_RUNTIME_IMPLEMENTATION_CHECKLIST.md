@@ -1046,3 +1046,23 @@ protocol.
   malformed list payload. The focused test, Ruff CI selection, and
   `git diff --check` pass locally. Parser CI runs #311 and #312 remain
   pending, so this seam is not yet a verified release gate.
+
+### Typed response and semantic-node seams (2026-10-16)
+
+- [~] Fixed locally; CI pending at the time of this entry. Commit `98d8153`
+  narrows LangChain accounting objects through runtime-checkable Protocols for
+  usage metadata, model identity, generation messages, and response metadata.
+  `tests/test_document_ingester_logger.py` covers valid SDK-like objects and
+  malformed/ordinary message objects. Focused tests, Ruff, and diff checks
+  passed locally.
+- [~] Fixed locally; CI pending at the time of this entry. Commit `86a7179`
+  centralizes the optional SDK content boundary in
+  `workflow_ingest/sdk_boundary.py` and reuses it from OCR and pipeline paths.
+  `test_shared_sdk_content_boundary_preserves_mapping_and_empty_content_rules`
+  proves SDK-like content, mappings, and empty content are not conflated.
+- [~] Fixed locally; CI pending at the time of this entry. Commit `2780377`
+  makes semantic tree and integrity-node shapes explicit runtime-checkable
+  Protocols and removes dynamic attribute reads from the shared validator
+  helpers. Pointer-edge, layerwise, legacy-invariant, and fixture-payload
+  regression suites passed locally; changed-file Pyright, Ruff, and diff checks
+  also passed. This does not close the remaining full-module typing backlog.
