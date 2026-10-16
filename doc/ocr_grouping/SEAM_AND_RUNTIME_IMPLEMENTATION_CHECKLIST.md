@@ -12,6 +12,15 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+Commit `37ed1e3` preserves compatibility for coverage segments that omit the
+optional `skipped` flag (the default is `False`) while retaining typed range
+records. The reusable regression `test_boundary_parent_coverage_report_marks_gaps_and_spans`
+and the complete layerwise suite pass locally (`45 passed`); Ruff and the diff
+check also pass. Remote CI remains unverified because the Actions API returns
+HTTP 403.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 Commit `29a36f8` narrows boundary refinement prompts and review decision
 diagnostics to dedicated `TypedDict` records. Commit `99d62d2` removes the
 typed `ParseSessionState` retry-context round trip through `dict[str, object]`

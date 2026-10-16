@@ -12,6 +12,14 @@ remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+Commit `37ed1e3` adds a regression-safe optional `skipped` field for normal
+coverage segments, preventing a `KeyError` while keeping gap detection typed.
+The named coverage regression and full layerwise suite pass locally (`45
+passed`), with Ruff and `git diff --check` clean. Remote CI remains unverified
+because the Actions API returns HTTP 403.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 Commits `29a36f8` and `99d62d2` close two additional layerwise typing seams:
 boundary refinement/review diagnostics now have dedicated `TypedDict` records,
 and retry context is read directly from the typed `ParseSessionState` rather
