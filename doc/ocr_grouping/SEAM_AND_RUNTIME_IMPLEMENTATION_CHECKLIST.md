@@ -977,8 +977,11 @@ an adapter-only test, or a source-checkout-only runtime test.
   Unfenced updates to an existing checkpoint now fail closed. This is
   provisional: every compatibility writer, late-writer path, and crash/restart
   ordering must use the same guard before this row can be green.
-- [ ] Persist source fingerprint, grouping policy, accepted page frontier, tree
-  digest, and last accepted runtime step.
+- [x] Persist source fingerprint, grouping policy, accepted page frontier, tree
+  digest, and last accepted runtime step. `OCRWorkflowStateStore` commits these
+  fields in `grouping_checkpoint_metadata` with the tree/frontier transaction;
+  `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`
+  verifies reload and source invalidation.
 - [~] Keep OCR page checkpoints compact by persisting artifact identity and a
   cursor rather than cumulative `raw_pages`. New checkpoints are artifact-backed
   and `_json_pages()` rehydrates accepted page JSON on demand; legacy checkpoints
