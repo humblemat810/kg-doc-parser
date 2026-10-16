@@ -12,6 +12,15 @@ remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+Commits `29a36f8` and `99d62d2` close two additional layerwise typing seams:
+boundary refinement/review diagnostics now have dedicated `TypedDict` records,
+and retry context is read directly from the typed `ParseSessionState` rather
+than reconstructed through `dict[str, object]`. Ruff, `git diff --check`, and
+the full layerwise suite pass locally (`45 passed`). GitHub Actions remains
+pending verification because its API currently returns HTTP 403.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 Layerwise boundary prompt and lookup payloads now use typed records for parent
 IDs, source spans, excerpts, and legal cutpoints instead of
 `dict[str, object]`. The existing layerwise suite, Ruff, and the diff check

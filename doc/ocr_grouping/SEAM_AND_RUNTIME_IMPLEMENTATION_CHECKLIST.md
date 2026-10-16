@@ -12,6 +12,16 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+Commit `29a36f8` narrows boundary refinement prompts and review decision
+diagnostics to dedicated `TypedDict` records. Commit `99d62d2` removes the
+typed `ParseSessionState` retry-context round trip through `dict[str, object]`
+and preserves its strategy, attempt, mode, and review types directly. Ruff,
+`git diff --check`, and the full layerwise suite pass locally (`45 passed`).
+GitHub Actions status is pending verification because the Actions API currently
+returns HTTP 403.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 The layerwise boundary prompt now uses typed `_BoundaryPromptCandidate`,
 `_BoundaryLegalCutpoint`, and `_BoundaryLookupCandidate` records instead of
 `dict[str, object]` for deterministic parent/span/cutpoint payloads. The
