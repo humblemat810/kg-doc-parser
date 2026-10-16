@@ -39,15 +39,13 @@ passes locally and proves that deleting an accepted page artifact is rejected
 instead of silently reusing stale checkpoint data.  Ruff and `git diff --check`
 also pass, and the commit is pushed on `feat/ocr-provider-abstraction`.
 
-Parser CI run `38777972861` still failed all CPython 3.12-3.14 and PyPy 3.11
-jobs at the installed-Kogwistar contract step, before the parser test suite.
-This is a release dependency gate, not evidence that `c173057` regressed the
-parser tests.  Kogwistar `v0.6.10` is tagged at `c11efd9` but its protected
-PyPI deployment remains pending; the ownership/recovery API used by the fresh
-process tests is still only on the separately pushed, unmerged
-`fix/workflow-run-ownership` branch.  Do not bump the parser version or pin to
-that API until a compatible Kogwistar release is published and the clean
-CPython/PyPy matrix passes.
+Parser CI run `38847694420` failed after the earlier installed-package gate;
+follow-up run `38851635751` for the recovery-test correction is currently in
+progress. These are release-gate observations, not evidence that `c173057`
+regressed the parser tests. Kogwistar `v0.6.10` is tagged at `c11efd9` and is
+published on PyPI. The published package remains the dependency under test;
+the installed matrix must verify the ownership/recovery API before the
+remaining release gates can close.
 
 This is the implementation checklist for the contract in `reference/START_HERE_AGENT_PROMPT.md`.
 `PASS` means current code and a focused test prove the requirement. `PARTIAL` means
@@ -84,7 +82,7 @@ not claims of complete crash consistency or fresh-process recovery.
 | C14 | PASS | `DocumentTree` remains standalone; OCR metadata and lineage enter the existing `WorkflowIngestInput`, semantic parser, `WorkflowExportBundle`, and `CanonicalGraphPersistenceClient` boundary. No persistent Kogwistar model is subclassed; a separate direct `DocumentTree` serializer is intentionally not duplicated |
 | C15 | PASS | Six lazy Docling engines, direct RapidOCR/EasyOCR, platform/CLI gating, KServe v2 transport, and process-local user-provider registration; `tests/test_workflow_ingest_ocr_providers.py` passed 16 tests (one optional-runtime skip); real-provider observations are recorded in `doc/ocr_grouping/PROVIDER_SMOKE_RESULTS.md` |
 | C16 | PASS | `SummaryPolicy` and `select_summary_targets()` bound eligible kinds, evidence size, information gain, estimated input tokens, and target count without invoking a provider; `test_summary_target_planner_is_bounded_and_skips_low_information_nodes` |
-| C17 | PARTIAL / RELEASE EVIDENCE OPEN | Atomic tree replacement, migrated SQLite page/config/artifact checkpoints, root resume identity fencing, idempotent summary-attempt journal, and a versioned root Kogwistar workflow with page/grouping/semantic child invocations are present. Grouping and summary checkpoint writes share atomic expected-revision/expected-absence fencing, reject orphaned or missing frontier rows, reject a restored tree whose persisted frontier disagrees, and prove multi-pass interrupted/resumed grouping equivalence. OCR/tree publication uses unique temporary files with a concurrent-writer regression; `test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash after real page artifact publication and verifies fresh-process adoption; `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted result under duplicate page delivery. The focused recovery matrix passed locally in 356.33 seconds, and the full deterministic local suite passed with `335 passed, 119 deselected, 50 warnings` in 1645.93 seconds against the coordinated source checkout. Parser CI run `38774809344` for `16f2f00` failed all CPython 3.12-3.14 and PyPy 3.11 jobs at the installed-package contract, before the parser suite ran. Kogwistar `v0.6.10` is tagged on `main`; its PyPI workflow has passed verification/build/audit and is waiting for protected `pypi` deployment approval. This is not installed-release evidence until that deployment completes and the parser matrix passes from a clean environment. Linux SIGKILL, full root/checkpoint reconciliation, and dual-store recovery after both commit orderings remain release gates; see `REVIEW_FIX_CHECKLIST.md`. |
+| C17 | PARTIAL / RELEASE EVIDENCE OPEN | Atomic tree replacement, migrated SQLite page/config/artifact checkpoints, root resume identity fencing, idempotent summary-attempt journal, and a versioned root Kogwistar workflow with page/grouping/semantic child invocations are present. Grouping and summary checkpoint writes share atomic expected-revision/expected-absence fencing, reject orphaned or missing frontier rows, reject a restored tree whose persisted frontier disagrees, and prove multi-pass interrupted/resumed grouping equivalence. OCR/tree publication uses unique temporary files with a concurrent-writer regression; `test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash after real page artifact publication and verifies fresh-process adoption; `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted result under duplicate page delivery. The focused recovery matrix passed locally, and Pyright reports zero errors for `kg_doc_parser`. Kogwistar `v0.6.10` is published and is the installed dependency under test. Parser CI run `38847694420` failed and follow-up run `38851635751` is still in progress; the installed-release matrix, Linux SIGKILL, full root/checkpoint reconciliation, and dual-store recovery after both commit orderings remain release gates; see `REVIEW_FIX_CHECKLIST.md`. |
 | C18 | PASS | `DocumentReferenceMention` keeps explicit page/section/figure/table phrases source-grounded and outside the primary coverage partition; unresolved targets remain pending; `test_explicit_reference_mentions_are_source_grounded_and_outside_partition`, `test_reference_mentions_round_trip_and_validate_targets_without_becoming_children`, and `test_reference_mentions_reject_unknown_targets_and_non_text_sources` |
 | C19 | PASS | `render_preview()` reads only accepted source intervals and display separators |
 | C20 | PASS | Open node kinds and heterogeneous adjacent merges are supported |

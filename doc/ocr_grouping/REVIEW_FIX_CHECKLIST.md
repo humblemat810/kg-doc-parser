@@ -120,8 +120,8 @@ passed in 1030.06 seconds with merged Kogwistar source commit `c0eb92c` on
 `PYTHONPATH`. The uninterrupted and interrupted/resumed canonical graph
 payloads matched, and the injected page failure was retried without rebuilding
 accepted page work. This improves C05 evidence but does not close it: the
-test used a coordinated source checkout, while Kogwistar `v0.6.10` is only
-tagged and its protected PyPI deployment is still pending. A true
+test used a coordinated source checkout. Kogwistar `v0.6.10` is now published
+on PyPI. A true
 fresh-process recovery is now covered by the coordinated source-checkout
 termination test below, but Linux SIGKILL evidence and the duplicate-root-resume
 race remain open.
@@ -143,7 +143,7 @@ same persistent state. The resumed worker calls only page two, preserves the
 same root run ID, and accepts one grouping result. This is real process
 termination evidence on the host platform, not a simulated callback failure.
 It uses coordinated parser/core source checkouts, so installed-package recovery
-still depends on publishing and verifying Kogwistar `0.6.10`. Linux `SIGKILL`,
+still depends on verifying Kogwistar `0.6.10` in the current matrix. Linux `SIGKILL`,
 duplicate-root-resume exclusion, and dual-store crash reconciliation remain
 release gates.
 
@@ -332,7 +332,7 @@ claim from a same-process or mocked test.
   `38757822459` failed all four jobs at the installed-Kogwistar version
   contract because PyPI `0.6.9` still exposes
   `kogwistar.__version__ == "0.6.8"`. The parser contract remains strict; the
-  matrix must be rerun after Kogwistar `0.6.10` is published. Slow/manual
+  matrix is being rerun against published Kogwistar `0.6.10`. Slow/manual
   provider experiments remain separate gates.
 
 ## Reviewer-required acceptance additions
@@ -340,8 +340,8 @@ claim from a same-process or mocked test.
 These require an implementation location, an exact pytest node, before/after
 behavior, and a runtime classification. C01 was previously evidenced, but the
 current released-package check found a Kogwistar `0.6.9` public-version
-mismatch. Core PR #61 is now merged and tagged as `v0.6.10`; C01 is awaiting
-PyPI publication and the parser matrix rerun. C02-C06 have partial implementation
+mismatch. Core PR #61 is merged and tagged as `v0.6.10`; C01 is published but
+the current parser matrix rerun is still pending. C02-C06 have partial implementation
 evidence, but none is a release-gate pass yet:
 
 - [~] Verify the installed Kogwistar package and public workflow persistence
@@ -355,8 +355,8 @@ The checklist-only rerun `38729861407` failed in all four matrix jobs before
 the OCR acceptance suite because the installed `0.6.9` package still exposes
 `kogwistar.__version__ == "0.6.8"`. The same failure is reproduced locally by
 `tests/test_pypy_ci_contract.py::test_installed_kogwistar_exposes_the_persisted_workflow_api`.
-This is evidence for the release gate, not a reason to relax the version
-contract.
+This is historical release-gate evidence, not a reason to relax the version
+contract; the current run must verify the published `0.6.10` package.
 - [~] Document and test one root/child ownership model, including semantic
   parser checkpoint and graph publication identities. Stable root/page/grouping/
   semantic IDs and same-process ownership tests exist; fresh-process lineage
@@ -394,11 +394,10 @@ contract.
   by `tests/test_document_adapters.py::test_final_group_keeps_identity_and_kind_under_document_root`.
   The root's one-child exception is structural only; semantic grouping nodes
   remain non-unary.
-- Kogwistar `0.6.10` is merged and tagged, but its protected PyPI deployment is
-  still pending. The parser lockfile must not be updated to that release until
-  a clean environment can install it and confirm the public version/API. The
-  installed-package recovery gate still needs to be rerun before C05 can be
-  promoted.
+- Kogwistar `0.6.10` is merged, tagged, and publicly installable. The parser
+  lockfile targets that released version. The installed-package recovery gate
+  still needs the current parser matrix and remaining crash-order evidence
+  before C05 can be promoted.
 
 ## Broad OCR Audit Ledger (2026-10-16)
 

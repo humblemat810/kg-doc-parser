@@ -720,11 +720,11 @@ itself as proof:
 
 | Gate | Current status | Required closure evidence |
 | --- | --- | --- |
-| C01 installed API compatibility | PARTIAL / AWAITING PYPI 0.6.10 | Parser CI run `38774809344` failed all CPython 3.12-3.14 and PyPy 3.11 jobs at the installed-package contract before the parser suite ran. The correction is merged and tagged at core commit `c11efd9` as `v0.6.10`, but the protected PyPI deployment is still waiting for approval; installation and the parser matrix must be re-tested after publication. |
+| C01 installed API compatibility | PARTIAL / MATRIX PENDING | Kogwistar `v0.6.10` is merged, tagged at core commit `c11efd9`, and publicly available on PyPI. Parser CI run `38847694420` failed and follow-up run `38851635751` is in progress; the clean CPython 3.12-3.14 and PyPy 3.11 matrix must finish before this gate is closed. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`. Released Kogwistar `v0.6.10` does not expose the ownership lease API used by the fresh-process tests; the compatible implementation is on the separately pushed, unmerged `fix/workflow-run-ownership` branch. Parser fresh-process recovery must still prove one parent lineage and no second semantic generation against a published compatible core package. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption, and `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact` proves the public preparation path reruns a database-first incomplete page. Full root/runtime checkpoint reconciliation remains open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
-| C05 true resume | PARTIAL / BLOCKED BY CORE PUBLICATION | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with the coordinated core source checkout on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. `test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process` and `test_ocr_root_reopens_after_real_process_termination` pass with coordinated parser/core source checkouts; the latter terminates the worker after page one is committed and verifies a fresh process resumes the same root, calls only page two, and accepts one grouping result. `test_ocr_root_concurrent_resume_has_one_owner_and_one_result` also passes, proving two fresh workers yield one accepted result and one ownership failure. This remains source-checkout evidence, not installed-release evidence. Core `v0.6.10` is merged and tagged, but it does not contain the ownership lease API and its protected PyPI deployment is still waiting for approval; the compatible core branch must be merged/published and the parser re-tested before claiming released recovery. Cross-store reconciliation, Linux SIGKILL evidence, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
+| C05 true resume | PARTIAL / MATRIX PENDING | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with the coordinated core source checkout on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. Fresh-process, real termination, and concurrent-resume tests pass locally with the coordinated runtime. Kogwistar `v0.6.10` is now publicly available, but the current clean parser matrix is still pending; installed-release evidence, cross-store reconciliation, Linux SIGKILL evidence, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
 
 ### C05 evidence correction (2026-10-15)
@@ -735,8 +735,9 @@ passes in 128.89 seconds when the subprocess explicitly receives both the parser
 and Kogwistar source checkouts. The first subprocess interrupts after pages `[1, 2]`; a
 new process waits for the lease to expire, resumes the same root run, calls only
 page 2, and accepts the semantic graph bundle. This proves the parent/child
-workflow path and top-level graph `doc_id` contract, but it does not close the
-installed-package gate until Kogwistar `0.6.10` is available from PyPI.
+workflow path and top-level graph `doc_id` contract. Kogwistar `0.6.10` is now
+available from PyPI; the current parser matrix remains the required
+installed-package verification.
 
 The process-boundary regression
 `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_reopens_after_real_process_termination`
@@ -824,7 +825,7 @@ on `PYTHONPATH`; the uninterrupted and resumed canonical graph payloads are
 equal and the accepted page-call counts are asserted. The same test fails with
 released Kogwistar `0.6.8`, because that release returned a durably failed
 `ocr_pages` child as terminal. Core `v0.6.10` contains the corrected public
-version and retryable-child fix, but its publish job is still waiting; the
+version and retryable-child fix, and is now published; the
 parser must verify the installed package and then rerun this test
 against the released artifact. It is not converted into a skip or a
 parser-only child-ID workaround.
@@ -832,15 +833,15 @@ parser-only child-ID workaround.
 Status correction: the source-checkout failure described above has been
 resolved by merged Kogwistar `c11efd9`/`v0.6.10`; the current run passed as
 recorded in the C05 evidence correction. The remaining blocker is publication
-and verification of the installed `0.6.10` package, not a known failure in the
+verification of the installed `0.6.10` package, not a known failure in the
 parser source path.
 
 The checklist-only parser CI rerun `38729861407` failed in all four matrix
 jobs before reaching the OCR acceptance suite. The local contract reproduction
 is `tests/test_pypy_ci_contract.py::test_installed_kogwistar_exposes_the_persisted_workflow_api`:
-the installed package still exposes `kogwistar.__version__ == "0.6.8"` while
-the parser contract expects `0.6.9`. This is retained as release evidence; the
-contract is not weakened to mask the unpublished core correction.
+the then-installed package exposed the old public version. This is retained as
+release history; the contract is not weakened, and the current run must verify
+published Kogwistar `0.6.10`.
 
 ## Evidence Ledger Requirements
 
@@ -872,12 +873,10 @@ protocol.
 - [ ] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
 - [~] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11. Earlier
-  runs passed the four required jobs, but the latest pushed run `38757822459`
-  reached all four matrix jobs and failed at the existing installed-Kogwistar
-  version contract: PyPI `0.6.9` still exposes
-  `kogwistar.__version__ == "0.6.8"`. This is an upstream package-publication
-  gate, not a reason to weaken the parser contract. Slow/manual provider
-  experiments remain separate gates.
+  runs passed the four required jobs, but the current pushed run
+  `38851635751` is still in progress. Earlier failures came from the old
+  installed Kogwistar package contract; this is not a reason to weaken the
+  parser contract. Slow/manual provider experiments remain separate gates.
 - [ ] Only after all release gates pass, update version/release notes and pins.
 
 ### Evidence update (2026-10-15)
@@ -887,11 +886,10 @@ protocol.
   document root is explicitly treated as a structural wrapper that may have
   one child; semantic grouping nodes remain subject to the two-or-more-child
   invariant. The focused adapter suite passes its grouping assertions.
-- Kogwistar `0.6.10` is merged and tagged at core commit `c11efd9`, but its
-  protected PyPI deployment is still pending. The parser must not claim an
-  installed-package release gate or regenerate its release lock until
-  `kogwistar==0.6.10` is publicly installable. Installed-package 100-page
-  recovery and fresh-process root checkpoint recovery remain open.
+- Kogwistar `0.6.10` is merged, tagged at core commit `c11efd9`, and published
+  on PyPI. The parser must not claim the installed-package release gate until
+  the current clean matrix is green. Installed-package 100-page recovery and
+  fresh-process root checkpoint recovery remain open.
 - B10 page-checkpoint compaction is implemented locally in
   `workflow_ingest/ocr_runtime.py`: page artifacts are the durable payload
   source, while runtime state stores only stable page identity and progress.
