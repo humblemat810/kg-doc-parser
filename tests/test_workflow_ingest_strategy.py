@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import kg_doc_parser.workflow_ingest.strategy as strategy_module
 import pytest
+
+import kg_doc_parser.workflow_ingest.strategy as strategy_module
 from kg_doc_parser.workflow_ingest.cli import _provider_settings_from_args, build_parser
 from kg_doc_parser.workflow_ingest.models import WorkflowIngestInput
 from kg_doc_parser.workflow_ingest.providers import (
@@ -287,6 +288,43 @@ def test_fake_layer_payloads_select_success_fallback_and_terminal_routes() -> No
     }
     assert predicates["all_strategies_exhausted"](edge("parse_failure"), exhausted, None)
     assert not predicates["strategy_failed_with_remaining"](edge("triage_parse_strategy"), exhausted, None)
+
+
+@pytest.mark.ci
+def test_workflow_predicates_ignore_malformed_persisted_field_types() -> None:
+    """Persisted state decoding must not turn arbitrary values into valid routes."""
+    predicates = _workflow_predicates()
+
+    def edge(target: str) -> SimpleNamespace:
+        return SimpleNamespace(dst=f"wf|parser|{target}")
+
+    malformed = {
+        "current_layer_context": {
+            "parent_node_ids": ["parent-a", 42],
+            "metadata": {
+                "parse_strategy": {"unexpected": "mapping"},
+                "disabled_strategies": ["layer_boundary", 42],
+            },
+        },
+        "current_layer_result": {
+            "satisfied": "true",
+            "children": [{"parent_node_id": 42}],
+        },
+        "current_layer_review": {
+            "coverage_ok": "true",
+            "satisfied": 1,
+            "metadata": {"commit_validation": "true"},
+            "coverage_gap_notes": "not-a-list",
+        },
+    }
+
+    assert not predicates["parse_strategy_layer_boundary"](
+        edge("layer_boundary_method"), malformed, None
+    )
+    assert not predicates["layer_satisfied"](edge("repair_layer_pointers"), malformed, None)
+    assert not predicates["batch_has_repair_candidates"](
+        edge("repair_layer_pointers"), malformed, None
+    )
 
 
 @pytest.mark.ci

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import StorageBackend
@@ -44,8 +44,15 @@ class _LayerContext(TypedDict, total=False):
     parent_node_ids: list[str]
 
 
+class _LayerMetadata(TypedDict, total=False):
+    parse_strategy: str
+    disabled_strategies: list[str]
+    commit_validation: bool
+    review_failure: str
+
+
 class _LayerReview(TypedDict, total=False):
-    metadata: Mapping[str, object]
+    metadata: _LayerMetadata
     satisfied: bool
     coverage_ok: bool
     overlap_conflicts: list[object]
@@ -67,42 +74,99 @@ class _LayerResult(TypedDict, total=False):
 def _string_set(value: object) -> set[str]:
     if not isinstance(value, (list, tuple, set, frozenset)):
         return set()
-    return {str(item) for item in value}
+    return {item for item in value if isinstance(item, str)}
 
 
 def _string_list(value: object) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
-    return [str(item) for item in value]
+    return [item for item in value if isinstance(item, str)]
 
 
 def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _metadata_mapping(value: object) -> _LayerMetadata:
+    raw = _mapping(value)
+    metadata: _LayerMetadata = {}
+    parse_strategy = raw.get("parse_strategy")
+    if isinstance(parse_strategy, str):
+        metadata["parse_strategy"] = parse_strategy
+    disabled_strategies = _string_list(raw.get("disabled_strategies"))
+    if disabled_strategies:
+        metadata["disabled_strategies"] = disabled_strategies
+    commit_validation = raw.get("commit_validation")
+    if isinstance(commit_validation, bool):
+        metadata["commit_validation"] = commit_validation
+    review_failure = raw.get("review_failure")
+    if isinstance(review_failure, str):
+        metadata["review_failure"] = review_failure
+    return metadata
+
+
 def _context(state: WorkflowState) -> _LayerContext:
-    value = state.get("current_layer_context")
-    return cast(_LayerContext, value) if isinstance(value, Mapping) else {}
+    raw = _mapping(state.get("current_layer_context"))
+    context: _LayerContext = {}
+    parent_node_ids = _string_list(raw.get("parent_node_ids"))
+    if parent_node_ids:
+        context["parent_node_ids"] = parent_node_ids
+    metadata = _metadata_mapping(raw.get("metadata"))
+    if metadata:
+        context["metadata"] = metadata
+    return context
 
 
 def _metadata(state: WorkflowState) -> Mapping[str, object]:
-    return _mapping(_context(state).get("metadata"))
+    return _metadata_mapping(_context(state).get("metadata"))
 
 
 def _review(state: WorkflowState) -> _LayerReview:
-    value = state.get("current_layer_review")
-    return cast(_LayerReview, value) if isinstance(value, Mapping) else {}
+    raw = _mapping(state.get("current_layer_review"))
+    review: _LayerReview = {}
+    metadata = _metadata_mapping(raw.get("metadata"))
+    if metadata:
+        review["metadata"] = metadata
+    for field_name in ("satisfied", "coverage_ok"):
+        value = raw.get(field_name)
+        if isinstance(value, bool):
+            review[field_name] = value
+    for field_name in (
+        "overlap_conflicts",
+        "coverage_gap_notes",
+        "duplicate_child_notes",
+        "structural_issues",
+        "validation_diagnostics",
+    ):
+        value = raw.get(field_name)
+        if isinstance(value, list):
+            review[field_name] = value
+    return review
 
 
 def _result(state: WorkflowState) -> _LayerResult:
-    value = state.get("current_layer_result")
-    return cast(_LayerResult, value) if isinstance(value, Mapping) else {}
+    raw = _mapping(state.get("current_layer_result"))
+    result: _LayerResult = {}
+    satisfied = raw.get("satisfied")
+    if isinstance(satisfied, bool):
+        result["satisfied"] = satisfied
+    children = _children(raw.get("children"))
+    if children:
+        result["children"] = children
+    return result
 
 
 def _children(value: object) -> list[_LayerChild]:
     if not isinstance(value, list):
         return []
-    return [cast(_LayerChild, child) for child in value if isinstance(child, Mapping)]
+    children: list[_LayerChild] = []
+    for child in value:
+        if not isinstance(child, Mapping):
+            continue
+        parent_node_id = child.get("parent_node_id")
+        if isinstance(parent_node_id, str):
+            children.append({"parent_node_id": parent_node_id})
+    return children
 
 
 def workflow_predicates() -> WorkflowPredicates:
