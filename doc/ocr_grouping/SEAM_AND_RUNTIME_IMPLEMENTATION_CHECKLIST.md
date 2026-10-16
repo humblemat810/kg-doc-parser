@@ -5,7 +5,8 @@
 PyPI now exposes Kogwistar `0.6.12`, including the lease-aware
 `WorkflowRuntime` constructor and retryable-child runtime behavior required by
 these tests. The parser manifest and lockfile have been updated from `0.6.10`
-to `0.6.12`; the post-pin parser CI matrix is still pending. Runs before that
+to `0.6.12`. Parser CI run `38873761447` passed on the exact branch head
+`cb22da2` across CPython 3.12, 3.13, 3.14, and PyPy 3.11. Runs before that
 pin remain historical evidence only and must not be used to close the installed
 release gate.
 

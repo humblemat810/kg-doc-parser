@@ -14,10 +14,10 @@ The SQLite rebuild seam now validates the advisory progress report through
 progress remains advisory and cannot supply untyped values to state rebuild.
 The corrupt-progress and invalid-hash rebuild regressions pass.
 
-Parser branch CI run `38870392775` completed successfully on CPython 3.12,
-3.13, 3.14, and PyPy 3.11. The branch head has since advanced to the typing
-commit under verification; a new CI run for that exact SHA remains required
-before treating the latest commit as release evidence.
+Parser branch CI run `38873761447` completed successfully on the exact head
+`cb22da2` on CPython 3.12, 3.13, 3.14, and PyPy 3.11. This verifies the
+current post-pin matrix. It does not close the separately tracked dual-store,
+Linux SIGKILL, OCR completeness, or bounded-frontier gates.
 
 The grouping resume frontier regression is fixed locally. Resume now performs
 the same persisted tree/frontier validation before invoking Kogwistar, because

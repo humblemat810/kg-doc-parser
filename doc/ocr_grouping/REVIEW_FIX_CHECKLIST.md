@@ -2,12 +2,11 @@
 
 ## Latest verified release evidence (2026-10-16)
 
-Latest evidence correction: parser CI run `38870392775` passed all four
-interpreter jobs (CPython 3.12-3.14 and PyPy 3.11) for the preceding branch
-commit. The current branch head also includes a typed OCR-runtime state seam
-patch; its focused grouping-resume and provider-identity regressions pass
-locally, but the new head must receive its own GitHub CI run before this is
-considered release evidence.
+Latest evidence correction: parser CI run `38873761447` passed all four
+interpreter jobs (CPython 3.12-3.14 and PyPy 3.11) on the exact branch head
+`cb22da2`. That run includes the typed OCR-runtime state seam and artifact
+metadata reader; it is matrix evidence for this commit, not proof that the
+remaining crash-window, Linux SIGKILL, or OCR completeness gates are closed.
 
 The grouping frontier mismatch is now validated before terminal resume, not
 only inside the runtime restore step. This prevents a terminal Kogwistar
@@ -17,9 +16,9 @@ passes locally against Kogwistar `0.6.12`; broader dual-store and crash/restart
 gates remain partial.
 
 PyPI now exposes Kogwistar `0.6.12`, and the parser manifest and lockfile are
-updated to consume it. The post-pin installed-release recovery matrix is still
-pending; runs that installed `0.6.10` remain historical evidence only. Before
-that pin, the installed matrix
+updated to consume it. The post-pin installed-release matrix is green on the
+current branch; runs that installed `0.6.10` remain historical evidence only.
+Before that pin, the installed matrix
 `test_ocr_root_concurrent_resume_has_one_owner_and_one_result` receives a
 nested-workflow failure instead of a `WorkflowRunOwnershipError`, and
 `test_grouping_checkpoint_reopens_after_process_termination` exits with the
