@@ -72,6 +72,16 @@ def test_legacy_export_and_import_preserve_a_valid_branching_tree() -> None:
     assert {child.title for child in restored.child_nodes} == {"Child 0", "Child 1"}
 
 
+def test_legacy_import_rejects_non_string_relation_endpoints() -> None:
+    payload = semantic_tree_to_kge_payload(
+        _legacy_tree(2), parser_source_map=_legacy_source_map(2)
+    )
+    payload["edges"][0]["target_ids"] = [123]
+
+    with pytest.raises(TypeError, match="target_ids.*list of strings"):
+        kge_payload_to_semantic_tree(payload)
+
+
 def test_legacy_import_rejects_a_persisted_unary_tree() -> None:
     payload = semantic_tree_to_kge_payload(
         _legacy_tree(2), parser_source_map=_legacy_source_map(2)
