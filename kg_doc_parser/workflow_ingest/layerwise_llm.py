@@ -38,6 +38,7 @@ from .models import (
 )
 from .parser_core import ParserPayload, ParserSourceMap, SplitStrategy
 from .providers import (
+    ProviderDiagnosticValue,
     ProviderDiagnostics,
     ProviderDiagnosticsSink,
     SupportsStructuredOutput,
@@ -219,7 +220,7 @@ class _AcceptedBoundaryCutpoint(TypedDict):
 
 
 class _BoundaryReviewDecisionSummary(TypedDict):
-    candidate_id: str
+    candidate_id: str | None
     decision: str
     parent_node_id: str
     source_cluster_id: str
@@ -752,8 +753,44 @@ def _boundary_prompt_candidate_context(
     for parent_id in parent_ids:
         for pointer in _object_list(pointers_by_id.get(parent_id)):
             text = _pointer_text(pointer, parser_source_map=parser_source_map)
-            legal = _legal_cutpoints_for_text(text, max_points=max_points)
             start_char = _offset_value(_pointer_field(pointer, "start_char"), 0)
+            legal = _legal_cutpoints_for_text(text, max_points=max_points)
+            legal_cutpoints: list[_BoundaryLegalCutpoint] = []
+            for boundary in legal:
+                legal_cutpoints.append(
+                    {
+                        "candidate_id": (
+                            f"{parent_id}|{_pointer_field(pointer, 'source_cluster_id') or ''!s}|"
+                            f"{start_char}|{boundary.candidate_id or boundary.cut_offset}"
+                        ),
+                        "cut_offset": start_char + boundary.cut_offset,
+                        "boundary_kind": boundary.boundary_kind,
+                        "confidence": float(boundary.confidence or 0.0),
+                        "reason": str(boundary.reason or ""),
+                        "text_before_cut": text[max(0, boundary.cut_offset - 20) : boundary.cut_offset],
+                        "text_after_cut": text[boundary.cut_offset : min(len(text), boundary.cut_offset + 20)],
+                        "text_before_cut_preview": _trim_text(
+                            text[max(0, boundary.cut_offset - 20) : boundary.cut_offset],
+                            max_chars=60,
+                        ),
+                        "text_after_cut_preview": _trim_text(
+                            text[boundary.cut_offset : min(len(text), boundary.cut_offset + 20)],
+                            max_chars=60,
+                        ),
+                        "preview": _trim_text(
+                            _pointer_span_text(
+                                pointer,
+                                parser_source_map=parser_source_map,
+                                start_offset=max(start_char, start_char + boundary.cut_offset - 30),
+                                end_offset=min(
+                                    _pointer_span_bounds(pointer, parser_source_map=parser_source_map)[1],
+                                    start_char + boundary.cut_offset + 30,
+                                ),
+                            ),
+                            max_chars=120,
+                        ),
+                    }
+                )
             candidates.append(
                 {
                     "parent_node_id": parent_id,
@@ -763,42 +800,7 @@ def _boundary_prompt_candidate_context(
                         "start_char": start_char,
                         "end_char": _pointer_end_inclusive(pointer, parser_source_map=parser_source_map),
                     },
-                    "legal_cutpoints": [
-                        {
-                            "candidate_id": (
-                                f"{parent_id}|{_pointer_field(pointer, 'source_cluster_id') or ''!s}|"
-                                f"{start_char}|"
-                                f"{boundary.candidate_id or boundary.cut_offset}"
-                            ),
-                            "cut_offset": start_char + boundary.cut_offset,
-                            "boundary_kind": boundary.boundary_kind,
-                            "confidence": boundary.confidence,
-                            "reason": boundary.reason,
-                            "text_before_cut": text[max(0, boundary.cut_offset - 20) : boundary.cut_offset],
-                            "text_after_cut": text[boundary.cut_offset : min(len(text), boundary.cut_offset + 20)],
-                            "text_before_cut_preview": _trim_text(
-                                text[max(0, boundary.cut_offset - 20) : boundary.cut_offset],
-                                max_chars=60,
-                            ),
-                            "text_after_cut_preview": _trim_text(
-                                text[boundary.cut_offset : min(len(text), boundary.cut_offset + 20)],
-                                max_chars=60,
-                            ),
-                            "preview": _trim_text(
-                                _pointer_span_text(
-                                    pointer,
-                                    parser_source_map=parser_source_map,
-                                    start_offset=max(start_char, start_char + boundary.cut_offset - 30),
-                                    end_offset=min(
-                                        _pointer_span_bounds(pointer, parser_source_map=parser_source_map)[1],
-                                        start_char + boundary.cut_offset + 30,
-                                    ),
-                                ),
-                                max_chars=120,
-                            ),
-                        }
-                        for boundary in legal
-                    ],
+                    "legal_cutpoints": legal_cutpoints,
                 }
             )
     return candidates
@@ -818,7 +820,16 @@ def _boundary_candidate_lookup(
             if not candidate_id:
                 continue
             lookup[candidate_id] = {
-                **dict(candidate),
+                "candidate_id": candidate_id,
+                "cut_offset": _offset_value(candidate.get("cut_offset"), 0),
+                "boundary_kind": str(candidate.get("boundary_kind") or "semantic"),
+                "confidence": float(candidate.get("confidence") or 0.0),
+                "reason": str(candidate.get("reason") or ""),
+                "text_before_cut": str(candidate.get("text_before_cut") or ""),
+                "text_after_cut": str(candidate.get("text_after_cut") or ""),
+                "text_before_cut_preview": str(candidate.get("text_before_cut_preview") or ""),
+                "text_after_cut_preview": str(candidate.get("text_after_cut_preview") or ""),
+                "preview": str(candidate.get("preview") or ""),
                 "parent_node_id": parent_node_id,
                 "source_cluster_id": source_cluster_id,
             }
@@ -1278,8 +1289,8 @@ def _boundary_refinement_prompt_context(
                 {
                     "cut_offset": start_char + boundary.cut_offset,
                     "boundary_kind": boundary.boundary_kind,
-                    "confidence": boundary.confidence,
-                    "reason": boundary.reason,
+                    "confidence": float(boundary.confidence or 0.0),
+                    "reason": str(boundary.reason or ""),
                 }
             )
     return {
@@ -1288,7 +1299,7 @@ def _boundary_refinement_prompt_context(
         "input_cut_offset": target.cut_offset,
         "text_before_cut": target.text_before_cut,
         "text_after_cut": target.text_after_cut,
-        "cut_reason": target.cut_reason or target.reason,
+        "cut_reason": str(target.cut_reason or target.reason or ""),
         "parent_ids": parent_ids,
         "pointer_excerpt": _trim_multiline_text(target_excerpt, max_lines=4, max_chars=700),
         "legal_cutpoints": legal_cutpoints,
@@ -1306,21 +1317,23 @@ def _boundary_decision_key(decision: BoundaryReviewDecision) -> tuple[str, str, 
 def _boundary_review_decision_summary(
     decisions: list[BoundaryReviewDecision],
 ) -> list[_BoundaryReviewDecisionSummary]:
-    return [
-        {
-            "candidate_id": decision.candidate_id,
-            "decision": decision.decision,
-            "parent_node_id": decision.parent_node_id,
-            "source_cluster_id": decision.source_cluster_id,
-            "input_cut_offset": decision.input_cut_offset,
-            "resolved_cut_offset": decision.resolved_cut_offset,
-            "boundary_kind": decision.boundary_kind,
-            "anchor_match_mode": decision.anchor_match_mode,
-            "anchor_match_score": decision.anchor_match_score,
-            "reason": _trim_text(decision.reason, max_chars=180),
-        }
-        for decision in decisions
-    ]
+    summaries: list[_BoundaryReviewDecisionSummary] = []
+    for decision in decisions:
+        summaries.append(
+            {
+                "candidate_id": decision.candidate_id,
+                "decision": decision.decision,
+                "parent_node_id": decision.parent_node_id,
+                "source_cluster_id": decision.source_cluster_id,
+                "input_cut_offset": decision.input_cut_offset,
+                "resolved_cut_offset": decision.resolved_cut_offset,
+                "boundary_kind": decision.boundary_kind,
+                "anchor_match_mode": decision.anchor_match_mode,
+                "anchor_match_score": decision.anchor_match_score,
+                "reason": _trim_text(decision.reason or "", max_chars=180),
+            }
+        )
+    return summaries
 
 
 def _boundary_review_decision(
@@ -2007,7 +2020,9 @@ def build_layerwise_llm_callbacks(
         if callable(event_sink):
             event_sink(stage, **extra)
 
-    def _emit_provider_diagnostics(diagnostics: ProviderDiagnostics) -> None:
+    def _emit_provider_diagnostics(
+        diagnostics: Mapping[str, ProviderDiagnosticValue],
+    ) -> None:
         """Publish one structured call record without exposing provider payloads."""
 
         nonlocal last_provider_failure_type

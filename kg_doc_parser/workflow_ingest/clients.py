@@ -36,6 +36,7 @@ from .models import (
     WorkflowIngestInput,
 )
 from .probe import WorkflowProbe, emit_probe_event
+from .runtime_contracts import WorkflowRuntimeDeps
 from .serialization import JsonValue, ModelDumpLike, json_safe
 
 
@@ -74,7 +75,7 @@ class ResumeIngestArguments(TypedDict, total=False):
     workflow_id: Required[str]
     conversation_id: Required[str]
     turn_node_id: Required[str]
-    deps: dict[str, object]
+    deps: WorkflowRuntimeDeps
 
 
 def _workflow_probe(deps: Mapping[str, object] | None) -> WorkflowProbe | None:
@@ -346,7 +347,7 @@ class IngestExecutionClient(ABC):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, object] | None = None,
+        deps: WorkflowRuntimeDeps | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
@@ -390,7 +391,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, object] | None = None,
+        deps: WorkflowRuntimeDeps | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
@@ -596,7 +597,7 @@ class ServerCanonicalKgClient(IngestExecutionClient):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, object] | None = None,
+        deps: WorkflowRuntimeDeps | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:

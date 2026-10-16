@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Mapping
-from typing import Literal, Protocol, TypedDict, cast
+from typing import Literal, Protocol, cast
 
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import (
@@ -22,8 +22,7 @@ from .adapters import (
     build_parser_source_map,
     select_primary_collection,
 )
-from .cache import WorkflowLLMCallCache, workflow_cache_namespace
-from .clients import CanonicalGraphPersistenceClient
+from .cache import workflow_cache_namespace
 from .models import (
     CanonicalGraphWriteResult,
     CurrentLayerContext,
@@ -41,10 +40,6 @@ from .page_index import PageIndexSourceFormat, parse_page_index_layer
 from .parser_core import (
     ParserPayload,
     ParserSourceMap,
-    ParseSemanticFn,
-    ProposeLayerFn,
-    ReviewLayerFn,
-    SplitStrategy,
     apply_cud_update,
     check_layer_coverage,
     commit_layer_children,
@@ -61,8 +56,8 @@ from .parser_core import (
     switch_split_strategy,
     validate_layer_commit,
 )
-from .probe import WorkflowProbe, emit_probe_event
-from .providers import ProviderDiagnosticsSink, WorkflowProviderSettings
+from .probe import emit_probe_event
+from .runtime_contracts import WorkflowRuntimeDeps
 from .semantics import (
     HydratedTextPointer,
     SemanticNode,
@@ -75,7 +70,6 @@ from .semantics import (
 from .serialization import JsonValue, decode_json_object
 from .strategy import (
     ParseStrategy,
-    StrategyTriageFn,
     build_llm_strategy_triage,
     select_parse_strategy,
 )
@@ -233,36 +227,6 @@ class StepHandler(Protocol):
     """Execute one parser workflow step against the runtime context."""
 
     def __call__(self, context: StepContext, /) -> StepRunResult: ...
-
-
-class WorkflowRuntimeDeps(TypedDict, total=False):
-    """Optional, typed dependencies injected into workflow steps.
-
-    The state carried by the runtime remains JSON-like and intentionally
-    dynamic. This contract applies only to executable collaborators and
-    bounded workflow policy, so a malformed dependency cannot silently pass
-    through as an arbitrary object.
-    """
-
-    probe: WorkflowProbe | None
-    parse_semantic_fn: ParseSemanticFn
-    propose_layer_fn: ProposeLayerFn
-    review_layer_fn: ReviewLayerFn
-    llm_cache: WorkflowLLMCallCache
-    graph_persistence_client: CanonicalGraphPersistenceClient
-    persistence_mode: str
-    kg_authority: str
-    max_depth: int
-    allow_review: bool
-    split_strategy: SplitStrategy
-    fallback_split_strategy: SplitStrategy
-    max_review_retries: int
-    layer_frontier_batch_size: int
-    coverage_threshold: float
-    provider_settings: WorkflowProviderSettings
-    triage_strategy_fn: StrategyTriageFn
-    provider_diagnostics_sink: ProviderDiagnosticsSink
-    require_grouping_tree: bool
 
 
 def _build_export_bundle(

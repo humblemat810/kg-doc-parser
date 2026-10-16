@@ -29,7 +29,7 @@ from .semantics import (
     pointer_source_validation_error,
     validate_semantic_tree_integrity,
 )
-from .serialization import JsonObject, JsonValue, ModelDumpLike
+from .serialization import JsonObject, JsonValue, ModelDumpLike, json_safe
 
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
@@ -1010,11 +1010,11 @@ def propose_layer_breakdown(
                 fingerprint={
                     "cache_namespace": dict(cache_namespace or {}),
                     "collection_id": collection.collection_id,
-                    "parse_session": parse_session,
-                    "current_layer_context": current_layer_context,
-                    "semantic_tree": semantic_tree,
-                    "parser_input_dict": parser_input_dict,
-                    "parser_source_map": parser_source_map,
+                    "parse_session": json_safe(parse_session),
+                    "current_layer_context": json_safe(current_layer_context),
+                    "semantic_tree": json_safe(semantic_tree),
+                    "parser_input_dict": json_safe(parser_input_dict),
+                    "parser_source_map": json_safe(parser_source_map),
                 },
                 fn=call,
             )
@@ -1120,10 +1120,10 @@ def review_layer(
                     operation=f"review_cud_proposal:{current_layer_context.split_strategy}",
                     fingerprint={
                         "cache_namespace": dict(cache_namespace or {}),
-                        "parse_session": parse_session,
-                        "current_layer_context": current_layer_context,
-                        "current_layer_result": current_layer_result,
-                        "parser_source_map": parser_source_map or {},
+                        "parse_session": json_safe(parse_session),
+                        "current_layer_context": json_safe(current_layer_context),
+                        "current_layer_result": json_safe(current_layer_result),
+                        "parser_source_map": json_safe(parser_source_map or {}),
                         "split_strategy": current_layer_context.split_strategy,
                     },
                     fn=call,

@@ -13,7 +13,7 @@ from uuid import UUID
 JsonScalar = TypeAliasType("JsonScalar", None | bool | int | float | str)
 JsonValue = TypeAliasType(
     "JsonValue",
-    JsonScalar | list["JsonValue"] | dict[str, "JsonValue"],
+    None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"],
 )
 JsonObject = dict[str, JsonValue]
 
