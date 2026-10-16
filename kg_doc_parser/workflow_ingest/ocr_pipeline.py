@@ -971,6 +971,18 @@ def _process_ocr_page(
             image_path=str(image_path),
         )
 
+    # Reconcile an artifact-first commit before checking the SQLite completion
+    # row. A fresh recovery child starts with cursor zero, so its checkpoint
+    # prefix reconciliation cannot visit page one; the artifact itself must
+    # still be allowed to restore the accepted result.
+    state_store.reconcile_orphan_artifact(
+        document_id=document_id,
+        page_number=page_number,
+        content_hash=image_sha256,
+        artifact_path=page_json_path,
+        config_fingerprints=context.configuration_fingerprints,
+    )
+
     # Resume boundary: if the OCR page artifact already matches the image,
     # reuse the serialized page instead of calling the model again.
     if state_store.should_skip_page(

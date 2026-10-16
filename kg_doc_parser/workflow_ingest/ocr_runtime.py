@@ -260,6 +260,25 @@ def _typed_child_state(value: object, *, label: str) -> _OCRWorkflowState:
     return cast(_OCRWorkflowState, value)
 
 
+def _state_string(state: Mapping[str, object], key: str, default: str) -> str:
+    value = state.get(key)
+    return value if isinstance(value, str) else default
+
+
+def _state_optional_string(state: Mapping[str, object], key: str) -> str | None:
+    value = state.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"OCR workflow state field {key!r} must be a string")
+    return value
+
+
+def _state_bool(state: Mapping[str, object], key: str, default: bool = False) -> bool:
+    value = state.get(key)
+    return value if type(value) is bool else default
+
+
 def _success(
     next_step: str | None,
     *,
@@ -314,8 +333,9 @@ def _page_sources(state: _OCRWorkflowState) -> list[tuple[int, Path]]:
     for item in value:
         if not isinstance(item, dict):
             raise TypeError("OCR page runtime source entry is malformed")
-        page_number = item.get("page_number")
-        image_path = item.get("image_path")
+        source = cast(_PageSourceState, item)
+        page_number: int = source["page_number"]
+        image_path: str = source["image_path"]
         if type(page_number) is not int or page_number < 1:
             raise ValueError("OCR page runtime source page number is malformed")
         if not isinstance(image_path, str) or not image_path:
@@ -877,8 +897,8 @@ def _register_grouping_steps(
     def _restore(ctx: StepContext) -> StepRunResult:
         state = _typed_state(ctx.state_view)
         tree = _tree(state)
-        document_id = str(state.get("document_id", tree.document_id))
-        policy_version = str(state.get("grouping_policy_version", "baseline-v1"))
+        document_id = _state_string(state, "document_id", tree.document_id)
+        policy_version = _state_string(state, "grouping_policy_version", "baseline-v1")
         restored, revision = _validated_grouping_checkpoint(
             state_store=state_store,
             document_id=document_id,
@@ -914,7 +934,7 @@ def _register_grouping_steps(
         passes = raw_passes if isinstance(raw_passes, list) else []
         if pass_index < len(passes):
             proposals = _proposals(passes[pass_index])
-            policy_version = str(state.get("grouping_policy_version", "baseline-v1"))
+            policy_version = _state_string(state, "grouping_policy_version", "baseline-v1")
             tree = apply_grouping_proposals(
                 tree,
                 proposals,
@@ -935,9 +955,9 @@ def _register_grouping_steps(
     def _summaries(ctx: StepContext) -> StepRunResult:
         state = _typed_state(ctx.state_view)
         tree = _tree(state)
-        document_id = str(state.get("document_id", tree.document_id))
-        policy_version = str(state.get("grouping_policy_version", "baseline-v1"))
-        checkpoint_revision = state.get("checkpoint_revision")
+        document_id = _state_string(state, "document_id", tree.document_id)
+        policy_version = _state_string(state, "grouping_policy_version", "baseline-v1")
+        checkpoint_revision = _state_optional_string(state, "checkpoint_revision")
         updated = _generate_tree_summaries(
             tree,
             document_id=document_id,
@@ -947,11 +967,11 @@ def _register_grouping_steps(
             grounded_generator=grounded_summary_generator,
             grouping_policy_version=policy_version,
             expected_tree_revision=(
-                str(checkpoint_revision)
+                checkpoint_revision
                 if checkpoint_revision is not None
                 else None
             ),
-            require_no_existing_tree=bool(state.get("checkpoint_absent", False)),
+            require_no_existing_tree=_state_bool(state, "checkpoint_absent"),
         )
         current_revision = state_store.document_tree_revision(document_id=document_id)
         return _success(
@@ -975,17 +995,17 @@ def _register_grouping_steps(
     def _persist(ctx: StepContext) -> StepRunResult:
         state = _typed_state(ctx.state_view)
         tree = _tree(state)
-        checkpoint_revision = state.get("checkpoint_revision")
+        checkpoint_revision = _state_optional_string(state, "checkpoint_revision")
         revision = state_store.save_document_tree(
-            document_id=str(state.get("document_id", tree.document_id)),
+            document_id=_state_string(state, "document_id", tree.document_id),
             tree=tree,
-            grouping_policy_version=str(state.get("grouping_policy_version", "baseline-v1")),
+            grouping_policy_version=_state_string(state, "grouping_policy_version", "baseline-v1"),
             expected_tree_revision=(
-                str(checkpoint_revision)
+                checkpoint_revision
                 if checkpoint_revision is not None
                 else None
             ),
-            require_no_existing_tree=bool(state.get("checkpoint_absent", False)),
+            require_no_existing_tree=_state_bool(state, "checkpoint_absent"),
         )
         return _success("end", state_update=[("u", {"checkpoint_revision": revision})])
 
