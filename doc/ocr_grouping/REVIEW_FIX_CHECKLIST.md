@@ -1,5 +1,15 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-16, commits `94bc900` and `22603c3`)
+
+Added a reusable regression for failed nested workflow results: the grouping
+wrapper preserves the failure diagnostic and never returns a tree. Strategy
+predicate state decoding now validates known persisted field types rather than
+using blind casts, including IDs, booleans, strategy lists, and child records.
+Parser CI run `#297` (`38896087720`) passed CPython 3.12, 3.13, 3.14, and PyPy
+3.11. This is seam evidence only; crash-order recovery, OCR completeness,
+long-document equivalence, and release readiness remain partial or open.
+
 ## Latest evidence update (2026-10-16, commits `a438cdb` and `f56ddc5`)
 
 Page-index refinement now fails closed when a proposed terminal leaf excerpt

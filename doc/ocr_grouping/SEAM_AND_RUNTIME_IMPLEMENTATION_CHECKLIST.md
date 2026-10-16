@@ -1,5 +1,17 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-16, commits `94bc900` and `22603c3`)
+
+The grouping wrapper now has a deterministic regression proving that a failed
+nested runtime result remains a failure and preserves its diagnostic instead of
+being returned as an accepted tree. Persisted strategy state decoding also
+uses typed, runtime-checked views for strategy names, disabled strategies,
+parent IDs, review flags, and child parent IDs; malformed values cannot enable
+valid routes. Parser CI run `#297` (`38896087720`) passed CPython 3.12, 3.13,
+3.14, and PyPy 3.11. This evidence does not close dual-store reconciliation,
+Linux SIGKILL recovery, OCR completeness, long-document equivalence, or release
+gates.
+
 ## Latest evidence update (2026-10-16, commits `a438cdb` and `f56ddc5`)
 
 The page-index callback accounting seam now uses runtime-checkable protocols

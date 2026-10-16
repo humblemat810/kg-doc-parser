@@ -117,7 +117,7 @@ def _context(state: WorkflowState) -> _LayerContext:
     return context
 
 
-def _metadata(state: WorkflowState) -> Mapping[str, object]:
+def _metadata(state: WorkflowState) -> _LayerMetadata:
     return _metadata_mapping(_context(state).get("metadata"))
 
 
