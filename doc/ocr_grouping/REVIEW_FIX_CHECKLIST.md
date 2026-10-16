@@ -457,6 +457,13 @@ claim from a same-process or mocked test.
   `tests/test_workflow_ingest_ocr_pipeline.py::test_failed_summary_is_retryable_without_replaying_ocr`
   verifies two OCR calls total and one failed plus one accepted summary
   generation for the retried target.
+- [x] Fence duplicate accepted summary delivery. The summary journal now uses
+  an immediate transaction to return the existing accepted attempt for the same
+  `(document_id, node_id, input_fingerprint)` instead of appending a second
+  accepted row. Regression:
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_duplicate_accepted_summary_delivery_is_idempotent`.
+  This proves accepted-result idempotence for the summary journal; it does not
+  close the broader root publication or dual-store crash gates.
 - [~] Add evidence-ledger rows for C01-C06 with implementation locations,
   exact test IDs, before/after behavior, and runtime classification.
 - [~] Verify every grouping checkpoint writer uses the same revision/absence
