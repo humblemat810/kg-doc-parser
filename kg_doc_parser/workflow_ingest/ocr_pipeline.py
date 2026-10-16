@@ -963,14 +963,17 @@ def _process_ocr_page(
         artifact_path=page_json_path,
         config_fingerprint=context.configuration_fingerprints,
     ):
-        persisted_page = json.loads(page_json_path.read_text(encoding="utf-8"))
+        persisted_page = cast(
+            OCRPageJSON,
+            _read_json_object(page_json_path),
+        )
         split_page = SplitPage.model_validate(persisted_page)
         raw_page = split_page.dump_supercede_parse()
         raw_page["meaningful_ordering"] = list(split_page.meaningful_ordering)
-        persisted_metadata = persisted_page.get("metadata", {})
+        persisted_metadata = persisted_page.get("metadata")
         raw_page["metadata"] = (
             persisted_metadata
-            if isinstance(persisted_metadata, dict)
+            if persisted_metadata is not None
             else split_page.metadata.model_dump(mode="json")
         )
         raw_pages.append(cast(OCRPageJSON, raw_page))
