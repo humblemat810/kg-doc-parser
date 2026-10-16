@@ -33,6 +33,7 @@ from .models import (
     LLMBoundaryProposalBatch,
     LLMCurrentLayerResult,
     LLMCurrentLayerReview,
+    LLMLayerChildCandidate,
     ParseSessionState,
 )
 from .parser_core import ParserPayload, ParserSourceMap, SplitStrategy
@@ -1115,7 +1116,7 @@ def _proposal_validation_reason(
     child_parent_ids = {str(child.parent_node_id or "") for child in children}
     if current_parent_ids and not child_parent_ids.issubset(current_parent_ids):
         return "proposal referenced parent ids outside the current layer"
-    children_by_parent: dict[str, list[object]] = {}
+    children_by_parent: dict[str, list[LLMLayerChildCandidate]] = {}
     parent_pointers = dict(current_layer_context.parent_content_pointers_by_id)
     source_text_by_cluster = {
         str(source_cluster_id): _record_text(record)
