@@ -32,6 +32,7 @@ from .cache import WorkflowLLMCallCache, workflow_cache_namespace
 from .clients import (
     DocumentTreeApiPersistenceClient,
     HttpClientLike,
+    HttpResponseLike,
     ServerCanonicalKgClient,
 )
 from .models import (
@@ -56,6 +57,45 @@ class DemoHttpClientLike(HttpClientLike, Protocol):
     """HTTP client surface used by the demo server and persistence helpers."""
 
     def close(self) -> None: ...
+
+
+class _ExternalPost(Protocol):
+    """Minimal callable shape exposed by the optional HTTP clients."""
+
+    def __call__(self, url: str, *, json: JsonValue | None = None) -> object: ...
+
+
+class _DemoHttpResponse:
+    """Normalize a third-party response at the demo transport boundary."""
+
+    def __init__(self, response: object) -> None:
+        status_code = getattr(response, "status_code", None)
+        text = getattr(response, "text", None)
+        json_method = getattr(response, "json", None)
+        if not isinstance(status_code, int) or not isinstance(text, str):
+            raise TypeError("demo HTTP response does not expose the required fields")
+        if not callable(json_method):
+            raise TypeError("demo HTTP response does not expose json()")
+        self.status_code = status_code
+        self.text = text
+        self._json_method: Callable[[], object] = json_method
+
+    def json(self) -> object:
+        return self._json_method()
+
+
+class _DemoHttpClient:
+    """Adapt requests/TestClient without weakening the application protocol."""
+
+    def __init__(self, post: _ExternalPost, close: Callable[[], None]) -> None:
+        self._post = post
+        self._close = close
+
+    def post(self, url: str, *, json: JsonValue | None = None) -> HttpResponseLike:
+        return _DemoHttpResponse(self._post(url, json=json))
+
+    def close(self) -> None:
+        self._close()
 
 
 @dataclass
@@ -175,7 +215,10 @@ def _load_isolated_server_app(server_data_dir: Path) -> _ServerContext:
             restore_env()
 
     return _ServerContext(
-        client=cast(DemoHttpClientLike, client),
+        client=_DemoHttpClient(
+            post=cast(_ExternalPost, client.post),
+            close=client.close,
+        ),
         transport="fastapi_testclient",
         base_url="",
         cleanup=cleanup,
@@ -246,7 +289,10 @@ def _start_subprocess_server(server_data_dir: Path) -> _ServerContext:
             if response.ok:
                 session = requests.Session()
                 return _ServerContext(
-                    client=cast(DemoHttpClientLike, session),
+                    client=_DemoHttpClient(
+                        post=cast(_ExternalPost, session.post),
+                        close=session.close,
+                    ),
                     transport="subprocess_http",
                     base_url=base_url,
                     cleanup=lambda *_args, session=session: _shutdown_subprocess_server(proc, session),
@@ -267,7 +313,10 @@ def _connect_external_server(base_url: str) -> _ServerContext:
     response.raise_for_status()
     session = requests.Session()
     return _ServerContext(
-        client=cast(DemoHttpClientLike, session),
+        client=_DemoHttpClient(
+            post=cast(_ExternalPost, session.post),
+            close=session.close,
+        ),
         transport="external_http",
         base_url=base_url,
         cleanup=lambda *_args: session.close(),
@@ -384,10 +433,9 @@ def _seed_demo_document(server_ctx: _ServerContext, *, document_id: str, text: s
         "content": text,
     }
     response = server_ctx.client.post(f"{server_ctx.base_url}/api/document", json=payload)
-    status_code = int(getattr(response, "status_code", 500))
+    status_code = response.status_code
     if status_code >= 400:
-        body = getattr(response, "text", "")
-        raise RuntimeError(f"demo document seed failed: {body}")
+        raise RuntimeError(f"demo document seed failed: {response.text}")
 
 
 def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
