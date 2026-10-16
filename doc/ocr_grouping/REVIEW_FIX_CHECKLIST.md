@@ -985,3 +985,8 @@ release is available.
   changed test surface. The legacy monolith still has pre-existing `E402`
   import-order debt, so full module Ruff, Pyright, remote CI, and release
   readiness remain open.
+- [x] The legacy semantic node-type decoder now narrows its finite `Literal`
+  union through explicit branches instead of a cast. Accepted and unsupported
+  value regressions pass (`2 passed`), and the changed module has no `F` lint
+  findings. Pre-existing `E402`, full Pyright, remote CI, and release
+  readiness remain open.

@@ -3447,9 +3447,15 @@ def _legacy_int(value: object, *, label: str, default: int | None = None) -> int
 def _legacy_node_type(value: object) -> Literal[
     "DOCUMENT_ROOT", "TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"
 ]:
-    if value not in {"DOCUMENT_ROOT", "TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"}:
-        raise ValueError(f"unsupported legacy semantic node type: {value!r}")
-    return cast(Literal["DOCUMENT_ROOT", "TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"], value)
+    if value == "DOCUMENT_ROOT":
+        return "DOCUMENT_ROOT"
+    if value == "TEXT_FLOW":
+        return "TEXT_FLOW"
+    if value == "KEY_VALUE_PAIR":
+        return "KEY_VALUE_PAIR"
+    if value == "TABLE":
+        return "TABLE"
+    raise ValueError(f"unsupported legacy semantic node type: {value!r}")
 
 
 def _extract_pointers_from_mentions(

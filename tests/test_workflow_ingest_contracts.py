@@ -34,6 +34,7 @@ from kg_doc_parser.workflow_ingest.handlers import (
 from kg_doc_parser.ocr import _structured_output_payload, get_page_json
 from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
     _legacy_mapping,
+    _legacy_node_type,
     _legacy_object_list,
 )
 from kg_doc_parser.workflow_ingest.models import (
@@ -146,6 +147,13 @@ def test_legacy_graph_helpers_validate_mapping_key_types() -> None:
         _legacy_mapping({1: "node-1"}, label="node")
     with pytest.raises(TypeError, match="must have string keys"):
         _legacy_object_list([{1: "node-1"}], label="nodes")
+
+
+@pytest.mark.ci
+def test_legacy_node_type_narrows_the_finite_sum_type() -> None:
+    assert _legacy_node_type("TABLE") == "TABLE"
+    with pytest.raises(ValueError, match="unsupported legacy semantic node type"):
+        _legacy_node_type("unknown")
 
 
 def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):
