@@ -12,7 +12,7 @@ from .models import (
     SourceUnit,
     WorkflowIngestInput,
 )
-from .serialization import JsonValue
+from .serialization import JsonObject, JsonValue
 
 
 class OCRTextClusterJSON(TypedDict, total=False):
@@ -401,11 +401,11 @@ def select_primary_collection(inp: WorkflowIngestInput) -> NormalizedSourceColle
 
 def build_parser_input_dict(
     collection: NormalizedSourceCollection,
-) -> dict[str, object]:
-    pages: list[dict[str, object]] = []
+) -> JsonObject:
+    pages: list[JsonObject] = []
     for page in collection.pages:
-        text_clusters = []
-        non_text_objects = []
+        text_clusters: list[JsonObject] = []
+        non_text_objects: list[JsonObject] = []
         allocated_clusters = _allocated_cluster_numbers(page.units)
         for unit, cluster_number in zip(page.units, allocated_clusters, strict=True):
             bbox = unit.bbox
@@ -441,7 +441,10 @@ def build_parser_input_dict(
                 "non_text_objects": non_text_objects,
             }
         )
-    payload: dict[str, object] = {"document_filename": collection.title, "pages": pages}
+    payload: JsonObject = {
+        "document_filename": collection.title,
+        "pages": cast(JsonValue, pages),
+    }
     if "document_tree" in collection.metadata:
         payload["document_tree"] = collection.metadata["document_tree"]
     return payload
@@ -449,7 +452,7 @@ def build_parser_input_dict(
 
 def build_parser_source_map(
     source_map: dict[str, GroundedSourceRecord],
-) -> dict[str, dict[str, object]]:
+) -> dict[str, JsonObject]:
     return {
         unit_id: {
             "id": record.unit_id,
