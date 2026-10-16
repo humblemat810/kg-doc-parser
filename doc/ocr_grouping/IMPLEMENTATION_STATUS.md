@@ -2,6 +2,14 @@
 
 ## Latest release-gate update (2026-10-16)
 
+The grouping resume frontier regression is fixed locally. Resume now performs
+the same persisted tree/frontier validation before invoking Kogwistar, because
+a terminal runtime checkpoint can legitimately skip the parser restore step.
+The regression `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_resume_rejects_frontier_that_disagrees_with_tree`
+passes locally with published Kogwistar `0.6.12`. This closes only the
+terminal-resume validation bypass; dual-store crash ordering, Linux SIGKILL,
+and bounded-frontier evidence remain open.
+
 Kogwistar `0.6.12` is published on PyPI. A clean parser environment now
 verifies `metadata.version("kogwistar") == "0.6.12"` and
 `kogwistar.__version__ == "0.6.12"`; the previous `0.6.9` module-version

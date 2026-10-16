@@ -2,6 +2,13 @@
 
 ## Latest verified release evidence (2026-10-16)
 
+The grouping frontier mismatch is now validated before terminal resume, not
+only inside the runtime restore step. This prevents a terminal Kogwistar
+checkpoint from bypassing parser corruption detection. The focused regression
+`tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_resume_rejects_frontier_that_disagrees_with_tree`
+passes locally against Kogwistar `0.6.12`; broader dual-store and crash/restart
+gates remain partial.
+
 PyPI now exposes Kogwistar `0.6.12`, and the parser manifest and lockfile are
 updated to consume it. The post-pin installed-release recovery matrix is still
 pending; runs that installed `0.6.10` remain historical evidence only. Before

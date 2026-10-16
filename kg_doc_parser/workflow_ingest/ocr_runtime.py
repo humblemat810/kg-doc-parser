@@ -737,6 +737,54 @@ def run_ocr_page_workflow(
     )
 
 
+def _validated_grouping_checkpoint(
+    *,
+    state_store: OCRWorkflowStateStore,
+    document_id: str,
+    tree: DocumentTree,
+    grouping_policy_version: str,
+) -> tuple[DocumentTree | None, str | None]:
+    """Validate persisted grouping state before a workflow can resume.
+
+    A terminal runtime checkpoint may return without executing the parser's
+    restore step. Validate the SQLite tree/frontier seam before requesting
+    that resume so terminal state cannot bypass corruption detection.
+    """
+    restored = state_store.load_document_tree(
+        document_id=document_id,
+        source_fingerprint=tree.source_fingerprint(),
+        grouping_policy_version=grouping_policy_version,
+    )
+    revision = state_store.document_tree_revision(document_id=document_id)
+    if restored is None:
+        if revision is not None:
+            raise RuntimeError(
+                "grouping checkpoint exists but does not match the current source or policy"
+            )
+        return None, None
+
+    persisted_frontier = state_store.load_grouping_frontier(
+        document_id=document_id,
+        source_fingerprint=restored.source_fingerprint(),
+        grouping_policy_version=grouping_policy_version,
+    )
+    if persisted_frontier is None:
+        raise RuntimeError(
+            "grouping checkpoint exists but its frontier is missing or mismatched"
+        )
+    restored_root = next(
+        node for node in restored.nodes if node.node_id == restored.root_id
+    )
+    expected_frontier = (
+        tuple(child.node_id for child in restored_root.children)
+        if restored_root.children
+        else (restored_root.node_id,)
+    )
+    if persisted_frontier != expected_frontier:
+        raise RuntimeError("grouping checkpoint frontier does not match the restored tree")
+    return restored, revision
+
+
 def _register_grouping_steps(
     resolver: MappingStepResolver,
     *,
@@ -755,33 +803,13 @@ def _register_grouping_steps(
         tree = _tree(state)
         document_id = str(state.get("document_id", tree.document_id))
         policy_version = str(state.get("grouping_policy_version", "baseline-v1"))
-        restored = state_store.load_document_tree(
+        restored, revision = _validated_grouping_checkpoint(
+            state_store=state_store,
             document_id=document_id,
-            source_fingerprint=tree.source_fingerprint(),
+            tree=tree,
             grouping_policy_version=policy_version,
         )
         if restored is not None:
-            persisted_frontier = state_store.load_grouping_frontier(
-                document_id=document_id,
-                source_fingerprint=restored.source_fingerprint(),
-                grouping_policy_version=policy_version,
-            )
-            if persisted_frontier is None:
-                raise RuntimeError(
-                    "grouping checkpoint exists but its frontier is missing or mismatched"
-                )
-            restored_root = next(
-                node for node in restored.nodes if node.node_id == restored.root_id
-            )
-            expected_frontier = (
-                tuple(child.node_id for child in restored_root.children)
-                if restored_root.children
-                else (restored_root.node_id,)
-            )
-            if persisted_frontier != expected_frontier:
-                raise RuntimeError(
-                    "grouping checkpoint frontier does not match the restored tree"
-                )
             payload = restored.model_dump(mode="json")
             return _success(
                 "apply_grouping_pass",
@@ -792,9 +820,7 @@ def _register_grouping_steps(
                             "tree": payload,
                             "checkpoint_restored": True,
                             "checkpoint_absent": False,
-                            "checkpoint_revision": state_store.document_tree_revision(
-                                document_id=document_id
-                            ),
+                            "checkpoint_revision": revision,
                         },
                     )
                 ],
@@ -936,6 +962,13 @@ def run_grouping_workflow(
         run_ownership_lease_ms=run_ownership_lease_ms,
     )
     effective_run_id = run_id or f"ocr-grouping|{document_id}"
+    if resume_from_checkpoint:
+        _validated_grouping_checkpoint(
+            state_store=state_store,
+            document_id=document_id,
+            tree=tree,
+            grouping_policy_version=grouping_policy_version,
+        )
     existing_revision = state_store.document_tree_revision(document_id=document_id)
     result = (
         runtime.resume_from_latest_checkpoint(
