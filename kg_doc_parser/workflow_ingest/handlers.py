@@ -275,11 +275,15 @@ def _build_export_bundle(
             raise TypeError("document_tree metadata must be a JSON object")
         grouping_tree = cast(dict[str, JsonValue], raw_grouping_tree)
     deps = runtime_deps or {}
+    grouping_contract: Literal["optional", "required"] = (
+        "required" if deps.get("require_grouping_tree") is True else "optional"
+    )
     persistence_mode = str(ctx.state_view.get("persistence_mode", deps.get("persistence_mode", "local_debug")))
     kg_authority = str(ctx.state_view.get("kg_authority", deps.get("kg_authority", "local")))
     return WorkflowExportBundle(
         graph_payload=graph_payload,
         grouping_tree=grouping_tree,
+        grouping_contract=grouping_contract,
         authoritative_source_map=cast(
             dict[str, GroundedSourceRecord],
             ctx.state_view["authoritative_source_map"],

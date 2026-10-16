@@ -910,10 +910,12 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [x] Add a metamorphic test using identical source items with two valid group
   trees and distinguishable export results in
   `tests/test_workflow_ingest_page_index_pipeline.py::test_graph_export_consumes_hierarchy_for_identical_source_evidence`.
-- [ ] Add an explicit compatibility mode for consumers that ignore hierarchy;
-  fail closed where hierarchy is required. The OCR root currently fails closed
-  for missing or mismatched hierarchy; ordinary parser callers remain backward
-  compatible because the export field is optional.
+- [x] Add an explicit compatibility mode for consumers that ignore hierarchy;
+  fail closed where hierarchy is required. `WorkflowExportBundle.grouping_contract`
+  is `optional` by default for legacy callers and `required` bundles reject a
+  missing tree during Pydantic construction. The regression
+  `test_export_bundle_required_grouping_contract_fails_closed_without_tree`
+  covers the required boundary.
 
 ### S06. Grouping pass to durable checkpoint
 
@@ -1450,3 +1452,10 @@ protocol.
   result plus one ownership failure. This closes the installed-package local
   concurrent-resume evidence gap only; Linux SIGKILL, remote matrix, and full
   dual-store reconciliation remain open.
+
+### Explicit hierarchy compatibility contract (2026-10-17)
+
+- [x] `WorkflowExportBundle` now carries a typed `grouping_contract` discriminator.
+  The default `optional` mode preserves existing non-OCR callers; the explicit
+  `required` mode fails closed when `grouping_tree` is absent. The focused
+  export-contract selection passes (`2 passed`) and changed-module Ruff passes.

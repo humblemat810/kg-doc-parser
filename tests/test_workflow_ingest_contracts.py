@@ -844,6 +844,18 @@ def test_export_bundle_llm_slicing_excludes_backend_grounding_data():
     assert "authoritative_source_map" not in llm_view
     assert "embedding_spaces" not in llm_view
     assert backend_view["authoritative_source_map"]["u1"]["parser_text"] == "Alpha"
+    assert bundle.grouping_contract == "optional"
+
+
+@pytest.mark.ci
+def test_export_bundle_required_grouping_contract_fails_closed_without_tree() -> None:
+    with pytest.raises(ValueError, match="required grouping contract needs grouping_tree"):
+        WorkflowExportBundle(
+            graph_payload={"nodes": [], "edges": []},
+            grouping_contract="required",
+            authoritative_source_map={},
+            persisted_to_knowledge_engine=False,
+        )
 
 
 def test_pointer_correction_is_applied_before_validation(workflow_backend_kind):

@@ -1011,6 +1011,13 @@ class WorkflowExportBundle(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
+    grouping_contract: Annotated[
+        Literal["optional", "required"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = "optional"
     authoritative_source_map: Annotated[
         dict[str, GroundedSourceRecord],
         DtoField(),
@@ -1033,6 +1040,12 @@ class WorkflowExportBundle(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _require_grouping_tree_when_declared(self) -> WorkflowExportBundle:
+        if self.grouping_contract == "required" and self.grouping_tree is None:
+            raise ValueError("required grouping contract needs grouping_tree")
+        return self
     persistence_mode: Annotated[
         Literal["local_debug", "server_canonical"],
         DtoField(),
