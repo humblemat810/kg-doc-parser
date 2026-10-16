@@ -311,6 +311,16 @@ class GroundedSummaryGenerator(Protocol):
     ) -> Summary: ...
 
 
+def _summary_generator_identity(
+    generator: SummaryGenerator | GroundedSummaryGenerator,
+) -> str:
+    """Return a stable, typed identity for the active summary implementation."""
+    if isinstance(generator, FunctionType):
+        return f"{generator.__module__}.{generator.__qualname__}"
+    generator_type = type(generator)
+    return f"{generator_type.__module__}.{generator_type.__qualname__}"
+
+
 class OCRQualityPolicy(BaseModel):
     """Policy for turning provider quality signals into acceptance decisions."""
 
@@ -528,10 +538,9 @@ def _generate_tree_summaries(
     for node_id in select_summary_targets(current, policy):
         evidence_fingerprint = current.summary_input_fingerprint(node_id)
         policy_payload = policy.model_dump(mode="json") if policy is not None else {}
-        generator_name = (
-            f"{getattr(generator, '__module__', type(generator).__module__)}."
-            f"{getattr(generator, '__qualname__', type(generator).__qualname__)}"
-        )
+        active_generator = generator if generator is not None else grounded_generator
+        assert active_generator is not None
+        generator_name = _summary_generator_identity(active_generator)
         input_fingerprint = hashlib.sha256(
             json.dumps(
                 {

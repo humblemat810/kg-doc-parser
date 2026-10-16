@@ -131,6 +131,7 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     _pdf_render_manifest_payload,
     _process_ocr_page,
     _render_pdf_to_images,
+    _summary_generator_identity,
     _resolve_ocr_source_plan,
     _write_json_atomic,
     _write_png_atomic,
@@ -2489,6 +2490,30 @@ def test_summary_cache_reuses_exact_generation_and_slice_identity() -> None:
     assert store.document_tree_revision(document_id=tree.document_id) == persisted_revision
     attempts = store.list_summary_attempts(document_id=tree.document_id)
     assert [attempt["status"] for attempt in attempts] == ["pending", "generated"]
+
+
+def test_grounded_summary_generator_identity_is_not_none_type() -> None:
+    def grounded_generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        evidence_slices: tuple[EvidenceSlice, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree, node_id, evidence_slices, input_fingerprint
+        return Summary(
+            status="generated",
+            text="unused",
+            evidence_item_ids=(),
+            provider_model="test",
+            prompt_revision="test",
+            input_fingerprint="test",
+        )
+
+    identity = _summary_generator_identity(grounded_generator)
+
+    assert identity.endswith(".grounded_generator")
+    assert identity != "builtins.NoneType"
 
 
 def test_duplicate_accepted_summary_delivery_is_idempotent() -> None:
