@@ -1339,7 +1339,7 @@ def _refine_page_index_block_excerpts(
     callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
-) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
     entries = [
         {
             "path_id": _page_index_path_id(path),
@@ -1530,7 +1530,7 @@ def _refine_page_index_summaries_hierarchically(
     callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
-) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
     """Optionally regenerate summaries one tree depth at a time.
 
     The initial assignment remains authoritative for structure and grounding.
@@ -1703,7 +1703,7 @@ def _build_page_outline_from_candidates(
     assignment_mode: str,
     assignments: list[BlockAssignment],
     validation: PageIndexValidationResult,
-) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     if validation.valid:
         block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=assignments)
@@ -1729,7 +1729,7 @@ def _heuristic_page_outline(
     *,
     page_number: int,
     source_format: PageIndexSourceFormat,
-) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     assignments = _deterministic_block_assignments(candidates)
     validation = _validate_block_assignments(candidates, assignments, page_text=page_text)
@@ -1896,7 +1896,7 @@ def _llm_page_outline(
         fallback_reason: str,
         retry_prompt_summary: str | None = None,
         structure_retry_prompt_summary: str | None = None,
-    ) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+    ) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
         fallback_assignments = _deterministic_block_assignments(candidates)
         fallback_block_specs = _assemble_page_index_blocks(
             candidates=candidates,
@@ -1940,7 +1940,7 @@ def _llm_page_outline(
         validation_warnings: list[str],
         retry_prompt_summary: str | None = None,
         structure_retry_prompt_summary: str | None = None,
-    ) -> tuple[list[PageIndexBlockSpec], dict[str, object]] | None:
+    ) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics] | None:
         if batch is None:
             return None
         salvaged_assignments, salvage_diagnostics = _salvage_page_index_assignments(
@@ -1994,7 +1994,7 @@ def _llm_page_outline(
         assignment_retry_validation_errors: list[str],
         validation_warnings: list[str],
         retry_prompt_summary: str | None = None,
-    ) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+    ) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
         block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=batch.assignments)
         structure_validation = _validate_page_index_block_structure(
             candidates=candidates,
@@ -2845,7 +2845,7 @@ def parse_page_index_document(
         child_nodes=[],
     )
     page_nodes: list[SemanticNode] = []
-    page_diagnostics: list[dict[str, object]] = []
+    page_diagnostics: list[PageIndexDiagnostics] = []
     for page_number, (unit_id, record) in enumerate(page_units, start=1):
         if trace_log is not None:
             trace_log(
