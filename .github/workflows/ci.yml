@@ -62,6 +62,10 @@ jobs:
         if: matrix.is_pypy == false
         run: poetry run pip install ruff
 
+      - name: Install Pyright
+        if: matrix.label == 'cpython312'
+        run: poetry run pip install pyright
+
       - name: Install PyPy 3.11 Python-authority dependencies
         if: matrix.is_pypy
         env:
@@ -84,6 +88,10 @@ jobs:
       - name: Check changed provider style
         if: matrix.is_pypy == false
         run: poetry run ruff check kg_doc_parser/workflow_ingest/providers.py
+
+      - name: Run package type check
+        if: matrix.label == 'cpython312'
+        run: poetry run pyright
 
       - name: Verify Kogwistar 0.6.12 source-profile import on PyPy
         if: matrix.is_pypy
