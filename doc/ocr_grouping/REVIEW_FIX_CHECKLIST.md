@@ -964,3 +964,8 @@ release is available.
   Nested opaque-value regressions pass with the handler contract selection
   (`3 passed`); changed-file Ruff and `git diff --check` pass. Full Pyright and
   remote CI remain pending.
+- [x] Commit `f2dc457` applies the same recursive JSON boundary to grouping
+  metadata during graph export, replacing the unchecked `document_tree` cast.
+  The export-boundary regression and adjacent persisted-payload tests pass
+  (`3 passed`); changed-file Ruff and `git diff --check` pass. Full Pyright,
+  remote CI, and release readiness remain open.
