@@ -1,6 +1,18 @@
 # OCR Review Fix Checklist
 
-## Latest evidence update (2026-10-17, local CI selection green)
+## Checklist maintenance rule
+
+This file is a fixed requirements ledger, not an append-only work journal.
+Update the existing A/S/C/P status row and its evidence in place when a finding
+changes. Do not add a new checklist item merely because another test was run;
+the commit history and diff show historical progress. Keep a short dated note
+only when it records a materially different verification environment or a
+regression that cannot be represented by the existing row.
+
+The older evidence notes below are retained for audit context. They are not
+additional requirements and must not be counted as checklist items.
+
+## Historical evidence log (retained for context; do not append)
 
 The focused fresh-process ownership regression
 `test_ocr_root_concurrent_resume_has_one_owner_and_one_result` passed locally
@@ -602,7 +614,7 @@ interpretation of existing evidence:
 | S02 atomic JSON publication | PARTIAL | Unique same-directory temporary files and atomic replacement are used. | Atomic replacement of one file does not make the artifact and SQLite/Kogwistar checkpoint a transaction; both crash orders need recovery tests. |
 | S05 accepted hierarchy consumption | PARTIAL | The semantic callback receives and consumes the accepted `document_tree` to derive semantic output, `WorkflowExportBundle.grouping_tree` preserves it, and the OCR root rejects a missing or changed grouping artifact. Regression: `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`. | Explicit compatibility behavior for consumers that ignore hierarchy remains open. |
 | S06 grouping checkpoint safety | PARTIAL | Expected-revision/absence fencing, frontier consistency checks, stable proposal identities, and `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` now reject unfenced updates to an existing checkpoint; duplicate accepted proposals are idempotent. | Every writer must be audited; late-writer, monotonic generation, and crash/restart behavior remain release blockers. |
-| Runtime ownership | PARTIAL | Stable root/page/grouping/semantic child identities and persisted CAS ownership leases are exercised by the installed Kogwistar `0.6.10` environment. Fresh-process lineage, real termination, and concurrent resume tests pass locally. | Linux SIGKILL and release-CI evidence remain open. |
+| Runtime ownership | PARTIAL | Stable root/page/grouping/semantic child identities and persisted CAS ownership leases are exercised by the installed Kogwistar `0.6.10` environment. `test_ocr_root_concurrent_resume_has_one_owner_and_one_result` and `test_grouping_checkpoint_reopens_after_process_termination` pass locally together, as do the broader fresh-process recovery checks. | Linux SIGKILL and release-CI evidence remain open. |
 | 100-page resume | PARTIAL | The persisted reference/resume comparison and installed-package fresh-process tests pass locally; the selected parser CI suite also passes. | A full 100-page run through the installed release, Linux SIGKILL, and complete dual-store reconciliation remain open. |
 | OCR completeness | PARTIAL | Typed provider diagnostics and strict policy can reject provider loss signals. | Interval coverage alone does not detect missing figures/tables/coordinates; provider-side completeness and recovery evidence remain open. |
 | Same-basename PDF artifact isolation | FIXED (focused boundary) | `_resolve_ocr_source_plan` now derives both PDF artifact directories from document identity, PDF content fingerprint, and a safe source stem. `tests/test_workflow_ingest_ocr_pipeline.py::test_pdf_artifact_directories_do_not_collide_for_same_basename` proves two different `report.pdf` inputs cannot share rendered or legacy artifact paths. | Existing artifact directories using the old basename-only layout are intentionally not adopted as new-source identities; migration/cleanup policy remains operational work. |
@@ -633,7 +645,7 @@ claim from a same-process or mocked test.
 | P0 grouping checkpoint overwrite on resume | PARTIAL | Prefix pages no longer overwrite `document_tree_state`; grouping and summary persistence now atomically fence both expected revisions and expected absence. The preparation path still has a baseline SQLite compatibility path outside the grouping child, and a late compatibility writer or crash can still violate the intended ownership boundary until every writer is audited. |
 | P0 OCR and grouping are persisted Kogwistar workflow nodes | PARTIAL | A versioned root workflow now invokes persisted page, grouping, and semantic child workflows with stable child run IDs. Same-process test coverage exists, but it is not evidence of a real process stop; new-process lineage/no-double-publication evidence remains required before PASS. |
 | P1 OCR model/config changes invalidate reuse | PARTIAL | `page_state.config_fingerprint` includes provider, model, endpoint, engine, language, and candidate list, and the reuse predicate compares it. `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages` proves the public root rejects a changed model before replay, while `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact` proves the changed configuration is rejected in a fresh process. The item remains partial pending full crash/reopen evidence. |
-| P1 page artifact/database publication is crash-safe | PARTIAL | The current write path validates JSON, atomically replaces the artifact through unique same-directory temporary files, records an artifact SHA-256, rejects a well-formed tampered artifact on reuse, and adopts a valid rename-before-DB orphan. The legacy `record_page_completed()` path is now also fenced against late writers by source/config identity and pending status, with `test_ocr_page_completion_rejects_a_late_writer_after_acceptance`. `test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct restart predicates, `test_ocr_page_artifact_publish_crash_is_recoverable` injects the crash at the real publication boundary, and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves duplicate page delivery cannot replace the accepted artifact. These are still separate sub-properties, not crash-safe publication as a whole: checkpoint-before-artifact and full runtime/checkpoint reconciliation remain before PASS. |
+| P1 page artifact/database publication is crash-safe | PARTIAL | The current write path validates JSON, preserves the established `ValueError` contract for invalid page numbers, atomically replaces the artifact through unique same-directory temporary files, records an artifact SHA-256, rejects a well-formed tampered artifact on reuse, and adopts a valid rename-before-DB orphan. The legacy `record_page_completed()` path is also fenced against late writers by source/config identity and pending status, with `test_ocr_page_completion_rejects_a_late_writer_after_acceptance`. `test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct restart predicates, `test_ocr_page_artifact_publish_crash_is_recoverable` injects the crash at the real publication boundary, and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves duplicate page delivery cannot replace the accepted artifact. These are still separate sub-properties, not crash-safe publication as a whole: checkpoint-before-artifact and full runtime/checkpoint reconciliation remain before PASS. |
 | P1 grouping is not quadratic for long documents | PARTIAL | The root path avoids the old per-page semantic rebuild and uses a runtime grouping child. `test_grouping_incremental_resume_matches_uninterrupted_reference` covers a controlled multi-pass case, but bounded frontier cost, monotonic ownership, a real interruption/reopen path, and a 100-page performance comparison remain open. |
 | P1 Docling preserves item positions | PARTIAL | Item provenance boxes are exported for text, tables, and pictures when Docling exposes them. `tests/test_workflow_ingest_ocr_providers.py::test_docling_adapter_preserves_text_table_figure_provenance` proves mocked multi-item ordering and clipping; full-page Markdown remains a compatibility fallback for adapters with no positional items, and live multi-item Docling coverage is still required. |
 
@@ -990,20 +1002,3 @@ release is available.
   value regressions pass (`2 passed`), and the changed module has no `F` lint
   findings. Pre-existing `E402`, full Pyright, remote CI, and release
   readiness remain open.
-- [x] Commit `02722b5` wires `_validated_ocr_page_json()` into
-  `normalize_ocr_pages()` and validates nested OCR text/media scalar fields,
-  while preserving the established page/container diagnostics and string page
-  number compatibility. The compatibility and malformed nested-field matrix
-  passes (`16 passed`); changed-module Ruff and `git diff --check` pass. Full
-  Pyright, remote CI, and release readiness remain open.
-- [x] Commit `b37e8c0` restores the established `ValueError` contract for
-  invalid OCR page numbers after activating top-level page validation. The
-  complete adapter and workflow-contract selection passes (`78 passed,
-  8 skipped`); changed-module Ruff and `git diff --check` pass. Full Pyright,
-  remote CI, and release readiness remain open.
-- [x] The current branch revalidated the two previously failing process
-  recovery regressions: `test_ocr_root_concurrent_resume_has_one_owner_and_one_result`
-  and `test_grouping_checkpoint_reopens_after_process_termination` pass
-  together (`2 passed` in 138.22s with `-p no:cacheprovider`). This confirms
-  local ownership fencing and grouping checkpoint reopening; Linux `SIGKILL`,
-  installed-release, and complete dual-store recovery evidence remain open.
