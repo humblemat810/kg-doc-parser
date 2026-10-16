@@ -191,7 +191,7 @@ def _record_list(value: object, *, field_name: str) -> list[JsonObject]:
         converted = _jsonable_payload(item)
         if not isinstance(converted, dict):
             raise TypeError(f"graph payload {field_name!r} items must be objects")
-        records.append(cast(JsonObject, {str(key): payload for key, payload in converted.items()}))
+        records.append({key: payload for key, payload in converted.items()})
     return records
 
 
