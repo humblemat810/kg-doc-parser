@@ -45,7 +45,7 @@ from .providers import (
     provider_call_metrics_snapshot,
 )
 from .semantics import HydratedTextPointer, SemanticNode, hydrate_pointer_from_offsets
-from .serialization import JsonValue, ModelDumpLike, safe_json_dumps
+from .serialization import JsonValue, ModelDumpLike, json_safe, safe_json_dumps
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 
@@ -351,7 +351,11 @@ def _object_dict(value: object) -> dict[str, object]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _pointer_signature(pointer: object, *, parser_source_map: ParserSourceMap) -> tuple[str, int, int, str]:
+def _pointer_signature(
+    pointer: object,
+    *,
+    parser_source_map: Mapping[str, Mapping[str, object]],
+) -> tuple[str, int, int, str]:
     return (
         _pointer_source_cluster_id(pointer),
         _offset_value(_pointer_field(pointer, "start_char"), 0),
@@ -363,7 +367,7 @@ def _pointer_signature(pointer: object, *, parser_source_map: ParserSourceMap) -
 def _pointer_end_inclusive(
     pointer: object,
     *,
-    parser_source_map: ParserSourceMap,
+    parser_source_map: Mapping[str, Mapping[str, object]],
 ) -> int:
     end_char = _pointer_field(pointer, "end_char")
     if type(end_char) is int and end_char >= 0:
@@ -380,7 +384,7 @@ def _pointer_end_inclusive(
 def _pointer_span_bounds(
     pointer: object,
     *,
-    parser_source_map: ParserSourceMap,
+    parser_source_map: Mapping[str, Mapping[str, object]],
 ) -> tuple[int, int]:
     start_char = _offset_value(_pointer_field(pointer, "start_char"), 0)
     end_char_exclusive = _pointer_end_inclusive(pointer, parser_source_map=parser_source_map) + 1
@@ -390,7 +394,7 @@ def _pointer_span_bounds(
 def _pointer_text(
     pointer: object,
     *,
-    parser_source_map: ParserSourceMap,
+    parser_source_map: Mapping[str, Mapping[str, object]],
 ) -> str:
     source_cluster_id = _pointer_source_cluster_id(pointer)
     start_char = _pointer_field(pointer, "start_char")
@@ -408,7 +412,7 @@ def _pointer_text(
 def _pointer_span_text(
     pointer: object,
     *,
-    parser_source_map: ParserSourceMap,
+    parser_source_map: Mapping[str, Mapping[str, object]],
     start_offset: int | None = None,
     end_offset: int | None = None,
 ) -> str:
@@ -1880,17 +1884,19 @@ def build_layerwise_llm_callbacks(
         return "transport/provider_exception"
 
     def _proposal_attempt_payload(
-        payload: ParserPayload,
+        payload: Mapping[str, object],
         *,
         attempt_index: int,
         prior_error: str | None,
     ) -> ParserPayload:
-        payload = dict(payload)
-        payload["proposal_attempt"] = attempt_index + 1
-        payload["proposal_retry_rounds"] = proposal_retry_rounds
+        normalized = json_safe(payload)
+        if not isinstance(normalized, dict):
+            raise TypeError("proposal prompt payload must serialize to a JSON object")
+        normalized["proposal_attempt"] = attempt_index + 1
+        normalized["proposal_retry_rounds"] = proposal_retry_rounds
         if prior_error:
-            payload["previous_attempt_error"] = prior_error
-        return payload
+            normalized["previous_attempt_error"] = prior_error
+        return normalized
 
     def _propose_layer_fn(
         *,
