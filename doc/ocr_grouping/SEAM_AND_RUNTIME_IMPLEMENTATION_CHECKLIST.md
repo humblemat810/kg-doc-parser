@@ -1172,3 +1172,9 @@ protocol.
   modules report zero Pyright errors; the focused legacy workflow selection
   passes (`2 passed`). The legacy monolith still has pre-existing broad Ruff
   violations outside this change, and full CI remains the release gate.
+- [x] Commit `33aa16a` aligns layerwise pointer, boundary, and source-context
+  helpers on read-only `Mapping[str, Mapping[str, object]]` views, allowing the
+  strict `ParserSourceMap` and legacy-compatible maps without invariant casts.
+  The CI Ruff selection passes and the focused hydration/boundary suite passes
+  (`34 passed`). Local Pyright was blocked by the Windows Node launcher path
+  error; GitHub CI remains authoritative for this commit.

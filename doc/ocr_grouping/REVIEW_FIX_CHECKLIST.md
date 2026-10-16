@@ -720,3 +720,8 @@ release is available.
   modules pass Pyright and the focused legacy workflow selection passes
   (`2 passed`). Full Ruff/CI and release readiness remain open because the
   legacy monolith has unrelated existing Ruff findings.
+- [x] Commit `33aa16a` removes the duplicated invariant source-map annotations
+  from layerwise pointer and boundary helpers in favor of read-only mapping
+  views. Ruff and the focused hydration/boundary suite pass (`34 passed`).
+  Local Pyright is currently blocked by the Windows Node launcher path error;
+  full CI and release readiness remain open.
