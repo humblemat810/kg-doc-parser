@@ -47,6 +47,18 @@ IngestStatus = Literal["succeeded", "failed", "failure", "suspended"]
 JsonObject = dict[str, JsonValue]
 
 
+class _EngineResultPayload(TypedDict, total=False):
+    nodes_added: int | str
+    edges_added: int | str
+
+
+class _CanonicalResponsePayload(TypedDict, total=False):
+    status: str
+    engine_result: _EngineResultPayload
+    inserted_nodes: int | str
+    inserted_edges: int | str
+
+
 class ResumeIngestArguments(TypedDict, total=False):
     """Named arguments accepted by checkpoint-resume adapters.
 
@@ -263,13 +275,18 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
         response_payload = response.json()
         if not isinstance(response_payload, Mapping):
             raise TypeError("canonical server persistence returned a non-object JSON body")
-        response_json = cast(Mapping[str, JsonValue], response_payload)
+        response_json = cast(_CanonicalResponsePayload, response_payload)
         raw_engine_result = response_json.get("engine_result")
-        engine_result = raw_engine_result if isinstance(raw_engine_result, Mapping) else {}
+        engine_result = (
+            cast(_EngineResultPayload, raw_engine_result)
+            if isinstance(raw_engine_result, Mapping)
+            else {}
+        )
+        status = response_json.get("status", "")
         return CanonicalGraphWriteResult(
             persistence_mode="server_canonical",
             kg_authority="server",
-            canonical_write_confirmed=str(response_json.get("status") or "").lower() == "ok",
+            canonical_write_confirmed=status.lower() == "ok",
             nodes_written=_json_int(
                 engine_result.get("nodes_added")
                 or response_json.get("inserted_nodes")
