@@ -199,6 +199,25 @@ class _SourceMapExcerptRecord(TypedDict):
     text: str
 
 
+class _BoundaryAcceptedUnit(TypedDict):
+    parent_node_id: str
+    source_cluster_id: str
+    start_char: int
+    end_char: int
+    boundary_kind: str
+    verbatim_text: str
+    summary_text: str
+    exact_text: str
+    expandable: bool
+
+
+class _AcceptedBoundaryCutpoint(TypedDict):
+    parent_node_id: str
+    source_cluster_id: str
+    cut_offset: int
+    boundary_kind: str
+
+
 class _BoundaryReviewDecisionSummary(TypedDict):
     candidate_id: str
     decision: str
@@ -1451,7 +1470,7 @@ def _boundary_unit_summaries(
     *,
     current_layer_context: CurrentLayerContext,
     parser_source_map: Mapping[str, Mapping[str, object]],
-    accepted_units: list[dict[str, object]],
+    accepted_units: Sequence[_BoundaryAcceptedUnit],
 ) -> list[BoundaryUnitSummary]:
     summaries: list[BoundaryUnitSummary] = []
     for unit in accepted_units:
@@ -1459,10 +1478,10 @@ def _boundary_unit_summaries(
             _make_boundary_summary(
                 parent_node_id=str(unit["parent_node_id"]),
                 source_cluster_id=str(unit["source_cluster_id"]),
-                start_char=_offset_value(unit.get("start_char"), 0),
-                end_char=_offset_value(unit.get("end_char"), 0),
+                start_char=unit["start_char"],
+                end_char=unit["end_char"],
                 parser_source_map=parser_source_map,
-                boundary_kind=str(unit.get("boundary_kind") or "semantic"),
+                boundary_kind=unit["boundary_kind"],
             )
         )
     return summaries
@@ -1518,9 +1537,9 @@ def _assemble_layer_result_from_boundaries(
     current_layer_context: CurrentLayerContext,
     parser_source_map: Mapping[str, Mapping[str, object]],
     review_batch: BoundaryReviewBatch,
-) -> tuple[CurrentLayerResult, list[BoundaryUnitSummary], list[_BoundaryCoverageReport]]:
-    accepted_cutpoints: list[dict[str, object]] = []
-    child_items: list[dict[str, object]] = []
+) -> tuple[CurrentLayerResult, list[BoundaryUnitSummary], list[_AcceptedBoundaryCutpoint]]:
+    accepted_cutpoints: list[_AcceptedBoundaryCutpoint] = []
+    child_items: list[_BoundaryAcceptedUnit] = []
     coverage_reports: list[_BoundaryCoverageReport] = []
     unresolved_intervals = 0
     decisions_by_parent: dict[tuple[str, str], list[BoundaryReviewDecision]] = {}
