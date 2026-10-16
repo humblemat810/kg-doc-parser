@@ -2498,6 +2498,7 @@ def _materialize_image_payloads(image_payloads: Sequence[OCRImagePayload], rende
     rendered_dir.mkdir(parents=True, exist_ok=True)
     resolved: list[tuple[int, Path]] = []
     seen_page_numbers: set[int] = set()
+    supplied_page_numbers: list[int] = []
     for index, payload in enumerate(image_payloads, start=1):
         page_number = index if payload.page_number is None else int(payload.page_number)
         if page_number < 1:
@@ -2505,6 +2506,7 @@ def _materialize_image_payloads(image_payloads: Sequence[OCRImagePayload], rende
         if page_number in seen_page_numbers:
             raise ValueError(f"duplicate OCR page number: {page_number}")
         seen_page_numbers.add(page_number)
+        supplied_page_numbers.append(page_number)
         suffix = ".png"
         if payload.image_path:
             src = Path(payload.image_path)
@@ -2528,7 +2530,9 @@ def _materialize_image_payloads(image_payloads: Sequence[OCRImagePayload], rende
         else:
             raise ValueError("OCRImagePayload requires image_path or image_bytes_b64")
         resolved.append((page_number, dst))
-    return sorted(resolved, key=lambda item: item[0])
+    if supplied_page_numbers != sorted(supplied_page_numbers):
+        raise ValueError("OCR page numbers must be supplied in ascending order")
+    return resolved
 
 
 def _compute_input_fingerprint(*, page_sources: Sequence[tuple[int, Path]] | None = None, pdf_path: Path | None = None) -> str:

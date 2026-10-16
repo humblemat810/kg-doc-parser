@@ -209,6 +209,19 @@ def test_materialize_image_payloads_rejects_invalid_page_numbers_and_symlinks(
     assert outside.read_bytes() == b"original"
 
 
+def test_materialize_image_payloads_rejects_out_of_order_page_numbers(tmp_path: Path) -> None:
+    encoded = base64.b64encode(b"image").decode("ascii")
+
+    with pytest.raises(ValueError, match="ascending order"):
+        _materialize_image_payloads(
+            [
+                OCRImagePayload(page_number=2, image_bytes_b64=encoded),
+                OCRImagePayload(page_number=1, image_bytes_b64=encoded),
+            ],
+            tmp_path / "out-of-order",
+        )
+
+
 def test_pdf_rasterization_regenerates_corrupt_cached_page_atomically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -103,6 +103,21 @@ Source: `ocr_pipeline.py`, `_render_pdf_with_identity` and `_render_pdf_to_image
 
 For each B01–B14: pin exact PR HEAD SHA; mark **confirmed in current HEAD / already fixed / not reproduced / design gap**; write a failing regression test before the fix whenever feasible; make the smallest correct patch; run focused and full parser tests. Record source line, exact test ID, expected behaviour, observed result, and Kogwistar version. Do not claim a fix merely because the checklist changed. Prioritise B01/B02/B03/B04, then B05/B06/B07 and the performance issues. Maintain backward compatibility with existing `SplitPage`, `SourceUnit` and parser APIs unless a documented versioned migration is required.
 
+## Current branch reconciliation (2026-10-16)
+
+B07 is fixed on the current branch. `_materialize_image_payloads()` rejects
+non-positive and duplicate page numbers, rejects explicitly out-of-order page
+numbers, rejects symlink destinations, and derives destination names from the
+validated page number rather than the caller filename. The reusable evidence is:
+
+- `tests/test_workflow_ingest_ocr_pipeline.py::test_materialize_image_payloads_rejects_invalid_page_numbers_and_symlinks`
+- `tests/test_workflow_ingest_ocr_pipeline.py::test_materialize_image_payloads_rejects_out_of_order_page_numbers`
+
+The focused tests pass with `-p no:cacheprovider` and a repository-local
+basetemp, and Ruff plus `git diff --check` pass. B07 is no longer an open
+implementation gap; the remaining audit items and release gates remain open
+unless their own evidence is recorded.
+
 **Source entrypoints:**
 - https://github.com/humblemat810/kg-doc-parser/pull/46
 - https://raw.githubusercontent.com/humblemat810/kg-doc-parser/feat/ocr-provider-abstraction/kg_doc_parser/workflow_ingest/ocr_pipeline.py
