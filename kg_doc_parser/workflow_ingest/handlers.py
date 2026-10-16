@@ -262,6 +262,7 @@ class WorkflowRuntimeDeps(TypedDict, total=False):
     provider_settings: WorkflowProviderSettings
     triage_strategy_fn: StrategyTriageFn
     provider_diagnostics_sink: ProviderDiagnosticsSink
+    require_grouping_tree: bool
 
 
 def _build_export_bundle(

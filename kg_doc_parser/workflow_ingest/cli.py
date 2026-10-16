@@ -12,7 +12,7 @@ import argparse
 import json
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TypeVar, get_args
+from typing import TypeVar, cast, get_args
 
 from .demo_harness import DemoHarnessConfig
 from .page_index import PageIndexMode
@@ -41,7 +41,8 @@ def _optional_namespace_value(
     expected_type: type[TNamespaceValue],
 ) -> TNamespaceValue | None:
     """Read an optional CLI value without leaking ``Any`` from Namespace."""
-    value = getattr(args, name, None)
+    namespace_values = cast(dict[str, object], vars(args))
+    value = namespace_values.get(name)
     if value is None:
         return None
     if not isinstance(value, expected_type):
