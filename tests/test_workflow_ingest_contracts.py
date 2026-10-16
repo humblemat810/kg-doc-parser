@@ -42,6 +42,7 @@ from kg_doc_parser.workflow_ingest.models import (
 )
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
+from kg_doc_parser.ocr import get_page_json
 
 pytestmark = [pytest.mark.workflow]
 
@@ -108,6 +109,14 @@ def test_handler_persisted_parser_objects_reject_non_json_keys_and_entries() -> 
         _state_object_list([{"nested": object()}])
     with pytest.raises(TypeError, match="JSON serializable"):
         _state_mapping({"nested": object()})
+
+
+@pytest.mark.ci
+def test_legacy_ocr_page_loader_rejects_non_object_json(tmp_path: Path) -> None:
+    (tmp_path / "page_1.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(TypeError, match="OCR page JSON must be JSON objects"):
+        get_page_json(str(tmp_path), 1)
 
 
 def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):

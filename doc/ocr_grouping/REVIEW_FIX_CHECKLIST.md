@@ -969,3 +969,8 @@ release is available.
   The export-boundary regression and adjacent persisted-payload tests pass
   (`3 passed`); changed-file Ruff and `git diff --check` pass. Full Pyright,
   remote CI, and release readiness remain open.
+- [x] The legacy OCR page loader now uses the shared recursive JSON decoder
+  instead of casting `json.load()` output, and `regen_page()` relies on the
+  typed model return values. The malformed-root regression plus adjacent
+  persisted/export boundary tests pass (`3 passed`); changed-file Ruff passes.
+  Full Pyright, remote CI, and release readiness remain open.

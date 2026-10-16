@@ -54,6 +54,7 @@ from .pdf2png import RawFileLoader
 from .utils.langchain import GeminiCostCallbackHandler, get_gemini_callback_cost
 from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 from .workflow_ingest.sdk_boundary import raw_content
+from .workflow_ingest.serialization import decode_json_object
 
 PastCompatibleSplitPage: TypeAlias = SplitPage
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -93,7 +94,7 @@ def _build_ocr_llm(
 def get_page_json(folder_path: str, page_num: int) -> JsonObject:
     with open(os.path.join(folder_path, 'page_'+str(page_num)+'.json'), 'r') as f:
         file_json_raw = json.load(f)
-    return cast(JsonObject, file_json_raw)
+    return decode_json_object(file_json_raw, label="OCR page JSON")
 
 
 def regen_page(file_json_raw: Mapping[str, JsonValue], use_raw: bool) -> JsonObject:
@@ -101,12 +102,12 @@ def regen_page(file_json_raw: Mapping[str, JsonValue], use_raw: bool) -> JsonObj
     """regen from json returned by SplitPage.to_doc(), can be view as SplitPage.FromJson(filepath)"""
     p = PastCompatibleSplitPage.model_validate(file_json_raw)
     if use_raw:
-        return cast(JsonObject, p.dump_supercede_parse())
+        return p.dump_supercede_parse()
     try:
         res = p.to_doc()
     except:
         raise
-    return cast(JsonObject, res)
+    return res
 
 
 def regen_doc(folder_path: str, use_raw: bool = False) -> list[JsonObject]:
