@@ -25,7 +25,13 @@ from kogwistar.runtime.models import (
     StepRunResult,
     WorkflowInvocationRequest,
 )
-from kogwistar.runtime.runtime import RunResult, StepContext, WorkflowRuntime
+from kogwistar.runtime.contract import Predicate
+from kogwistar.runtime.runtime import (
+    RunResult,
+    StepContext,
+    StepResolver,
+    WorkflowRuntime,
+)
 
 from .design import (
     DEFAULT_OCR_GROUPING_WORKFLOW_ID,
@@ -73,12 +79,24 @@ class KogwistarRuntimeCompatibilityError(RuntimeError):
     """Raised when a requested OCR recovery contract is not available."""
 
 
+class _WorkflowRuntimeArgs(TypedDict):
+    workflow_engine: GraphKnowledgeEngine
+    conversation_engine: GraphKnowledgeEngine
+    step_resolver: StepResolver
+    predicate_registry: dict[str, Predicate]
+    trace: bool
+
+
+class _WorkflowRuntimeLeaseArgs(_WorkflowRuntimeArgs, total=False):
+    run_ownership_lease_ms: int
+
+
 def _workflow_runtime(
     *,
     workflow_engine: GraphKnowledgeEngine,
     conversation_engine: GraphKnowledgeEngine,
-    step_resolver: object,
-    predicate_registry: object,
+    step_resolver: StepResolver,
+    predicate_registry: dict[str, Predicate],
     trace: bool,
     run_ownership_lease_ms: int | None = None,
 ) -> WorkflowRuntime:
@@ -90,7 +108,7 @@ def _workflow_runtime(
     to an unowned execution.  Do not catch arbitrary constructor ``TypeError``
     values: inspect the public signature and fail at this dependency boundary.
     """
-    runtime_args: dict[str, object] = {
+    runtime_args: _WorkflowRuntimeArgs = {
         "workflow_engine": workflow_engine,
         "conversation_engine": conversation_engine,
         "step_resolver": step_resolver,
@@ -110,7 +128,11 @@ def _workflow_runtime(
                 "run_ownership_lease_ms; install the lease-aware release "
                 "before running resumable OCR workflows"
             )
-        runtime_args["run_ownership_lease_ms"] = run_ownership_lease_ms
+        lease_args: _WorkflowRuntimeLeaseArgs = {
+            **runtime_args,
+            "run_ownership_lease_ms": run_ownership_lease_ms,
+        }
+        return WorkflowRuntime(**lease_args)
     return WorkflowRuntime(**runtime_args)
 
 
