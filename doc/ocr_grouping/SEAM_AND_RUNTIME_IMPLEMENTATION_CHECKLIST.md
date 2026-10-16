@@ -1178,3 +1178,8 @@ protocol.
   The CI Ruff selection passes and the focused hydration/boundary suite passes
   (`34 passed`). Local Pyright was blocked by the Windows Node launcher path
   error; GitHub CI remains authoritative for this commit.
+- [x] Commit `4008804` normalizes retry prompt payloads through `json_safe`
+  before adding retry metadata, instead of casting provider/model summaries to
+  `ParserPayload`. Pyright reports zero errors for `layerwise_llm.py`, Ruff
+  passes, and the focused proposal/boundary suite passes (`23 passed`). CI for
+  this commit is queued; the release gate remains open.

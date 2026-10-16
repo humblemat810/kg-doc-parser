@@ -725,3 +725,8 @@ release is available.
   views. Ruff and the focused hydration/boundary suite pass (`34 passed`).
   Local Pyright is currently blocked by the Windows Node launcher path error;
   full CI and release readiness remain open.
+- [x] Commit `4008804` makes the proposal retry payload cross the JSON boundary
+  through `json_safe` rather than an unsafe `ParserPayload` cast. The changed
+  module reports zero Pyright errors, Ruff passes, and the focused proposal /
+  boundary suite passes (`23 passed`). CI is queued; release readiness remains
+  open.
