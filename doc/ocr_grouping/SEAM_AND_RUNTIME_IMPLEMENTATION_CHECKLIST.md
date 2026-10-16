@@ -1,5 +1,20 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-16, commit `77e7fd5`)
+
+The typed OCR checkpoint-repair update now constructs an explicit
+`StateUpdate` before returning it to Kogwistar. The focused Pyright scan across
+the OCR runtime seam (`ocr_runtime.py`, `handlers.py`, `clients.py`, and
+`demo_harness.py`) reports zero errors, and the corresponding Ruff checks
+pass. Six focused OCR recovery/state tests pass, including frontier mismatch
+rejection and fresh-process grouping recovery. CI run `#282`
+(`38885261941`) is green; run `#283` (`38885766112`) is still in progress.
+
+No release gate is promoted by this update. Package-wide Pyright is still
+unverified in the Windows checkout because the local Node launcher fails with
+`EPERM` during workspace path resolution, while dual-store recovery, Linux
+SIGKILL recovery, OCR completeness, and long-document evidence remain open.
+
 ## Current verification correction (2026-10-16)
 
 PyPI now exposes Kogwistar `0.6.12`, including the lease-aware

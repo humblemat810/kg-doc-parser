@@ -1,5 +1,27 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-16, commit `77e7fd5`)
+
+The OCR runtime state-update seam now preserves the concrete `StateUpdate`
+shape when applying a typed checkpoint repair. This prevents the operation tag
+from widening to an arbitrary `str` at the runtime boundary. The focused
+Pyright scan for `ocr_runtime.py`, `handlers.py`, `clients.py`, and
+`demo_harness.py` reports zero errors; Ruff also passes for the changed
+runtime/demo files.
+
+The focused OCR recovery run passed six tests, including grouping frontier
+mismatch rejection, grouping resume after process termination, incremental
+resume equivalence, persisted grouping integration, OCR runtime state-boundary
+validation, and cross-page checkpoint preparation. Parser CI run `#282`
+(`38885261941`) passed. Run `#283` (`38885766112`), triggered by `77e7fd5`,
+is still in progress, so the full branch verification remains pending.
+
+This evidence does not close the release gates: the package-wide Pyright
+command is not currently usable in this Windows checkout because Node fails
+with `EPERM` while resolving the workspace path, and dual-store reconciliation,
+Linux SIGKILL recovery, OCR completeness, and the remaining end-to-end gates
+remain partial or open below.
+
 ## Latest verified release evidence (2026-10-16)
 
 ### Recovery seam update (commit `5a95c19`)
