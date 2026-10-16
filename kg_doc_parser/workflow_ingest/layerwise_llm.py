@@ -947,8 +947,17 @@ def _parent_context_excerpt(
 
 
 def _proposal_attempt_context(
-    *, parse_session: ParseSessionState, current_layer_context: CurrentLayerContext
+    *, parse_session: ParseSessionState | None, current_layer_context: CurrentLayerContext
 ) -> dict[str, object]:
+    if parse_session is None:
+        return {
+            "attempt_number_for_depth": 1,
+            "attempts_by_depth": {},
+            "strategy_history": [],
+            "fallback_split_strategy": None,
+            "workflow_mode": None,
+            "prior_review": {},
+        }
     parse_session_dump = _object_dict(_dump_model(parse_session))
     attempts = _object_dict(parse_session_dump.get("layer_attempts"))
     depth_key = str(current_layer_context.depth)
@@ -1664,10 +1673,7 @@ def _annotate_proposal_result(
     reasoning_history.append(LayerReasoningEntry.model_validate(marker_payload))
     payload = result.model_dump()
     payload["metadata"] = metadata
-    payload["reasoning_history"] = [
-        entry.model_dump() if isinstance(entry, ModelDumpLike) else entry
-        for entry in reasoning_history
-    ]
+    payload["reasoning_history"] = [entry.model_dump() for entry in reasoning_history]
     return result.__class__.model_validate(payload)
 
 

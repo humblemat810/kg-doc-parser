@@ -875,12 +875,14 @@ def _resolve_ocr_source_plan(
             rendered_dir=rendered_dir,
             rasterizer=pdf_page_rasterizer,
         )
-        render_configuration_fingerprint = str(
-            _pdf_render_manifest_payload(
-                pdf_path=pdf_source,
-                rasterizer=pdf_page_rasterizer,
-            )["render_identity"]
+        render_manifest = _pdf_render_manifest_payload(
+            pdf_path=pdf_source,
+            rasterizer=pdf_page_rasterizer,
         )
+        render_identity = render_manifest.get("render_identity")
+        if not isinstance(render_identity, str):
+            raise ValueError("PDF render manifest did not produce an identity")
+        render_configuration_fingerprint = render_identity
         page_sources = list(enumerate(rendered_paths, start=1))
         source_kind = "pdf"
     else:
@@ -2738,11 +2740,11 @@ def _render_pdf_with_identity(
             existing = None
     paths: list[Path] = []
     if existing is not None and all(existing.get(key) == value for key, value in expected.items()):
-        page_entries = existing.get("pages")
-        if page_entries is not None:
+        loaded_page_entries: list[_PDFRenderPageEntry] | None = existing.get("pages")
+        if loaded_page_entries is not None:
             candidate_paths: list[Path] = []
             valid = True
-            for entry in page_entries:
+            for entry in loaded_page_entries:
                 filename = entry.get("filename")
                 if not isinstance(filename, str) or Path(filename).name != filename:
                     valid = False
@@ -2772,12 +2774,12 @@ def _render_pdf_with_identity(
                 and not isinstance(expected_page_count_value, bool)
                 else None
             )
-            page_numbers = [entry["page_number"] for entry in page_entries]
+            page_numbers = [entry["page_number"] for entry in loaded_page_entries]
             valid = valid and (
                 expected_page_count is None
                 or (
-                    len(page_entries) == expected_page_count
-                    and len(page_numbers) == len(page_entries)
+                    len(loaded_page_entries) == expected_page_count
+                    and len(page_numbers) == len(loaded_page_entries)
                     and page_numbers == list(range(1, expected_page_count + 1))
                 )
             )

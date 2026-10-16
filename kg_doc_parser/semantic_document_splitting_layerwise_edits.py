@@ -108,7 +108,8 @@ TTerminalResult = TypeVar("TTerminalResult", bound="_TerminalCorrectionResult")
 class _TerminalCorrectionResult(Protocol):
     """Structural contract for correction results eligible for caching."""
 
-    pending_fix_children: Sequence[object]
+    @property
+    def pending_fix_children(self) -> Sequence[object]: ...
 
 from kogwistar.id_provider import stable_id
 from kogwistar.llm_tasks.providers import SupportsStructuredOutput
@@ -1159,7 +1160,10 @@ def parser_llm_cache_terminal_correction(
     """Cache a correction layer only when it has no remaining pending nodes."""
 
     def _is_terminal(value: TTerminalResult) -> bool:
-        return not value.pending_fix_children
+        pending = value.pending_fix_children
+        if not isinstance(pending, Sequence):
+            raise TypeError("terminal correction result must expose a sequence of pending children")
+        return not pending
 
     return _parser_llm_cache(fn, should_stage=_is_terminal)
 
