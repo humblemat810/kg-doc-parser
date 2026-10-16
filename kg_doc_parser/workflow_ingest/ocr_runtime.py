@@ -69,7 +69,7 @@ from .ocr_pipeline import (
     _write_document_tree,
     _write_summary,
 )
-from .serialization import JsonObject
+from .serialization import JsonObject, decode_json_object
 from .service import workflow_predicates
 
 if TYPE_CHECKING:
@@ -169,9 +169,7 @@ def _page_source_state(value: object) -> _PageSourceState:
 def _json_object(value: object, *, label: str) -> JsonObject:
     """Validate one persisted JSON object without widening its values."""
 
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        raise TypeError(f"OCR workflow state field {label!r} must contain JSON objects")
-    return cast(JsonObject, value)
+    return decode_json_object(value, label=f"OCR workflow state field {label!r}")
 
 
 def _json_object_passes(value: object, *, label: str) -> list[list[JsonObject]]:
@@ -203,6 +201,15 @@ StateStringKey = Literal[
     "checkpoint_revision",
 ]
 StateBoolKey = Literal["checkpoint_absent", "checkpoint_restored", "summaries_generated"]
+StateObjectKey = Literal[
+    "tree",
+    "workflow_input",
+    "grouping_result",
+    "semantic_result",
+    "semantic_tree",
+    "ocr_page_result",
+    "export_bundle",
+]
 ResumeIdentityValue = str | list[str]
 ResumeIdentityKey = Literal[
     "ocr_root_state_version",
@@ -290,12 +297,19 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
         if field is not None and type(field) is not bool:
             raise TypeError(f"OCR workflow state field {key!r} must be a boolean")
 
-    for key in ("tree", "workflow_input", "grouping_result", "semantic_result", "semantic_tree", "ocr_page_result", "export_bundle"):
+    object_keys: tuple[StateObjectKey, ...] = (
+        "tree",
+        "workflow_input",
+        "grouping_result",
+        "semantic_result",
+        "semantic_tree",
+        "ocr_page_result",
+        "export_bundle",
+    )
+    for key in object_keys:
         field = value.get(key)
-        if field is not None and (
-            not isinstance(field, dict) or not all(isinstance(item_key, str) for item_key in field)
-        ):
-            raise TypeError(f"OCR workflow state field {key!r} must be a JSON object")
+        if field is not None:
+            state[key] = _json_object(field, label=key)
 
     grouping_passes = value.get("grouping_passes")
     if grouping_passes is not None:

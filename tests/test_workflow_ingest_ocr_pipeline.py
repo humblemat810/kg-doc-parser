@@ -252,6 +252,9 @@ def test_ocr_runtime_state_boundary_rejects_wrong_known_field_types() -> None:
     with pytest.raises(TypeError, match=r"grouping_passes\[0\].*JSON objects"):
         ocr_runtime_module._typed_state({"grouping_passes": [["not-a-proposal"]]})
 
+    with pytest.raises(TypeError, match=r"tree.*opaque.*JSON serializable"):
+        ocr_runtime_module._typed_state({"tree": {"opaque": object()}})
+
 
 def test_ocr_runtime_state_boundary_rebuilds_validated_known_containers() -> None:
     raw_pages = [[{"proposal_id": "p1"}]]

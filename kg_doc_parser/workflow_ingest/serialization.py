@@ -18,6 +18,35 @@ JsonValue = TypeAliasType(
 JsonObject = dict[str, JsonValue]
 
 
+def decode_json_value(value: object, *, label: str = "value") -> JsonValue:
+    """Validate and copy a JSON value at an internal persistence boundary."""
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, list):
+        return [
+            decode_json_value(item, label=f"{label}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        decoded: JsonObject = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{label} contains a non-string object key")
+            decoded[key] = decode_json_value(item, label=f"{label}.{key}")
+        return decoded
+    raise TypeError(f"{label} is not JSON serializable: {type(value).__name__}")
+
+
+def decode_json_object(value: object, *, label: str = "object") -> JsonObject:
+    """Validate and copy a JSON object without an unchecked cast."""
+
+    decoded = decode_json_value(value, label=label)
+    if not isinstance(decoded, dict):
+        raise TypeError(f"{label} must be JSON objects")
+    return decoded
+
+
 @runtime_checkable
 class ModelDumpLike(Protocol):
     """Minimal serialization seam for Pydantic-like provider payloads."""
@@ -79,4 +108,11 @@ def safe_json_dumps(
     )
 
 
-__all__ = ["JsonObject", "JsonValue", "json_safe", "safe_json_dumps"]
+__all__ = [
+    "JsonObject",
+    "JsonValue",
+    "decode_json_object",
+    "decode_json_value",
+    "json_safe",
+    "safe_json_dumps",
+]
