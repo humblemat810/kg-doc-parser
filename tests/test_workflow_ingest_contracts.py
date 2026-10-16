@@ -30,6 +30,7 @@ from kg_doc_parser.workflow_ingest.handlers import (
     _state_object_list,
     _state_mapping,
     _state_string_list,
+    _validate_public_runtime_policy_conflicts,
 )
 from kg_doc_parser.ocr import _structured_output_payload, get_page_json
 from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
@@ -50,6 +51,31 @@ from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, Semanti
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
 
 pytestmark = [pytest.mark.workflow]
+
+
+def test_public_and_runtime_parse_strategy_conflict_fails_closed() -> None:
+    normalized = WorkflowIngestInput.from_text(
+        document_id="policy-conflict",
+        text="alpha",
+    ).model_copy(update={"parse_strategy": "layer_excerpt"})
+
+    with pytest.raises(ValueError, match="conflicting parse strategy policies"):
+        _validate_public_runtime_policy_conflicts(
+            normalized,
+            {"split_strategy": "boundary_first"},
+        )
+
+
+def test_matching_public_and_runtime_parse_strategy_is_accepted() -> None:
+    normalized = WorkflowIngestInput.from_text(
+        document_id="policy-match",
+        text="alpha",
+    ).model_copy(update={"parse_strategy": "layer_boundary"})
+
+    _validate_public_runtime_policy_conflicts(
+        normalized,
+        {"split_strategy": "boundary_first"},
+    )
 
 
 @pytest.fixture(

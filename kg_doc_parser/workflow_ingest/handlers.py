@@ -84,6 +84,23 @@ def _strategy_attempt(state_view: Mapping[str, object], strategy: str) -> int:
     return 1
 
 
+def _validate_public_runtime_policy_conflicts(
+    normalized_input: WorkflowIngestInput,
+    runtime_deps: WorkflowRuntimeDeps,
+) -> None:
+    """Reject contradictory request and runtime strategy policies."""
+    requested = normalized_input.parse_strategy
+    configured = runtime_deps.get("split_strategy")
+    if requested not in {"layer_excerpt", "layer_boundary"} or configured is None:
+        return
+    expected = "excerpt_first" if requested == "layer_excerpt" else "boundary_first"
+    if configured != expected:
+        raise ValueError(
+            "conflicting parse strategy policies: request specifies "
+            f"{requested!r}, runtime specifies {configured!r}"
+        )
+
+
 def _parser_payload(value: object) -> ParserPayload:
     """Decode one JSON object from runtime state into parser payload shape."""
 
@@ -458,6 +475,7 @@ def register_base_ingest_steps(
     @_register_step(resolver, step_name="init_parse_session", runtime_deps=runtime_deps)
     def _init_parse_session(ctx: StepContext) -> StepRunResult:
         normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
+        _validate_public_runtime_policy_conflicts(normalized, runtime_deps)
         collection = select_primary_collection(normalized)
         parse_semantic_fn = runtime_deps.get("parse_semantic_fn", default_parse_semantic_fn)
         propose_layer_fn = runtime_deps.get("propose_layer_fn")

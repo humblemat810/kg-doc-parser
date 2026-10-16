@@ -1086,8 +1086,12 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [x] Expose summary policy/generator consistently at the public runner. The
   public OCR parse and root-workflow runners forward both values; CLI forwarding
   is covered by `tests/test_workflow_ingest_cli.py::test_cli_forwards_summary_hooks`.
-- [ ] Reject conflicting public/internal policy values rather than silently
-  falling back to `baseline-v1`.
+- [x] Reject conflicting public/internal policy values rather than silently
+  falling back to `baseline-v1`. `_validate_public_runtime_policy_conflicts`
+  fails closed for contradictory public `parse_strategy` and internal
+  `split_strategy` values; matching values are accepted. Regression coverage:
+  `tests/test_workflow_ingest_contracts.py::test_public_and_runtime_parse_strategy_conflict_fails_closed`
+  and `::test_matching_public_and_runtime_parse_strategy_is_accepted`.
 - [ ] Test explicit custom policy through the public API and inspect persisted
   metadata, cache keys, and final output.
 
