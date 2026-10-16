@@ -123,10 +123,12 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     _materialize_image_payloads,
     _ocr_configuration_fingerprint,
     _ocr_page_metadata,
+    _pdf_render_manifest_payload,
     _process_ocr_page,
     _render_pdf_to_images,
     _resolve_ocr_source_plan,
     _write_json_atomic,
+    _write_png_atomic,
 )
 from kg_doc_parser.workflow_ingest.ocr_runtime import (
     _json_pages,
@@ -3558,6 +3560,47 @@ def test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf(tmp_path: P
 
     _render_pdf_with_identity(pdf_path=source, rendered_dir=rendered, rasterizer=rasterizer)
     assert calls == [1, 1]
+
+
+@pytest.mark.ci
+def test_builtin_pdf_render_identity_includes_poppler_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"placeholder")
+    first = _pdf_render_manifest_payload(
+        pdf_path=source,
+        rasterizer=_render_pdf_to_images,
+    )
+
+    monkeypatch.setenv("POPPLER_PATH", str(tmp_path / "other-poppler"))
+    second = _pdf_render_manifest_payload(
+        pdf_path=source,
+        rasterizer=_render_pdf_to_images,
+    )
+
+    assert first["rasterizer_configuration"] != second["rasterizer_configuration"]
+    assert first["render_identity"] != second["render_identity"]
+
+
+@pytest.mark.ci
+def test_png_publication_failure_keeps_previous_artifact_and_cleans_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "page-1.png"
+    target.write_bytes(b"previous")
+    image = Image.new("RGB", (4, 4), "white")
+
+    def _fail_save(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise OSError("injected rasterizer failure")
+
+    monkeypatch.setattr(image, "save", _fail_save)
+    with pytest.raises(OSError, match="injected rasterizer failure"):
+        _write_png_atomic(image, target)
+
+    assert target.read_bytes() == b"previous"
+    assert not list(tmp_path.glob(f".{target.name}.*.tmp"))
 
 
 @pytest.mark.ci

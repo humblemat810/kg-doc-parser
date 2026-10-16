@@ -45,8 +45,10 @@ import tempfile
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from types import FunctionType
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -231,6 +233,7 @@ class PDFRasterizer(Protocol):
     def __call__(self, pdf_path: Path, rendered_dir: Path, /) -> list[Path]: ...
 
 
+@runtime_checkable
 class PDFRasterizerWithIdentity(PDFRasterizer, Protocol):
     """Optional rasterizer extension for configuration-sensitive cache keys."""
 
@@ -2483,9 +2486,17 @@ def _pdf_render_manifest_payload(
     rasterizer: PDFRasterizer,
 ) -> JsonObject:
     """Describe the exact PDF/rendering inputs behind cached page images."""
-    rasterizer_name = getattr(rasterizer, "__qualname__", type(rasterizer).__qualname__)
-    rasterizer_module = getattr(rasterizer, "__module__", type(rasterizer).__module__)
-    configuration_fingerprint = getattr(rasterizer, "configuration_fingerprint", "default")
+    rasterizer_name = type(rasterizer).__qualname__
+    rasterizer_module = type(rasterizer).__module__
+    if isinstance(rasterizer, FunctionType):
+        rasterizer_name = rasterizer.__qualname__
+        rasterizer_module = rasterizer.__module__
+    if rasterizer is _render_pdf_to_images:
+        configuration_fingerprint = _builtin_pdf_rasterizer_configuration()
+    elif isinstance(rasterizer, PDFRasterizerWithIdentity):
+        configuration_fingerprint = rasterizer.configuration_fingerprint
+    else:
+        configuration_fingerprint = "default"
     if not isinstance(configuration_fingerprint, str) or not configuration_fingerprint:
         configuration_fingerprint = "default"
     page_count: int | None = None
@@ -2506,6 +2517,31 @@ def _pdf_render_manifest_payload(
     encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
     config["render_identity"] = hashlib.sha256(encoded).hexdigest()
     return config
+
+
+def _builtin_pdf_rasterizer_configuration() -> str:
+    """Describe every process-level option used by the built-in rasterizer.
+
+    ``pdf2image`` defaults are part of the cache contract too.  Including the
+    installed version and Poppler selection prevents a changed runtime from
+    reusing images produced by a different renderer configuration.
+    """
+    try:
+        pdf2image_version = metadata.version("pdf2image")
+    except metadata.PackageNotFoundError:
+        pdf2image_version = "unknown"
+    poppler_path = os.environ.get("POPPLER_PATH", "")
+    return json.dumps(
+        {
+            "dpi": 200,
+            "fmt": "png",
+            "rotation": 0,
+            "pdf2image": pdf2image_version,
+            "poppler_path": poppler_path,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _render_pdf_with_identity(

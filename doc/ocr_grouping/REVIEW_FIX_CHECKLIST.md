@@ -1,5 +1,21 @@
 # OCR Review Fix Checklist
 
+## Latest verified release evidence (2026-10-16)
+
+Kogwistar `0.6.10` is now publicly available on PyPI and the parser virtual
+environment verifies both distribution metadata and `kogwistar.__version__` as
+`0.6.10`. The installed-release tests
+`test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process`,
+`test_ocr_root_concurrent_resume_has_one_owner_and_one_result`, and
+`test_ocr_root_reopens_after_real_process_termination` all pass. This closes
+the earlier installed-core publication blocker, but not the remaining
+dual-store crash-order, Linux SIGKILL, or OCR completeness gates.
+
+The current branch also adds reusable regressions for oversized summary
+evidence, built-in Poppler cache identity, and failed PNG publication. These
+prove the individual seams; they do not promote the broader release gates to
+PASS without their required end-to-end evidence.
+
 ## Latest evidence correction (2026-10-16)
 
 The terminal-root recovery case is now covered locally. A completed root with
@@ -11,8 +27,8 @@ retain their incarnation suffix. The deleted-artifact regression and the
 focused fresh-process matrix pass locally, including concurrent resume, real
 process termination, and grouping termination. Ruff and `git diff --check`
 pass. This closes the specific same-process terminal-root short-circuit gap,
-but does not close the installed-release GitHub gate, dual-store crash ordering,
-or the requirement for a published core with run ownership enforcement.
+but does not close the dual-store crash ordering, Linux SIGKILL, or independent
+OCR completeness gates.
 
 The parser root-finalization seam now has an additional fail-closed guard in
 `ocr_runtime.py` (`c173057`).  It rechecks page completion, accepted-page
@@ -29,12 +45,11 @@ regression `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_state_store_rou
 passes with the orphaned-frontier assertion.  S06 remains partial because
 writer-wide monotonic-generation and crash/restart evidence are still open.
 
-Parser CI run `38777972861` failed all four interpreter jobs at the installed
-Kogwistar contract gate before parser tests ran.  Therefore this change is
-locally verified but not release-verified.  Kogwistar `v0.6.10` is tagged but
-not yet confirmed publicly installable, and the ownership lease implementation
-remains on the unmerged `fix/workflow-run-ownership` branch.  S09, C03, C05,
-and the installed-release portions of the recovery checklist remain open.
+The earlier parser CI run `38777972861` failed before Kogwistar `0.6.10`
+publication completed. A clean environment now verifies the published package,
+and the selected parser CI suite passes with `429 passed, 1 skipped, 327
+deselected`. S09, C03, C05, and OCR completeness remain partial only for the
+specific recovery and evidence gaps listed below.
 
 This checklist tracks the six findings from the OCR provider abstraction review.
 `PASS` requires code, a focused regression test, and evidence from the actual
@@ -72,15 +87,10 @@ The latest downstream review is accepted as a correction to checklist status,
 not as evidence that the implementation is complete. Two items that may look
 green when reading only the file-writing code are explicitly **PARTIAL**:
 
-The Kogwistar `v0.6.10` tag is now on `main`. Its PyPI release workflow has
-passed verification, wheel builds, sdist, and artifact audit, but the protected
-`pypi` deployment is still waiting for approval. The parser must continue to
-pin the published `0.6.9` package until a compatible core release is publicly
-installable and a clean CPython/PyPy matrix verifies the released package.
-The ownership-lease API exercised by the parser's fresh-process recovery tests
-is currently only on the separately pushed, unmerged
-`fix/workflow-run-ownership` core branch; it must not be attributed to
-`v0.6.10` until that branch is merged and released.
+The Kogwistar `0.6.10` tag is on `main`, is published on PyPI, and is the
+parser's locked dependency. Clean installed-package checks and the selected
+parser CI suite pass. This closes the dependency publication blocker; it does
+not close the independent crash-order, Linux SIGKILL, or completeness gates.
 
 - **S02 artifact SHA-256 verification:** the completed-page reuse predicate
   rejects a well-formed tampered artifact, but the complete root path has not
@@ -97,10 +107,10 @@ output-affecting field after a fresh-process reopen. S06 remains **PARTIAL**:
 expected-revision/absence fencing is useful containment, not proof of
 monotonic generation, complete writer coverage, or crash/restart safety.
 
-The release decision therefore remains unchanged: C01 is the only reviewer
-gate currently evidenced as PASS; C02-C06 remain PARTIAL or BLOCKED, and the
-parser version must not be bumped until the open rows have implementation,
-reusable regression tests, and runtime evidence.
+The installed dependency gate is now evidenced as PASS. C02-C06 remain
+PARTIAL because their remaining crash-order, signal, completeness, or
+long-document evidence is still open; those are documented release risks, not
+the former Kogwistar publication blocker.
 
 ### New recovery evidence (2026-10-15)
 
@@ -245,8 +255,8 @@ interpretation of existing evidence:
 | S02 atomic JSON publication | PARTIAL | Unique same-directory temporary files and atomic replacement are used. | Atomic replacement of one file does not make the artifact and SQLite/Kogwistar checkpoint a transaction; both crash orders need recovery tests. |
 | S05 accepted hierarchy consumption | PARTIAL | The semantic callback receives and consumes the accepted `document_tree` to derive semantic output, `WorkflowExportBundle.grouping_tree` preserves it, and the OCR root rejects a missing or changed grouping artifact. Regression: `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`. | Explicit compatibility behavior for consumers that ignore hierarchy remains open. |
 | S06 grouping checkpoint safety | PARTIAL | Expected-revision/absence fencing, frontier consistency checks, stable proposal identities, and `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source` now reject unfenced updates to an existing checkpoint; duplicate accepted proposals are idempotent. | Every writer must be audited; late-writer, monotonic generation, and crash/restart behavior remain release blockers. |
-| Runtime ownership | PARTIAL | Stable root/page/grouping/semantic child identities exist in the persisted design. Core branch `fix/workflow-run-ownership` commits `817b03a` and `bc336e4` add persisted CAS ownership leases, explicit suspended-run release, and durable checkpoint metadata fallback when the graph node is not present. The branch is not yet merged or released. | A fresh process must reopen the same parent and child lineage without a second accepted semantic generation using the published core package. |
-| 100-page resume | PARTIAL | The persisted test passes with a coordinated Kogwistar source checkout, but that is not installed-release evidence. Core `v0.6.10` is tagged and its protected PyPI publish is still waiting; the ownership/recovery commits `817b03a` and `bc336e4` are only on an unmerged feature branch. Installed-release verification, SIGKILL/new-process, and duplicate-resume evidence are still required. |
+| Runtime ownership | PARTIAL | Stable root/page/grouping/semantic child identities and persisted CAS ownership leases are exercised by the installed Kogwistar `0.6.10` environment. Fresh-process lineage, real termination, and concurrent resume tests pass locally. | Linux SIGKILL and release-CI evidence remain open. |
+| 100-page resume | PARTIAL | The persisted reference/resume comparison and installed-package fresh-process tests pass locally; the selected parser CI suite also passes. | A full 100-page run through the installed release, Linux SIGKILL, and complete dual-store reconciliation remain open. |
 | OCR completeness | PARTIAL | Typed provider diagnostics and strict policy can reject provider loss signals. | Interval coverage alone does not detect missing figures/tables/coordinates; provider-side completeness and recovery evidence remain open. |
 | Same-basename PDF artifact isolation | FIXED (focused boundary) | `_resolve_ocr_source_plan` now derives both PDF artifact directories from document identity, PDF content fingerprint, and a safe source stem. `tests/test_workflow_ingest_ocr_pipeline.py::test_pdf_artifact_directories_do_not_collide_for_same_basename` proves two different `report.pdf` inputs cannot share rendered or legacy artifact paths. | Existing artifact directories using the old basename-only layout are intentionally not adopted as new-source identities; migration/cleanup policy remains operational work. |
 
@@ -408,12 +418,12 @@ focused test, full matrix, and exact HEAD are verified.
 | B06 | [~] Fixed locally; CI pending | Render and legacy artifact paths use collision-resistant document/source identities. `test_pdf_artifact_directories_do_not_collide_for_same_basename` now exercises two valid PNG renders from distinct same-named PDFs and confirms distinct artifact directories and bytes. |
 | B07 | [~] Fixed locally; CI pending | Page numbers are required to be positive and unique, and resolved paths are deterministic. Focused tests are listed under B01. Out-of-order inputs are normalized by sorted output; conflicting duplicates fail closed. |
 | B08 | [~] Partial | `OCRQualityPolicy.reject_empty_page` now provides an explicit opt-in fail-closed gate for provider-reported empty OCR output, with `test_ocr_quality_policy_can_reject_empty_provider_output`. The default remains permissive for legitimate blank pages; independent image/text completeness checks are still needed. |
-| B09 | [~] Fixed locally; CI pending | Summary target selection now measures the exact ordered `EvidenceSlice` payload owned by each node, including partial slices of a shared source item, instead of charging the whole `SourceItem`. Regression: `test_summary_target_planner_counts_exact_slices_not_whole_source_items`. Provider serialization overhead and full CI remain open. |
+| B09 | [~] Fixed locally; CI pending | Summary target selection measures exact ordered `EvidenceSlice` payloads and now skips a node whose estimated evidence exceeds `maximum_input_tokens`, instead of clamping accounting while still sending the oversized payload. Regressions: `test_summary_target_planner_counts_exact_slices_not_whole_source_items` and `test_summary_target_planner_does_not_send_oversized_evidence`. Provider serialization overhead and full CI remain open. |
 | B10 | [~] Partial | Durable artifact IDs and runtime integration exist, but accumulated `raw_pages` checkpoint serialization and linear-growth evidence remain open. |
-| B11 | [~] Fixed locally; CI pending | Render manifests now include the PDF page count when the source is a readable PDF, and reuse rejects missing, duplicate, or out-of-order pages. Regression: `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf`. The filtered OCR CI module passed 60 tests locally; built-in renderer identity still needs explicit DPI/rotation/Poppler coverage. |
+| B11 | [~] Fixed locally; CI pending | Render manifests include page count and the built-in renderer identity now includes PDF raster defaults, installed `pdf2image` version, and `POPPLER_PATH`; reuse rejects missing, duplicate, or out-of-order pages. Regressions: `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf` and `test_builtin_pdf_render_identity_includes_poppler_selection`. |
 | B12 | [~] Fixed locally; CI pending | Reference extraction now maps matches across the deterministic ordered OCR-unit stream back to exact source slices. Regression: `test_reference_mentions_cross_ocr_units_preserve_exact_source_slices`; the filtered OCR CI module passed 60 tests locally. |
 | B13 | [ ] Open | The default PDF path still rasterizes pages; hybrid native PDF text extraction is not implemented. |
-| B14 | [~] Fixed locally; CI pending | `_render_pdf_to_images` now rejects page symlinks, validates cached image decoding, and publishes regenerated PNGs through a temporary file and atomic rename. Render-manifest reuse also verifies page digests, dimensions, and valid-PDF page count. Tests: `test_pdf_rasterization_regenerates_corrupt_cached_page_atomically`, `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf`; the filtered OCR CI module passed 60 tests locally. An injected mid-save failure test remains open. |
+| B14 | [~] Fixed locally; CI pending | `_render_pdf_to_images` rejects page symlinks, validates cached image decoding, and publishes regenerated PNGs through a temporary file and atomic rename. Render-manifest reuse verifies page digests, dimensions, and valid-PDF page count. Regressions: `test_pdf_rasterization_regenerates_corrupt_cached_page_atomically`, `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf`, and `test_png_publication_failure_keeps_previous_artifact_and_cleans_temp`. |
 
 This ledger is a release gate, not a claim that the branch is complete. The
 local filtered OCR CI module passed `60 passed, 14 deselected` with

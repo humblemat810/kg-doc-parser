@@ -272,6 +272,31 @@ def test_summary_target_planner_counts_exact_slices_not_whole_source_items() -> 
     ) == ()
 
 
+def test_summary_target_planner_does_not_send_oversized_evidence() -> None:
+    large = "x" * 20_000
+    tree = DocumentTree(
+        document_id="oversized-summary",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(_item("a", large), _item("b", large)),
+        nodes=(
+            _leaf("a-leaf", "a", large),
+            _leaf("b-leaf", "b", large),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=({"node_id": "a-leaf"}, {"node_id": "b-leaf"}),
+            ),
+        ),
+    )
+
+    assert select_summary_targets(
+        tree,
+        SummaryPolicy(maximum_input_tokens=128, maximum_targets=1),
+    ) == ()
+
+
 def test_title_and_atomic_sixty_row_table_remain_two_grounded_children() -> None:
     title = _item("title", "Report")
     table_text = "\n".join(f"row-{index}|value-{index}" for index in range(60))

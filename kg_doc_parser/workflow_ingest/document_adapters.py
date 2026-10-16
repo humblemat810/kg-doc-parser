@@ -406,11 +406,15 @@ def select_summary_targets(
     for _depth, node_id, estimated_tokens in sorted(candidates):
         if len(selected) >= policy.maximum_targets:
             break
-        bounded_tokens = min(estimated_tokens, policy.maximum_input_tokens)
-        if used_tokens + bounded_tokens > policy.maximum_input_tokens:
+        # The planner's estimate is also the provider boundary.  Clamping the
+        # accounting while still sending the full evidence payload makes the
+        # configured context limit decorative for one oversized node.
+        if estimated_tokens > policy.maximum_input_tokens:
+            continue
+        if used_tokens + estimated_tokens > policy.maximum_input_tokens:
             continue
         selected.append(node_id)
-        used_tokens += bounded_tokens
+        used_tokens += estimated_tokens
     return tuple(selected)
 
 

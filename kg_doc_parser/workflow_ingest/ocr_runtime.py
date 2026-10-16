@@ -13,7 +13,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import TypedDict, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver
@@ -67,6 +67,33 @@ _OCR_ROOT_STATE_VERSION = "ocr-root-v2"
 _OCR_PAGE_STATE_VERSION = "ocr-page-v2"
 
 
+class _PageSourceState(TypedDict):
+    page_number: int
+    image_path: str
+
+
+class _OCRWorkflowState(TypedDict, total=False):
+    ocr_page_state_version: str
+    ocr_root_state_version: str
+    document_id: str
+    source_fingerprint: str
+    ocr_configuration_fingerprints: list[str]
+    grouping_policy_version: str
+    tree: dict[str, object]
+    pass_index: int
+    ocr_page_recovery_generation: int
+    page_cursor: int
+    page_sources: list[_PageSourceState]
+    legacy_dir: str
+    raw_pages: list[OCRPageJSON]
+    completed_pages: list[int]
+    reused_pages: list[int]
+    last_failed_page: int
+    checkpoint_revision: str
+    ocr_page_result: dict[str, object]
+    export_bundle: dict[str, object]
+
+
 def _success(
     next_step: str | None,
     *,
@@ -81,9 +108,9 @@ def _success(
 
 def _tree(state: Mapping[str, object]) -> DocumentTree:
     payload = state.get("tree")
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or not all(isinstance(key, str) for key in payload):
         raise TypeError("OCR grouping runtime state has no tree")
-    return DocumentTree.model_validate(payload)
+    return DocumentTree.model_validate(cast(dict[str, object], payload))
 
 
 def _proposals(value: object) -> tuple[GroupProposal, ...]:
@@ -119,12 +146,15 @@ def _page_sources(state: Mapping[str, object]) -> list[tuple[int, Path]]:
         raise TypeError("OCR page runtime state has no page source list")
     sources: list[tuple[int, Path]] = []
     for item in value:
-        if not isinstance(item, dict) or type(item.get("page_number")) is not int:
-            raise ValueError("OCR page runtime source entry is malformed")
+        if not isinstance(item, dict):
+            raise TypeError("OCR page runtime source entry is malformed")
+        page_number = item.get("page_number")
         image_path = item.get("image_path")
+        if type(page_number) is not int or page_number < 1:
+            raise ValueError("OCR page runtime source page number is malformed")
         if not isinstance(image_path, str) or not image_path:
             raise ValueError("OCR page runtime source path is malformed")
-        sources.append((int(item["page_number"]), Path(image_path)))
+        sources.append((page_number, Path(image_path)))
     return sources
 
 
@@ -201,7 +231,7 @@ def _validate_root_resume_identity(
         )
 
 
-def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> dict[str, object]:
+def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> _OCRWorkflowState:
     return {
         "ocr_page_state_version": _OCR_PAGE_STATE_VERSION,
         "source_fingerprint": source_plan.input_fingerprint,
@@ -599,7 +629,7 @@ def run_ocr_page_workflow(
             workflow_id=DEFAULT_OCR_PAGE_WORKFLOW_ID,
             conversation_id=f"ocr:{context.document_id}",
             turn_node_id=f"ocr:{context.document_id}:pages",
-            initial_state=initial_state,
+            initial_state=cast(dict[str, object], initial_state),
             run_id=run_id,
         )
     )
