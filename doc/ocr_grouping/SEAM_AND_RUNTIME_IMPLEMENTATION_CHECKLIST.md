@@ -1,5 +1,17 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-16, commit `520675c`)
+
+The concurrent-resume error classifier now has both positive and negative
+regression coverage. It accepts the direct ownership exception and the exact
+wrapped nested grouping failure observed when a competing lease is lost, while
+rejecting an unrelated nested failure such as an invalid grouping frontier.
+The same typed classifier is reused by the subprocess race assertion. Parser
+CI run `#304` (`38902399870`) passed CPython 3.12, 3.13, 3.14, and PyPy 3.11.
+This closes only the error-classification regression; ownership recovery,
+dual-store reconciliation, OCR completeness, long-document equivalence, and
+release gates remain open.
+
 ## Latest evidence update (2026-10-16, commit `4009bc9`)
 
 The concurrent fresh-process resume regression now has reusable coverage for

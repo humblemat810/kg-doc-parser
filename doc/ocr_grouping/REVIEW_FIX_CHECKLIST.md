@@ -1,5 +1,15 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-16, commit `520675c`)
+
+Added a negative concurrent-resume regression: an unrelated nested workflow
+failure is not accepted as evidence that a worker lost ownership. The direct
+ownership and exact wrapped grouping-failure forms from the CI failure remain
+covered. Parser CI run `#304` (`38902399870`) passed CPython 3.12, 3.13, 3.14,
+and PyPy 3.11. This remains narrow evidence; crash-order reconciliation, true
+process recovery, OCR completeness, long-document equivalence, and release
+readiness remain partial or open.
+
 ## Latest evidence update (2026-10-16, commit `4009bc9`)
 
 Added reusable parametrized coverage for the two valid concurrent-resume
