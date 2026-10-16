@@ -12,6 +12,14 @@ remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+OCR runtime page-source decoding now uses one typed `_PageSourceState`
+decoder for both persisted-state validation and execution. Regression coverage
+rejects malformed page numbers and paths (`4 passed`); this narrows a resume
+boundary without changing accepted workflow semantics. CI and broader recovery
+gates remain pending.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 The canonical graph client keeps validated graph records typed as `JsonObject`
 through ID extraction instead of widening them to `Mapping[str, object]`. The
 client/demo persistence suite passes (`28 passed, 5 skipped`); this is a typing

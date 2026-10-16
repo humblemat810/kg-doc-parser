@@ -154,6 +154,18 @@ class _OCRCheckpointPatch(TypedDict, total=False):
     raw_pages: list[OCRPageJSON]
 
 
+def _page_source_state(value: object) -> _PageSourceState:
+    """Decode one persisted page source without widening known fields."""
+
+    if not isinstance(value, Mapping):
+        raise TypeError("OCR workflow state page_sources contains a malformed entry")
+    page_number = value.get("page_number")
+    image_path = value.get("image_path")
+    if type(page_number) is not int or not isinstance(image_path, str) or not image_path:
+        raise TypeError("OCR workflow state page_sources contains a malformed entry")
+    return {"page_number": page_number, "image_path": image_path}
+
+
 PageListKey = Literal["completed_pages", "reused_pages"]
 StateStringKey = Literal[
     "document_id",
@@ -264,10 +276,7 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
         if not isinstance(page_sources, list):
             raise TypeError("OCR workflow state field 'page_sources' must be a list")
         for item in page_sources:
-            if not isinstance(item, dict) or type(item.get("page_number")) is not int or not isinstance(
-                item.get("image_path"), str
-            ):
-                raise TypeError("OCR workflow state page_sources contains a malformed entry")
+            _page_source_state(item)
 
     return cast(_OCRWorkflowState, value)
 
@@ -292,9 +301,10 @@ def _resume_identity_value(
     value = state.get(key)
     if value is None or isinstance(value, str):
         return value
-    if key == "ocr_configuration_fingerprints" and isinstance(value, list):
-        if all(isinstance(item, str) for item in value):
-            return list(value)
+    if key == "ocr_configuration_fingerprints" and isinstance(value, list) and all(
+        isinstance(item, str) for item in value
+    ):
+        return list(value)
     raise TypeError(f"OCR checkpoint identity field {key!r} has an invalid type")
 
 
@@ -380,18 +390,11 @@ def _page_sources(state: _OCRWorkflowState) -> list[tuple[int, Path]]:
         raise TypeError("OCR page runtime state has no page source list")
     sources: list[tuple[int, Path]] = []
     for item in value:
-        if not isinstance(item, dict):
-            raise TypeError("OCR page runtime source entry is malformed")
-        raw_page_number = item.get("page_number")
-        raw_image_path = item.get("image_path")
-        if type(raw_page_number) is not int or not isinstance(raw_image_path, str):
-            raise TypeError("OCR page runtime source entry is malformed")
-        page_number: int = raw_page_number
-        image_path: str = raw_image_path
-        if type(page_number) is not int or page_number < 1:
+        source = _page_source_state(item)
+        page_number = source["page_number"]
+        image_path = source["image_path"]
+        if page_number < 1:
             raise ValueError("OCR page runtime source page number is malformed")
-        if not isinstance(image_path, str) or not image_path:
-            raise ValueError("OCR page runtime source path is malformed")
         sources.append((page_number, Path(image_path)))
     return sources
 

@@ -12,6 +12,13 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+OCR runtime page-source decoding now has one typed `_PageSourceState`
+boundary shared by checkpoint validation and page execution. Malformed page
+numbers, missing paths, and empty paths are rejected by reusable regression
+coverage (`4 passed`), while the existing resume paths remain unchanged.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 The canonical graph client now preserves the validated `JsonObject` record
 contract when reading record IDs, rather than widening records back to
 `Mapping[str, object]`. The client/demo persistence suite passes (`28 passed,
