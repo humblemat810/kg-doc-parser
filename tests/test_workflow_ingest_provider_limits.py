@@ -14,6 +14,7 @@ from kg_doc_parser.workflow_ingest import ProviderEndpointConfig
 from kg_doc_parser.workflow_ingest.models import FailureCategory
 from kg_doc_parser.workflow_ingest.providers import (
     ChatProviderName,
+    ProviderDiagnostics,
     WorkflowProviderSettings,
     _normalize_provider_name,
     _provider_usage_metrics,
@@ -154,6 +155,28 @@ def test_provider_timeout_returns_result_without_leaking_into_caller() -> None:
     assert isinstance(throughput, (int, float)) and float(throughput) > 0
     assert diagnostics["success"] is True
     assert diagnostics["timed_out"] is False
+
+
+def test_provider_diagnostics_are_json_safe_scalar_records() -> None:
+    diagnostics: ProviderDiagnostics = {}
+    invoke_with_timeout(
+        lambda: {
+            "usage_metadata": {
+                "input_tokens": 4,
+                "output_tokens": 2,
+                "nested": {"ignored": object()},
+            }
+        },
+        timeout_seconds=1.0,
+        diagnostics=diagnostics,
+    )
+
+    assert diagnostics["input_tokens"] == 4
+    assert diagnostics["output_tokens"] == 2
+    assert all(
+        value is None or isinstance(value, (str, int, float, bool))
+        for value in diagnostics.values()
+    )
 
 
 def test_provider_usage_metrics_uses_typed_model_dump_boundary() -> None:

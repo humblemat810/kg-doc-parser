@@ -138,10 +138,14 @@ def _parse_strategy_order(raw: str) -> ParseStrategyOrder:
     return cast(ParseStrategyOrder, values)
 
 
+ProviderDiagnosticValue = str | int | float | bool | None
+ProviderDiagnostics = dict[str, ProviderDiagnosticValue]
+
+
 class ProviderDiagnosticsSink(Protocol):
     """Receive one structured provider-call diagnostic record."""
 
-    def __call__(self, diagnostics: Mapping[str, object], /) -> None: ...
+    def __call__(self, diagnostics: Mapping[str, ProviderDiagnosticValue], /) -> None: ...
 
 
 class _EmbeddingBackend(Protocol):
@@ -243,12 +247,12 @@ _PROVIDER_USAGE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _provider_usage_metrics(value: object) -> dict[str, int | float]:
+def _provider_usage_metrics(value: object) -> ProviderDiagnostics:
     """Extract optional provider usage metadata without serializing the response."""
 
     pending: list[tuple[object, int]] = [(value, 0)]
     seen: set[int] = set()
-    found: dict[str, int | float] = {}
+    found: ProviderDiagnostics = {}
     while pending:
         candidate, depth = pending.pop()
         if candidate is None or id(candidate) in seen or depth > 4:
@@ -818,7 +822,7 @@ def invoke_with_timeout(
     callable_obj: Callable[[], object],
     *,
     timeout_seconds: float,
-    diagnostics: dict[str, object] | None = None,
+    diagnostics: ProviderDiagnostics | None = None,
     operation: str = "provider_call",
     max_in_flight: int = 1,
     attempt_index: int = 1,

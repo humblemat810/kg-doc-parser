@@ -12,6 +12,17 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+Provider-call diagnostics now use a shared scalar-value contract across OCR,
+layerwise, PageIndex, and strategy boundaries. A regression confirms nested
+provider metadata is reduced to JSON-safe scalar diagnostics rather than
+leaking opaque objects (`test_provider_diagnostics_are_json_safe_scalar_records`).
+Provider-focused tests and Ruff pass locally; package-wide Pyright is still
+blocked by the known Windows Node launcher `EPERM` issue, and CI for this slice
+is pending. This does not close the broader recovery, semantic-publication,
+OCR-completeness, or release gates.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 The OCR resume and duplicate-delivery paths now validate reconstructed page
 payloads with `_validated_ocr_page_json` rather than using unchecked casts to
 `OCRPageJSON`. The focused boundary/resume selection passes (`7 passed`), and

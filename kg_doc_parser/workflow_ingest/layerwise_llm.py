@@ -37,6 +37,7 @@ from .models import (
 )
 from .parser_core import ParserPayload, ParserSourceMap, SplitStrategy
 from .providers import (
+    ProviderDiagnostics,
     ProviderDiagnosticsSink,
     SupportsStructuredOutput,
     WorkflowProviderSettings,
@@ -1691,7 +1692,7 @@ def _structured_invoke(
     messages: Sequence[tuple[str, str]],
     *,
     timeout_seconds: float = 120.0,
-    diagnostics: dict[str, object] | None = None,
+    diagnostics: ProviderDiagnostics | None = None,
     diagnostics_sink: ProviderDiagnosticsSink | None = None,
     operation: str = "parser_structured_call",
     max_in_flight: int = 1,
@@ -1864,7 +1865,7 @@ def build_layerwise_llm_callbacks(
         if callable(event_sink):
             event_sink(stage, **extra)
 
-    def _emit_provider_diagnostics(diagnostics: Mapping[str, object]) -> None:
+    def _emit_provider_diagnostics(diagnostics: ProviderDiagnostics) -> None:
         """Publish one structured call record without exposing provider payloads."""
 
         nonlocal last_provider_failure_type

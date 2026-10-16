@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from ..llm_structured_output import StructuredOutputRunnable
 from .providers import (
+    ProviderDiagnostics,
     ProviderDiagnosticsSink,
     WorkflowProviderSettings,
     build_chat_model_for_role,
@@ -155,7 +156,7 @@ def build_llm_strategy_triage(
     )
 
     def _triage(context: Mapping[str, JsonValue]) -> ParseStrategyTriage:
-        diagnostics: dict[str, object] = {}
+        diagnostics: ProviderDiagnostics = {}
         try:
             response = invoke_with_timeout(
                 lambda: structured.invoke(

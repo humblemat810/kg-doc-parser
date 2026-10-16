@@ -62,6 +62,7 @@ from .models import (
 )
 from .parser_core import ParserSourceMap, finalize_semantic_tree
 from .providers import (
+    ProviderDiagnostics,
     ProviderDiagnosticsSink,
     WorkflowProviderSettings,
     build_chat_model_for_role,
@@ -1382,7 +1383,7 @@ def _refine_page_index_block_excerpts(
         f"Page text: {page_text}\n"
         f"Blocks: {_json.dumps(entries, ensure_ascii=False, sort_keys=True)}"
     )
-    call_diagnostics: dict[str, object] = {}
+    call_diagnostics: ProviderDiagnostics = {}
     provider_returned = False
     try:
         callback_counts = _callback_call_counts(callbacks)
@@ -1615,7 +1616,7 @@ def _refine_page_index_summaries_hierarchically(
                 f"Tree depth: {depth}\n"
                 f"Blocks: {json.dumps(entries, ensure_ascii=False, sort_keys=True)}"
             )
-            call_diagnostics: dict[str, object] = {}
+            call_diagnostics: ProviderDiagnostics = {}
             provider_returned = False
             try:
                 callback_counts = _callback_call_counts(callbacks)
@@ -1806,7 +1807,7 @@ def _llm_page_outline(
             trace_log(
                 f"page_index_llm_invoke_start page_number={page_number} attempt={attempt_label} source_format={source_format}"
         )
-        call_diagnostics: dict[str, object] = {}
+        call_diagnostics: ProviderDiagnostics = {}
         provider_returned = False
         try:
             callback_counts = _callback_call_counts(callbacks)

@@ -80,6 +80,7 @@ from .document_models import (
 from .models import WorkflowExportBundle, WorkflowIngestInput
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import (
+    ProviderDiagnostics,
     ProviderDiagnosticsSink,
     WorkflowProviderSettings,
     build_chat_model_for_role,
@@ -3001,7 +3002,7 @@ def _run_live_ocr_page(
         "Preserve reading order, cluster numbering, and non-text regions.\n"
         "Do not invent missing text. If the page is empty, mark it as empty."
     )
-    call_diagnostics: dict[str, object] = {}
+    call_diagnostics: ProviderDiagnostics = {}
     try:
         response = invoke_with_timeout(
             lambda: structured.invoke(
