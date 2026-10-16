@@ -1190,3 +1190,8 @@ protocol.
   selection passes (`11 passed, 4 skipped`). This is evidence for the client
   state seam only; full runtime recovery, matrix CI, and release gates remain
   open.
+- [~] Commit `eb02d6c` uses the shared `ModelDumpLike` protocol for provider
+  usage extraction instead of an untyped dynamic `model_dump` lookup, and narrows
+  the provider regression's JSON/diagnostic reads. Provider and test Pyright
+  reports zero errors, Ruff passes, and the focused provider selection passes
+  (`10 passed`); remote CI remains pending.

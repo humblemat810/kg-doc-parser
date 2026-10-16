@@ -736,3 +736,8 @@ release is available.
   `clients.py`; the focused client/demo contract selection passes (`11 passed,
   4 skipped`). This closes one client serialization seam only; the repository-wide
   typing and release gates remain open.
+- [~] Commit `eb02d6c` replaces provider-response `model_dump` discovery with the
+  shared runtime-checkable `ModelDumpLike` protocol and strengthens the provider
+  regression reads with explicit JSON/diagnostic narrowing. Provider and test
+  Pyright reports zero errors, Ruff passes, and the focused selection passes
+  (`10 passed`). Remote CI for this commit is pending.
