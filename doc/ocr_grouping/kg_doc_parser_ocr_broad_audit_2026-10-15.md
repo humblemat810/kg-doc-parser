@@ -80,7 +80,7 @@ The manifest includes the source PDF digest, a fixed renderer version string and
 ### B12 — P2: Reference extraction misses mentions split across OCR units
 Source: `document_models.py`, `extract_reference_mentions`, around lines 383–416.
 
-Regex is applied to each `SourceItem.text` separately. `"see Section"` in one item and `"4.2"` in the next will not generate a mention. **Fix:** run detection over deterministic grouped text and map the match back to ordered source slices; keep references outside the primary coverage partition. **Test:** cross-cluster and cross-page explicit references, duplicate text occurrences.
+**Current branch status (2026-10-16): fixed locally, CI pending.** Detection now runs over the deterministic text reading-order stream and maps each match back to exact source slices, including multiple OCR units and pages. References remain metadata outside the primary coverage partition. `tests/test_document_grouping_contract.py::test_reference_mentions_cross_ocr_units_preserve_exact_source_slices` proves a cross-unit, cross-page mention retains both item IDs and exact half-open offsets.
 
 ### B13 — P2/architectural gap: No hybrid native-PDF-text path
 Source: `ocr_pipeline.py`, `_render_pdf_to_images`; uses `PdfReader` to count pages, then rasterizes/OCRs each page. No native text extraction is visible in that pathway. This is a completeness/quality limitation rather than a regression proven by a failing test. **Fix:** optionally ingest embedded PDF glyph text and precise native coordinates first, then OCR only missing/scanned regions; reconcile duplicate coverage. **Test:** text-selectable PDF with equations, scanned figure, embedded caption and searchable table.

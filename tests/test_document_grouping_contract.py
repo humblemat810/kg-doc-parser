@@ -390,6 +390,36 @@ def test_explicit_reference_mentions_are_source_grounded_and_outside_partition()
     assert tree.render_preview() == text
 
 
+def test_reference_mentions_cross_ocr_units_preserve_exact_source_slices() -> None:
+    first = _item("page-1-cluster-1", "Intro; see Section")
+    second = _item("page-2-cluster-1", " 4.2 for details.", page_index=1)
+    tree = DocumentTree(
+        document_id="cross-unit-references",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(first, second),
+        nodes=(
+            _leaf("first", first.item_id, first.text or ""),
+            _leaf("second", second.item_id, second.text or ""),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=({"node_id": "first"}, {"node_id": "second"}),
+            ),
+        ),
+    )
+
+    mentions = extract_reference_mentions(tree)
+    assert len(mentions) == 1
+    mention = mentions[0]
+    assert (mention.target_kind, mention.target_label) == ("section", "4.2")
+    assert [(source.item_id, source.start, source.end) for source in mention.sources] == [
+        (first.item_id, 7, len(first.text)),
+        (second.item_id, 0, 4),
+    ]
+
+
 def test_reference_mentions_round_trip_and_validate_targets_without_becoming_children() -> None:
     text = "See figure 2."
     base = DocumentTree(

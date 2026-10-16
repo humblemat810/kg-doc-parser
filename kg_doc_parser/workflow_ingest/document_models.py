@@ -508,25 +508,55 @@ def extract_reference_mentions(tree: DocumentTree) -> tuple[DocumentReferenceMen
     """
 
     mentions: list[DocumentReferenceMention] = []
-    for item in tree.source_items:
-        if item.text is None:
+    text_items = tuple(item for item in tree.source_items if item.text is not None)
+    if not text_items:
+        return ()
+
+    # Search one deterministic reading-order stream, while retaining the item
+    # and character offset for every source character. Separators are synthetic
+    # and therefore never become part of an authoritative source slice.
+    stream_parts: list[str] = []
+    stream_locations: list[tuple[str, int] | None] = []
+    for item_index, item in enumerate(text_items):
+        assert item.text is not None
+        if item_index:
+            stream_parts.append(" ")
+            stream_locations.append(None)
+        stream_parts.append(item.text)
+        stream_locations.extend((item.item_id, offset) for offset in range(len(item.text)))
+    stream = "".join(stream_parts)
+
+    for match in _REFERENCE_PATTERN.finditer(stream):
+        locations = stream_locations[match.start() : match.end()]
+        grouped: list[SourceSlice] = []
+        for location in locations:
+            if location is None:
+                continue
+            item_id, offset = location
+            if grouped and grouped[-1].item_id == item_id and grouped[-1].end == offset:
+                grouped[-1] = grouped[-1].model_copy(update={"end": offset + 1})
+            else:
+                grouped.append(SourceSlice(item_id=item_id, start=offset, end=offset + 1))
+        if not grouped:
             continue
-        for match in _REFERENCE_PATTERN.finditer(item.text):
-            start, end = match.span()
-            target_kind = cast(
-                Literal["page", "section", "figure", "table"],
-                match.group("target_kind").lower(),
+        target_kind = cast(
+            Literal["page", "section", "figure", "table"],
+            match.group("target_kind").lower(),
+        )
+        target_label = match.group("target_label")
+        source_keys = ",".join(
+            f"{source.item_id}:{source.start}:{source.end}" for source in grouped
+        )
+        digest = sha256(f"{source_keys}:{target_kind}:{target_label}".encode()).hexdigest()[:24]
+        mentions.append(
+            DocumentReferenceMention(
+                mention_id=f"mention:{digest}",
+                source=grouped[0],
+                additional_sources=tuple(grouped[1:]),
+                target_kind=target_kind,
+                target_label=target_label,
             )
-            target_label = match.group("target_label")
-            digest = sha256(f"{item.item_id}:{start}:{end}:{target_kind}:{target_label}".encode()).hexdigest()[:24]
-            mentions.append(
-                DocumentReferenceMention(
-                    mention_id=f"mention:{digest}",
-                    source=SourceSlice(item_id=item.item_id, start=start, end=end),
-                    target_kind=target_kind,
-                    target_label=target_label,
-                )
-            )
+        )
     return tuple(mentions)
 
 
