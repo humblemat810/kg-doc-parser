@@ -2,6 +2,18 @@
 
 ## Latest release-gate update (2026-10-16)
 
+The persisted OCR runtime state seam now has explicit `TypedDict` shapes for
+page source entries, page-list keys, and checkpoint rewind patches. The
+`_int_list()` reader accepts only the two known page-list fields and rejects
+non-integer values without coercion. Focused grouping-resume and provider-
+identity tests pass after this change; this improves static checking and does
+not change the persisted JSON contract.
+
+Parser branch CI run `38870392775` completed successfully on CPython 3.12,
+3.13, 3.14, and PyPy 3.11. The branch head has since advanced to the typing
+commit under verification; a new CI run for that exact SHA remains required
+before treating the latest commit as release evidence.
+
 The grouping resume frontier regression is fixed locally. Resume now performs
 the same persisted tree/frontier validation before invoking Kogwistar, because
 a terminal runtime checkpoint can legitimately skip the parser restore step.

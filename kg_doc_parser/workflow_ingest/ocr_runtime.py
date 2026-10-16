@@ -14,7 +14,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver
@@ -141,6 +141,18 @@ class _PageSourceState(TypedDict):
     image_path: str
 
 
+class _OCRCheckpointPatch(TypedDict, total=False):
+    """Validated partial state used to rewind an accepted page prefix."""
+
+    page_cursor: int
+    completed_pages: list[int]
+    reused_pages: list[int]
+    raw_pages: list[OCRPageJSON]
+
+
+PageListKey = Literal["completed_pages", "reused_pages"]
+
+
 class _OCRWorkflowState(TypedDict, total=False):
     ocr_page_state_version: str
     ocr_root_state_version: str
@@ -166,6 +178,9 @@ class _OCRWorkflowState(TypedDict, total=False):
     semantic_tree: JsonObject
     ocr_page_result: JsonObject
     export_bundle: JsonObject
+    checkpoint_restored: bool
+    checkpoint_absent: bool
+    summaries_generated: bool
 
 
 def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
@@ -282,11 +297,14 @@ def _json_pages(state: _OCRWorkflowState) -> list[OCRPageJSON]:
     return pages
 
 
-def _int_list(state: _OCRWorkflowState, key: str) -> list[int]:
+def _int_list(state: _OCRWorkflowState, key: PageListKey) -> list[int]:
     value = state.get(key, [])
     if not isinstance(value, list) or any(type(item) is not int for item in value):
         raise ValueError(f"OCR page runtime state field {key!r} is malformed")
-    return [int(item) for item in value]
+    result: list[int] = [item for item in value if type(item) is int]
+    if len(result) != len(value):
+        raise ValueError(f"OCR page runtime state field {key!r} is malformed")
+    return result
 
 
 def _validate_root_resume_identity(
@@ -374,7 +392,7 @@ def _reconcile_page_checkpoint(
     state: _OCRWorkflowState,
     context: OCRPageProcessingContext,
     source_plan: OCRSourcePlan,
-) -> dict[str, object] | None:
+) -> _OCRCheckpointPatch | None:
     """Find the first checkpointed page whose accepted artifact is no longer valid.
 
     Runtime checkpoints and the SQLite/artifact cache are separate durable
@@ -407,7 +425,7 @@ def _reconcile_page_checkpoint(
             config_fingerprint=context.configuration_fingerprints,
         ):
             continue
-        repair: dict[str, object] = {
+        repair: _OCRCheckpointPatch = {
             "page_cursor": index,
             "completed_pages": completed[:index],
             "reused_pages": [number for number in reused[:index] if number in completed[:index]],

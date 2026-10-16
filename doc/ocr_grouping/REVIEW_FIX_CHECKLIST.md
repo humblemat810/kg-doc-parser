@@ -2,6 +2,13 @@
 
 ## Latest verified release evidence (2026-10-16)
 
+Latest evidence correction: parser CI run `38870392775` passed all four
+interpreter jobs (CPython 3.12-3.14 and PyPy 3.11) for the preceding branch
+commit. The current branch head also includes a typed OCR-runtime state seam
+patch; its focused grouping-resume and provider-identity regressions pass
+locally, but the new head must receive its own GitHub CI run before this is
+considered release evidence.
+
 The grouping frontier mismatch is now validated before terminal resume, not
 only inside the runtime restore step. This prevents a terminal Kogwistar
 checkpoint from bypassing parser corruption detection. The focused regression
