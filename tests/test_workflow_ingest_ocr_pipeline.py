@@ -496,6 +496,74 @@ def test_workflow_runtime_compatibility_rejects_unsupported_lease_argument(
         )
 
 
+def test_grouping_wrapper_preserves_failed_nested_workflow_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed runtime result cannot be mistaken for an accepted tree."""
+    workflow_engine, conversation_engine, _knowledge_engine = build_workflow_engine_triplet(
+        _scratch("ocr_grouping_failed_nested_workflow") / "engines",
+        "in_memory",
+    )
+    tree = DocumentTree(
+        document_id="grouping-failed-nested-workflow-doc",
+        source_revision="ocr-v1:source-digest",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="item-a",
+                kind="text",
+                text="alpha",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                parts=(SourceSlice(item_id="item-a", start=0, end=5),),
+            ),
+        ),
+    )
+
+    class _FailedRuntime:
+        def run(self, **kwargs: object) -> SimpleNamespace:
+            del kwargs
+            return SimpleNamespace(
+                status="failure",
+                errors=["nested workflow lost ownership"],
+                final_state={},
+                run_id="ocr-grouping-failed-nested-workflow",
+            )
+
+    monkeypatch.setattr(
+        ocr_runtime_module,
+        "ensure_ocr_grouping_workflow_design",
+        lambda _engine: None,
+    )
+    monkeypatch.setattr(
+        ocr_runtime_module,
+        "_workflow_runtime",
+        lambda **_kwargs: _FailedRuntime(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"OCR grouping workflow failure: \['nested workflow lost ownership'\]",
+    ):
+        run_grouping_workflow(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            state_store=OCRWorkflowStateStore(
+                _scratch("ocr_grouping_failed_nested_workflow") / "ocr-state.sqlite"
+            ),
+            tree=tree,
+            document_id=tree.document_id,
+            grouping_policy_version="test-v1",
+            run_id="ocr-grouping-failed-nested-workflow",
+        )
+
+
 @pytest.mark.ci
 def test_grouping_resume_rejects_frontier_that_disagrees_with_tree() -> None:
     scratch = _scratch("ocr_grouping_frontier_mismatch")
