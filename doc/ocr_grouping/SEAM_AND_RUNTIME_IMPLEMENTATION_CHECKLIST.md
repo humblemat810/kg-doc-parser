@@ -1196,3 +1196,7 @@ protocol.
   the provider regression's JSON/diagnostic reads. Provider and test Pyright
   reports zero errors, Ruff passes, and the focused provider selection passes
   (`10 passed`); remote CI remains pending.
+- [~] Commit `ed4ac40` uses the shared `ModelDumpLike` protocol for legacy
+  semantic-tree coercion and adds a dedicated regression module. Production and
+  dedicated-test Pyright report zero errors, Ruff passes, and the regression
+  passes (`1 passed`); remote CI remains pending.

@@ -742,3 +742,8 @@ release is available.
   regression reads with explicit JSON/diagnostic narrowing. Provider and test
   Pyright reports zero errors, Ruff passes, and the focused selection passes
   (`10 passed`). Remote CI for this commit is pending.
+- [~] Commit `ed4ac40` replaces the legacy semantic-tree `model_dump` lookup with
+  the shared `ModelDumpLike` protocol and adds a dedicated coercion regression.
+  Production and dedicated-test Pyright report zero errors, Ruff passes, and the
+  regression passes (`1 passed`). Remote CI for this commit is pending; the
+  pre-existing broad state-edge test file is not treated as clean evidence.
