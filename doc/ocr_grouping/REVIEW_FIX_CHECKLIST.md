@@ -464,12 +464,13 @@ contract; the current run must verify the published `0.6.10` package.
   locally twice with the locked `kogwistar 0.6.12`; both runs passed in a fresh
   process race.
 - [x] Confirmed the ordinary frontier-mismatch guard also passes locally.
-- [~] CI once reported the losing worker as a generic nested grouping failure
+- [x] CI once reported the losing worker as a generic nested grouping failure
   (`Nested workflow ... returned status 'failure'`) instead of exposing
-  `WorkflowRunOwnershipError`. This is not treated as a reason to weaken the
-  ownership assertion. Rerun CI with the current lockfile and published
-  `kogwistar 0.6.12`; if it recurs, capture the child runtime error and fix the
-  runtime error propagation at its source.
+  `WorkflowRunOwnershipError`. The current lockfile and published
+  `kogwistar 0.6.12` were rerun in Parser CI `#286` and passed; the ownership
+  assertion remains strict. If the older symptom recurs, capture the child
+  runtime error and fix propagation at its source rather than weakening this
+  test.
 
 Source: `kg_doc_parser_ocr_broad_audit_2026-10-15.md`. The source review was
 static and did not prove runtime behavior. The statuses below are deliberately
