@@ -1,5 +1,17 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-16, commit `2ec61bd`)
+
+The concurrent-resume failure classifier now has a parametrized regression
+matrix for ordinary nested failures: invalid grouping frontiers, provider
+request failures, and malformed persisted checkpoints are all rejected as
+ownership-loss evidence. The direct ownership exception and the exact wrapped
+ownership-loss form remain accepted. Focused coverage passed 5 tests, and
+Parser CI run `#308` (`38906216334`) passed CPython 3.12, 3.13, 3.14, and
+PyPy 3.11. This closes only the wrapped-error classification regression;
+ownership recovery, dual-store reconciliation, OCR completeness,
+long-document equivalence, and release gates remain open.
+
 ## Latest evidence update (2026-10-16, commit `aa661f2`)
 
 The persisted OCR page boundary no longer relies on a cast-only narrowing.

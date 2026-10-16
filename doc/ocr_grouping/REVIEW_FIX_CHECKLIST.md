@@ -1,5 +1,16 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-16, commit `2ec61bd`)
+
+Expanded concurrent-resume regression coverage to distinguish ordinary nested
+failures from ownership loss. Invalid grouping frontiers, provider request
+failures, and malformed persisted checkpoints are now explicit negative cases,
+while direct and wrapped ownership-loss forms remain positive cases. Focused
+coverage passed 5 tests, and Parser CI run `#308` (`38906216334`) passed
+CPython 3.12, 3.13, 3.14, and PyPy 3.11. This is narrow error-classification
+evidence; true process recovery, crash-order reconciliation, OCR completeness,
+long-document equivalence, and release readiness remain partial or open.
+
 ## Latest evidence update (2026-10-16, commit `aa661f2`)
 
 Persisted OCR page JSON is now validated before it is narrowed to the typed
