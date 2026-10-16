@@ -855,6 +855,9 @@ release is available.
   verifies valid SDK-like metadata, ordinary messages, and malformed list
   payloads. The focused test, Ruff CI selection, and `git diff --check` pass
   locally; parser CI runs #311 and #312 remain pending.
+  The demo HTTP response adapter now uses the same runtime-checkable protocol
+  boundary rather than untyped attribute reads; its malformed-response
+  regression is `test_demo_http_response_rejects_objects_without_typed_response_protocol`.
 
 ### Typed response and semantic-node seam evidence (2026-10-16)
 
