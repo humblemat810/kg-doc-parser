@@ -1,5 +1,18 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-16, commit `aa661f2`)
+
+The persisted OCR page boundary no longer relies on a cast-only narrowing.
+Checkpoint payloads and reloaded page artifacts now pass a top-level typed
+validator before entering grouping. Legacy artifacts that omit `pdf_page_num`
+retain compatibility by receiving the authoritative page number from their
+persisted page key; malformed checkpoint values are rejected. Focused
+OCR/grouping coverage passed 15 tests, including fresh-process recovery,
+artifact crash recovery, late-writer fencing, and duplicate-worker acceptance.
+Parser CI run `#306` (`38903836991`) passed CPython 3.12, 3.13, 3.14, and PyPy
+3.11. Deeper nested cluster-field validation, dual-store reconciliation, OCR
+completeness, long-document equivalence, and release gates remain open.
+
 ## Latest evidence update (2026-10-16, commit `520675c`)
 
 The concurrent-resume error classifier now has both positive and negative

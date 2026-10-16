@@ -1,5 +1,16 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-16, commit `aa661f2`)
+
+Persisted OCR page JSON is now validated before it is narrowed to the typed
+page contract. The loader preserves legacy artifacts without an embedded page
+number by deriving it from the authoritative artifact key, while malformed
+checkpoint page numbers fail closed. The OCR/grouping subset passed 15 tests,
+and Parser CI run `#306` (`38903836991`) passed CPython 3.12, 3.13, 3.14, and
+PyPy 3.11. This closes one persisted-state typing seam only; deeper payload
+validation, crash-order reconciliation, OCR completeness, long-document
+equivalence, and release readiness remain partial or open.
+
 ## Latest evidence update (2026-10-16, commit `520675c`)
 
 Added a negative concurrent-resume regression: an unrelated nested workflow
