@@ -996,3 +996,8 @@ release is available.
   number compatibility. The compatibility and malformed nested-field matrix
   passes (`16 passed`); changed-module Ruff and `git diff --check` pass. Full
   Pyright, remote CI, and release readiness remain open.
+- [x] Commit `b37e8c0` restores the established `ValueError` contract for
+  invalid OCR page numbers after activating top-level page validation. The
+  complete adapter and workflow-contract selection passes (`78 passed,
+  8 skipped`); changed-module Ruff and `git diff --check` pass. Full Pyright,
+  remote CI, and release readiness remain open.
