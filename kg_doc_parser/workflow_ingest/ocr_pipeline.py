@@ -86,8 +86,9 @@ from .providers import (
     build_chat_model_for_role,
     invoke_with_timeout,
 )
+from .runtime_contracts import WorkflowRuntimeDeps
 from .sdk_boundary import raw_content
-from .serialization import JsonValue
+from .serialization import JsonValue, json_safe
 from .service import _RunCompat
 
 _LOGGER = logging.getLogger(__name__)
@@ -3147,13 +3148,20 @@ def _write_summary(
         "state_db_path": str(artifacts.state_db_path),
         "progress_path": str(artifacts.progress_path),
         "document_completed": state_store.read_document_completed(document_id=document_id),
-        "completed_pages": artifacts.completed_pages,
-        "reused_pages": artifacts.reused_pages,
-        "model_attempts": {
-            str(page_number): state_store.list_model_attempts(document_id=document_id, page_number=page_number)
-            for page_number in artifacts.completed_pages
-        },
-        "summary_attempts": state_store.list_summary_attempts(document_id=document_id),
+        "completed_pages": cast(list[JsonValue], list(artifacts.completed_pages)),
+        "reused_pages": cast(list[JsonValue], list(artifacts.reused_pages)),
+        "model_attempts": json_safe(
+            {
+                str(page_number): state_store.list_model_attempts(
+                    document_id=document_id,
+                    page_number=page_number,
+                )
+                for page_number in artifacts.completed_pages
+            }
+        ),
+        "summary_attempts": json_safe(
+            state_store.list_summary_attempts(document_id=document_id)
+        ),
         "page_count": len(artifacts.ocr_pages),
         "document_tree_path": str(artifacts.document_tree_path) if artifacts.document_tree is not None else None,
     }
@@ -3374,7 +3382,7 @@ def run_ocr_ingest_workflow(
     ocr_runner: OCRRunner | None = None,
     pdf_rasterizer: PDFRasterizer | None = None,
     ocr_candidate_models: Sequence[str] | None = None,
-    deps: dict[str, object] | None = None,
+    deps: WorkflowRuntimeDeps | None = None,
     probe: WorkflowProbe | None = None,
     grouping_proposals: Sequence[GroupProposal] | None = None,
     grouping_passes: Sequence[Sequence[GroupProposal]] | None = None,

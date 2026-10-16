@@ -14,7 +14,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
@@ -41,6 +41,7 @@ from .parser_core import (
 from .parsing import parse_page_index_document, parse_tree_document
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
+from .runtime_contracts import WorkflowRuntimeDeps
 from .semantics import HydratedTextPointer, SemanticNode
 from .serialization import JsonObject
 from .service import build_default_engines
@@ -260,7 +261,7 @@ def run_ocr_source_workflow(
     conversation_engine: GraphKnowledgeEngine | None = None,
     knowledge_engine: GraphKnowledgeEngine | None = None,
     probe: WorkflowProbe | None = None,
-    deps: Mapping[str, object] | None = None,
+    deps: WorkflowRuntimeDeps | None = None,
     document_id: str | None = None,
     title: str | None = None,
     grouping_proposals: Sequence[GroupProposal] | None = None,
@@ -315,7 +316,7 @@ def run_ocr_source_workflow(
         ocr_runner=ocr_runner,
         pdf_rasterizer=pdf_rasterizer,
         ocr_candidate_models=ocr_candidate_models,
-        deps={"probe": probe, **(deps or {})},
+        deps=cast(WorkflowRuntimeDeps, {"probe": probe, **(deps or {})}),
         probe=probe,
         grouping_proposals=grouping_proposals,
         grouping_passes=grouping_passes,
@@ -366,7 +367,7 @@ def run_ocr_batch_workflow(
     conversation_engine: GraphKnowledgeEngine | None = None,
     knowledge_engine: GraphKnowledgeEngine | None = None,
     probe: WorkflowProbe | None = None,
-    deps: Mapping[str, object] | None = None,
+    deps: WorkflowRuntimeDeps | None = None,
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
 ) -> list[OcrWorkflowCommandResult]:

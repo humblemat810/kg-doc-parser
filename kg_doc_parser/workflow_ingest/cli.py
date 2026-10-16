@@ -18,6 +18,7 @@ from .demo_harness import DemoHarnessConfig
 from .page_index import PageIndexMode
 from .probe import WorkflowProbe
 from .providers import WorkflowProviderSettings
+from .runtime_contracts import WorkflowRuntimeDeps
 from .runners import (
     WorkflowCommandResult,
     _fallback_parse_semantic_fn,
@@ -219,7 +220,10 @@ def _ocr_command(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     probe = _build_probe(output_dir, command="ocr")
-    deps: dict[str, object] = {"parse_semantic_fn": _fallback_parse_semantic_fn}
+    deps = cast(
+        WorkflowRuntimeDeps,
+        {"parse_semantic_fn": _fallback_parse_semantic_fn},
+    )
     if any(
         value is not None
         for value in (
@@ -230,12 +234,15 @@ def _ocr_command(args: argparse.Namespace) -> int:
         )
     ):
         effective_settings = provider_settings or WorkflowProviderSettings.from_env()
-        deps = {
-            "parse_semantic_fn": build_legacy_parse_semantic_fn(
-                provider_settings=effective_settings,
-                model_names=[args.parser_model] if args.parser_model else None,
-            )
-        }
+        deps = cast(
+            WorkflowRuntimeDeps,
+            {
+                "parse_semantic_fn": build_legacy_parse_semantic_fn(
+                    provider_settings=effective_settings,
+                    model_names=[args.parser_model] if args.parser_model else None,
+                )
+            },
+        )
     try:
         inputs = [Path(item) for item in args.inputs]
         if len(inputs) == 1 and inputs[0].is_file():

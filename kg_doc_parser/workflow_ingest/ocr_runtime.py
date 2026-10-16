@@ -70,6 +70,7 @@ from .ocr_pipeline import (
     _write_summary,
 )
 from .serialization import JsonObject, decode_json_object, decode_json_value
+from .runtime_contracts import WorkflowRuntimeDeps
 from .service import workflow_predicates
 
 if TYPE_CHECKING:
@@ -1246,7 +1247,7 @@ def run_ocr_root_workflow(
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
     grounded_summary_generator: GroundedSummaryGenerator | None = None,
-    deps: Mapping[str, object] | None = None,
+    deps: WorkflowRuntimeDeps | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
     run_ownership_lease_ms: int | None = None,
