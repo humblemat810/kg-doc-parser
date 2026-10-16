@@ -1,15 +1,26 @@
 # OCR Review Fix Checklist
 
-## Latest evidence update (2026-10-17, commit `bfc4535` pending CI)
+## CI promotion update (2026-10-17)
+
+Parser CI passed all four supported interpreter jobs for `87c0074` in run
+`38930968502`, `ebfb726` in `38931695531`, `d588b0d` in `38932121311`, and
+`bfc4535` plus checklist commit `a59c252` in `38932502441`. Earlier pending
+seams are also verified: `ed4ac40` passed `38930015792` and `9e0631a` passed
+`38930317634`. These results promote only the changed typing/serialization
+seams; recovery, semantic publication, OCR completeness, and release gates
+remain open.
+
+## Latest evidence update (2026-10-17, commit `bfc4535`, CI verified)
 
 Probe event serialization now uses the shared `ModelDumpLike` protocol and
 typed recursive JSON traversal rather than dynamic `getattr`. A regression
 covers nested model-dump payloads and preserves the backend serialization
 mode. Changed-module Pyright and Ruff pass, the focused test passes (`1
-passed`), and the diff check passes. CI and the recovery, semantic-
-publication, OCR-completeness, and release gates remain open.
+passed`), and the diff check passes. Parser CI `38932502441` passed all four
+supported interpreters; the recovery, semantic-publication, OCR-completeness,
+and release gates remain open.
 
-## Latest evidence update (2026-10-17, commit `d588b0d` pending CI)
+## Latest evidence update (2026-10-17, commit `d588b0d`, CI verified)
 
 Resume identity comparisons now pass through a typed key/value helper. A
 malformed `ocr_configuration_fingerprints` list is rejected rather than
@@ -17,9 +28,10 @@ silently widening through `object`; the focused regression passes (`1 passed,
 95 deselected`), changed-module Pyright and Ruff pass, and the diff check
 passes. The package-wide Pyright attempt was blocked by the known Windows
 Node launcher `EPERM` path-resolution failure, so no package-wide claim is
-made. CI verification and the recovery/release gates remain open.
+made. Parser CI `38932121311` passed all four interpreters; the
+recovery/release gates remain open.
 
-## Latest evidence update (2026-10-17, local commit pending CI)
+## Latest evidence update (2026-10-17, commit `ebfb726`, CI verified)
 
 The recursive JSON serialization alias now uses named
 `typing_extensions.TypeAliasType`. This avoids the Pydantic recursion caused
@@ -772,13 +784,14 @@ release is available.
   regression reads with explicit JSON/diagnostic narrowing. Provider and test
   Pyright reports zero errors, Ruff passes, and the focused selection passes
   (`10 passed`).
-- [~] Commit `ed4ac40` replaces the legacy semantic-tree `model_dump` lookup with
+- [x] Commit `ed4ac40` replaces the legacy semantic-tree `model_dump` lookup with
   the shared `ModelDumpLike` protocol and adds a dedicated coercion regression.
   Production and dedicated-test Pyright report zero errors, Ruff passes, and the
-  regression passes (`1 passed`). Remote CI for this commit is pending; the
-  pre-existing broad state-edge test file is not treated as clean evidence.
-- [~] Commit `9e0631a` narrows document source and summary fingerprint payloads
+  regression passes (`1 passed`). Parser CI `38930015792` passed all four
+  supported interpreter jobs; the pre-existing broad state-edge test file is
+  not treated as clean evidence.
+- [x] Commit `9e0631a` narrows document source and summary fingerprint payloads
   through the shared JSON-safe object helper instead of retaining
   `list[dict[str, object]]`. Document-model Pyright and Ruff pass, and the
-  fingerprint regressions pass (`2 passed`). Remote CI for this commit is
-  pending.
+  fingerprint regressions pass (`2 passed`). Parser CI `38930317634` passed all
+  four supported interpreter jobs.
