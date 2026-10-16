@@ -1082,7 +1082,7 @@ itself as proof:
 
 | Gate | Current status | Required closure evidence |
 | --- | --- | --- |
-| C01 installed API compatibility | PARTIAL / RELEASE EVIDENCE PENDING | Kogwistar `v0.6.12` is used by the current parser branch, and Parser CI run `38948398992` passed the CPython 3.12-3.14 and PyPy 3.11 matrix. Published-package verification and the final release decision remain open. |
+| C01 installed API compatibility | PARTIAL / REMOTE EVIDENCE PENDING | The active Poetry environment now verifies installed Kogwistar `0.6.12`: package metadata and `kogwistar.__version__` both report `0.6.12`, and `test_installed_kogwistar_exposes_the_persisted_workflow_api` passes (`1 passed`). The supported-interpreter matrix and final release decision remain open. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`. Released Kogwistar `v0.6.10` does not expose the ownership lease API used by the fresh-process tests; the compatible implementation is on the separately pushed, unmerged `fix/workflow-run-ownership` branch. Parser fresh-process recovery must still prove one parent lineage and no second semantic generation against a published compatible core package. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption, and `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact` proves the public preparation path reruns a database-first incomplete page. Full root/runtime checkpoint reconciliation remains open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
@@ -1420,3 +1420,9 @@ protocol.
   Document-model Pyright and Ruff pass, and fingerprint regressions pass
   (`2 passed`); Parser CI `38930317634` passed all four supported interpreter
   jobs.
+- [x] Commit `14464e2` routes handler parser payload and source-map reads through
+  the recursive `decode_json_object` boundary instead of unchecked casts.
+  The malformed proposal/review, authoritative source-map forwarding, and cache
+  isolation selection passes (`4 passed`); changed-module Ruff passes. This
+  closes the handler JSON boundary only, not repository-wide typing or release
+  gates.
