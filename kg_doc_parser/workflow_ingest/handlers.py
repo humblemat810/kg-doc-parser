@@ -370,8 +370,13 @@ def _progress_bar(done: int, total: int, width: int = 20) -> str:
 
 
 def _log_runtime_progress(*, step_name: str, state_view: Mapping[str, object]) -> None:
-    current_layer_context = _state_mapping(state_view.get("current_layer_context"))
-    parse_session = _state_mapping(state_view.get("parse_session"))
+    try:
+        current_layer_context = _state_mapping(state_view.get("current_layer_context"))
+        parse_session = _state_mapping(state_view.get("parse_session"))
+    except (TypeError, ValueError):
+        # Progress reporting must not turn malformed diagnostic state into a
+        # workflow failure; strict decoding remains enforced by state consumers.
+        return
     if not current_layer_context or not parse_session:
         return
     depth = _state_int(current_layer_context.get("depth"), 0)
