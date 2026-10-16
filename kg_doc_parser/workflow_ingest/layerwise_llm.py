@@ -147,6 +147,38 @@ class _BoundaryLookupCandidate(_BoundaryLegalCutpoint):
     source_cluster_id: str
 
 
+class _BoundaryRefinementCutpoint(TypedDict):
+    cut_offset: int
+    boundary_kind: str
+    confidence: float
+    reason: str
+
+
+class _BoundaryRefinementPromptContext(TypedDict):
+    parent_node_id: str
+    source_cluster_id: str
+    input_cut_offset: int | None
+    text_before_cut: str
+    text_after_cut: str
+    cut_reason: str
+    parent_ids: list[str]
+    pointer_excerpt: str
+    legal_cutpoints: list[_BoundaryRefinementCutpoint]
+
+
+class _BoundaryReviewDecisionSummary(TypedDict):
+    candidate_id: str
+    decision: str
+    parent_node_id: str
+    source_cluster_id: str
+    input_cut_offset: int | None
+    resolved_cut_offset: int | None
+    boundary_kind: str | None
+    anchor_match_mode: str | None
+    anchor_match_score: float | None
+    reason: str
+
+
 class _PointerExcerpt(TypedDict):
     source_cluster_id: str
     start_char: int | None
@@ -1167,7 +1199,7 @@ def _boundary_refinement_prompt_context(
     current_layer_context: CurrentLayerContext,
     parser_source_map: Mapping[str, Mapping[str, object]],
     target: BoundaryCutpoint,
-) -> dict[str, object]:
+) -> _BoundaryRefinementPromptContext:
     parent_ids = list(current_layer_context.parent_node_ids)
     parent_pointers = dict(current_layer_context.parent_content_pointers_by_id)
     target_parent_pointers = list(parent_pointers.get(target.parent_node_id) or [])
@@ -1177,7 +1209,7 @@ def _boundary_refinement_prompt_context(
             target_pointer = pointer
             break
     target_excerpt = _pointer_text(target_pointer, parser_source_map=parser_source_map) if target_pointer is not None else ""
-    legal_cutpoints: list[dict[str, object]] = []
+    legal_cutpoints: list[_BoundaryRefinementCutpoint] = []
     if target_pointer is not None:
         start_char = _offset_value(_pointer_field(target_pointer, "start_char"), 0)
         for boundary in _legal_cutpoints_for_text(target_excerpt, max_points=128):
@@ -1210,7 +1242,9 @@ def _boundary_decision_key(decision: BoundaryReviewDecision) -> tuple[str, str, 
     )
 
 
-def _boundary_review_decision_summary(decisions: list[BoundaryReviewDecision]) -> list[dict[str, object]]:
+def _boundary_review_decision_summary(
+    decisions: list[BoundaryReviewDecision],
+) -> list[_BoundaryReviewDecisionSummary]:
     return [
         {
             "candidate_id": decision.candidate_id,
