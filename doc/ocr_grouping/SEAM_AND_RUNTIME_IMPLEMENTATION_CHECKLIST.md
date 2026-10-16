@@ -1183,3 +1183,10 @@ protocol.
   `ParserPayload`. Pyright reports zero errors for `layerwise_llm.py`, Ruff
   passes, and the focused proposal/boundary suite passes (`23 passed`). CI for
   this commit is queued; the release gate remains open.
+- [x] Commit `f0bb1cc` normalizes client workflow state through `json_safe` and
+  rejects a non-object result at the serialization boundary rather than relying
+  on an unchecked `dict[str, JsonValue]` cast. `clients.py` reports zero Pyright
+  errors, the CI Ruff selection passes, and the focused client/demo contract
+  selection passes (`11 passed, 4 skipped`). This is evidence for the client
+  state seam only; full runtime recovery, matrix CI, and release gates remain
+  open.
