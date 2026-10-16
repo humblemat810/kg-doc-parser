@@ -31,6 +31,7 @@ from kg_doc_parser.workflow_ingest.handlers import (
     _state_mapping,
     _state_string_list,
 )
+from kg_doc_parser.ocr import _structured_output_payload, get_page_json
 from kg_doc_parser.workflow_ingest.models import (
     BoundingBox,
     GroundedSourceRecord,
@@ -42,7 +43,6 @@ from kg_doc_parser.workflow_ingest.models import (
 )
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
-from kg_doc_parser.ocr import get_page_json
 
 pytestmark = [pytest.mark.workflow]
 
@@ -117,6 +117,21 @@ def test_legacy_ocr_page_loader_rejects_non_object_json(tmp_path: Path) -> None:
 
     with pytest.raises(TypeError, match="OCR page JSON must be JSON objects"):
         get_page_json(str(tmp_path), 1)
+
+
+@pytest.mark.ci
+def test_legacy_ocr_structured_output_envelope_is_runtime_checked() -> None:
+    semantic = SemanticNode(
+        title="response",
+        node_type="DOCUMENT_ROOT",
+        total_content_pointers=[],
+        child_nodes=[],
+        level_from_root=0,
+    )
+    assert _structured_output_payload({"parsed": semantic})["parsed"] is semantic
+
+    with pytest.raises(TypeError, match="structured OCR output parsed value"):
+        _structured_output_payload({"parsed": {"text": "not a model"}})
 
 
 def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):

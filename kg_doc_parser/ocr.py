@@ -81,6 +81,21 @@ class StructuredOutputPayload(TypedDict):
     parsing_error: NotRequired[object]
 
 
+def _structured_output_payload(value: object) -> StructuredOutputPayload:
+    if not isinstance(value, Mapping):
+        raise TypeError("structured OCR output must be a mapping")
+    payload: StructuredOutputPayload = {}
+    parsed = value.get("parsed")
+    if parsed is not None and not isinstance(parsed, BaseModel):
+        raise TypeError("structured OCR output parsed value must be a model or null")
+    payload["parsed"] = parsed
+    if "raw" in value:
+        payload["raw"] = value["raw"]
+    if "parsing_error" in value:
+        payload["parsing_error"] = value["parsing_error"]
+    return payload
+
+
 def _build_ocr_llm(
     model_name: str,
     *,
@@ -242,9 +257,10 @@ def get_first_round_response(
                     
                     
                     usage_metadata.append(_raw_usage_metadata(raw_response))
-                    response_with_raw = cast(StructuredOutputPayload, after_parse.invoke(raw_response))
+                    response_with_raw = _structured_output_payload(after_parse.invoke(raw_response))
                     response: RawOCRResponse | OCRClusterResponse | None
-                    response1 = cast(RawOCRResponse | None, response_with_raw.get('parsed'))
+                    parsed_response = response_with_raw.get('parsed')
+                    response1 = parsed_response if isinstance(parsed_response, RawOCRResponse) else None
                     parsing_error = response_with_raw.get('parsing_error')
                     if response1 is None:
                         
@@ -267,20 +283,25 @@ def get_first_round_response(
                         sys_message_2 = sys_message.model_copy(deep = True)
                         class OCRDraftResponse(BaseModel):
                             text: str = Field(description = "OCR identified text with layout")
-                        ocr_draft_response = cast(
-                                                    OCRDraftResponse | None,
-                                                    build_structured_output_runnable(llm, OCRDraftResponse, include_raw=True).invoke(messages),
-                                                )
+                        draft_value = build_structured_output_runnable(
+                            llm, OCRDraftResponse, include_raw=True
+                        ).invoke(messages)
+                        ocr_draft_response = (
+                            draft_value if isinstance(draft_value, OCRDraftResponse) else None
+                        )
                         if (ocr_draft_response is not None) and (ocr_draft_response.text is not None) and ocr_draft_response.text != "":
                             draft_responses[model_name] = ocr_draft_response.text
                         sys_message_2.content += ("If your internal OCR fails. Focus on table parsing mode because my error analysis modes often show that the failing OCR pages are usually highly complicated tables. "
                                                  f"Try to put in as much data as possible given all text found by simple OCR for your reference:```{ocr_draft_response.text}```"  if ocr_draft_response else"")
-                        response_with_raw = cast(StructuredOutputPayload, build_structured_output_runnable(llm, RawOCRResponse, include_raw=True).invoke(
-                            [sys_message, img_message]
-                        ))
+                        response_with_raw = _structured_output_payload(
+                            build_structured_output_runnable(
+                                llm, RawOCRResponse, include_raw=True
+                            ).invoke([sys_message, img_message])
+                        )
                         raw_ocr_response : None | RawOCRResponse= None
-                        if response_with_raw.get('parsed'):
-                            raw_ocr_response = cast(RawOCRResponse, response_with_raw.get('parsed'))
+                        parsed_retry = response_with_raw.get('parsed')
+                        if isinstance(parsed_retry, RawOCRResponse):
+                            raw_ocr_response = parsed_retry
                         else:
                             try:
                                 raw = _raw_content(response_with_raw.get('raw'))

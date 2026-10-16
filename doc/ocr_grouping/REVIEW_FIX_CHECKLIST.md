@@ -974,3 +974,8 @@ release is available.
   typed model return values. The malformed-root regression plus adjacent
   persisted/export boundary tests pass (`3 passed`); changed-file Ruff passes.
   Full Pyright, remote CI, and release readiness remain open.
+- [x] The legacy structured OCR response envelope now performs runtime mapping
+  and model checks before parsed values are consumed, replacing direct casts in
+  the retry path. The malformed-envelope, malformed-page, and persisted-payload
+  regressions pass (`3 passed`); changed-file Ruff and `git diff --check` pass.
+  Full Pyright, remote CI, and release readiness remain open.
