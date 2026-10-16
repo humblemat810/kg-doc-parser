@@ -1,5 +1,14 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-17, commit `a0332d1`, pending CI)
+
+Proposal/review cache namespaces now accept only JSON-safe `JsonValue` values,
+and the external provider boundary is explicitly fail-closed. Parser-core and
+layerwise protocol tests pass locally (`29 passed, 6 skipped`); Ruff and
+`git diff --check` pass. The branch was pushed, but remote CI could not be
+queried because the local environment has no `gh` executable, so this remains
+pending CI evidence.
+
 ## CI promotion update (2026-10-17)
 
 Parser CI passed all four supported interpreter jobs for `87c0074` in run

@@ -1,5 +1,17 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-17, commit `a0332d1`, pending CI)
+
+Parser-core cache namespaces now use the JSON-safe `JsonValue` contract for
+both proposal and review cache identities, preventing arbitrary runtime
+objects from entering deterministic serialization. The provider exception
+boundary is explicitly documented as fail-closed because provider failures
+must become structured review failure rather than escape into an accepted
+parse. Parser-core and layerwise protocol tests pass locally (`29 passed, 6
+skipped`); Ruff and `git diff --check` pass. The feature branch was pushed,
+but GitHub CI could not be queried from this environment (`gh` unavailable),
+so this evidence is not promoted to remote-CI verified.
+
 ## CI promotion update (2026-10-17)
 
 Parser CI passed all four supported interpreter jobs for `87c0074` in run
