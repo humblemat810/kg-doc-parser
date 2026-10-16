@@ -2687,16 +2687,15 @@ def _decode_pdf_render_manifest(value: object) -> _PDFRenderManifest | None:
     rasterizer = value.get("rasterizer")
     rasterizer_configuration = value.get("rasterizer_configuration")
     render_identity = value.get("render_identity")
-    if not all(
-        isinstance(item, str)
-        for item in (
-            pdf_sha256,
-            renderer_version,
-            rasterizer,
-            rasterizer_configuration,
-            render_identity,
-        )
-    ):
+    if not isinstance(pdf_sha256, str):
+        return None
+    if not isinstance(renderer_version, str):
+        return None
+    if not isinstance(rasterizer, str):
+        return None
+    if not isinstance(rasterizer_configuration, str):
+        return None
+    if not isinstance(render_identity, str):
         return None
     manifest: _PDFRenderManifest = {
         "manifest_version": manifest_version,

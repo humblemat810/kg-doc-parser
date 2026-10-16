@@ -45,6 +45,7 @@ from .models import (
 )
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
+from .runtime_contracts import WorkflowRuntimeDeps
 from .semantics import HydratedTextPointer
 from .serialization import JsonValue
 from .service import StorageBackendFactory, build_default_engines
@@ -116,7 +117,9 @@ class DemoHarnessConfig:
     probe_filename: str = "probe-events.jsonl"
     summary_filename: str = "demo-summary.json"
     cache_dirname: str = "llm-cache"
-    deps: dict[str, object] = field(default_factory=dict)
+    deps: WorkflowRuntimeDeps = field(
+        default_factory=lambda: cast(WorkflowRuntimeDeps, {})
+    )
 
 
 @dataclass
@@ -338,7 +341,7 @@ def _shutdown_subprocess_server(
             proc.wait(timeout=5)
 
 
-def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, object]:
+def _fake_layered_deps(inp: WorkflowIngestInput) -> WorkflowRuntimeDeps:
     """Build deterministic proposal/review hooks for the fake layered demo mode."""
     text = inp.collections[0].pages[0].units[0].text or ""
     unit_id = f"{inp.request_id}|p1_t0"
@@ -462,7 +465,7 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
         title=config.title,
     )
 
-    deps = dict(config.deps)
+    deps = cast(WorkflowRuntimeDeps, dict(config.deps))
     deps["llm_cache"] = WorkflowLLMCallCache(
         artifacts.cache_dir,
         probe=probe,

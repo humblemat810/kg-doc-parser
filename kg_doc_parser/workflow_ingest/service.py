@@ -15,6 +15,7 @@ from .design import DEFAULT_WORKFLOW_ID
 from .handlers import build_ingest_step_resolver
 from .models import IngestRunResult, WorkflowExportBundle, WorkflowIngestInput
 from .providers import WorkflowProviderSettings, build_embedding_function
+from .runtime_contracts import WorkflowRuntimeDeps
 from .serialization import JsonValue
 
 if TYPE_CHECKING:
@@ -360,7 +361,7 @@ def run_ingest_workflow(
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
 ) -> tuple[_RunCompat, WorkflowExportBundle | None]:
-    effective_deps = dict(deps or {})
+    effective_deps = cast(WorkflowRuntimeDeps, dict(deps or {}))
     if provider_settings is not None:
         effective_deps.setdefault("provider_settings", provider_settings)
     client = DirectRuntimeIngestClient(
