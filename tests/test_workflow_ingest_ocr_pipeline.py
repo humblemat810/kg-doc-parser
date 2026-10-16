@@ -222,6 +222,19 @@ def test_materialize_image_payloads_rejects_out_of_order_page_numbers(tmp_path: 
         )
 
 
+def test_ocr_runtime_state_boundary_rejects_wrong_known_field_types() -> None:
+    with pytest.raises(TypeError, match="page_cursor.*integer"):
+        ocr_runtime_module._typed_state({"page_cursor": "1"})
+
+    with pytest.raises(TypeError, match="completed_pages.*list of integers"):
+        ocr_runtime_module._typed_state({"completed_pages": [1, "2"]})
+
+    with pytest.raises(TypeError, match="page_sources contains a malformed entry"):
+        ocr_runtime_module._typed_state(
+            {"page_sources": [{"page_number": 1, "image_path": 42}]}
+        )
+
+
 def test_pdf_rasterization_regenerates_corrupt_cached_page_atomically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

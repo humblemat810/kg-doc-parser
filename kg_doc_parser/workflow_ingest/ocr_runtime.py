@@ -190,6 +190,64 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
     values at each use.  The TypedDict keeps known keys from degrading to
     ``object`` after the boundary has been crossed.
     """
+    if not all(isinstance(key, str) for key in value):
+        raise TypeError("OCR workflow state keys must be strings")
+
+    string_keys = (
+        "ocr_page_state_version",
+        "ocr_root_state_version",
+        "document_id",
+        "source_fingerprint",
+        "grouping_policy_version",
+        "legacy_dir",
+        "checkpoint_revision",
+    )
+    for key in string_keys:
+        field = value.get(key)
+        if field is not None and not isinstance(field, str):
+            raise TypeError(f"OCR workflow state field {key!r} must be a string")
+
+    integer_keys = (
+        "pass_index",
+        "ocr_page_recovery_generation",
+        "page_cursor",
+        "last_failed_page",
+    )
+    for key in integer_keys:
+        field = value.get(key)
+        if field is not None and type(field) is not int:
+            raise TypeError(f"OCR workflow state field {key!r} must be an integer")
+
+    boolean_keys = ("checkpoint_restored", "checkpoint_absent", "summaries_generated")
+    for key in boolean_keys:
+        field = value.get(key)
+        if field is not None and type(field) is not bool:
+            raise TypeError(f"OCR workflow state field {key!r} must be a boolean")
+
+    for key in ("tree", "workflow_input", "grouping_result", "semantic_result", "semantic_tree", "ocr_page_result", "export_bundle"):
+        field = value.get(key)
+        if field is not None and (
+            not isinstance(field, dict) or not all(isinstance(item_key, str) for item_key in field)
+        ):
+            raise TypeError(f"OCR workflow state field {key!r} must be a JSON object")
+
+    for key in ("completed_pages", "reused_pages"):
+        field = value.get(key)
+        if field is not None and (
+            not isinstance(field, list) or any(type(item) is not int for item in field)
+        ):
+            raise TypeError(f"OCR workflow state field {key!r} must be a list of integers")
+
+    page_sources = value.get("page_sources")
+    if page_sources is not None:
+        if not isinstance(page_sources, list):
+            raise TypeError("OCR workflow state field 'page_sources' must be a list")
+        for item in page_sources:
+            if not isinstance(item, dict) or type(item.get("page_number")) is not int or not isinstance(
+                item.get("image_path"), str
+            ):
+                raise TypeError("OCR workflow state page_sources contains a malformed entry")
+
     return cast(_OCRWorkflowState, value)
 
 
