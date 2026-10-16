@@ -953,3 +953,9 @@ release is available.
   `list[dict[str, object]]`. Document-model Pyright and Ruff pass, and the
   fingerprint regressions pass (`2 passed`). Parser CI `38930317634` passed all
   four supported interpreter jobs.
+- [x] Commit `017bb13` validates unknown non-runtime OCR checkpoint keys
+  recursively through the JSON contract, while preserving Kogwistar's reserved
+  underscore-prefixed runtime plumbing values. The new opaque-future-state
+  regression and the OCR runtime resume seam pass; changed-file Ruff and
+  `git diff --check` pass. Remote push/CI is pending connectivity; this does
+  not close the package-wide typing or release gates.
