@@ -18,6 +18,7 @@ from typing import TypedDict, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver
+from kogwistar.runtime.contract import Predicate
 from kogwistar.runtime.models import (
     RunFailure,
     RunSuccess,
@@ -25,7 +26,6 @@ from kogwistar.runtime.models import (
     StepRunResult,
     WorkflowInvocationRequest,
 )
-from kogwistar.runtime.contract import Predicate
 from kogwistar.runtime.runtime import (
     RunResult,
     StepContext,

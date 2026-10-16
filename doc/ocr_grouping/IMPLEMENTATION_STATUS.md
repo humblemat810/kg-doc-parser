@@ -2,9 +2,9 @@
 
 ## Latest release-gate update (2026-10-16)
 
-Kogwistar `0.6.10` is published on PyPI. A clean parser environment now
-verifies `metadata.version("kogwistar") == "0.6.10"` and
-`kogwistar.__version__ == "0.6.10"`; the previous `0.6.9` module-version
+Kogwistar `0.6.12` is published on PyPI. A clean parser environment now
+verifies `metadata.version("kogwistar") == "0.6.12"` and
+`kogwistar.__version__ == "0.6.12"`; the previous `0.6.9` module-version
 mismatch is closed. Installed-release fresh-process root resume, concurrent
 resume ownership, and real process termination all pass. Remaining partial
 gates are the dual-store crash orderings, Linux SIGKILL coverage, independent
@@ -26,7 +26,7 @@ tests pass. The deleted-artifact terminal-resume regression also passes: three
 OCR calls become two accepted page artifacts on the recovery run, the valid
 second page is reused, and semantic parsing runs once for the recovery
 incarnation. Ruff and `git diff --check` pass for the changed files. This is
-The clean parser environment uses published Kogwistar `0.6.10`, so the local
+The clean parser environment uses published Kogwistar `0.6.12`, so the local
 deterministic suite provides installed-package evidence. Linux SIGKILL,
 complete dual-store reconciliation, and independent OCR completeness remain
 open release gates.

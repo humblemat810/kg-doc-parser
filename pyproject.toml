@@ -36,7 +36,7 @@ langchain-google-vertexai = { version = "^3.2.4", optional = true }
 pydantic-extension = "^0.0.7"
 rapidfuzz = "^3.14.3"
 mcp = "^2.2.0"
-kogwistar = "0.6.10"
+kogwistar = "0.6.12"
 
 [tool.poetry.extras]
 openai = ["langchain-openai"]

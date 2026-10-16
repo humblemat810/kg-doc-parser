@@ -2,15 +2,15 @@
 
 ## Latest verified release evidence (2026-10-16)
 
-The latest parser CI matrix still installs Kogwistar `0.6.10`, and the
-installed-release recovery gate is failing. The source-checkout tests exercise
-newer merged Kogwistar code, but that does not prove the published dependency
-works. In the installed matrix,
+PyPI now exposes Kogwistar `0.6.12`, and the parser manifest and lockfile are
+updated to consume it. The post-pin installed-release recovery matrix is still
+pending; runs that installed `0.6.10` remain historical evidence only. Before
+that pin, the installed matrix
 `test_ocr_root_concurrent_resume_has_one_owner_and_one_result` receives a
 nested-workflow failure instead of a `WorkflowRunOwnershipError`, and
 `test_grouping_checkpoint_reopens_after_process_termination` exits with the
-child worker's recovery error. The corrected Kogwistar runtime must be
-published, then pinned and retested before this gate can pass.
+child worker's recovery error. The corrected published runtime must now be
+retested before this gate can pass.
 
 Dual-store crash-order, Linux SIGKILL, and OCR completeness gates remain open
 independently.

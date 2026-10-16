@@ -1511,17 +1511,17 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.10"
+version = "0.6.12"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "kogwistar-0.6.10-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:01fa62ef1600e186d967d18a9e3f6d526eef32be07f7134e33c0e8c7d2752a48"},
-    {file = "kogwistar-0.6.10-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:06bc3bc718aeb960f32a7fb89f237997693b1da7d692aaf021a8aab673541726"},
-    {file = "kogwistar-0.6.10-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:8dfc808231edbacde50bba9ea6704933d7ba147ffcb80612427f5ab6675feb12"},
-    {file = "kogwistar-0.6.10-cp312-abi3-win_amd64.whl", hash = "sha256:8ffffb4b3686099c54769102df9aedd13ac66739cc411ccf05285b4915f58f38"},
-    {file = "kogwistar-0.6.10.tar.gz", hash = "sha256:1f1ab7b554b7f54f8f2df42b9040a0dd27449c0e2be22c1c964e0311f96ddcf2"},
+    {file = "kogwistar-0.6.12-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:90983c65a9d9148f2c525d92a7d870bde2199f72ffac18ecd33950aeb291d2de"},
+    {file = "kogwistar-0.6.12-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:ed8cac2b0eda6f4fc5d812817534e3b3e4c1fe196ca3f72a79d34c1f2c6e448a"},
+    {file = "kogwistar-0.6.12-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:e9076cef120088b62e2e48ccdc9c80ae02647b7d63f866f62d47fd22d2e9daed"},
+    {file = "kogwistar-0.6.12-cp312-abi3-win_amd64.whl", hash = "sha256:0d1ef596eac0f72fd4a3dccd19283a104e24fc179c9aa70aadcb912be29e819d"},
+    {file = "kogwistar-0.6.12.tar.gz", hash = "sha256:2a0cb39c58e662da8c455f95501b584eb84f5961a60d95b7cffb996ac628765c"},
 ]
 
 [package.dependencies]
@@ -4384,4 +4384,4 @@ vertex = ["langchain-google-vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "c35f79e141c9487e3f1b51baa6747bf1a2e7d29c5653bfa02bc33ef98fa62e46"
+content-hash = "81f85b2609d850cddb8160b86aa84d7dcc05502ad98b3af9524107c0d5c0e7fc"

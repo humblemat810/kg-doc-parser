@@ -2,12 +2,12 @@
 
 ## Current verification correction (2026-10-16)
 
-The latest parser CI matrix does not pass the installed-release recovery gate.
-It still installs Kogwistar `0.6.10`; that release lacks the lease-aware
-`WorkflowRuntime` constructor and the retryable-child runtime behavior required
-by these tests. Source-checkout tests against newer merged Kogwistar code are
-not installed-release evidence. The dependency gate remains open until the
-corrected core release is published and consumed by this parser matrix.
+PyPI now exposes Kogwistar `0.6.12`, including the lease-aware
+`WorkflowRuntime` constructor and retryable-child runtime behavior required by
+these tests. The parser manifest and lockfile have been updated from `0.6.10`
+to `0.6.12`; the post-pin parser CI matrix is still pending. Runs before that
+pin remain historical evidence only and must not be used to close the installed
+release gate.
 
 Dual-store crash reconciliation, Linux SIGKILL evidence, independent OCR
 completeness, and long-document frontier measurements also remain open.
@@ -135,11 +135,10 @@ whose contract crosses SQLite, Kogwistar, a provider, or graph export.
   S02, S06, C02, C03, C04, C05, or C06 green from narrow tests.
 - [x] **D-2.** Keep the installed Kogwistar API gate separate from source
   checkout compatibility; record the exact version and CI run.
-- [~] **D-3.** Merge and publish the Kogwistar retryable-child and lease-aware
+- [x] **D-3.** Merge and publish the Kogwistar retryable-child and lease-aware
   runtime fixes before claiming Track A-6 or the 100-page release fixture.
-  The fixes are merged on Kogwistar `main`, but this parser still resolves
-  `0.6.10`; its installed CI failures are recorded above. A corrected package
-  release and parser pin update are still required.
+  Kogwistar `0.6.12` is visible on PyPI and is now the parser's locked
+  dependency. The post-pin parser matrix remains the evidence gate.
 - [ ] **D-4.** Close Track A process/recovery evidence before claiming Track B
   end-to-end seam closure.
 - [ ] **D-5.** Only after both tracks are green, bump the parser version, add
