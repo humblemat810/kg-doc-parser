@@ -70,6 +70,37 @@ OCRResponseDecoder = Callable[[Mapping[str, object]], OCRClusterResponse]
 _REGISTERED_PROVIDERS: dict[str, OCRPageProvider] = {}
 
 
+def _external_attribute(value: object, name: str) -> object | None:
+    """Read an optional vendor attribute at the untyped SDK boundary."""
+
+    return getattr(value, name, None)
+
+
+def _as_external_sequence(value: object) -> Sequence[object]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        return ()
+    return value
+
+
+def _external_sequence(value: object, name: str) -> Sequence[object]:
+    return _as_external_sequence(_external_attribute(value, name))
+
+
+def _external_text(value: object, name: str, default: str = "") -> str:
+    candidate = _external_attribute(value, name)
+    return candidate if isinstance(candidate, str) else default
+
+
+def _external_callable(value: object, name: str) -> Callable[[], object] | None:
+    candidate = _external_attribute(value, name)
+    return candidate if callable(candidate) else None
+
+
+def _external_number(value: object, name: str) -> int | float | None:
+    candidate = _external_attribute(value, name)
+    return candidate if isinstance(candidate, (int, float)) else None
+
+
 def register_ocr_provider(name: str, provider: OCRPageProvider) -> None:
     """Register a named user provider for explicit ``custom`` OCR calls.
 
@@ -330,9 +361,10 @@ def run_rapidocr_page(image_path: Path, page_number: int, provider_settings: Pro
     except ImportError as exc:
         raise RuntimeError("RapidOCR selected but rapidocr-onnxruntime is not installed") from exc
     result = RapidOCR()(str(image_path))
-    texts = getattr(result, "txts", ())
-    boxes = getattr(result, "boxes", ())
-    return _direct_response(image_path, list(zip(boxes, texts, strict=False)))
+    texts = _external_sequence(result, "txts")
+    boxes = _external_sequence(result, "boxes")
+    detections = [(box, str(text)) for box, text in zip(boxes, texts, strict=False)]
+    return _direct_response(image_path, detections)
 
 
 def run_easyocr_page(image_path: Path, page_number: int, provider_settings: ProviderEndpointConfig) -> OCRClusterResponse:
@@ -345,13 +377,13 @@ def run_easyocr_page(image_path: Path, page_number: int, provider_settings: Prov
         raise RuntimeError("EasyOCR selected but easyocr is not installed") from exc
     languages = tuple(
         language.strip()
-        for language in getattr(provider_settings, "ocr_language", "en").split(",")
+        for language in provider_settings.ocr_language.split(",")
         if language.strip()
     ) or ("en",)
     reader = Reader(list(languages), gpu=False, verbose=False)
     raw_results = reader.readtext(str(image_path), detail=1)
     detections: list[tuple[object, str]] = []
-    for item in raw_results:
+    for item in _as_external_sequence(raw_results):
         if isinstance(item, (list, tuple)) and len(item) >= 2:
             detections.append((item[0], str(item[1])))
     return _direct_response(image_path, detections)
@@ -449,16 +481,20 @@ def run_docling_ocr_page(
     ordering: list[int] = []
 
     def _box(item: object) -> tuple[float, float, float, float] | None:
-        provenance = getattr(item, "prov", None)
-        records: list[object] = list(provenance) if isinstance(provenance, (list, tuple)) else [provenance]
+        provenance = _external_attribute(item, "prov")
+        records: Sequence[object] = _as_external_sequence(provenance) or (provenance,)
         for record in records:
-            bbox = getattr(record, "bbox", None)
+            bbox = _external_attribute(record, "bbox")
             if bbox is None:
                 continue
-            left_value = getattr(bbox, "l", getattr(bbox, "left", None))
-            right_value = getattr(bbox, "r", getattr(bbox, "right", None))
-            top_value = getattr(bbox, "t", getattr(bbox, "top", None))
-            bottom_value = getattr(bbox, "b", getattr(bbox, "bottom", None))
+            left_value = _external_number(bbox, "l")
+            left_value = left_value if left_value is not None else _external_number(bbox, "left")
+            right_value = _external_number(bbox, "r")
+            right_value = right_value if right_value is not None else _external_number(bbox, "right")
+            top_value = _external_number(bbox, "t")
+            top_value = top_value if top_value is not None else _external_number(bbox, "top")
+            bottom_value = _external_number(bbox, "b")
+            bottom_value = bottom_value if bottom_value is not None else _external_number(bbox, "bottom")
             raw_values = (left_value, right_value, top_value, bottom_value)
             numeric_values: list[float] = []
             for value in raw_values:
@@ -476,20 +512,20 @@ def run_docling_ocr_page(
                 return left, right, top, bottom
         return None
 
-    iterate_items = getattr(document, "iterate_items", None)
-    raw_items = iterate_items() if callable(iterate_items) else []
-    items = list(raw_items) if isinstance(raw_items, (list, tuple)) else []
+    iterate_items = _external_callable(document, "iterate_items")
+    raw_items = iterate_items() if iterate_items is not None else ()
+    items = list(_as_external_sequence(raw_items))
     for item_record in items:
         item = item_record[0] if isinstance(item_record, tuple) and item_record else item_record
         box = _box(item)
         if box is None:
             continue
-        text_value = getattr(item, "text", "")
+        text_value = _external_text(item, "text")
         if not text_value:
-            export_item = getattr(item, "export_to_markdown", None)
-            text_value = export_item() if callable(export_item) else ""
+            export_item = _external_callable(item, "export_to_markdown")
+            text_value = export_item() if export_item is not None else ""
         text = str(text_value or "").strip()
-        label = str(getattr(item, "label", "") or "").lower()
+        label = _external_text(item, "label").lower()
         cluster_number = len(ordering)
         if text and "table" not in label and "picture" not in label and "figure" not in label:
             clusters.append(
@@ -517,8 +553,8 @@ def run_docling_ocr_page(
         ordering.append(cluster_number)
 
     if not ordering:
-        export = getattr(document, "export_to_markdown", None)
-        text = str(export() if callable(export) else getattr(document, "text", "")).strip()
+        export = _external_callable(document, "export_to_markdown")
+        text = str(export() if export is not None else _external_text(document, "text")).strip()
         if text:
             clusters.append(
                 TextCluster(
@@ -546,7 +582,7 @@ def run_docling_ocr_page(
         incomplete_text=False,
         data_loss_likelihood=0.0,
         scan_quality="medium",
-        contains_table=any("table" in str(getattr(item, "label", "")).lower() for item in items),
+        contains_table=any("table" in _external_text(item, "label").lower() for item in items),
         spatial_accuracy="region" if ordering else "page",
     )
 
