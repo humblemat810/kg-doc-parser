@@ -1,5 +1,16 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-16, commit `1908772`)
+
+The OCR SDK content boundary now has an explicit runtime-checkable Protocol.
+Regression coverage proves that SDK-like content is unwrapped while mappings
+and `None` are not coerced or reinterpreted. Two focused tests and the
+CI-relevant Ruff subset passed locally; Parser CI runs `#309` and `#310`
+passed CPython 3.12, 3.13, 3.14, and PyPy 3.11. Full-module Ruff findings in
+the legacy OCR module remain open and are not represented as fixed by this
+seam change. Broader payload validation, recovery, and release gates remain
+partial or open.
+
 ## Latest evidence update (2026-10-16, commit `2ec61bd`)
 
 Expanded concurrent-resume regression coverage to distinguish ordinary nested

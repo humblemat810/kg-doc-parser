@@ -1,5 +1,17 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-16, commit `1908772`)
+
+The external OCR response seam now uses a runtime-checkable content protocol
+instead of an untyped `getattr`. A regression covers SDK-like response objects,
+already-decoded mappings, and `None` without changing the fallback behavior.
+Focused coverage passed 2 tests; the CI-relevant Ruff subset (`E4,E7,E9,F`)
+and diff check passed. Parser CI runs `#309` and `#310` passed CPython 3.12,
+3.13, 3.14, and PyPy 3.11. Full-module Ruff still reports pre-existing
+legacy `ocr.py` findings outside this seam; they remain tracked separately.
+Broader external payload validation, crash-order reconciliation, OCR
+completeness, long-document equivalence, and release gates remain open.
+
 ## Latest evidence update (2026-10-16, commit `2ec61bd`)
 
 The concurrent-resume failure classifier now has a parametrized regression
