@@ -9,9 +9,11 @@ from kg_doc_parser.workflow_ingest import (
     WorkflowProviderSettings,
 )
 from kg_doc_parser.workflow_ingest.layerwise_llm import (
+    _dump_model,
     _fallback_layer_result,
     _make_boundary_summary,
     _pointer_excerpt,
+    _pointer_field,
     _pointer_text,
     _proposal_validation_reason,
     _source_map_excerpt,
@@ -48,6 +50,26 @@ def _provider_settings() -> WorkflowProviderSettings:
     return WorkflowProviderSettings(
         parser=ProviderEndpointConfig(provider="fake", model="fake-model"),
     )
+
+
+@pytest.mark.ci
+def test_layerwise_internal_model_and_pointer_seams_are_typed() -> None:
+    class _ModelDump:
+        def model_dump(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs == {"field_mode": "backend", "dump_format": "json"}
+            return {"value": "model"}
+
+    pointer = HydratedTextPointer(
+        source_cluster_id="cluster-1",
+        start_char=2,
+        end_char=4,
+        verbatim_text="abc",
+    )
+
+    assert _dump_model(_ModelDump()) == {"value": "model"}
+    assert _pointer_field(pointer, "start_char") == 2
+    assert _pointer_field({"start_char": 3}, "start_char") == 3
+    assert _pointer_field(object(), "start_char") is None
 
 
 def _context() -> CurrentLayerContext:

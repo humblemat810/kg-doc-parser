@@ -45,7 +45,7 @@ from .providers import (
     provider_call_metrics_snapshot,
 )
 from .semantics import HydratedTextPointer, SemanticNode, hydrate_pointer_from_offsets
-from .serialization import JsonValue, safe_json_dumps
+from .serialization import JsonValue, ModelDumpLike, safe_json_dumps
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 
@@ -149,12 +149,11 @@ def _trim_multiline_text(value: object, *, max_lines: int = 3, max_chars: int = 
 
 
 def _dump_model(value: object) -> object:
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
+    if isinstance(value, ModelDumpLike):
         try:
-            return model_dump(field_mode="backend", dump_format="json")
+            return value.model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return model_dump()
+            return value.model_dump()
     if isinstance(value, dict):
         return {str(key): _dump_model(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -169,7 +168,7 @@ def _summarize_for_prompt(
     max_items: int = 6,
     max_string: int = 400,
 ) -> object:
-    if hasattr(value, "model_dump"):
+    if isinstance(value, ModelDumpLike):
         value = _dump_model(value)
     if isinstance(value, dict):
         if max_depth <= 0:
@@ -313,9 +312,17 @@ def _record_text(record: object) -> str:
 
 
 def _pointer_field(pointer: object, field_name: str) -> object:
-    if isinstance(pointer, dict):
+    if isinstance(pointer, Mapping):
         return pointer.get(field_name)
-    return getattr(pointer, field_name, None)
+    if isinstance(pointer, HydratedTextPointer):
+        fields = {
+            "source_cluster_id": pointer.source_cluster_id,
+            "start_char": pointer.start_char,
+            "end_char": pointer.end_char,
+            "verbatim_text": pointer.verbatim_text,
+        }
+        return fields.get(field_name)
+    return None
 
 
 def _pointer_source_cluster_id(pointer: object) -> str:
@@ -1657,7 +1664,10 @@ def _annotate_proposal_result(
     reasoning_history.append(LayerReasoningEntry.model_validate(marker_payload))
     payload = result.model_dump()
     payload["metadata"] = metadata
-    payload["reasoning_history"] = [entry.model_dump() if hasattr(entry, "model_dump") else entry for entry in reasoning_history]
+    payload["reasoning_history"] = [
+        entry.model_dump() if isinstance(entry, ModelDumpLike) else entry
+        for entry in reasoning_history
+    ]
     return result.__class__.model_validate(payload)
 
 
@@ -1710,14 +1720,13 @@ def _structured_invoke(
                     if isinstance(parsed, schema):
                         result = parsed
                     else:
-                        parsed_dump = getattr(parsed, "model_dump", None)
-                        if callable(parsed_dump):
+                        if isinstance(parsed, ModelDumpLike):
                             # Internal adapters and test doubles may return a
                             # richer Pydantic model than the provider DTO.
                             # Narrow only that trusted model instance to the
                             # declared schema; mappings from the provider stay
                             # strict so extra fields cannot bypass validation.
-                            payload = parsed_dump()
+                            payload = parsed.model_dump()
                             if isinstance(payload, dict):
                                 payload = {
                                     field_name: payload[field_name]
@@ -1735,9 +1744,8 @@ def _structured_invoke(
             elif isinstance(response, schema):
                 result = response
             else:
-                response_dump = getattr(response, "model_dump", None)
-                if callable(response_dump):
-                    result = schema.model_validate(response_dump())
+                if isinstance(response, ModelDumpLike):
+                    result = schema.model_validate(response.model_dump())
                 else:
                     result = schema.model_validate(response)
         except Exception as exc:

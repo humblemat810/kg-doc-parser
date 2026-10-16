@@ -564,12 +564,16 @@ def test_grouping_wrapper_preserves_failed_nested_workflow_diagnostics(
         )
 
 
-def _assert_concurrent_resume_loser_error(error_text: str) -> None:
-    assert (
+def _is_concurrent_resume_loser_error(error_text: str) -> bool:
+    return (
         "WorkflowRunOwnershipError" in error_text
         or "Nested workflow 'kg_doc_parser.ocr_grouping.v1' returned status 'failure'"
         in error_text
     )
+
+
+def _assert_concurrent_resume_loser_error(error_text: str) -> None:
+    assert _is_concurrent_resume_loser_error(error_text)
 
 
 @pytest.mark.parametrize(
@@ -585,6 +589,15 @@ def _assert_concurrent_resume_loser_error(error_text: str) -> None:
 def test_concurrent_resume_loser_errors_are_fail_closed(error_text: str) -> None:
     """Only the two ownership-loss surfaces are valid for a losing resume."""
     _assert_concurrent_resume_loser_error(error_text)
+
+
+def test_concurrent_resume_unrelated_nested_failure_is_not_misclassified() -> None:
+    """A failed child for another reason must not look like an ownership loss."""
+    assert not _is_concurrent_resume_loser_error(
+        "RuntimeError: OCR root workflow failure: "
+        '["Nested workflow \'kg_doc_parser.ocr_grouping.v1\' returned status '
+        '\'failure: invalid grouping frontier\'"]'
+    )
 
 
 @pytest.mark.ci
