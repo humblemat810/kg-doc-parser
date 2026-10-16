@@ -1159,11 +1159,11 @@ def _boundary_review_decision_summary(decisions: list[BoundaryReviewDecision]) -
 def _boundary_review_decision(
     *,
     cutpoint: BoundaryCutpoint,
-    current_layer_context: object,
+    current_layer_context: CurrentLayerContext,
     parser_source_map: dict[str, dict[str, object]],
     max_repair_shift_chars: int = MAX_BOUNDARY_REPAIR_SHIFT_CHARS,
 ) -> BoundaryReviewDecision:
-    parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
+    parent_pointers = dict(current_layer_context.parent_content_pointers_by_id)
     pointer = None
     for parent_pointer in list(parent_pointers.get(cutpoint.parent_node_id) or []):
         if _pointer_source_cluster_id(parent_pointer) == cutpoint.source_cluster_id:
@@ -1301,7 +1301,7 @@ def _boundary_review_decision(
 
 def _boundary_unit_summaries(
     *,
-    current_layer_context: object,
+    current_layer_context: CurrentLayerContext,
     parser_source_map: dict[str, dict[str, object]],
     accepted_units: list[dict[str, object]],
 ) -> list[BoundaryUnitSummary]:
@@ -1367,7 +1367,7 @@ def _boundary_parent_coverage_report(
 
 def _assemble_layer_result_from_boundaries(
     *,
-    current_layer_context: object,
+    current_layer_context: CurrentLayerContext,
     parser_source_map: dict[str, dict[str, object]],
     review_batch: BoundaryReviewBatch,
 ) -> tuple[CurrentLayerResult, list[BoundaryUnitSummary], list[dict[str, object]]]:
@@ -1380,10 +1380,8 @@ def _assemble_layer_result_from_boundaries(
         key = (decision.parent_node_id, decision.source_cluster_id)
         decisions_by_parent.setdefault(key, []).append(decision)
 
-    for parent_id in list(getattr(current_layer_context, "parent_node_ids", []) or []):
-        parent_pointers = list(
-            dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {}).get(parent_id) or []
-        )
+    for parent_id in list(current_layer_context.parent_node_ids):
+        parent_pointers = list(current_layer_context.parent_content_pointers_by_id.get(parent_id) or [])
         pointer_index = 0
         for pointer in parent_pointers:
             source_cluster_id = _pointer_source_cluster_id(pointer)
@@ -1564,14 +1562,12 @@ def _assemble_layer_result_from_boundaries(
 
 def _boundary_identical_parent_child_ids(
     *,
-    current_layer_context: object,
+    current_layer_context: CurrentLayerContext,
     current_layer_result: CurrentLayerResult,
 ) -> list[str]:
     """Find assembled children that reproduce a complete parent pointer."""
 
-    parent_pointers_by_id = dict(
-        getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {}
-    )
+    parent_pointers_by_id = dict(current_layer_context.parent_content_pointers_by_id)
     identical_ids: list[str] = []
     for child in current_layer_result.children:
         child_pointers = list(child.total_content_pointers or [])
@@ -1766,7 +1762,7 @@ def _fallback_layer_result(
     parser_source_map: ParserSourceMap,
 ) -> CurrentLayerResult:
     children: list[LayerChildCandidate] = []
-    if int(getattr(current_layer_context, "depth", 0)) > 0:
+    if current_layer_context.depth > 0:
         return CurrentLayerResult(
             children=[],
             satisfied=True,
@@ -1777,7 +1773,7 @@ def _fallback_layer_result(
                 "allow_empty_layer": True,
             },
         )
-    parent_ids = list(getattr(current_layer_context, "parent_node_ids", []) or [])
+    parent_ids = list(current_layer_context.parent_node_ids)
     parent_id = parent_ids[0] if parent_ids else "root"
     records = list(parser_source_map.items())
     for index, (source_cluster_id, record) in enumerate(records[:8], start=1):
