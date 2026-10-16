@@ -151,6 +151,14 @@ class _OCRCheckpointPatch(TypedDict, total=False):
 
 
 PageListKey = Literal["completed_pages", "reused_pages"]
+StateStringKey = Literal[
+    "document_id",
+    "source_fingerprint",
+    "grouping_policy_version",
+    "legacy_dir",
+    "checkpoint_revision",
+]
+StateBoolKey = Literal["checkpoint_absent", "checkpoint_restored", "summaries_generated"]
 
 
 class _OCRWorkflowState(TypedDict, total=False):
@@ -263,12 +271,19 @@ def _typed_child_state(value: object, *, label: str) -> _OCRWorkflowState:
         raise TypeError(f"{label} returned invalid typed state: {exc}") from exc
 
 
-def _state_string(state: Mapping[str, object], key: str, default: str) -> str:
+def _state_string(
+    state: _OCRWorkflowState,
+    key: StateStringKey,
+    default: str,
+) -> str:
     value = state.get(key)
     return value if isinstance(value, str) else default
 
 
-def _state_optional_string(state: Mapping[str, object], key: str) -> str | None:
+def _state_optional_string(
+    state: _OCRWorkflowState,
+    key: StateStringKey,
+) -> str | None:
     value = state.get(key)
     if value is None:
         return None
@@ -277,7 +292,11 @@ def _state_optional_string(state: Mapping[str, object], key: str) -> str | None:
     return value
 
 
-def _state_bool(state: Mapping[str, object], key: str, default: bool = False) -> bool:
+def _state_bool(
+    state: _OCRWorkflowState,
+    key: StateBoolKey,
+    default: bool = False,
+) -> bool:
     value = state.get(key)
     return value if type(value) is bool else default
 
