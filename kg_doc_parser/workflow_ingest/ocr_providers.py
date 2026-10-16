@@ -297,7 +297,18 @@ def _box_to_bounds(box: object) -> tuple[float, float, float, float]:
     """Convert a four-point OCR polygon into an axis-aligned pixel box."""
 
     try:
-        points = tuple(tuple(float(value) for value in point) for point in box)  # type: ignore[union-attr]
+        if isinstance(box, (str, bytes)) or not isinstance(box, Sequence):
+            raise TypeError
+        points: list[tuple[float, float]] = []
+        for point in box:
+            if isinstance(point, (str, bytes)) or not isinstance(point, Sequence):
+                raise TypeError
+            if len(point) < 2:
+                raise ValueError
+            x, y = point[0], point[1]
+            if isinstance(x, bool) or isinstance(y, bool):
+                raise TypeError
+            points.append((float(x), float(y)))
         coordinates = tuple(value for point in points for value in point)
         if len(points) < 4 or len(coordinates) < 8:
             raise ValueError

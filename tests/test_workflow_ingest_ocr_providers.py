@@ -160,6 +160,33 @@ def test_direct_rapidocr_adapter_normalizes_boxes_without_docling(
     assert response.OCR_text_clusters[0].bb_y_max == 30
 
 
+def test_direct_rapidocr_adapter_rejects_boolean_polygon_coordinates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from PIL import Image
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+
+    class Output:
+        boxes: ClassVar[list[list[tuple[object, object]]]] = [
+            [(True, 20), (50, 20), (50, 30), (10, 30)]
+        ]
+        txts: ClassVar[list[str]] = ["malformed"]
+
+    class FakeRapidOCR:
+        def __call__(self, path: str) -> Output:
+            assert path == str(image_path)
+            return Output()
+
+    module = ModuleType("rapidocr")
+    module.RapidOCR = FakeRapidOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidocr", module)
+
+    with pytest.raises(RuntimeError, match="invalid quadrilateral"):
+        run_rapidocr_page(image_path, 1, ProviderEndpointConfig(provider="rapidocr"))
+
+
 def test_direct_easyocr_adapter_normalizes_boxes_without_docling(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
