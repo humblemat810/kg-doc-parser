@@ -69,14 +69,14 @@ class WorkflowLLMCallCache:
         cache_dir: str | Path,
         *,
         probe: WorkflowProbe | None = None,
-        namespace: Mapping[str, object] | None = None,
+        namespace: Mapping[str, JsonValue] | None = None,
     ) -> None:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.probe = probe
         self.namespace = dict(namespace or workflow_cache_namespace())
 
-    def _cache_path(self, operation: str, fingerprint: Mapping[str, object]) -> Path:
+    def _cache_path(self, operation: str, fingerprint: Mapping[str, JsonValue]) -> Path:
         payload = json.dumps(
             _jsonable({"namespace": self.namespace, "request": fingerprint}),
             sort_keys=True,
@@ -90,7 +90,7 @@ class WorkflowLLMCallCache:
         self,
         *,
         operation: str,
-        fingerprint: Mapping[str, object],
+        fingerprint: Mapping[str, JsonValue],
         fn: Callable[[], T],
     ) -> T:
         path = self._cache_path(operation, fingerprint)
