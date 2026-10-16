@@ -1,5 +1,16 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-17, local commit pending CI)
+
+The recursive JSON serialization alias now uses named
+`typing_extensions.TypeAliasType`. This avoids the Pydantic recursion caused
+by a plain recursive `TypeAlias`, while remaining valid for PyPy 3.11 and
+CPython 3.12-3.14. The dedicated serialization regression passes (`1 passed`),
+full parser-package Pyright reports `0 errors`, changed-file Ruff passes, and
+the diff check passes. Commit `87c0074` is pushed; Parser CI run
+`38930968502` remains in progress. This is seam evidence only and does not
+close the recovery, semantic-publication, OCR-completeness, or release gates.
+
 ## Latest evidence update (2026-10-16, commit `1908772`)
 
 The OCR SDK content boundary now has an explicit runtime-checkable Protocol.

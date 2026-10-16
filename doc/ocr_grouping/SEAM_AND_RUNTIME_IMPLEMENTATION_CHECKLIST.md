@@ -1,5 +1,18 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-17, local commit pending CI)
+
+The shared recursive JSON contract now uses the named `typing_extensions`
+`TypeAliasType` form. A plain recursive `TypeAlias` caused Pydantic model
+construction to recurse indefinitely; the named alias preserves runtime schema
+support on PyPy 3.11 and CPython 3.12-3.14 while keeping Pyright valid. The
+new serialization regression passes (`1 passed`), the full parser-package
+Pyright scan reports `0 errors`, the changed-file Ruff selection passes, and
+`git diff --check` passes. The related client cast cleanup is in commit
+`87c0074`; Parser CI run `38930968502` is still in progress, so this seam is
+not yet promoted to CI-verified. Runtime recovery, semantic hierarchy
+publication, OCR completeness, and release gates remain open.
+
 ## Latest evidence update (2026-10-16, commit `1908772`)
 
 The external OCR response seam now uses a runtime-checkable content protocol

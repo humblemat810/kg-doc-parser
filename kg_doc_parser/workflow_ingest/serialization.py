@@ -7,15 +7,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+from typing_extensions import TypeAliasType
 from uuid import UUID
 
-try:
-    from typing import TypeAliasType
-except ImportError:  # PyPy 3.11 does not expose the Python 3.12 alias API.
-    from typing_extensions import TypeAliasType  # noqa: UP035
-
-JsonScalar = TypeAliasType("JsonScalar", None | bool | int | float | str)  # noqa: UP040
-JsonValue = TypeAliasType(  # noqa: UP040
+JsonScalar = TypeAliasType("JsonScalar", None | bool | int | float | str)
+JsonValue = TypeAliasType(
     "JsonValue",
     JsonScalar | list["JsonValue"] | dict[str, "JsonValue"],
 )
