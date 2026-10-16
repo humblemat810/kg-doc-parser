@@ -1,8 +1,8 @@
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from logging import Logger
-from typing import Any, Iterator, TypedDict
+from typing import TypedDict, cast
 from uuid import UUID
 
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -32,6 +32,18 @@ class UsageHistoryEntry(TypedDict):
     end_time: float | None
 
 
+class TokenDetails(TypedDict, total=False):
+    cache_read: int | float | str
+    reasoning: int | float | str
+
+
+class UsageMetadata(TypedDict, total=False):
+    input_tokens: int | float | str
+    output_tokens: int | float | str
+    input_token_details: TokenDetails
+    output_token_details: TokenDetails
+
+
 cost_table: dict[str, ModelCost] = {
     "gemini-2.0-flash": {"input": 0.0001, "output": 0.0004, "cache" : 0.0, "storage_per_hour": 0.0},
     "gemini-1.5-pro": {"input": 0.001250, "output": 0.005, "cache" : 0.0, "storage_per_hour": 0.0},
@@ -43,9 +55,35 @@ cost_table: dict[str, ModelCost] = {
 }
 
 
-def _usage_metadata(message: object) -> Mapping[str, Any] | None:
+def _usage_metadata(message: object) -> UsageMetadata | None:
     value = getattr(message, "usage_metadata", None)
-    return value if isinstance(value, Mapping) else None
+    return cast(UsageMetadata, dict(value)) if isinstance(value, Mapping) else None
+
+
+def _non_negative_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        return max(0, int(value))
+    if isinstance(value, str):
+        try:
+            return max(0, int(value))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _usage_count(usage: Mapping[str, object], key: str) -> int:
+    return _non_negative_int(usage.get(key, 0))
+
+
+def _nested_usage_count(usage: Mapping[str, object], key: str, nested_key: str) -> int:
+    details = usage.get(key)
+    if not isinstance(details, Mapping):
+        return 0
+    return _non_negative_int(details.get(nested_key, 0))
 
 
 def _model_name(generation: object) -> str:
@@ -98,13 +136,13 @@ class GeminiCostCallbackHandler(BaseCallbackHandler):
         self.run_end_time: float | None = None
     def on_llm_start(
         self,
-        serialized: dict[str, Any],
+        serialized: dict[str, object],
         prompts: list[str],
         *,
         run_id: UUID,
         parent_run_id: UUID | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, object] | None = None,
         **kwargs: object,
     ) -> object:
         self.run_start_time = time.time()
@@ -123,21 +161,13 @@ class GeminiCostCallbackHandler(BaseCallbackHandler):
                     if usage_metadata is not None:
                                     
                     
-                            input_tokens = usage_metadata.get("input_tokens", 0)
-                            output_tokens = usage_metadata.get("output_tokens", 0)
-
-                            input_details = usage_metadata.get("input_token_details")
-                            cached_tokens = (
-                                input_details.get("cache_read", 0)
-                                if isinstance(input_details, Mapping)
-                                else 0
+                            input_tokens = _usage_count(usage_metadata, "input_tokens")
+                            output_tokens = _usage_count(usage_metadata, "output_tokens")
+                            cached_tokens = _nested_usage_count(
+                                usage_metadata, "input_token_details", "cache_read"
                             )
-                            output_tokens = usage_metadata.get("output_tokens", 0)
-                            output_details = usage_metadata.get("output_token_details")
-                            reasoning_tokens = (
-                                output_details.get("reasoning", 0)
-                                if isinstance(output_details, Mapping)
-                                else 0
+                            reasoning_tokens = _nested_usage_count(
+                                usage_metadata, "output_token_details", "reasoning"
                             )
 
                             if input_tokens > 0 or output_tokens > 0:
@@ -258,19 +288,13 @@ class PromptCostTokenLogger(BaseCallbackHandler):
                     if usage_metadata is None:
                         continue
                     
-                    input_tokens = usage_metadata.get("input_tokens", 0)
-                    input_details = usage_metadata.get("input_token_details")
-                    cached_tokens = (
-                        input_details.get("cache_read", 0)
-                        if isinstance(input_details, Mapping)
-                        else 0
+                    input_tokens = _usage_count(usage_metadata, "input_tokens")
+                    cached_tokens = _nested_usage_count(
+                        usage_metadata, "input_token_details", "cache_read"
                     )
-                    output_tokens = usage_metadata.get("output_tokens", 0)
-                    output_details = usage_metadata.get("output_token_details")
-                    reasoning_tokens = (
-                        output_details.get("reasoning", 0)
-                        if isinstance(output_details, Mapping)
-                        else 0
+                    output_tokens = _usage_count(usage_metadata, "output_tokens")
+                    reasoning_tokens = _nested_usage_count(
+                        usage_metadata, "output_token_details", "reasoning"
                     )
                     if input_tokens > 0 or output_tokens > 0:
                         cost = calculate_gemini_cost(input_tokens, output_tokens, cached_tokens, model_name=_model_name(gen))
@@ -305,7 +329,7 @@ class PromptCostTokenLogger(BaseCallbackHandler):
 class PromptTokenCounter(BaseCallbackHandler):
     def on_llm_start(
         self,
-        serialized: dict[str, Any],
+        serialized: dict[str, object],
         prompts: list[str],
         **kwargs: object,
     ) -> None:

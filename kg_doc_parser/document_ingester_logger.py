@@ -559,10 +559,10 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                     {
                         "type": m.type,
                         "content": self._clip(str(m.content)),
-                        "additional_kwargs": getattr(m, "additional_kwargs", None),
-                        "response_metadata": getattr(m, "response_metadata", None),
-                        "name": getattr(m, "name", None),
-                        "id": getattr(m, "id", None),
+                        "additional_kwargs": m.additional_kwargs,
+                        "response_metadata": m.response_metadata,
+                        "name": m.name,
+                        "id": m.id,
                     }
                     for m in batch
                 ]
@@ -675,21 +675,21 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                 if isinstance(gen, ChatGeneration) and hasattr(gen, "message"):
                     msg = gen.message
                     # Gemini usage_metadata is commonly stored on the message
-                    usage = getattr(msg, "usage_metadata", None)
+                    # LangChain's base message type does not declare this optional
+                    # provider extension, so keep the dynamic read at this boundary.
+                    usage = _as_mapping(getattr(msg, "usage_metadata", None))
                     if usage:
-                        input_tokens = int(usage.get("input_tokens", 0) or 0)
-                        output_tokens = int(usage.get("output_tokens", 0) or 0)
-                        try:
-                            cached_tokens = int(usage["input_token_details"]["cache_read"] or 0)
-                        except Exception:
-                            cached_tokens = 0
-                        try:
-                            reasoning_tokens = int(usage["output_token_details"]["reasoning"] or 0)
-                        except Exception:
-                            reasoning_tokens = 0
+                        input_tokens = _metadata_int_or_none(usage.get("input_tokens")) or 0
+                        output_tokens = _metadata_int_or_none(usage.get("output_tokens")) or 0
+                        cached_tokens = _metadata_int_or_none(
+                            _as_mapping(usage.get("input_token_details")).get("cache_read")
+                        ) or 0
+                        reasoning_tokens = _metadata_int_or_none(
+                            _as_mapping(usage.get("output_token_details")).get("reasoning")
+                        ) or 0
 
                     # Model name is often in generation_info
-                    gi = getattr(gen, "generation_info", None) or {}
+                    gi = gen.generation_info or {}
                     model_name = gi.get("model_name") or model_name
         if model_name is None:
             inv_params = kwargs.get("invocation_params")
@@ -711,7 +711,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
             "output_tokens": output_tokens,
             "cached_tokens": cached_tokens,
             "reasoning_tokens": reasoning_tokens,
-            "response_llm_output": getattr(response, "llm_output", None),
+            "response_llm_output": response.llm_output,
         }            
         if self.log_responses:
             outs: list[dict[str, object]] = []
@@ -727,13 +727,13 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                     if isinstance(gen, ChatGeneration) and hasattr(gen, "message"):
                         msg = gen.message
                         item["message"] = {
-                            "type": getattr(msg, "type", None),
-                            "content": self._clip(str(getattr(msg, "content", ""))),
-                            "additional_kwargs": getattr(msg, "additional_kwargs", None),
-                            "response_metadata": getattr(msg, "response_metadata", None),
+                            "type": msg.type,
+                            "content": self._clip(str(msg.content)),
+                            "additional_kwargs": msg.additional_kwargs,
+                            "response_metadata": msg.response_metadata,
                         }
 
-                    item["generation_info"] = getattr(gen, "generation_info", None)
+                    item["generation_info"] = gen.generation_info
                     outs.append(item)
 
             payload["outputs"] = outs
