@@ -9,6 +9,14 @@ layerwise protocol tests pass locally (`29 passed, 6 skipped`); Ruff and
 queried because the local environment has no `gh` executable, so this remains
 pending CI evidence.
 
+## Latest evidence update (2026-10-17, commit `c36613e`, pending CI)
+
+The OCR runtime state boundary now validates nested `grouping_passes` as
+`list[list[JsonObject]]` instead of allowing malformed lists or scalar entries
+to reach grouping conversion. The focused regression passes (`1 passed`), Ruff
+and `git diff --check` pass, and branch CI run `38941361615` is in progress.
+This is a verified local seam fix, not yet a remote-CI promotion.
+
 ## CI promotion update (2026-10-17)
 
 Parser CI passed all four supported interpreter jobs for `87c0074` in run

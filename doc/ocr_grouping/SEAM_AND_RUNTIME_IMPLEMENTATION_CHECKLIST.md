@@ -12,6 +12,18 @@ skipped`); Ruff and `git diff --check` pass. The feature branch was pushed,
 but GitHub CI could not be queried from this environment (`gh` unavailable),
 so this evidence is not promoted to remote-CI verified.
 
+## Latest evidence update (2026-10-17, commit `c36613e`, pending CI)
+
+The persisted OCR runtime decoder now validates the declared
+`grouping_passes: list[list[JsonObject]]` shape before workflow execution.
+Malformed pass containers and non-object proposal entries fail at the state
+boundary, with regression coverage in
+`test_ocr_runtime_state_boundary_rejects_wrong_known_field_types`. The focused
+test passes (`1 passed`), Ruff and `git diff --check` pass, and branch CI run
+`38941361615` is in progress. This closes one runtime-state typing seam; the
+recovery, semantic-publication, OCR-completeness, and release gates remain
+open.
+
 ## CI promotion update (2026-10-17)
 
 Parser CI passed all four supported interpreter jobs for `87c0074` in run
