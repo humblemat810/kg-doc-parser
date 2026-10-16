@@ -700,3 +700,11 @@ release is available.
   workflow, resume, cache, and canonical persistence tests passing. This is
   evidence for these boundaries only; the remaining broad typing and release
   gates stay open.
+
+### Shared parser payload contract (2026-10-16)
+
+- [x] Commits `b61f428` and `96fe1bc` align the parser adapter, parser core,
+  and PageIndex result contracts on `JsonObject`/`ParserSourceMap`. Changed
+  modules pass Pyright, the CI Ruff selection passes, and the focused suite
+  passes (`17 passed`). CI for `b61f428` remains in progress; full release
+  readiness is not claimed.

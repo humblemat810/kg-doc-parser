@@ -1147,3 +1147,12 @@ protocol.
   applies the same contract to canonical graph payload conversion; Pyright and
   Ruff pass and the selected canonical persistence tests pass. These entries
   close only the named seams, not the remaining repository-wide typing sweep.
+
+### Shared parser payload contract (2026-10-16)
+
+- [x] Commits `b61f428` and `96fe1bc` align adapter, parser-core, and PageIndex
+  payloads on `JsonObject`/`ParserSourceMap` instead of invariant
+  `dict[str, object]` aliases. Pyright reports zero errors for the changed
+  modules, the CI Ruff selection passes, and the focused source-map/PageIndex
+  suite passes (`17 passed`). CI for `b61f428` is still in progress; this
+  evidence does not close the full CI or release gates.
