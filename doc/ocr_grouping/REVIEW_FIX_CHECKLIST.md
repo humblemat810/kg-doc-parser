@@ -639,3 +639,11 @@ release is available.
 - [x] Parser CI #322 (`38913709355`) verified `e130e26` across CPython
   3.12-3.14 and PyPy 3.11. It exposes the `WorkflowProviderSettings` contract
   to the OCR root workflow without adding a runtime dependency cycle.
+- [~] `466d70f` closes the next full-package Pyright seam set: optional review
+  sessions now narrow to an explicit empty attempt context, PDF render manifest
+  fields are narrowed before use, the terminal-correction Protocol is read-only
+  and compatible with the concrete NamedTuple result, and proposal reasoning
+  entries use their declared Pydantic type. Full local Pyright is now
+  `0 errors, 0 warnings, 0 informations`; focused regressions pass. Parser CI
+  #329 (`38918021548`) is the required CPython/PyPy verification and remains
+  pending.

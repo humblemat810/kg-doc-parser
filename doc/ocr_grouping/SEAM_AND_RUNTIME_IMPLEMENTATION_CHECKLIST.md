@@ -1081,3 +1081,14 @@ protocol.
   makes logger shutdown failures observable at debug level, and uses the
   Python 3.11-compatible `datetime.UTC`. Focused logger tests, Ruff, changed-
   file Pyright, and diff checks pass locally.
+
+### Typed OCR workflow seam correction (2026-10-16)
+
+- [~] Commit `466d70f` removes five full-package Pyright errors in the OCR,
+  layerwise, and terminal-correction seams. Optional review sessions now use
+  an explicit empty attempt context; PDF render manifest values are narrowed
+  before use; terminal correction exposes a read-only Protocol property; and
+  reasoning entries serialize through their declared Pydantic model. The full
+  local parser-package Pyright scan reports `0 errors, 0 warnings, 0
+  informations`, and focused OCR/PDF/correction regressions pass. Parser CI
+  #329 (`38918021548`) must pass before this becomes `[x]`.
