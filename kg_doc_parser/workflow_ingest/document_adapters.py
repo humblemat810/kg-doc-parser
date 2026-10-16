@@ -49,6 +49,29 @@ class UnrepresentedSourceUnitError(ValueError):
         )
 
 
+class UnrepresentedSourceUnitsError(UnrepresentedSourceUnitError):
+    """Report every source unit rejected before tree construction.
+
+    The singular exception remains the compatibility type for callers that
+    catch it.  The aggregate retains the complete loss report so a provider
+    or caller can repair all rejected non-text units in one pass.
+    """
+
+    def __init__(self, diagnostics: tuple[UnrepresentedSourceDiagnostic, ...]) -> None:
+        if not diagnostics:
+            raise ValueError("at least one unrepresented source diagnostic is required")
+        self.diagnostics = diagnostics
+        self.diagnostic = diagnostics[0]
+        ValueError.__init__(
+            self,
+            "unrepresented OCR source units: "
+            + "; ".join(
+                f"{item.unit_id or '<generated>'} on page {item.page_number}: {item.reason}"
+                for item in diagnostics
+            ),
+        )
+
+
 def build_document_tree(
     workflow_input: WorkflowIngestInput,
     *,
@@ -64,6 +87,7 @@ def build_document_tree(
     collection = workflow_input.collections[0]
     items: list[SourceItem] = []
     leaves: list[DocumentNode] = []
+    rejected: list[UnrepresentedSourceDiagnostic] = []
     for page in collection.pages:
         allocated = _allocated_cluster_numbers(page.units)
         for unit, cluster_number in zip(page.units, allocated, strict=True):
@@ -87,7 +111,7 @@ def build_document_tree(
             if not text and not has_media:
                 # Do not let a structurally valid but unrepresentable OCR unit
                 # disappear before source-coverage validation can see it.
-                raise UnrepresentedSourceUnitError(
+                rejected.append(
                     UnrepresentedSourceDiagnostic(
                         unit_id=unit.unit_id,
                         page_number=page.page_number,
@@ -98,6 +122,7 @@ def build_document_tree(
                         ),
                     )
                 )
+                continue
             precise_bbox = (
                 unit.bbox
                 if unit.bbox is not None
@@ -186,6 +211,10 @@ def build_document_tree(
                     parts=(leaf_part,),
                 )
             )
+    if rejected:
+        if len(rejected) == 1:
+            raise UnrepresentedSourceUnitError(rejected[0])
+        raise UnrepresentedSourceUnitsError(tuple(rejected))
     if not items:
         return None
     if len(leaves) == 1:
@@ -495,6 +524,7 @@ def apply_grouping_passes(
 __all__ = [
     "UnrepresentedSourceDiagnostic",
     "UnrepresentedSourceUnitError",
+    "UnrepresentedSourceUnitsError",
     "apply_grouping_passes",
     "apply_grouping_proposals",
     "apply_summary_updates",

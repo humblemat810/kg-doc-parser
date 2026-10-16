@@ -24,6 +24,7 @@ from .design import (
 from .document_adapters import (
     UnrepresentedSourceDiagnostic,
     UnrepresentedSourceUnitError,
+    UnrepresentedSourceUnitsError,
     apply_grouping_passes,
     apply_grouping_proposals,
     apply_summary_updates,
@@ -253,6 +254,7 @@ __all__ = [
     "TreeParseRequest",
     "UnrepresentedSourceDiagnostic",
     "UnrepresentedSourceUnitError",
+    "UnrepresentedSourceUnitsError",
     "UnsupportedClientOperation",
     "ValidationReport",
     "WorkflowCommandResult",

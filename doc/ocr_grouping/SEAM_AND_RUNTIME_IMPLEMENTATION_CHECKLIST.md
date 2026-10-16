@@ -892,11 +892,20 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 - [~] Docling provenance boxes are used when exposed; the no-item fallback is
   still page-wide and requires explicit page-level accuracy.
-- [ ] Add a provider capability indicating whether coordinates are page,
-  region, token, table-cell, or unknown precision.
-- [ ] Never label a synthetic full-page box as region precision.
+- [x] Add a provider capability indicating whether coordinates are page,
+  region, token, table-cell, or unknown precision. `OCRProviderCapabilities`
+  now exposes the typed `coordinate_precision` field; direct and Docling
+  adapters declare `region`, while chat/remote providers remain `unknown`.
+- [x] Never label a synthetic full-page box as region precision. The existing
+  `_spatial_accuracy` gate requires provider-declared precision and a usable
+  box; `test_synthetic_page_box_does_not_claim_region_accuracy` remains the
+  regression.
 - [ ] Preserve media identity and location for figures, tables, and captions.
-- [ ] Record every rejected/lost non-text object with a structured diagnostic.
+- [x] Record every rejected/lost non-text object with a structured diagnostic.
+  `UnrepresentedSourceUnitsError.diagnostics` aggregates all rejected units
+  while preserving the singular `UnrepresentedSourceUnitError` compatibility
+  path; `test_build_document_tree_reports_all_unrepresented_nontext_units`
+  verifies the complete report.
 - [x] Add a mocked Docling fixture with separate text, table, and figure
   provenance, ordering, and coordinate clipping in
   `tests/test_workflow_ingest_ocr_providers.py::test_docling_adapter_preserves_text_table_figure_provenance`.

@@ -23,6 +23,7 @@ from ..models import NonTextCluster, OCRClusterResponse, TextCluster
 from .providers import ProviderEndpointConfig, WorkflowProviderSettings
 
 DoclingEngine = Literal["rapidocr", "easyocr", "tesseract", "tesserocr", "ocrmac", "nemotron-ocr"]
+CoordinatePrecision = Literal["page", "region", "token", "table_cell", "unknown"]
 OCRProviderName = Literal[
     "anthropic",
     "codex",
@@ -53,6 +54,7 @@ class OCRProviderCapabilities:
     structured_output: bool
     optional_dependency: str | None
     platforms: tuple[str, ...]
+    coordinate_precision: CoordinatePrecision = "unknown"
 
 
 class OCRPageProvider(Protocol):
@@ -129,17 +131,17 @@ def _registered_ocr_provider(name: str) -> OCRPageProvider:
 
 
 _DOCLING_CAPABILITIES: tuple[OCRProviderCapabilities, ...] = (
-    OCRProviderCapabilities("docling", "rapidocr", True, True, True, False, "docling", ("linux", "windows", "macos")),
-    OCRProviderCapabilities("docling", "easyocr", True, True, True, False, "docling[easyocr]", ("linux", "windows", "macos")),
-    OCRProviderCapabilities("docling", "tesseract", True, True, True, False, "docling + tesseract", ("linux", "windows", "macos")),
-    OCRProviderCapabilities("docling", "tesserocr", True, True, True, False, "docling[tesserocr]", ("linux", "windows", "macos")),
-    OCRProviderCapabilities("docling", "ocrmac", True, True, True, False, "docling[ocrmac]", ("macos",)),
-    OCRProviderCapabilities("docling", "nemotron-ocr", True, True, True, False, "docling[nemotron]", ("linux",)),
+    OCRProviderCapabilities("docling", "rapidocr", True, True, True, False, "docling", ("linux", "windows", "macos"), "region"),
+    OCRProviderCapabilities("docling", "easyocr", True, True, True, False, "docling[easyocr]", ("linux", "windows", "macos"), "region"),
+    OCRProviderCapabilities("docling", "tesseract", True, True, True, False, "docling + tesseract", ("linux", "windows", "macos"), "region"),
+    OCRProviderCapabilities("docling", "tesserocr", True, True, True, False, "docling[tesserocr]", ("linux", "windows", "macos"), "region"),
+    OCRProviderCapabilities("docling", "ocrmac", True, True, True, False, "docling[ocrmac]", ("macos",), "region"),
+    OCRProviderCapabilities("docling", "nemotron-ocr", True, True, True, False, "docling[nemotron]", ("linux",), "region"),
 )
 
 _DIRECT_CAPABILITIES: tuple[OCRProviderCapabilities, ...] = (
-    OCRProviderCapabilities("rapidocr", None, True, True, True, False, "rapidocr-onnxruntime", ("linux", "windows", "macos")),
-    OCRProviderCapabilities("easyocr", None, True, True, True, False, "easyocr", ("linux", "windows", "macos")),
+    OCRProviderCapabilities("rapidocr", None, True, True, True, False, "rapidocr-onnxruntime", ("linux", "windows", "macos"), "region"),
+    OCRProviderCapabilities("easyocr", None, True, True, True, False, "easyocr", ("linux", "windows", "macos"), "region"),
 )
 
 _CHAT_CAPABILITIES: tuple[OCRProviderCapabilities, ...] = (

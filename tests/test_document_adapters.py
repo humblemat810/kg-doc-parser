@@ -11,6 +11,7 @@ from kg_doc_parser.workflow_ingest import (
     OCRImagePayload,
     UnrepresentedSourceDiagnostic,
     UnrepresentedSourceUnitError,
+    UnrepresentedSourceUnitsError,
     WorkflowProviderSettings,
     apply_grouping_passes,
     apply_grouping_proposals,
@@ -418,6 +419,42 @@ def test_build_document_tree_rejects_unrepresented_nontext_unit() -> None:
             "content-addressed media reference"
         ),
     )
+
+
+def test_build_document_tree_reports_all_unrepresented_nontext_units() -> None:
+    inp = WorkflowIngestInput(
+        request_id="loss-report",
+        collections=[
+            {
+                "collection_id": "loss-report",
+                "title": "Loss report",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "units": [
+                            SourceUnit(
+                                modality="image_region",
+                                page_number=1,
+                                source_uri="assets/region.png",
+                            ),
+                            SourceUnit(
+                                modality="pure_image",
+                                page_number=1,
+                                source_uri="assets/figure.png",
+                            ),
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+
+    with pytest.raises(UnrepresentedSourceUnitsError) as raised:
+        build_document_tree(inp)
+
+    assert [item.page_number for item in raised.value.diagnostics] == [1, 1]
+    assert [item.modality for item in raised.value.diagnostics] == ["image_region", "pure_image"]
 
 
 def test_apply_grouping_proposals_keeps_source_coverage_and_rejects_bad_members() -> None:

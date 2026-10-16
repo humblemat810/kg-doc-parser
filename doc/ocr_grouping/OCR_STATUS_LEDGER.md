@@ -19,7 +19,7 @@ git show <commit> -- doc/ocr_grouping/OCR_STATUS_LEDGER.md
 | Artifact/checkpoint crash consistency | PARTIAL | Reconcile artifact-first and checkpoint-first crashes across SQLite and runtime checkpoints. |
 | Grouping and summary durability | PARTIAL | Prove monotonic frontier/generation behavior and bounded long-document work. |
 | Semantic hierarchy publication | PARTIAL | Prove accepted grouping is consumed and preserved by semantic parsing and graph export. |
-| OCR completeness and positional fidelity | PARTIAL | Verify independent completeness for non-text regions, coordinates, tables, and figures. |
+| OCR completeness and positional fidelity | PARTIAL | Coordinate precision and complete rejected-unit diagnostics are now enforced; verify independent completeness for non-text regions, tables, and figures. |
 | Typing and supported interpreters | PARTIAL | Keep the explicit Pyright CPython 3.12 gate and verify the full CPython 3.12-3.14/PyPy 3.11 matrix. |
 | Release | OPEN | Do not bump or publish until the release-blocking rows have evidence. |
 

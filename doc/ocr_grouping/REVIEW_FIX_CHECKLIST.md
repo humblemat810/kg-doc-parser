@@ -17,7 +17,7 @@ individual acceptance criteria.
 | Artifact and checkpoint crash consistency | PARTIAL | Reconcile both artifact-first and checkpoint-first crash orders across SQLite and Kogwistar runtime state. |
 | Grouping and summary durability | PARTIAL | Audit every writer, prove monotonic generation/frontier behavior, and prove bounded long-document work. |
 | Semantic hierarchy publication | PARTIAL | Prove the accepted grouping hierarchy is preserved through the persisted semantic graph/export path. |
-| OCR completeness and positional fidelity | PARTIAL | Add provider-side evidence for missing non-text regions, coordinates, tables, and figures. |
+| OCR completeness and positional fidelity | PARTIAL | Provider precision and complete rejected-unit diagnostics are enforced; live non-text completeness and table/figure evidence remain open. |
 | Typing and interpreter matrix | PARTIAL | Pyright is now an explicit CPython 3.12 CI gate; promote it only after the remote package check passes, then retain the CPython/PyPy matrix evidence. |
 | Release | OPEN | Do not bump the parser version or downstream pins until the release-blocking rows are green with evidence. |
 

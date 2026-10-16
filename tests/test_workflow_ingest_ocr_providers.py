@@ -38,6 +38,16 @@ def test_capability_inventory_contains_all_docling_engines_and_codex_boundary() 
     direct = {item.provider for item in capabilities if item.provider in {"rapidocr", "easyocr"}}
     assert direct == {"rapidocr", "easyocr"}
     assert all(item.coordinates for item in capabilities if item.provider in direct)
+    assert all(
+        item.coordinate_precision == "region"
+        for item in capabilities
+        if item.provider in direct or item.provider == "docling"
+    )
+    assert all(
+        item.coordinate_precision == "unknown"
+        for item in capabilities
+        if item.provider in {"codex", "openai", "azure", "gemini", "ollama"}
+    )
     assert {item.provider for item in capabilities} >= {"custom", "kserve"}
 
 
