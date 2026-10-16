@@ -41,8 +41,8 @@ from .parser_core import (
 from .parsing import parse_page_index_document, parse_tree_document
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
-from .serialization import JsonObject
 from .semantics import HydratedTextPointer, SemanticNode
+from .serialization import JsonObject
 from .service import build_default_engines
 
 if TYPE_CHECKING:
@@ -65,7 +65,7 @@ class WorkflowCommandResult:
     status: str | None = None
     probe_path: Path | None = None
     summary_path: Path | None = None
-    extra: dict[str, object] = field(default_factory=dict)
+    extra: JsonObject = field(default_factory=dict)
 
 
 @dataclass(slots=True)
