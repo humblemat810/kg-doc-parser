@@ -959,3 +959,8 @@ release is available.
   regression and the OCR runtime resume seam pass; changed-file Ruff and
   `git diff --check` pass. Remote push/CI is pending connectivity; this does
   not close the package-wide typing or release gates.
+- [x] Commit `3566164` removes unchecked casts from persisted handler object
+  maps, object lists, and mappings by using the shared recursive JSON sum type.
+  Nested opaque-value regressions pass with the handler contract selection
+  (`3 passed`); changed-file Ruff and `git diff --check` pass. Full Pyright and
+  remote CI remain pending.
