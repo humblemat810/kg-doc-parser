@@ -234,6 +234,11 @@ def test_ocr_runtime_state_boundary_rejects_wrong_known_field_types() -> None:
             {"page_sources": [{"page_number": 1, "image_path": 42}]}
         )
 
+    with pytest.raises(TypeError, match="source entry is malformed"):
+        ocr_runtime_module._page_sources(
+            {"page_sources": [{"page_number": 1}]}
+        )
+
 
 def test_ocr_runtime_child_state_uses_the_same_typed_boundary() -> None:
     with pytest.raises(TypeError, match="grouping child returned invalid typed state"):

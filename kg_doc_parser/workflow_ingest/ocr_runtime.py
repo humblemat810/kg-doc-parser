@@ -336,9 +336,12 @@ def _page_sources(state: _OCRWorkflowState) -> list[tuple[int, Path]]:
     for item in value:
         if not isinstance(item, dict):
             raise TypeError("OCR page runtime source entry is malformed")
-        source = cast(_PageSourceState, item)
-        page_number: int = source["page_number"]
-        image_path: str = source["image_path"]
+        raw_page_number = item.get("page_number")
+        raw_image_path = item.get("image_path")
+        if type(raw_page_number) is not int or not isinstance(raw_image_path, str):
+            raise TypeError("OCR page runtime source entry is malformed")
+        page_number: int = raw_page_number
+        image_path: str = raw_image_path
         if type(page_number) is not int or page_number < 1:
             raise ValueError("OCR page runtime source page number is malformed")
         if not isinstance(image_path, str) or not image_path:
