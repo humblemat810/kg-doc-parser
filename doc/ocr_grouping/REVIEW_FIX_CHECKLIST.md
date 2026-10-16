@@ -1001,3 +1001,9 @@ release is available.
   complete adapter and workflow-contract selection passes (`78 passed,
   8 skipped`); changed-module Ruff and `git diff --check` pass. Full Pyright,
   remote CI, and release readiness remain open.
+- [x] The current branch revalidated the two previously failing process
+  recovery regressions: `test_ocr_root_concurrent_resume_has_one_owner_and_one_result`
+  and `test_grouping_checkpoint_reopens_after_process_termination` pass
+  together (`2 passed` in 138.22s with `-p no:cacheprovider`). This confirms
+  local ownership fencing and grouping checkpoint reopening; Linux `SIGKILL`,
+  installed-release, and complete dual-store recovery evidence remain open.
