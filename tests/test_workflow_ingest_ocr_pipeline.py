@@ -1067,6 +1067,23 @@ def test_new_page_checkpoint_rehydrates_pages_from_artifacts_without_raw_payload
     assert [page["printed_page_number"] for page in pages] == ["1", "2"]
 
 
+def test_json_pages_rejects_malformed_persisted_page_shape() -> None:
+    state = _page_workflow_initial_state(
+        OCRSourcePlan(
+            pdf_source=None,
+            rendered_dir=Path("rendered"),
+            legacy_dir=Path("legacy"),
+            page_sources=[(1, Path("page-1.png"))],
+            source_kind="image",
+            input_fingerprint="malformed-page-source",
+        )
+    )
+    state["raw_pages"] = [{"pdf_page_num": "one"}]
+
+    with pytest.raises(TypeError, match="pdf_page_num"):
+        _json_pages(state)
+
+
 @pytest.mark.ci
 def test_ocr_page_resume_reopens_state_in_a_fresh_process() -> None:
     """A fresh process reuses accepted pages and processes only the gap."""

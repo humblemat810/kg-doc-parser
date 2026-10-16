@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import NotRequired, TypedDict
+from typing import NotRequired, TypedDict, cast
 
 from .models import (
     BoundingBox,
@@ -54,6 +54,55 @@ class OCRPageJSON(TypedDict):
     non_text_objects: NotRequired[list[OCRNonTextObjectJSON]]
     text: NotRequired[str]
     spatial_accuracy: NotRequired[str]
+
+
+def _validated_ocr_page_json(
+    value: object,
+    *,
+    default_page_number: int | None = None,
+) -> OCRPageJSON:
+    """Validate the top-level shape before narrowing persisted OCR JSON."""
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise TypeError("OCR page payload must be a JSON object")
+    page_number = value.get("pdf_page_num", default_page_number)
+    if type(page_number) is not int or page_number < 1:
+        raise TypeError("OCR page pdf_page_num must be a positive integer")
+    scalar_types: dict[str, type[object] | tuple[type[object], ...]] = {
+        "printed_page_number": str,
+        "contains_table": bool,
+        "is_blank_page": bool,
+        "spatial_accuracy": str,
+        "text": str,
+    }
+    for key, expected_type in scalar_types.items():
+        field = value.get(key)
+        if field is not None and not isinstance(field, expected_type):
+            raise TypeError(f"OCR page field {key!r} has an invalid type")
+    for key in ("meaningful_ordering",):
+        field = value.get(key)
+        if field is not None and (
+            not isinstance(field, list) or any(type(item) is not int for item in field)
+        ):
+            raise TypeError(f"OCR page field {key!r} must be a list of integers")
+    metadata = value.get("metadata")
+    if metadata is not None and (
+        not isinstance(metadata, dict) or not all(isinstance(key, str) for key in metadata)
+    ):
+        raise TypeError("OCR page metadata must be a JSON object")
+    for key in ("OCR_text_clusters", "non_text_objects"):
+        field = value.get(key)
+        if field is not None and (
+            not isinstance(field, list)
+            or any(
+                not isinstance(item, dict)
+                or not all(isinstance(item_key, str) for item_key in item)
+                for item in field
+            )
+        ):
+            raise TypeError(f"OCR page field {key!r} must be a list of JSON objects")
+    if "pdf_page_num" not in value:
+        return cast(OCRPageJSON, {**value, "pdf_page_num": page_number})
+    return cast(OCRPageJSON, value)
 
 
 def _ocr_page_number(value: object) -> int:

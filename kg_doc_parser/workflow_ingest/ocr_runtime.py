@@ -33,6 +33,7 @@ from kogwistar.runtime.runtime import (
     WorkflowRuntime,
 )
 
+from .adapters import _validated_ocr_page_json
 from .design import (
     DEFAULT_OCR_GROUPING_WORKFLOW_ID,
     DEFAULT_OCR_PAGE_WORKFLOW_ID,
@@ -381,7 +382,7 @@ def _json_pages(state: _OCRWorkflowState) -> list[OCRPageJSON]:
     if value is not None:
         if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
             raise ValueError("OCR page runtime raw page state is malformed")
-        return [cast(OCRPageJSON, item) for item in value]
+        return [_validated_ocr_page_json(item) for item in value]
 
     legacy_dir_value = state.get("legacy_dir")
     if not isinstance(legacy_dir_value, str) or not legacy_dir_value:
@@ -396,7 +397,9 @@ def _json_pages(state: _OCRWorkflowState) -> list[OCRPageJSON]:
             raise ValueError(f"OCR page artifact is not readable: {page_path}") from exc
         if not isinstance(payload, dict):
             raise TypeError(f"OCR page artifact is not a JSON object: {page_path}")
-        pages.append(cast(OCRPageJSON, payload))
+        pages.append(
+            _validated_ocr_page_json(payload, default_page_number=page_number)
+        )
     return pages
 
 
