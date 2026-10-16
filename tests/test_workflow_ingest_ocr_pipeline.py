@@ -87,7 +87,7 @@ from kg_doc_parser.models import (
     SplitPageMeta,
     TextCluster,
 )
-from kg_doc_parser.ocr import RawOCRResponse, regen_doc
+from kg_doc_parser.ocr import RawOCRResponse, _raw_content, regen_doc
 from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     OCRImagePayload,
@@ -1075,6 +1075,16 @@ def test_new_page_checkpoint_rehydrates_pages_from_artifacts_without_raw_payload
     assert "raw_pages" not in state
     pages = _json_pages(state)
     assert [page["printed_page_number"] for page in pages] == ["1", "2"]
+
+
+def test_raw_ocr_content_narrows_sdk_content_without_stringifying_other_values() -> None:
+    sdk_payload = {"boxes_2d": [], "non_text_objects": []}
+    sdk_response = SimpleNamespace(content=sdk_payload)
+
+    assert _raw_content(sdk_response) is sdk_payload
+    mapping_payload = {"content": "already decoded"}
+    assert _raw_content(mapping_payload) is mapping_payload
+    assert _raw_content(None) is None
 
 
 def test_json_pages_rejects_malformed_persisted_page_shape() -> None:
