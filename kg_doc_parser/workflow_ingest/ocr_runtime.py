@@ -475,7 +475,7 @@ def _validate_page_resume_identity(
     configuration_fingerprints: Sequence[str],
 ) -> None:
     """Reject a page checkpoint built from a different immutable input set."""
-    expected: dict[str, object] = {
+    expected: dict[str, ResumeIdentityValue] = {
         "ocr_page_state_version": _OCR_PAGE_STATE_VERSION,
         "document_id": document_id,
         "source_fingerprint": source_fingerprint,
