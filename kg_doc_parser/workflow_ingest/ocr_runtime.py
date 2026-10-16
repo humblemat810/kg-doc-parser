@@ -9,6 +9,7 @@ into checkpoint state.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -66,6 +67,42 @@ from .service import workflow_predicates
 
 _OCR_ROOT_STATE_VERSION = "ocr-root-v2"
 _OCR_PAGE_STATE_VERSION = "ocr-page-v2"
+
+
+def _workflow_runtime(
+    *,
+    workflow_engine: GraphKnowledgeEngine,
+    conversation_engine: GraphKnowledgeEngine,
+    step_resolver: object,
+    predicate_registry: object,
+    trace: bool,
+    run_ownership_lease_ms: int | None = None,
+) -> WorkflowRuntime:
+    """Construct a runtime across released Kogwistar API generations.
+
+    Lease-aware ownership is optional in the parser API.  Kogwistar releases
+    before the lease constructor argument must remain usable, especially in a
+    fresh subprocess that resolves the published package rather than a source
+    checkout.  Do not catch arbitrary constructor ``TypeError`` values: only
+    pass the lease when the installed runtime advertises that parameter.
+    """
+    runtime_args: dict[str, object] = {
+        "workflow_engine": workflow_engine,
+        "conversation_engine": conversation_engine,
+        "step_resolver": step_resolver,
+        "predicate_registry": predicate_registry,
+        "trace": trace,
+    }
+    if run_ownership_lease_ms is not None:
+        try:
+            supports_lease = "run_ownership_lease_ms" in inspect.signature(
+                WorkflowRuntime
+            ).parameters
+        except (TypeError, ValueError):
+            supports_lease = False
+        if supports_lease:
+            runtime_args["run_ownership_lease_ms"] = run_ownership_lease_ms
+    return WorkflowRuntime(**runtime_args)
 
 
 class _PageSourceState(TypedDict):
@@ -859,23 +896,14 @@ def run_grouping_workflow(
         summary_generator=summary_generator,
         grounded_summary_generator=grounded_summary_generator,
     )
-    if run_ownership_lease_ms is None:
-        runtime = WorkflowRuntime(
-            workflow_engine=workflow_engine,
-            conversation_engine=conversation_engine,
-            step_resolver=resolver.resolve,
-            predicate_registry={},
-            trace=True,
-        )
-    else:
-        runtime = WorkflowRuntime(
-            workflow_engine=workflow_engine,
-            conversation_engine=conversation_engine,
-            step_resolver=resolver.resolve,
-            predicate_registry={},
-            trace=True,
-            run_ownership_lease_ms=run_ownership_lease_ms,
-        )
+    runtime = _workflow_runtime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=resolver.resolve,
+        predicate_registry={},
+        trace=True,
+        run_ownership_lease_ms=run_ownership_lease_ms,
+    )
     effective_run_id = run_id or f"ocr-grouping|{document_id}"
     existing_revision = state_store.document_tree_revision(document_id=document_id)
     result = (
@@ -1273,20 +1301,14 @@ def run_ocr_root_workflow(
                 return semantic_resolver.resolve(operation)(ctx)
             raise ValueError(f"unsupported OCR workflow child {ctx.workflow_id!r}")
 
-    runtime_args = {
-        "workflow_engine": workflow_engine,
-        "conversation_engine": conversation_engine,
-        "step_resolver": dispatch.resolve,
-        "predicate_registry": workflow_predicates(),
-        "trace": True,
-    }
-    if run_ownership_lease_ms is None:
-        runtime = WorkflowRuntime(**runtime_args)
-    else:
-        runtime = WorkflowRuntime(
-            **runtime_args,
-            run_ownership_lease_ms=run_ownership_lease_ms,
-        )
+    runtime = _workflow_runtime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=dispatch.resolve,
+        predicate_registry=workflow_predicates(),
+        trace=True,
+        run_ownership_lease_ms=run_ownership_lease_ms,
+    )
     effective_run_id = run_id or f"ocr|{document_id}"
     root_resume = resume_from_checkpoint
     recovery_generation = 0

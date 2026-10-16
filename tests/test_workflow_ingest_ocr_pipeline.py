@@ -433,6 +433,29 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
     }
 
 
+def test_workflow_runtime_compatibility_omits_unsupported_lease_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Published Kogwistar releases without lease support remain constructible."""
+
+    class LegacyRuntime:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(ocr_runtime_module, "WorkflowRuntime", LegacyRuntime)
+    runtime = ocr_runtime_module._workflow_runtime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=object(),
+        predicate_registry={},
+        trace=True,
+        run_ownership_lease_ms=30_000,
+    )
+
+    assert isinstance(runtime, LegacyRuntime)
+    assert "run_ownership_lease_ms" not in runtime.kwargs
+
+
 @pytest.mark.ci
 def test_grouping_resume_rejects_frontier_that_disagrees_with_tree() -> None:
     scratch = _scratch("ocr_grouping_frontier_mismatch")
