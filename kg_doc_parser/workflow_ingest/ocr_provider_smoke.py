@@ -11,6 +11,7 @@ from pathlib import Path
 from .ocr_pipeline import _run_live_ocr_page
 from .ocr_providers import list_ocr_provider_capabilities
 from .providers import WorkflowProviderSettings
+from .serialization import JsonObject, JsonValue
 
 
 def main() -> int:
@@ -21,30 +22,31 @@ def main() -> int:
     parser.add_argument("--page-number", type=int, default=1)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    report: dict[str, object] = {
+    provider_records: list[JsonValue] = [
+        {
+            "provider": item.provider,
+            "engine": item.engine,
+            "vision": item.vision,
+            "local": item.local,
+            "coordinates": item.coordinates,
+            "structured_output": item.structured_output,
+            "optional_dependency": item.optional_dependency,
+            "platforms": list(item.platforms),
+        }
+        for item in list_ocr_provider_capabilities()
+    ]
+    report: JsonObject = {
         "created_at": time.time(),
         "python": platform.python_version(),
         "implementation": platform.python_implementation(),
         "live_requested": args.live,
         "live_status": "not_requested",
-        "providers": [
-            {
-                "provider": item.provider,
-                "engine": item.engine,
-                "vision": item.vision,
-                "local": item.local,
-                "coordinates": item.coordinates,
-                "structured_output": item.structured_output,
-                "optional_dependency": item.optional_dependency,
-                "platforms": list(item.platforms),
-            }
-            for item in list_ocr_provider_capabilities()
-        ],
+        "providers": provider_records,
     }
     if args.live:
         if args.image is None:
             parser.error("--image is required with --live")
-        live_result: dict[str, object] = {
+        live_result: JsonObject = {
             "provider": "configured",
             "image": str(args.image),
             "page_number": args.page_number,

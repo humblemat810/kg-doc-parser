@@ -13,6 +13,7 @@ from kg_doc_parser.models import NonTextCluster, OCRClusterResponse, TextCluster
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
+    ocr_provider_smoke,
 )
 from kg_doc_parser.workflow_ingest.ocr_providers import (
     list_ocr_provider_capabilities,
@@ -38,6 +39,26 @@ def test_capability_inventory_contains_all_docling_engines_and_codex_boundary() 
     assert direct == {"rapidocr", "easyocr"}
     assert all(item.coordinates for item in capabilities if item.provider in direct)
     assert {item.provider for item in capabilities} >= {"custom", "kserve"}
+
+
+def test_ocr_provider_smoke_writes_typed_json_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = Path("tests") / ".tmp_ocr_provider_smoke_report"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["ocr-provider-smoke", "--output-dir", str(output_dir)],
+    )
+
+    assert ocr_provider_smoke.main() == 0
+    report = json.loads(
+        (output_dir / "capability-report.json").read_text(encoding="utf-8")
+    )
+    assert isinstance(report, dict)
+    assert report["live_status"] == "not_requested"
+    assert isinstance(report["providers"], list)
 
 
 def test_ocr_response_accepts_unified_text_and_nontext_reading_order() -> None:
