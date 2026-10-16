@@ -147,6 +147,21 @@ whose contract crosses SQLite, Kogwistar, a provider, or graph export.
 
 ## Audit note (2026-10-15)
 
+### Recovery evidence update (2026-10-16, commit 5a95c19)
+
+- [x] The fresh recovery child now reconciles a valid OCR page artifact before
+  the direct reuse predicate. This closes the cursor-zero hole where page one
+  could be replayed after an artifact-first interruption even though its JSON
+  was valid and source/configuration identities matched.
+- [x] Local regression evidence:
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_concurrent_resume_has_one_owner_and_one_result`
+  and
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_checkpoint_reopens_after_process_termination`
+  both pass; the broader focused grouping/runtime run passed 6 tests.
+- [~] Remote Parser CI run `38883695001` / `#280` is still in progress.
+  This update does not close A-6, S02, C03, C05, Linux SIGKILL, installed
+  package, or full graph-publication evidence.
+
 The external seam review found that earlier green marks overstated the
 evidence for artifact integrity and runtime ownership. Those marks are
 intentionally downgraded below. In particular, an artifact being written with

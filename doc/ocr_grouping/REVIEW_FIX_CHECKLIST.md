@@ -2,6 +2,17 @@
 
 ## Latest verified release evidence (2026-10-16)
 
+### Recovery seam update (commit `5a95c19`)
+
+The fresh page-recovery child now calls `reconcile_orphan_artifact()` before
+the OCR reuse predicate. This is required when recovery starts with cursor zero:
+the checkpoint prefix loop cannot otherwise inspect page one, and a valid
+artifact-first result could be replayed unnecessarily. The local regressions
+`test_ocr_root_concurrent_resume_has_one_owner_and_one_result` and
+`test_grouping_checkpoint_reopens_after_process_termination` pass, as does the
+focused six-test grouping/runtime run. Parser CI run `#280`
+(`38883695001`) is still pending, so the release-gate statuses remain partial.
+
 Latest evidence correction: parser CI run `38873761447` passed all four
 interpreter jobs (CPython 3.12-3.14 and PyPy 3.11) on the exact branch head
 `cb22da2`. That run includes the typed OCR-runtime state seam and artifact

@@ -94,7 +94,7 @@ except ImportError:  # pragma: no cover
 import math
 import os
 from collections import deque
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator, Iterable, Sequence
 from contextvars import ContextVar
 from typing import ClassVar, ParamSpec, Protocol, TypeVar, cast
 from uuid import UUID
@@ -102,6 +102,13 @@ from uuid import UUID
 P = ParamSpec("P")
 R = TypeVar("R")
 R_co = TypeVar("R_co", covariant=True)
+TTerminalResult = TypeVar("TTerminalResult", bound="_TerminalCorrectionResult")
+
+
+class _TerminalCorrectionResult(Protocol):
+    """Structural contract for correction results eligible for caching."""
+
+    pending_fix_children: Sequence[object]
 
 from kogwistar.id_provider import stable_id
 from kogwistar.llm_tasks.providers import SupportsStructuredOutput
@@ -1146,11 +1153,13 @@ def parser_llm_cache(fn: Callable[P, R]) -> Callable[P, R]:
     return _parser_llm_cache(fn, should_stage=lambda _value: True)
 
 
-def parser_llm_cache_terminal_correction(fn: Callable[P, R]) -> Callable[P, R]:
+def parser_llm_cache_terminal_correction(
+    fn: Callable[P, TTerminalResult],
+) -> Callable[P, TTerminalResult]:
     """Cache a correction layer only when it has no remaining pending nodes."""
 
-    def _is_terminal(value: R) -> bool:
-        return not bool(getattr(value, "pending_fix_children", None))
+    def _is_terminal(value: TTerminalResult) -> bool:
+        return not value.pending_fix_children
 
     return _parser_llm_cache(fn, should_stage=_is_terminal)
 
@@ -3264,7 +3273,7 @@ def semantic_tree_to_kge_payload(
     has_source_pointers = False
     while pending_nodes:
         node = pending_nodes.pop()
-        if node.total_content_pointers or getattr(node, "aggregate_content_pointers", []):
+        if node.total_content_pointers:
             has_source_pointers = True
             break
         pending_nodes.extend(node.child_nodes)
