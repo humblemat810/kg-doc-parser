@@ -192,6 +192,12 @@ class _BoundaryCoverageReport(TypedDict):
     gap_ranges: list[_BoundaryGapRange]
 
 
+class _SourceMapExcerptRecord(TypedDict):
+    page_number: int | None
+    cluster_number: int | None
+    text: str
+
+
 class _BoundaryReviewDecisionSummary(TypedDict):
     candidate_id: str
     decision: str
@@ -403,13 +409,15 @@ def _source_map_excerpt(
     *,
     max_records: int = 12,
     max_text_chars: int = 1200,
-) -> dict[str, dict[str, object]]:
-    excerpt: dict[str, dict[str, object]] = {}
+) -> dict[str, _SourceMapExcerptRecord]:
+    excerpt: dict[str, _SourceMapExcerptRecord] = {}
     for key, record in list(parser_source_map.items())[:max_records]:
         text = _record_text(record)
+        raw_page_number = record.get("page_number") if isinstance(record, Mapping) else None
+        raw_cluster_number = record.get("cluster_number") if isinstance(record, Mapping) else None
         excerpt[str(key)] = {
-            "page_number": record.get("page_number") if isinstance(record, Mapping) else None,
-            "cluster_number": record.get("cluster_number") if isinstance(record, Mapping) else None,
+            "page_number": raw_page_number if type(raw_page_number) is int else None,
+            "cluster_number": raw_cluster_number if type(raw_cluster_number) is int else None,
             "text": _trim_text(text, max_chars=max_text_chars),
         }
     return excerpt
