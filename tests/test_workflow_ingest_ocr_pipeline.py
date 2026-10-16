@@ -4357,7 +4357,10 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
     assert calls["ocr"] == 3
     assert calls["parse"] == 2
     assert third_artifacts.reused_pages == [2]
-    assert third_run.run_id == f"{first_run.run_id}|recovery-1"
+    # Recovery uses a new persisted runtime incarnation internally, but the
+    # public result keeps the stable logical root identity.  The trace below
+    # proves that the artifact-loss recovery was actually executed.
+    assert third_run.run_id == first_run.run_id
     root_trace = list(
         conversation_engine.read.get_nodes(
             where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": first_run.run_id}]}
@@ -4368,3 +4371,14 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
         "ocr_root_invoke_grouping",
         "ocr_root_invoke_semantic",
     }
+    recovery_trace = list(
+        conversation_engine.read.get_nodes(
+            where={
+                "$and": [
+                    {"entity_type": "workflow_step_exec"},
+                    {"run_id": f"{first_run.run_id}|recovery-1"},
+                ]
+            }
+        )
+    )
+    assert recovery_trace
