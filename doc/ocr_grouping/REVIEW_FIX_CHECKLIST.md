@@ -737,11 +737,11 @@ release is available.
   4 skipped`). This closes one client serialization seam only; the repository-wide
   typing and release gates remain open. The checklist push `89b8dc3` was also
   verified by Parser CI run `38928761211`.
-- [~] Commit `eb02d6c` replaces provider-response `model_dump` discovery with the
+- [x] Parser CI run `38929473712` verified commit `eb02d6c`, which replaces provider-response `model_dump` discovery with the
   shared runtime-checkable `ModelDumpLike` protocol and strengthens the provider
   regression reads with explicit JSON/diagnostic narrowing. Provider and test
   Pyright reports zero errors, Ruff passes, and the focused selection passes
-  (`10 passed`). Remote CI for this commit is pending.
+  (`10 passed`).
 - [~] Commit `ed4ac40` replaces the legacy semantic-tree `model_dump` lookup with
   the shared `ModelDumpLike` protocol and adds a dedicated coercion regression.
   Production and dedicated-test Pyright report zero errors, Ruff passes, and the

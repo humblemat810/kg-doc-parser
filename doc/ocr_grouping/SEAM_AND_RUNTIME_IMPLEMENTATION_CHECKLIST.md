@@ -1191,11 +1191,11 @@ protocol.
   state seam only; full runtime recovery, matrix CI, and release gates remain
   open. The checklist-only follow-up `89b8dc3` was verified by Parser CI run
   `38928761211`.
-- [~] Commit `eb02d6c` uses the shared `ModelDumpLike` protocol for provider
+- [x] Parser CI run `38929473712` verified commit `eb02d6c`, which uses the shared `ModelDumpLike` protocol for provider
   usage extraction instead of an untyped dynamic `model_dump` lookup, and narrows
   the provider regression's JSON/diagnostic reads. Provider and test Pyright
   reports zero errors, Ruff passes, and the focused provider selection passes
-  (`10 passed`); remote CI remains pending.
+  (`10 passed`).
 - [~] Commit `ed4ac40` uses the shared `ModelDumpLike` protocol for legacy
   semantic-tree coercion and adds a dedicated regression module. Production and
   dedicated-test Pyright report zero errors, Ruff passes, and the regression
