@@ -1607,7 +1607,7 @@ def _annotate_proposal_result(
     unresolved_interval_count: int | None = None,
     summary_count: int | None = None,
 ) -> CurrentLayerResult:
-    metadata = dict(getattr(result, "metadata", {}) or {})
+    metadata = dict(result.metadata)
     metadata["proposal_source"] = proposal_source
     metadata["proposal_mode"] = proposal_mode
     if proposal_failure_reason:
@@ -1628,7 +1628,7 @@ def _annotate_proposal_result(
         metadata["unresolved_interval_count"] = unresolved_interval_count
     if summary_count is not None:
         metadata["summary_count"] = summary_count
-    reasoning_history = list(getattr(result, "reasoning_history", []) or [])
+    reasoning_history = list(result.reasoning_history)
     marker_payload: dict[str, object] = {
         "source": "workflow_layered_proposal",
         "proposal_source": proposal_source,
@@ -1831,11 +1831,11 @@ def build_layerwise_llm_callbacks(
         # and test doubles that do not accept optional callback plumbing.
         chat_model = build_chat_model_for_role("parser", provider_settings)
     fallback_builder = fallback_layer_result_fn or _fallback_layer_result
-    proposal_mode = str(proposal_mode or getattr(provider_settings, "proposal_mode", "children") or "children")
+    proposal_mode = str(proposal_mode or provider_settings.proposal_mode or "children")
     if proposal_mode not in {"children", "boundaries"}:
         raise ValueError("proposal_mode must be either 'children' or 'boundaries'")
     boundary_refinement_rounds = max(0, int(boundary_refinement_rounds or 0))
-    proposal_retry_rounds = max(0, int(getattr(provider_settings.parser, "max_retries", 0) or 0))
+    proposal_retry_rounds = max(0, provider_settings.parser.max_retries)
     last_provider_failure_type: str | None = None
 
     def _emit(stage: str, **extra: object) -> None:
@@ -1888,7 +1888,7 @@ def build_layerwise_llm_callbacks(
             boundary_candidates = _boundary_prompt_candidate_context(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
-                max_points=int(getattr(provider_settings, "boundary_max_points", 128)),
+                max_points=provider_settings.boundary_max_points,
             )
             boundary_candidate_lookup = _boundary_candidate_lookup(boundary_candidates)
             boundary_dropped_count = 0
@@ -2885,7 +2885,7 @@ def build_layerwise_llm_callbacks(
             depth=current_layer_context.depth,
             retry_count=current_layer_context.retry_count,
             split_strategy=split_strategy,
-            child_count=len(getattr(current_layer_result, "children", []) or []),
+            child_count=len(current_layer_result.children),
         )
         try:
             review_result: LLMCurrentLayerReview = _structured_invoke(
