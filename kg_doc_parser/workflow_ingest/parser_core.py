@@ -29,12 +29,12 @@ from .semantics import (
     pointer_source_validation_error,
     validate_semantic_tree_integrity,
 )
-from .serialization import JsonValue
+from .serialization import JsonObject, JsonValue
 
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
 SplitStrategy = Literal["excerpt_first", "boundary_first"]
-ParserPayload = dict[str, object]
+ParserPayload = JsonObject
 ParserSourceMap = dict[str, ParserPayload]
 
 

@@ -75,7 +75,7 @@ from .semantics import (
     correct_and_validate_pointer,
     validate_semantic_tree_integrity,
 )
-from .serialization import JsonValue
+from .serialization import JsonObject, JsonValue
 
 
 class PageIndexTraceLogger(Protocol):
@@ -305,8 +305,8 @@ class PageIndexParseResult:
     source_format: PageIndexSourceFormat
     workflow_input: WorkflowIngestInput
     authoritative_source_map: dict[str, GroundedSourceRecord]
-    parser_input_dict: dict[str, object]
-    parser_source_map: dict[str, dict[str, object]]
+    parser_input_dict: JsonObject
+    parser_source_map: dict[str, JsonObject]
     semantic_tree: SemanticNode
     coverage: dict[str, object]
     diagnostics: dict[str, object]
