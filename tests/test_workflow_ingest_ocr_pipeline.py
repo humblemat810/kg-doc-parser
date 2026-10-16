@@ -591,12 +591,22 @@ def test_concurrent_resume_loser_errors_are_fail_closed(error_text: str) -> None
     _assert_concurrent_resume_loser_error(error_text)
 
 
-def test_concurrent_resume_unrelated_nested_failure_is_not_misclassified() -> None:
-    """A failed child for another reason must not look like an ownership loss."""
+@pytest.mark.parametrize(
+    "nested_failure",
+    [
+        "invalid grouping frontier",
+        "provider request failed",
+        "persisted checkpoint is malformed",
+    ],
+)
+def test_concurrent_resume_unrelated_nested_failure_is_not_misclassified(
+    nested_failure: str,
+) -> None:
+    """Ordinary nested failures must not look like ownership loss."""
     assert not _is_concurrent_resume_loser_error(
-        "RuntimeError: OCR root workflow failure: "
-        '["Nested workflow \'kg_doc_parser.ocr_grouping.v1\' returned status '
-        '\'failure: invalid grouping frontier\'"]'
+        f"RuntimeError: OCR root workflow failure: [\"Nested workflow "
+        f"'kg_doc_parser.ocr_grouping.v1' returned status "
+        f"'failure: {nested_failure}'\"]"
     )
 
 
