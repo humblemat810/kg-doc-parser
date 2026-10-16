@@ -6,6 +6,7 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import CodeType
 
 
 def _utc_now() -> str:
@@ -93,36 +94,36 @@ class WorkflowProbe:
             )
             self._sys_monitoring = state
 
-            def _should_log(code: object) -> bool:
-                filename = str(getattr(code, "co_filename", "") or "")
-                if state.code_name_allowlist and getattr(code, "co_name", "") not in state.code_name_allowlist:
+            def _should_log(code: CodeType) -> bool:
+                filename = code.co_filename
+                if state.code_name_allowlist and code.co_name not in state.code_name_allowlist:
                     return False
                 return any(part in filename for part in state.file_substrings)
 
-            def _on_start(code: object, offset: int) -> None:
+            def _on_start(code: CodeType, offset: int) -> None:
                 if _should_log(code):
                     self.emit(
                         "probe.sys_monitoring.start",
-                        code_name=getattr(code, "co_name", None),
-                        filename=getattr(code, "co_filename", None),
+                        code_name=code.co_name,
+                        filename=code.co_filename,
                         offset=int(offset),
                     )
 
-            def _on_return(code: object, offset: int, value: object) -> None:
+            def _on_return(code: CodeType, offset: int, value: object) -> None:
                 if _should_log(code):
                     self.emit(
                         "probe.sys_monitoring.return",
-                        code_name=getattr(code, "co_name", None),
-                        filename=getattr(code, "co_filename", None),
+                        code_name=code.co_name,
+                        filename=code.co_filename,
                         offset=int(offset),
                     )
 
-            def _on_raise(code: object, offset: int, exc: object) -> None:
+            def _on_raise(code: CodeType, offset: int, exc: object) -> None:
                 if _should_log(code):
                     self.emit(
                         "probe.sys_monitoring.raise",
-                        code_name=getattr(code, "co_name", None),
-                        filename=getattr(code, "co_filename", None),
+                        code_name=code.co_name,
+                        filename=code.co_filename,
                         offset=int(offset),
                         error=repr(exc),
                     )
