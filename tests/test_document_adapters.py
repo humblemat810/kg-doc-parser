@@ -379,6 +379,71 @@ def test_build_document_tree_uses_only_declared_content_addressed_media() -> Non
     tree = build_document_tree(inp)
     assert tree is not None
     assert tree.source_items[0].media is not None
+
+
+def test_build_document_tree_preserves_media_identity_location_and_metadata() -> None:
+    digest = "b" * 64
+    inp = WorkflowIngestInput(
+        request_id="media-provenance",
+        collections=[
+            {
+                "collection_id": "media-provenance",
+                "title": "Media provenance",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 3,
+                        "metadata": {"printed_page_number": "7"},
+                        "units": [
+                            SourceUnit(
+                                unit_id="figure-7",
+                                modality="image_region",
+                                page_number=3,
+                                source_uri="assets/figure-7.png",
+                                bbox={
+                                    "x_min": 0.1,
+                                    "x_max": 0.9,
+                                    "y_min": 0.2,
+                                    "y_max": 0.8,
+                                },
+                                metadata={
+                                    "coordinate_system": "relative",
+                                    "spatial_accuracy": "region",
+                                    "media_sha256": digest,
+                                    "media_byte_length": 4096,
+                                    "mime_type": "image/png",
+                                    "ocr_provider": "docling",
+                                    "ocr_model_name": "rapidocr-v2",
+                                    "ocr_configuration_fingerprint": "ocr-config-v1",
+                                },
+                            )
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+
+    tree = build_document_tree(inp)
+
+    assert tree is not None
+    item = tree.source_items[0]
+    assert item.item_id == "figure-7"
+    assert item.kind == "image_region"
+    assert item.media is not None
+    assert item.media.uri == "assets/figure-7.png"
+    assert item.media.sha256_hex == digest
+    assert item.media.byte_length == 4096
+    assert item.location.page_index == 2
+    assert item.location.printed_page_label == "7"
+    assert item.location.accuracy == "region"
+    assert item.location.bbox is not None
+    assert item.location.bbox.coordinate_system == "relative"
+    assert item.location.bbox.x0 == 0.1
+    assert item.location.bbox.y1 == 0.8
+    assert item.ocr_metadata is not None
+    assert item.ocr_metadata.provider == "docling"
+    assert item.ocr_metadata.configuration_fingerprint == "ocr-config-v1"
     assert tree.source_items[0].text is None
 
 

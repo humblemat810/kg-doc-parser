@@ -900,7 +900,10 @@ an adapter-only test, or a source-checkout-only runtime test.
   `_spatial_accuracy` gate requires provider-declared precision and a usable
   box; `test_synthetic_page_box_does_not_claim_region_accuracy` remains the
   regression.
-- [ ] Preserve media identity and location for figures, tables, and captions.
+- [x] Preserve media identity and location for figures, tables, and captions.
+  `test_build_document_tree_preserves_media_identity_location_and_metadata`
+  verifies URI, digest, MIME/size, page label, relative region bounds, and OCR
+  provenance survive the adapter boundary.
 - [x] Record every rejected/lost non-text object with a structured diagnostic.
   `UnrepresentedSourceUnitsError.diagnostics` aggregates all rejected units
   while preserving the singular `UnrepresentedSourceUnitError` compatibility
