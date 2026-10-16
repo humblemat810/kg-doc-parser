@@ -727,10 +727,13 @@ an adapter-only test, or a source-checkout-only runtime test.
   covered by a late-writer regression.
 - [ ] Persist an incremental merge frontier so long documents do not rebuild the
   entire prefix after every page.
-- [ ] Preserve meaningful groups, IDs, summaries, source slices, and reading
-  order when a frontier has one remaining group.
-- [ ] Reject invalid grouping proposals without enqueueing rejected children or
-  replacing the verified parent.
+- [x] Preserve meaningful groups, IDs, summaries, source slices, and reading
+  order when a frontier has one remaining group. The document root remains a
+  structural wrapper and `test_final_group_keeps_identity_and_kind_under_document_root`
+  verifies the final meaningful group is retained.
+- [x] Reject invalid grouping proposals without enqueueing rejected children or
+  replacing the verified parent. `test_apply_grouping_proposals_keeps_source_coverage_and_rejects_bad_members`
+  covers invalid members and preserves the verified tree.
 
 ### A5. Summary execution
 
@@ -1008,10 +1011,16 @@ an adapter-only test, or a source-checkout-only runtime test.
   separation still lack acceptance tests.
 - [ ] Separate document ID, source revision, OCR config, grouping revision, and
   parse generation namespaces.
-- [ ] Make default document IDs collision-safe for same-stem files.
-- [ ] Test two `report.pdf` files from different folders in one batch.
-- [ ] Test changed content at the same path and verify immutable revision
-  separation.
+- [x] Make default batch document IDs collision-safe for same-stem files. The
+  batch runner uses a resolved-path digest when stems collide, and
+  `test_ocr_batch_workflow_fences_duplicate_source_stems` verifies distinct IDs
+  and output directories.
+- [x] Test two `report.pdf` files from different folders in one batch. The
+  artifact-plan regression `test_pdf_artifact_directories_do_not_collide_for_same_basename`
+  verifies distinct content-addressed render and legacy directories.
+- [x] Test changed content at the same path and verify immutable revision
+  separation. `test_pdf_render_manifest_rejects_same_path_replacement` verifies
+  replacement invalidates the prior render identity and regenerates the page set.
 
 ### S11. Explicit references across boundaries
 
