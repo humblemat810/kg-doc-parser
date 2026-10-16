@@ -254,6 +254,11 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
     if not all(isinstance(key, str) for key in value):
         raise TypeError("OCR workflow state keys must be strings")
 
+    # Copy the mapping before narrowing it.  Returning the original mapping
+    # after validation would make the type contract purely a cast: later code
+    # could still observe mutable, unnormalised containers from a checkpoint.
+    state = cast(_OCRWorkflowState, dict(value))
+
     string_keys = (
         "ocr_page_state_version",
         "ocr_root_state_version",
@@ -294,7 +299,9 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
 
     grouping_passes = value.get("grouping_passes")
     if grouping_passes is not None:
-        _json_object_passes(grouping_passes, label="grouping_passes")
+        state["grouping_passes"] = _json_object_passes(
+            grouping_passes, label="grouping_passes"
+        )
 
     for key in ("completed_pages", "reused_pages"):
         field = value.get(key)
@@ -302,15 +309,20 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
             not isinstance(field, list) or any(type(item) is not int for item in field)
         ):
             raise TypeError(f"OCR workflow state field {key!r} must be a list of integers")
+        if field is not None:
+            normalized_pages = cast(list[int], list(field))
+            if key == "completed_pages":
+                state["completed_pages"] = normalized_pages
+            else:
+                state["reused_pages"] = normalized_pages
 
     page_sources = value.get("page_sources")
     if page_sources is not None:
         if not isinstance(page_sources, list):
             raise TypeError("OCR workflow state field 'page_sources' must be a list")
-        for item in page_sources:
-            _page_source_state(item)
+        state["page_sources"] = [_page_source_state(item) for item in page_sources]
 
-    return cast(_OCRWorkflowState, value)
+    return state
 
 
 def _typed_child_state(value: object, *, label: str) -> _OCRWorkflowState:

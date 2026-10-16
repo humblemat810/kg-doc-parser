@@ -253,6 +253,32 @@ def test_ocr_runtime_state_boundary_rejects_wrong_known_field_types() -> None:
         ocr_runtime_module._typed_state({"grouping_passes": [["not-a-proposal"]]})
 
 
+def test_ocr_runtime_state_boundary_rebuilds_validated_known_containers() -> None:
+    raw_pages = [[{"proposal_id": "p1"}]]
+    raw_sources = [{"page_number": 1, "image_path": "page-1.png"}]
+    state = ocr_runtime_module._typed_state(
+        {
+            "completed_pages": [1],
+            "reused_pages": [1],
+            "grouping_passes": raw_pages,
+            "page_sources": raw_sources,
+        }
+    )
+
+    completed_pages = state.get("completed_pages")
+    reused_pages = state.get("reused_pages")
+    grouping_passes = state.get("grouping_passes")
+    page_sources = state.get("page_sources")
+    assert completed_pages == [1]
+    assert reused_pages == [1]
+    assert grouping_passes == [[{"proposal_id": "p1"}]]
+    assert page_sources == [
+        {"page_number": 1, "image_path": "page-1.png"}
+    ]
+    assert grouping_passes is not raw_pages
+    assert page_sources is not raw_sources
+
+
 def test_ocr_runtime_child_state_uses_the_same_typed_boundary() -> None:
     with pytest.raises(TypeError, match="grouping child returned invalid typed state"):
         ocr_runtime_module._typed_child_state(
