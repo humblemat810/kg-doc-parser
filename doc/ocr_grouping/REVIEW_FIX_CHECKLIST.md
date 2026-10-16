@@ -1,5 +1,16 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-17, local CI selection green)
+
+The focused fresh-process ownership regression
+`test_ocr_root_concurrent_resume_has_one_owner_and_one_result` passed locally
+in `91.18s` with two competing resume processes and exactly one accepted
+result. The complete repository-local CI selection then passed with
+`346 passed, 143 deselected, 48 warnings` in `12m47s`, including fresh-process
+OCR recovery, grouping recovery, and concurrent resume. This promotes the
+local recovery gate; remote CI and the remaining semantic-publication,
+OCR-completeness, typing, and release gates remain open.
+
 ## Latest evidence update (2026-10-17, commit `a0332d1`, pending CI)
 
 Proposal/review cache namespaces now accept only JSON-safe `JsonValue` values,
