@@ -2,7 +2,7 @@ import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from logging import Logger
-from typing import TypedDict, cast
+from typing import Protocol, TypedDict, cast, runtime_checkable
 from uuid import UUID
 
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -44,6 +44,30 @@ class UsageMetadata(TypedDict, total=False):
     output_token_details: TokenDetails
 
 
+@runtime_checkable
+class _UsageMetadataCarrier(Protocol):
+    @property
+    def usage_metadata(self) -> object: ...
+
+
+@runtime_checkable
+class _GenerationInfoCarrier(Protocol):
+    @property
+    def generation_info(self) -> object: ...
+
+
+@runtime_checkable
+class _MessageCarrier(Protocol):
+    @property
+    def message(self) -> object: ...
+
+
+@runtime_checkable
+class _ResponseMetadataCarrier(Protocol):
+    @property
+    def response_metadata(self) -> object: ...
+
+
 cost_table: dict[str, ModelCost] = {
     "gemini-2.0-flash": {"input": 0.0001, "output": 0.0004, "cache" : 0.0, "storage_per_hour": 0.0},
     "gemini-1.5-pro": {"input": 0.001250, "output": 0.005, "cache" : 0.0, "storage_per_hour": 0.0},
@@ -56,7 +80,7 @@ cost_table: dict[str, ModelCost] = {
 
 
 def _usage_metadata(message: object) -> UsageMetadata | None:
-    value = getattr(message, "usage_metadata", None)
+    value = message.usage_metadata if isinstance(message, _UsageMetadataCarrier) else None
     return cast(UsageMetadata, dict(value)) if isinstance(value, Mapping) else None
 
 
@@ -87,12 +111,28 @@ def _nested_usage_count(usage: Mapping[str, object], key: str, nested_key: str) 
 
 
 def _model_name(generation: object) -> str:
-    value = getattr(generation, "generation_info", None)
+    value = (
+        generation.generation_info
+        if isinstance(generation, _GenerationInfoCarrier)
+        else None
+    )
     if isinstance(value, Mapping):
         model = value.get("model_name")
         if isinstance(model, str):
             return model
     return "unknown"
+
+
+def _generation_message(generation: object) -> object | None:
+    if isinstance(generation, _MessageCarrier):
+        return generation.message
+    return None
+
+
+def _response_metadata(message: object) -> object | None:
+    if isinstance(message, _ResponseMetadataCarrier):
+        return message.response_metadata
+    return None
 keys = list(cost_table.keys())
 for k in keys:
     if k.startswith('models/'):
@@ -267,9 +307,12 @@ class PromptCostTokenLogger(BaseCallbackHandler):
             for gg in g:
                 
                 to_log: dict[str, str | None] = {'response_metadata': None, 'usage_metadata': None}
-                message = getattr(gg, "message", None)
-                if message is not None and hasattr(message, "response_metadata"):
-                    to_log["response_metadata"] = f"{message.response_metadata}"
+                message = _generation_message(gg)
+                response_metadata = (
+                    _response_metadata(message) if message is not None else None
+                )
+                if response_metadata is not None:
+                    to_log["response_metadata"] = f"{response_metadata}"
                 usage = _usage_metadata(message) if message is not None else None
                 if usage is not None:
                     to_log["usage_metadata"] = f"{usage}"
@@ -281,7 +324,7 @@ class PromptCostTokenLogger(BaseCallbackHandler):
             for gen in generation:
                 # Check if the generation object is a ChatGeneration instance
                 # and has the 'usage_metadata' attribute.
-                message = getattr(gen, "message", None)
+                message = _generation_message(gen)
                 if message is not None and _usage_metadata(message) is not None:
                     
                     usage_metadata = _usage_metadata(message)
