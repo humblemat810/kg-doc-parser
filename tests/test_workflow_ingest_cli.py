@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from dataclasses import dataclass
@@ -17,7 +18,11 @@ from kg_doc_parser.workflow_ingest import (
     runners,
 )
 from kg_doc_parser.workflow_ingest import cli as workflow_cli
-from kg_doc_parser.workflow_ingest.cli import _provider_settings_from_args, build_parser
+from kg_doc_parser.workflow_ingest.cli import (
+    _optional_namespace_value,
+    _provider_settings_from_args,
+    build_parser,
+)
 
 pytestmark = [pytest.mark.workflow]
 
@@ -56,6 +61,15 @@ def _fake_ocr_artifacts(base_dir: Path) -> OCRWorkflowArtifacts:
         completed_pages=[1],
         reused_pages=[],
     )
+
+
+def test_cli_optional_namespace_value_validates_dynamic_namespace_fields() -> None:
+    args = argparse.Namespace(enabled=True, missing=None)
+
+    assert _optional_namespace_value(args, "enabled", bool) is True
+    assert _optional_namespace_value(args, "missing", str) is None
+    with pytest.raises(TypeError, match="enabled"):
+        _optional_namespace_value(args, "enabled", str)
 
 
 def test_ocr_source_workflow_emits_probe_steps(monkeypatch: pytest.MonkeyPatch) -> None:

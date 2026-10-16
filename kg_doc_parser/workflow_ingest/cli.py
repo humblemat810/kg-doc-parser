@@ -12,7 +12,7 @@ import argparse
 import json
 from collections.abc import Iterable
 from pathlib import Path
-from typing import get_args
+from typing import TypeVar, get_args
 
 from .demo_harness import DemoHarnessConfig
 from .page_index import PageIndexMode
@@ -32,6 +32,22 @@ from .runners import (
 )
 from .smoke_assets import generate_ocr_smoke_assets
 
+TNamespaceValue = TypeVar("TNamespaceValue")
+
+
+def _optional_namespace_value(
+    args: argparse.Namespace,
+    name: str,
+    expected_type: type[TNamespaceValue],
+) -> TNamespaceValue | None:
+    """Read an optional CLI value without leaking ``Any`` from Namespace."""
+    value = getattr(args, name, None)
+    if value is None:
+        return None
+    if not isinstance(value, expected_type):
+        raise TypeError(f"CLI argument {name!r} must be {expected_type.__name__}")
+    return value
+
 
 def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSettings | None:
     ocr_values = {
@@ -46,13 +62,13 @@ def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSe
         "base_url": args.parser_base_url,
         "api_key_env": args.parser_api_key_env,
     }
-    proposal_mode = getattr(args, "proposal_mode", None)
-    parse_strategy = getattr(args, "parse_strategy", None)
-    parse_strategy_order = getattr(args, "parse_strategy_order", None)
-    triage_enabled = getattr(args, "triage_enabled", None)
-    page_index_summary_enabled = getattr(args, "page_index_summary_enabled", None)
-    page_index_hierarchical_summary_enabled = getattr(
-        args, "page_index_hierarchical_summary_enabled", None
+    proposal_mode = _optional_namespace_value(args, "proposal_mode", str)
+    parse_strategy = _optional_namespace_value(args, "parse_strategy", str)
+    parse_strategy_order = _optional_namespace_value(args, "parse_strategy_order", str)
+    triage_enabled = _optional_namespace_value(args, "triage_enabled", bool)
+    page_index_summary_enabled = _optional_namespace_value(args, "page_index_summary_enabled", bool)
+    page_index_hierarchical_summary_enabled = _optional_namespace_value(
+        args, "page_index_hierarchical_summary_enabled", bool
     )
     ocr_override = any(value is not None for value in ocr_values.values())
     parser_override = any(value is not None for value in parser_values.values())
