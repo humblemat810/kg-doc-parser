@@ -12,6 +12,13 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+The canonical graph client now preserves the validated `JsonObject` record
+contract when reading record IDs, rather than widening records back to
+`Mapping[str, object]`. The client/demo persistence suite passes (`28 passed,
+5 skipped`), with no graph payload behavior change.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 PageIndex diagnostics and salvage results now use `PageIndexDiagnostics`, a
 `dict[str, JsonValue]` contract, for known JSON-safe values instead of
 `dict[str, object]`. Ruff, the PageIndex test command, and the diff check pass

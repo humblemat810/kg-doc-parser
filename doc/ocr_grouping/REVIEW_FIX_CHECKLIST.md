@@ -12,6 +12,13 @@ remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+The canonical graph client keeps validated graph records typed as `JsonObject`
+through ID extraction instead of widening them to `Mapping[str, object]`. The
+client/demo persistence suite passes (`28 passed, 5 skipped`); this is a typing
+only seam and does not change graph payload behavior.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 PageIndex diagnostics and salvage results now use the typed JSON-value alias
 `PageIndexDiagnostics` instead of `dict[str, object]` at the validated output
 boundary. Ruff, the PageIndex test command, and the diff check pass locally;

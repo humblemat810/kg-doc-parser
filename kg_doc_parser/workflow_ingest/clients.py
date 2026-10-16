@@ -205,7 +205,7 @@ def _string_list(value: object, *, field_name: str) -> list[str]:
     return list(value)
 
 
-def _optional_record_id(record: Mapping[str, object], *, field_name: str) -> str:
+def _optional_record_id(record: Mapping[str, JsonValue], *, field_name: str) -> str:
     value = record.get("id")
     if value is None:
         return ""
