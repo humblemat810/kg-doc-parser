@@ -122,6 +122,31 @@ class SemanticIntegrityNodeLike(Protocol):
     def total_content_pointers(self) -> Sequence[TextPointerLike]: ...
 
 
+def _attribute_sequence(value: object) -> tuple[object, ...]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(value)
+    return ()
+
+
+def _node_id_for_shape(node: object) -> str:
+    value = getattr(node, "node_id", None)
+    return "<missing>" if value is None else str(value)
+
+
+def _node_children_for_shape(node: object) -> tuple[object, ...]:
+    return _attribute_sequence(getattr(node, "child_nodes", ()))
+
+
+def _node_metadata_for_shape(node: object) -> Mapping[str, object]:
+    value = getattr(node, "metadata", {})
+    return value if isinstance(value, Mapping) else {}
+
+
+def _node_pointers_for_shape(node: object, attribute: str) -> tuple[TextPointerLike, ...]:
+    values = _attribute_sequence(getattr(node, attribute, ()))
+    return cast(tuple[TextPointerLike, ...], values)
+
+
 def validate_semantic_tree_shape(
     root: SemanticTreeNodeLike,
     *,
@@ -146,15 +171,15 @@ def validate_semantic_tree_shape(
         if object_id in active_object_ids:
             raise ValueError("semantic tree contains a cycle while checking branching")
         active_object_ids.add(object_id)
-        node_id = str(getattr(node, "node_id", "<missing>"))
-        children = list(getattr(node, "child_nodes", ()) or ())
+        node_id = _node_id_for_shape(node)
+        children = _node_children_for_shape(node)
         if len(children) == 1:
             raise ValueError(f"unary semantic node: {node_id}")
         if max_depth is not None and depth > max_depth:
             raise ValueError(f"semantic tree exceeds maximum depth {max_depth}: {node_id}")
-        metadata = getattr(node, "metadata", {})
-        total_pointers = getattr(node, "total_content_pointers", ())
-        aggregate_pointers = getattr(node, "aggregate_content_pointers", ())
+        metadata = _node_metadata_for_shape(node)
+        total_pointers = _node_pointers_for_shape(node, "total_content_pointers")
+        aggregate_pointers = _node_pointers_for_shape(node, "aggregate_content_pointers")
         if (
             isinstance(metadata, Mapping)
             and metadata.get("atomic_retained") is True
@@ -314,7 +339,7 @@ def validate_semantic_tree_integrity(
             )
         if max_depth is not None and depth > max_depth:
             raise ValueError(f"semantic tree exceeds maximum depth {max_depth}: {node_id}")
-        aggregate_pointers = getattr(node, "aggregate_content_pointers", ())
+        aggregate_pointers = _node_pointers_for_shape(node, "aggregate_content_pointers")
         pointers = [*node.total_content_pointers, *aggregate_pointers]
         for pointer in pointers:
             if pointer.start_char < 0 or pointer.end_char < -1:
