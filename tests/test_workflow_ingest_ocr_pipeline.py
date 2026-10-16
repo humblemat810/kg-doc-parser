@@ -3621,6 +3621,51 @@ def test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf(tmp_path: P
 
 
 @pytest.mark.ci
+def test_pdf_render_manifest_rejects_same_path_replacement(tmp_path: Path) -> None:
+    from pypdf import PdfWriter
+
+    from kg_doc_parser.workflow_ingest.ocr_pipeline import _render_pdf_with_identity
+
+    source = tmp_path / "same-path.pdf"
+    rendered = tmp_path / "rendered"
+    calls: list[bytes] = []
+
+    def _write_pdf(title: str) -> None:
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.add_blank_page(width=72, height=72)
+        writer.add_metadata({"/Title": title})
+        with source.open("wb") as handle:
+            writer.write(handle)
+
+    class _Rasterizer:
+        def __call__(self, pdf_path: Path, rendered_dir: Path) -> list[Path]:
+            source_bytes = pdf_path.read_bytes()
+            calls.append(source_bytes)
+            rendered_dir.mkdir(parents=True, exist_ok=True)
+            paths = [rendered_dir / "page_1.png", rendered_dir / "page_2.png"]
+            color = "white" if len(calls) == 1 else "black"
+            for path in paths:
+                Image.new("RGB", (11, 7), color).save(path, "PNG")
+            return paths
+
+    _write_pdf("revision-a")
+    rasterizer = _Rasterizer()
+    first = _render_pdf_with_identity(
+        pdf_path=source, rendered_dir=rendered, rasterizer=rasterizer
+    )
+    _write_pdf("revision-b")
+    second = _render_pdf_with_identity(
+        pdf_path=source, rendered_dir=rendered, rasterizer=rasterizer
+    )
+
+    assert first == second
+    assert len(calls) == 2
+    with Image.open(second[1]) as image:
+        assert image.getpixel((0, 0)) == (0, 0, 0)
+
+
+@pytest.mark.ci
 def test_builtin_pdf_render_identity_includes_poppler_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

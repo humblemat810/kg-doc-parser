@@ -468,7 +468,10 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [x] Reconcile existing rendered files against state before reuse; the render
   manifest now records each page digest and dimensions and invalid pages are
   regenerated.
-- [ ] Test same-path PDF A to PDF B with changed page 2.
+- [x] Test same-path PDF A to PDF B with changed page 2. The injected
+  rasterizer regression `test_pdf_render_manifest_rejects_same_path_replacement`
+  proves that a valid replacement at the same path invalidates the render cache
+  and regenerates both pages.
 - [x] Test render identity changes, including a typed custom rasterizer
   configuration fingerprint, in
   `tests/test_workflow_ingest_ocr_pipeline.py::test_pdf_render_manifest_rejects_tampered_page_and_records_identity`.
