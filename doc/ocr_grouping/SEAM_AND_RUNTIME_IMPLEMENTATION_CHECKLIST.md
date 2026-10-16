@@ -1,5 +1,17 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-17, commit `d588b0d` pending CI)
+
+OCR root/page resume identity reads now use a typed `ResumeIdentityKey` and
+runtime-checked `ResumeIdentityValue` helper. Malformed configuration
+fingerprint lists fail closed instead of being compared through an ambiguous
+`object` value. The dedicated regression passes (`1 passed, 95 deselected`),
+changed-module Pyright and Ruff pass, and `git diff --check` passes. A
+package-wide Pyright rerun was attempted but hit the known Windows Node
+launcher `EPERM` path-resolution failure, so it is not counted as a package
+scan result. CI verification for `d588b0d` is pending; recovery and release
+gates remain open.
+
 ## Latest evidence update (2026-10-17, local commit pending CI)
 
 The shared recursive JSON contract now uses the named `typing_extensions`

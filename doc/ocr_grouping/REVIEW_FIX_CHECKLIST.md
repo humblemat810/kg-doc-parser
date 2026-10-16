@@ -1,5 +1,15 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-17, commit `d588b0d` pending CI)
+
+Resume identity comparisons now pass through a typed key/value helper. A
+malformed `ocr_configuration_fingerprints` list is rejected rather than
+silently widening through `object`; the focused regression passes (`1 passed,
+95 deselected`), changed-module Pyright and Ruff pass, and the diff check
+passes. The package-wide Pyright attempt was blocked by the known Windows
+Node launcher `EPERM` path-resolution failure, so no package-wide claim is
+made. CI verification and the recovery/release gates remain open.
+
 ## Latest evidence update (2026-10-17, local commit pending CI)
 
 The recursive JSON serialization alias now uses named
