@@ -925,7 +925,7 @@ def run_ocr_page_workflow(
             workflow_id=DEFAULT_OCR_PAGE_WORKFLOW_ID,
             conversation_id=f"ocr:{context.document_id}",
             turn_node_id=f"ocr:{context.document_id}:pages",
-            initial_state=cast(dict[str, object], initial_state),
+            initial_state=dict(initial_state),
             run_id=run_id,
         )
     )
