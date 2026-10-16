@@ -957,30 +957,30 @@ def _proposal_attempt_context(
 
 def _proposal_validation_reason(
     *,
-    parsed: object,
+    parsed: LLMCurrentLayerResult,
     current_layer_context: CurrentLayerContext,
     parser_source_map: dict[str, dict[str, object]],
 ) -> str | None:
-    children = list(getattr(parsed, "children", []) or [])
+    children = list(parsed.children)
     if not children:
-        if getattr(parsed, "satisfied", None) is True:
+        if parsed.satisfied is True:
             return None
         return "proposal returned no children without satisfied=true"
-    current_parent_ids = set(getattr(current_layer_context, "parent_node_ids", []) or [])
-    child_parent_ids = {str(getattr(child, "parent_node_id", "") or "") for child in children}
+    current_parent_ids = set(current_layer_context.parent_node_ids)
+    child_parent_ids = {str(child.parent_node_id or "") for child in children}
     if current_parent_ids and not child_parent_ids.issubset(current_parent_ids):
         return "proposal referenced parent ids outside the current layer"
     children_by_parent: dict[str, list[object]] = {}
-    parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
+    parent_pointers = dict(current_layer_context.parent_content_pointers_by_id)
     source_text_by_cluster = {
         str(source_cluster_id): _record_text(record)
         for source_cluster_id, record in parser_source_map.items()
     }
     for child in children:
-        pointers = list(getattr(child, "total_content_pointers", []) or [])
+        pointers = list(child.total_content_pointers)
         if not pointers:
             return "proposal child missing total_content_pointers"
-        parent_id = str(getattr(child, "parent_node_id", "") or "")
+        parent_id = str(child.parent_node_id or "")
         if not parent_id:
             return "proposal child missing parent_node_id"
         children_by_parent.setdefault(parent_id, []).append(child)
@@ -999,13 +999,7 @@ def _proposal_validation_reason(
                 )
             except SourcePointerValidationError as exc:
                 return _proposal_pointer_validation_reason(exc)
-    parent_titles = dict(
-        zip(
-            current_layer_context.parent_node_ids,
-            current_layer_context.parent_titles,
-            strict=False,
-        )
-    )
+    parent_titles = dict(zip(current_layer_context.parent_node_ids, current_layer_context.parent_titles, strict=False))
     for parent_id, parent_children in children_by_parent.items():
         if len(parent_children) == 1:
             _ = parent_titles.get(parent_id)
@@ -1031,26 +1025,26 @@ def _proposal_pointer_validation_reason(exc: SourcePointerValidationError) -> st
 
 def _boundary_validation_reason(
     *,
-    parsed: object,
-    current_layer_context: object,
+    parsed: LLMBoundaryProposalBatch,
+    current_layer_context: CurrentLayerContext,
     parser_source_map: dict[str, dict[str, object]],
 ) -> str | None:
-    cutpoints = list(getattr(parsed, "cutpoints", []) or [])
+    cutpoints = list(parsed.cutpoints)
     if not cutpoints:
-        if getattr(parsed, "satisfied", None) is True:
+        if parsed.satisfied is True:
             return None
         return "boundary proposal returned no cutpoints without satisfied=true"
-    current_parent_ids = set(getattr(current_layer_context, "parent_node_ids", []) or [])
-    parent_pointers = dict(getattr(current_layer_context, "parent_content_pointers_by_id", {}) or {})
+    current_parent_ids = set(current_layer_context.parent_node_ids)
+    parent_pointers = dict(current_layer_context.parent_content_pointers_by_id)
     seen: set[tuple[str, str, int]] = set()
     previous_key: tuple[str, str, int] | None = None
     for cutpoint in cutpoints:
-        parent_node_id = str(getattr(cutpoint, "parent_node_id", "") or "")
-        source_cluster_id = str(getattr(cutpoint, "source_cluster_id", "") or "")
-        cut_offset = getattr(cutpoint, "cut_offset", None)
-        text_before_cut = str(getattr(cutpoint, "text_before_cut", "") or "")
-        text_after_cut = str(getattr(cutpoint, "text_after_cut", "") or "")
-        cut_reason = str(getattr(cutpoint, "cut_reason", "") or getattr(cutpoint, "reason", "") or "")
+        parent_node_id = str(cutpoint.parent_node_id or "")
+        source_cluster_id = str(cutpoint.source_cluster_id or "")
+        cut_offset = cutpoint.cut_offset
+        text_before_cut = str(cutpoint.text_before_cut or "")
+        text_after_cut = str(cutpoint.text_after_cut or "")
+        cut_reason = str(cutpoint.cut_reason or cutpoint.reason or "")
         current_key = (parent_node_id, source_cluster_id, cut_offset if type(cut_offset) is int else -1)
         if previous_key is not None and current_key < previous_key:
             return "boundary proposal cutpoints must be sorted by parent, source cluster, then cut offset"
@@ -2351,7 +2345,7 @@ def build_layerwise_llm_callbacks(
                                 target_cut_offset=target.cut_offset,
                                 refined_cutpoint_count=len(refinement_decisions),
                             )
-                    except Exception as refinement_exc:
+                    except Exception as refinement_exc:  # noqa: BLE001 - optional refinement must fail closed
                         refinement_notes.append(
                             f"boundary refinement skipped for {target.parent_node_id}:{target.source_cluster_id}:{target.cut_offset} "
                             f"due to {refinement_exc!r}"
