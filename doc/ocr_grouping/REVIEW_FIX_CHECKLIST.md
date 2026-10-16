@@ -458,6 +458,19 @@ contract; the current run must verify the published `0.6.10` package.
 
 ## Broad OCR Audit Ledger (2026-10-16)
 
+### Concurrent-resume CI follow-up (2026-10-16)
+
+- [x] Reproduced the reported `test_ocr_root_concurrent_resume_has_one_owner_and_one_result`
+  locally twice with the locked `kogwistar 0.6.12`; both runs passed in a fresh
+  process race.
+- [x] Confirmed the ordinary frontier-mismatch guard also passes locally.
+- [~] CI once reported the losing worker as a generic nested grouping failure
+  (`Nested workflow ... returned status 'failure'`) instead of exposing
+  `WorkflowRunOwnershipError`. This is not treated as a reason to weaken the
+  ownership assertion. Rerun CI with the current lockfile and published
+  `kogwistar 0.6.12`; if it recurs, capture the child runtime error and fix the
+  runtime error propagation at its source.
+
 Source: `kg_doc_parser_ocr_broad_audit_2026-10-15.md`. The source review was
 static and did not prove runtime behavior. The statuses below are deliberately
 conservative and apply to the current parser branch HEAD `e7139cf`. A row is
