@@ -11,6 +11,15 @@ OCR recovery, grouping recovery, and concurrent resume. This promotes the
 local recovery gate; remote CI and the remaining semantic-publication,
 OCR-completeness, typing, and release gates remain open.
 
+## Remote CI promotion (2026-10-17)
+
+Parser CI run `38948398992` passed on commit `b93351d` for CPython 3.12,
+CPython 3.13, CPython 3.14, and PyPy 3.11. The fresh-process recovery,
+grouping recovery, and concurrent-resume evidence is therefore verified by
+the repository matrix as well as locally. Semantic publication, dual-store
+crash-order reconciliation, OCR completeness, package-wide typing, and
+release gates remain open.
+
 ## Latest evidence update (2026-10-17, commit `a0332d1`, pending CI)
 
 Proposal/review cache namespaces now accept only JSON-safe `JsonValue` values,
@@ -665,29 +674,27 @@ claim from a same-process or mocked test.
   state and proves the second implementation cannot reuse the first accepted
   result. Callers must change the fingerprint whenever output-affecting
   generation configuration changes.
-- [~] Run the full parser CI matrix after the P0 runtime work. Earlier runs
-  passed CPython 3.12-3.14 and PyPy 3.11, but the latest pushed run
-  `38757822459` failed all four jobs at the installed-Kogwistar version
-  contract because PyPI `0.6.9` still exposes
-  `kogwistar.__version__ == "0.6.8"`. The parser contract remains strict; the
-  matrix is being rerun against published Kogwistar `0.6.10`. Slow/manual
-  provider experiments remain separate gates.
+- [~] Run the full parser CI matrix after the P0 runtime work. Parser CI run
+  `38948398992` passed CPython 3.12-3.14 and PyPy 3.11 against the current
+  `kogwistar` `0.6.12` source profile. Slow/manual provider experiments,
+  published-package verification, and the remaining release gates remain
+  separate.
 
 ## Reviewer-required acceptance additions
 
 These require an implementation location, an exact pytest node, before/after
 behavior, and a runtime classification. C01 was previously evidenced, but the
 current released-package check found a Kogwistar `0.6.9` public-version
-mismatch. Core PR #61 is merged and tagged as `v0.6.10`; C01 is published but
-the current parser matrix rerun is still pending. C02-C06 have partial implementation
+mismatch. The current parser matrix run `38948398992` is green against the
+`0.6.12` source profile; C02-C06 have partial implementation
 evidence, but none is a release-gate pass yet:
 
 - [~] Verify the installed Kogwistar package and public workflow persistence
   API, rather than relying on a source checkout or import-only probe. The
-  contract test caught that Kogwistar `0.6.9` metadata reported `0.6.9` while
-  its public module reported `0.6.8` in parser CI run `38720363271`. Re-run
-  the same test and CPython 3.12-3.14/PyPy 3.11 matrix after tagged Kogwistar
-  `v0.6.10` is visible on PyPI.
+  earlier `0.6.9` public-version mismatch is covered by the current `0.6.12`
+  source-profile import and the green CPython 3.12-3.14/PyPy 3.11 matrix in
+  run `38948398992`; final published-package and release evidence remains
+  required.
 
 The checklist-only rerun `38729861407` failed in all four matrix jobs before
 the OCR acceptance suite because the installed `0.6.9` package still exposes

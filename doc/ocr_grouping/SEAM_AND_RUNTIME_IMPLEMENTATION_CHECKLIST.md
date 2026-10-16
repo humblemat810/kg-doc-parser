@@ -11,6 +11,14 @@ OCR recovery, grouping recovery, and concurrent resume. This promotes the
 local recovery gate; remote CI and the remaining semantic-publication,
 OCR-completeness, typing, and release gates remain open.
 
+## Remote CI promotion (2026-10-17)
+
+Parser CI run `38948398992` passed on commit `b93351d` for all supported
+jobs: CPython 3.12, CPython 3.13, CPython 3.14, and PyPy 3.11. This promotes
+the local recovery and seam test evidence to remote-CI verified. It does not
+close the semantic-publication, dual-store crash-order, OCR-completeness,
+package-wide typing, or release gates.
+
 ## Latest evidence update (2026-10-17, commit `a0332d1`, pending CI)
 
 Parser-core cache namespaces now use the JSON-safe `JsonValue` contract for
@@ -142,8 +150,9 @@ layerwise, PageIndex, and strategy boundaries. A regression confirms nested
 provider metadata is reduced to JSON-safe scalar diagnostics rather than
 leaking opaque objects (`test_provider_diagnostics_are_json_safe_scalar_records`).
 Provider-focused tests and Ruff pass locally; package-wide Pyright is still
-blocked by the known Windows Node launcher `EPERM` issue, and CI for this slice
-is pending. This does not close the broader recovery, semantic-publication,
+blocked by the known Windows Node launcher `EPERM` issue. Parser CI run
+`38948398992` now verifies the branch across all four supported interpreters.
+This does not close the broader recovery, semantic-publication,
 OCR-completeness, or release gates.
 
 ## Latest evidence update (2026-10-17, pending CI)
@@ -154,7 +163,8 @@ payloads with `_validated_ocr_page_json` rather than using unchecked casts to
 Ruff plus `git diff --check` pass. This closes a local typing/runtime seam but
 does not promote the broader recovery, semantic-publication, OCR-completeness,
 or release gates. Package-wide Pyright remains locally blocked by the known
-Windows Node launcher `EPERM` issue; remote CI is the pending matrix evidence.
+Windows Node launcher `EPERM` issue; remote matrix evidence is recorded in
+run `38948398992`.
 
 ## Latest evidence update (2026-10-17, commit `bfc4535`, CI verified)
 
@@ -1060,11 +1070,11 @@ itself as proof:
 
 | Gate | Current status | Required closure evidence |
 | --- | --- | --- |
-| C01 installed API compatibility | PARTIAL / MATRIX PENDING | Kogwistar `v0.6.10` is merged, tagged at core commit `c11efd9`, and publicly available on PyPI. Parser CI run `38847694420` failed and follow-up run `38851635751` is in progress; the clean CPython 3.12-3.14 and PyPy 3.11 matrix must finish before this gate is closed. |
+| C01 installed API compatibility | PARTIAL / RELEASE EVIDENCE PENDING | Kogwistar `v0.6.12` is used by the current parser branch, and Parser CI run `38948398992` passed the CPython 3.12-3.14 and PyPy 3.11 matrix. Published-package verification and the final release decision remain open. |
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`. Released Kogwistar `v0.6.10` does not expose the ownership lease API used by the fresh-process tests; the compatible implementation is on the separately pushed, unmerged `fix/workflow-run-ownership` branch. Parser fresh-process recovery must still prove one parent lineage and no second semantic generation against a published compatible core package. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption, and `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact` proves the public preparation path reruns a database-first incomplete page. Full root/runtime checkpoint reconciliation remains open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
-| C05 true resume | PARTIAL / MATRIX PENDING | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with the coordinated core source checkout on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. Fresh-process, real termination, and concurrent-resume tests pass locally with the coordinated runtime. Kogwistar `v0.6.10` is now publicly available, but the current clean parser matrix is still pending; installed-release evidence, cross-store reconciliation, Linux SIGKILL evidence, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
+| C05 true resume | PARTIAL / REMOTE MATRIX VERIFIED | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The 100-page regression `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` passes with the coordinated core source checkout on `PYTHONPATH`: the reference and resumed canonical graph payloads match, page 63 is retried once, and pages 1-62 are not replayed. Fresh-process, real termination, and concurrent-resume tests pass locally and in Parser CI run `38948398992` across CPython 3.12-3.14 and PyPy 3.11. Installed-release evidence, cross-store reconciliation, Linux SIGKILL evidence, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
 
 ### C05 evidence correction (2026-10-15)
