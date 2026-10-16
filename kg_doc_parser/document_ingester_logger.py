@@ -93,7 +93,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -108,6 +108,12 @@ class TextRedactor(Protocol):
     """Redact one text value before it is written to ingestion telemetry."""
 
     def __call__(self, text: str, /) -> str: ...
+
+
+@runtime_checkable
+class _UsageMetadataCarrier(Protocol):
+    @property
+    def usage_metadata(self) -> object: ...
 
 
 def _metadata_float(value: object, default: float = 0.0) -> float:
@@ -444,6 +450,12 @@ def _as_mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _message_usage_metadata(message: object) -> Mapping[str, object]:
+    if isinstance(message, _UsageMetadataCarrier):
+        return _as_mapping(message.usage_metadata)
+    return {}
+
+
 def _invoked_model_name(kwargs: Mapping[str, object]) -> str | None:
     inv_params = _as_mapping(kwargs.get("invocation_params"))
     m = inv_params.get("model")
@@ -674,10 +686,8 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
             for gen in gen_list:
                 if isinstance(gen, ChatGeneration) and hasattr(gen, "message"):
                     msg = gen.message
-                    # Gemini usage_metadata is commonly stored on the message
-                    # LangChain's base message type does not declare this optional
-                    # provider extension, so keep the dynamic read at this boundary.
-                    usage = _as_mapping(getattr(msg, "usage_metadata", None))
+                    # Gemini usage_metadata is an optional provider extension.
+                    usage = _message_usage_metadata(msg)
                     if usage:
                         input_tokens = _metadata_int_or_none(usage.get("input_tokens")) or 0
                         output_tokens = _metadata_int_or_none(usage.get("output_tokens")) or 0
