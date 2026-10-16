@@ -69,6 +69,10 @@ _OCR_ROOT_STATE_VERSION = "ocr-root-v2"
 _OCR_PAGE_STATE_VERSION = "ocr-page-v2"
 
 
+class KogwistarRuntimeCompatibilityError(RuntimeError):
+    """Raised when a requested OCR recovery contract is not available."""
+
+
 def _workflow_runtime(
     *,
     workflow_engine: GraphKnowledgeEngine,
@@ -80,11 +84,11 @@ def _workflow_runtime(
 ) -> WorkflowRuntime:
     """Construct a runtime across released Kogwistar API generations.
 
-    Lease-aware ownership is optional in the parser API.  Kogwistar releases
-    before the lease constructor argument must remain usable, especially in a
-    fresh subprocess that resolves the published package rather than a source
-    checkout.  Do not catch arbitrary constructor ``TypeError`` values: only
-    pass the lease when the installed runtime advertises that parameter.
+    Lease-aware ownership is required whenever the caller requests it.
+    Kogwistar releases before the lease constructor argument may still be used
+    for non-recovery workflows, but must not silently downgrade a recovery run
+    to an unowned execution.  Do not catch arbitrary constructor ``TypeError``
+    values: inspect the public signature and fail at this dependency boundary.
     """
     runtime_args: dict[str, object] = {
         "workflow_engine": workflow_engine,
@@ -100,8 +104,13 @@ def _workflow_runtime(
             ).parameters
         except (TypeError, ValueError):
             supports_lease = False
-        if supports_lease:
-            runtime_args["run_ownership_lease_ms"] = run_ownership_lease_ms
+        if not supports_lease:
+            raise KogwistarRuntimeCompatibilityError(
+                "Kogwistar WorkflowRuntime does not support "
+                "run_ownership_lease_ms; install the lease-aware release "
+                "before running resumable OCR workflows"
+            )
+        runtime_args["run_ownership_lease_ms"] = run_ownership_lease_ms
     return WorkflowRuntime(**runtime_args)
 
 
@@ -1424,4 +1433,8 @@ def run_ocr_root_workflow(
     return result, bundle, artifacts
 
 
-__all__ = ["run_grouping_workflow", "run_ocr_root_workflow"]
+__all__ = [
+    "KogwistarRuntimeCompatibilityError",
+    "run_grouping_workflow",
+    "run_ocr_root_workflow",
+]

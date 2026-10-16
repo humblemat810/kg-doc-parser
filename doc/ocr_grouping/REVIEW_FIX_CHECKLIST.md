@@ -2,14 +2,18 @@
 
 ## Latest verified release evidence (2026-10-16)
 
-Kogwistar `0.6.10` is now publicly available on PyPI and the parser virtual
-environment verifies both distribution metadata and `kogwistar.__version__` as
-`0.6.10`. The installed-release tests
-`test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process`,
-`test_ocr_root_concurrent_resume_has_one_owner_and_one_result`, and
-`test_ocr_root_reopens_after_real_process_termination` all pass. This closes
-the earlier installed-core publication blocker, but not the remaining
-dual-store crash-order, Linux SIGKILL, or OCR completeness gates.
+The latest parser CI matrix still installs Kogwistar `0.6.10`, and the
+installed-release recovery gate is failing. The source-checkout tests exercise
+newer merged Kogwistar code, but that does not prove the published dependency
+works. In the installed matrix,
+`test_ocr_root_concurrent_resume_has_one_owner_and_one_result` receives a
+nested-workflow failure instead of a `WorkflowRunOwnershipError`, and
+`test_grouping_checkpoint_reopens_after_process_termination` exits with the
+child worker's recovery error. The corrected Kogwistar runtime must be
+published, then pinned and retested before this gate can pass.
+
+Dual-store crash-order, Linux SIGKILL, and OCR completeness gates remain open
+independently.
 
 The current branch also adds reusable regressions for oversized summary
 evidence, built-in Poppler cache identity, and failed PNG publication. These

@@ -433,27 +433,28 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
     }
 
 
-def test_workflow_runtime_compatibility_omits_unsupported_lease_argument(
+def test_workflow_runtime_compatibility_rejects_unsupported_lease_argument(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Published Kogwistar releases without lease support remain constructible."""
+    """Recovery must not silently downgrade on a legacy Kogwistar runtime."""
 
     class LegacyRuntime:
         def __init__(self, **kwargs: object) -> None:
             self.kwargs = kwargs
 
     monkeypatch.setattr(ocr_runtime_module, "WorkflowRuntime", LegacyRuntime)
-    runtime = ocr_runtime_module._workflow_runtime(
-        workflow_engine=object(),
-        conversation_engine=object(),
-        step_resolver=object(),
-        predicate_registry={},
-        trace=True,
-        run_ownership_lease_ms=30_000,
-    )
-
-    assert isinstance(runtime, LegacyRuntime)
-    assert "run_ownership_lease_ms" not in runtime.kwargs
+    with pytest.raises(
+        ocr_runtime_module.KogwistarRuntimeCompatibilityError,
+        match="does not support run_ownership_lease_ms",
+    ):
+        ocr_runtime_module._workflow_runtime(
+            workflow_engine=object(),
+            conversation_engine=object(),
+            step_resolver=object(),
+            predicate_registry={},
+            trace=True,
+            run_ownership_lease_ms=30_000,
+        )
 
 
 @pytest.mark.ci

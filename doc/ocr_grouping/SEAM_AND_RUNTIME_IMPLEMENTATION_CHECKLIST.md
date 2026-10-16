@@ -2,12 +2,15 @@
 
 ## Current verification correction (2026-10-16)
 
-Kogwistar `0.6.10` is now published and installed-release verification passes:
-the parser confirms matching package/module versions, fresh-process root lineage,
-concurrent resume ownership, and real process termination. The checklist still
-keeps dual-store crash reconciliation, Linux SIGKILL evidence, independent OCR
-completeness, and long-document frontier measurements open. These are not
-closed by the published-core check alone.
+The latest parser CI matrix does not pass the installed-release recovery gate.
+It still installs Kogwistar `0.6.10`; that release lacks the lease-aware
+`WorkflowRuntime` constructor and the retryable-child runtime behavior required
+by these tests. Source-checkout tests against newer merged Kogwistar code are
+not installed-release evidence. The dependency gate remains open until the
+corrected core release is published and consumed by this parser matrix.
+
+Dual-store crash reconciliation, Linux SIGKILL evidence, independent OCR
+completeness, and long-document frontier measurements also remain open.
 
 This checklist tracks two related but distinct implementations:
 
@@ -132,10 +135,11 @@ whose contract crosses SQLite, Kogwistar, a provider, or graph export.
   S02, S06, C02, C03, C04, C05, or C06 green from narrow tests.
 - [x] **D-2.** Keep the installed Kogwistar API gate separate from source
   checkout compatibility; record the exact version and CI run.
-- [x] **D-3.** Merge and publish the Kogwistar retryable-child fix before
-  claiming Track A-6 or the 100-page release fixture. Kogwistar `0.6.10` is
-  merged, tagged, published, and verified in the parser's clean environment.
-  The remaining recovery and completeness gates are tracked separately.
+- [~] **D-3.** Merge and publish the Kogwistar retryable-child and lease-aware
+  runtime fixes before claiming Track A-6 or the 100-page release fixture.
+  The fixes are merged on Kogwistar `main`, but this parser still resolves
+  `0.6.10`; its installed CI failures are recorded above. A corrected package
+  release and parser pin update are still required.
 - [ ] **D-4.** Close Track A process/recovery evidence before claiming Track B
   end-to-end seam closure.
 - [ ] **D-5.** Only after both tracks are green, bump the parser version, add
