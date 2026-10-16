@@ -7,7 +7,7 @@ from typing import Literal, Protocol, cast, runtime_checkable
 from kogwistar.id_provider import stable_id
 from pydantic import BaseModel, Field, model_validator
 
-from .serialization import JsonValue
+from .serialization import JsonObject, JsonValue, json_safe
 
 
 def _normalize_text(text: str) -> str:
@@ -568,8 +568,8 @@ def semantic_tree_to_kge_payload(
     if parser_source_map is None and has_source_pointers:
         raise ValueError("source-grounded graph export requires parser_source_map")
     validate_semantic_tree_integrity(root, parser_source_map=parser_source_map)
-    nodes: list[dict[str, object]] = []
-    edges: list[dict[str, object]] = []
+    nodes: list[JsonObject] = []
+    edges: list[JsonObject] = []
 
     def spans(ptrs: list[HydratedTextPointer]) -> list[dict[str, JsonValue]]:
         if not ptrs:
@@ -619,13 +619,17 @@ def semantic_tree_to_kge_payload(
         # A structural page-index container is grounded by its aggregate span;
         # ordinary legacy structural nodes retain the existing synthetic fallback.
         mentions = [{"spans": spans(node.total_content_pointers or node.aggregate_content_pointers)}]
-        node_metadata = {
+        raw_node_metadata = {
             "semantic_node_type": node.node_type,
             "doc_id": doc_id,
             "parent_id": node.parent_id,
             "level_from_root": node.level_from_root,
             **dict(node.metadata or {}),
         }
+        node_metadata_value = json_safe(raw_node_metadata)
+        if not isinstance(node_metadata_value, dict):
+            raise TypeError("semantic node metadata must serialize to a JSON object")
+        node_metadata: JsonObject = node_metadata_value
         if not node.summary and "summary_unavailable" not in node_metadata:
             # Do not silently turn a title into an LLM summary.  Consumers can
             # decide whether to request a summary or display the title only.
