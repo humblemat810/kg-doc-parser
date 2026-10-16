@@ -18,6 +18,7 @@ from kg_doc_parser.workflow_ingest.adapters import (
 from kg_doc_parser.workflow_ingest.clients import (
     ServerCanonicalKgClient,
     UnsupportedClientOperation,
+    _jsonable_payload,
 )
 from kg_doc_parser.workflow_ingest.design import build_ingest_workflow_design
 from kg_doc_parser.workflow_ingest.models import (
@@ -60,6 +61,21 @@ def _local_scratch_dir(name: str) -> Path:
     path = root / f"{name}_{uuid4().hex}"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+@pytest.mark.ci
+def test_client_jsonable_payload_uses_typed_model_dump_protocol() -> None:
+    class _BackendDump:
+        def model_dump(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs == {"field_mode": "backend", "dump_format": "json"}
+            return {"value": "backend"}
+
+    class _LegacyDump:
+        def model_dump(self) -> dict[str, object]:
+            return {"value": "legacy"}
+
+    assert _jsonable_payload(_BackendDump()) == {"value": "backend"}
+    assert _jsonable_payload(_LegacyDump()) == {"value": "legacy"}
 
 
 def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):
