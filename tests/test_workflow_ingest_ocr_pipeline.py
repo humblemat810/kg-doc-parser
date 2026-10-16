@@ -241,10 +241,16 @@ def test_ocr_runtime_state_boundary_rejects_wrong_known_field_types() -> None:
             {"page_sources": [{"page_number": 1, "image_path": 42}]}
         )
 
-    with pytest.raises(TypeError, match="source entry is malformed"):
+    with pytest.raises(TypeError, match="page_sources contains a malformed entry"):
         ocr_runtime_module._page_sources(
             {"page_sources": [{"page_number": 1}]}
         )
+
+    with pytest.raises(TypeError, match="grouping_passes.*pass 0 must be a list"):
+        ocr_runtime_module._typed_state({"grouping_passes": [{"proposal": 1}]})
+
+    with pytest.raises(TypeError, match=r"grouping_passes\[0\].*JSON objects"):
+        ocr_runtime_module._typed_state({"grouping_passes": [["not-a-proposal"]]})
 
 
 def test_ocr_runtime_child_state_uses_the_same_typed_boundary() -> None:

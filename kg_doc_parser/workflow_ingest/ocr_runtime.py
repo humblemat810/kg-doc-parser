@@ -166,6 +166,34 @@ def _page_source_state(value: object) -> _PageSourceState:
     return {"page_number": page_number, "image_path": image_path}
 
 
+def _json_object(value: object, *, label: str) -> JsonObject:
+    """Validate one persisted JSON object without widening its values."""
+
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise TypeError(f"OCR workflow state field {label!r} must contain JSON objects")
+    return cast(JsonObject, value)
+
+
+def _json_object_passes(value: object, *, label: str) -> list[list[JsonObject]]:
+    """Decode grouping passes at the checkpoint boundary."""
+
+    if not isinstance(value, list):
+        raise TypeError(f"OCR workflow state field {label!r} must be a list of passes")
+    passes: list[list[JsonObject]] = []
+    for pass_index, raw_pass in enumerate(value):
+        if not isinstance(raw_pass, list):
+            raise TypeError(
+                f"OCR workflow state field {label!r} pass {pass_index} must be a list"
+            )
+        passes.append(
+            [
+                _json_object(item, label=f"{label}[{pass_index}]")
+                for item in raw_pass
+            ]
+        )
+    return passes
+
+
 PageListKey = Literal["completed_pages", "reused_pages"]
 StateStringKey = Literal[
     "document_id",
@@ -263,6 +291,10 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
             not isinstance(field, dict) or not all(isinstance(item_key, str) for item_key in field)
         ):
             raise TypeError(f"OCR workflow state field {key!r} must be a JSON object")
+
+    grouping_passes = value.get("grouping_passes")
+    if grouping_passes is not None:
+        _json_object_passes(grouping_passes, label="grouping_passes")
 
     for key in ("completed_pages", "reused_pages"):
         field = value.get(key)
