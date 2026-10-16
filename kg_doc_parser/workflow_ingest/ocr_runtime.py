@@ -14,7 +14,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver
@@ -71,6 +71,9 @@ from .ocr_pipeline import (
 )
 from .serialization import JsonObject
 from .service import workflow_predicates
+
+if TYPE_CHECKING:
+    from .providers import WorkflowProviderSettings
 
 _OCR_ROOT_STATE_VERSION = "ocr-root-v2"
 _OCR_PAGE_STATE_VERSION = "ocr-page-v2"
@@ -1133,7 +1136,7 @@ def run_ocr_root_workflow(
     conversation_engine: GraphKnowledgeEngine,
     knowledge_engine: GraphKnowledgeEngine | None,
     preparation: OCRPagePreparation,
-    provider_settings: object,
+    provider_settings: WorkflowProviderSettings,
     document_id: str,
     title: str,
     grouping_policy_version: str,
