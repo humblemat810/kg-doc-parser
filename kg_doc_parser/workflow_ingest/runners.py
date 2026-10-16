@@ -108,7 +108,7 @@ def _fallback_parse_semantic_fn(
             parent_id=root.node_id,
         )
         for unit in page.units:
-            if not getattr(unit, "text", None):
+            if not unit.text:
                 continue
             text = str(unit.text)
             page_text_parts.append(text)

@@ -237,35 +237,20 @@ def test_parse_tree_document_uses_env_defaults_when_overrides_are_omitted(
     assert captured["env"]["KG_DOC_PARSER_MODEL"] == "qwen3:4b"
 
 
-def test_cli_ocr_command_uses_parse_ocr_document(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_ocr_command_uses_ocr_workflow_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     scratch = _scratch("cli_ocr")
     source = scratch / "sample.png"
     source.write_bytes(b"fake")
     output_dir = scratch / "ocr-out"
     captured: dict[str, object] = {}
 
-    def _fake_parse_ocr_document(**kwargs):
-        captured["parse_called"] = True
-        captured["kwargs"] = kwargs
-        return OCRWorkflowArtifacts(
-            workflow_input=SimpleNamespace(),
-            ocr_pages=[],
-            legacy_dir=scratch / "legacy",
-            rendered_dir=scratch / "rendered",
-            state_db_path=scratch / "ocr-state.sqlite",
-            progress_path=scratch / "ocr-progress.json",
-            summary_path=scratch / "ocr-summary.json",
-            completed_pages=[],
-            reused_pages=[],
-        )
-
     def _fake_build_default_engines(*args, **kwargs):
         captured["build_default_engines_called"] = True
         return object(), object(), object()
 
-    def _fake_run_ingest_workflow(**kwargs):
-        captured["run_ingest_workflow_called"] = True
-        captured["run_ingest_workflow_kwargs"] = kwargs
+    def _fake_run_ocr_ingest_workflow(**kwargs):
+        captured["run_ocr_ingest_workflow_called"] = True
+        captured["run_ocr_ingest_workflow_kwargs"] = kwargs
 
         @dataclass
         class _Run:
@@ -280,19 +265,31 @@ def test_cli_ocr_command_uses_parse_ocr_document(monkeypatch: pytest.MonkeyPatch
             def model_dump(self, *args, **kwargs):
                 return self.payload or {"bundle": "ok"}
 
-        return _Run(final_state={}), _Bundle()
+        return (
+            _Run(final_state={}),
+            _Bundle(),
+            OCRWorkflowArtifacts(
+                workflow_input=SimpleNamespace(),
+                ocr_pages=[],
+                legacy_dir=scratch / "legacy",
+                rendered_dir=scratch / "rendered",
+                state_db_path=scratch / "ocr-state.sqlite",
+                progress_path=scratch / "ocr-progress.json",
+                summary_path=scratch / "ocr-summary.json",
+                completed_pages=[],
+                reused_pages=[],
+            ),
+        )
 
-    monkeypatch.setattr("kg_doc_parser.workflow_ingest.parsing.parse_ocr_document", _fake_parse_ocr_document)
-    monkeypatch.setattr("kg_doc_parser.workflow_ingest.ocr_pipeline.run_ingest_workflow", _fake_run_ingest_workflow)
+    monkeypatch.setattr(runners, "run_ocr_ingest_workflow", _fake_run_ocr_ingest_workflow)
     monkeypatch.setattr(runners, "build_default_engines", _fake_build_default_engines)
 
     exit_code = workflow_cli.main(["ocr", str(source), "--output-dir", str(output_dir)])
 
     assert exit_code == 0
-    assert captured["parse_called"] is True
     assert captured["build_default_engines_called"] is True
-    assert captured["run_ingest_workflow_called"] is True
-    assert captured["run_ingest_workflow_kwargs"]["provider_settings"] is not None
+    assert captured["run_ocr_ingest_workflow_called"] is True
+    assert captured["run_ocr_ingest_workflow_kwargs"]["provider_settings"] is not None
 
 
 def test_cli_page_index_command_uses_parse_page_index_document(
