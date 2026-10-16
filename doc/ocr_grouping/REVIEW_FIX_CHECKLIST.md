@@ -1,5 +1,29 @@
 # OCR Review Fix Checklist
 
+## Current status ledger
+
+This table is the only active checklist summary. Update these existing rows in
+place; do not append a new requirement or a new progress row after a test run.
+The detailed requirement rows later in this file remain the source of the
+individual acceptance criteria.
+
+| Track | Status | Release-blocking remainder |
+| --- | --- | --- |
+| Runtime ownership and persisted stage graph | PARTIAL | Published-core fresh-process lineage, duplicate-resume, and no-double-publication evidence must be verified on the release matrix. |
+| Artifact and checkpoint crash consistency | PARTIAL | Reconcile both artifact-first and checkpoint-first crash orders across SQLite and Kogwistar runtime state. |
+| Grouping and summary durability | PARTIAL | Audit every writer, prove monotonic generation/frontier behavior, and prove bounded long-document work. |
+| Semantic hierarchy publication | PARTIAL | Prove the accepted grouping hierarchy is preserved through the persisted semantic graph/export path. |
+| OCR completeness and positional fidelity | PARTIAL | Add provider-side evidence for missing non-text regions, coordinates, tables, and figures. |
+| Typing and interpreter matrix | PARTIAL | Complete package-wide typing review and supported CPython/PyPy verification. |
+| Release | OPEN | Do not bump the parser version or downstream pins until the release-blocking rows are green with evidence. |
+
+The status history is the Git history. For example:
+
+```text
+git log --oneline --follow -- doc/ocr_grouping/REVIEW_FIX_CHECKLIST.md
+git show <commit> -- doc/ocr_grouping/REVIEW_FIX_CHECKLIST.md
+```
+
 ## Checklist maintenance rule
 
 This file is a fixed requirements ledger, not an append-only work journal.
@@ -9,8 +33,10 @@ the commit history and diff show historical progress. Keep a short dated note
 only when it records a materially different verification environment or a
 regression that cannot be represented by the existing row.
 
-The older evidence notes below are retained for audit context. They are not
-additional requirements and must not be counted as checklist items.
+The dated sections below are retained as an immutable audit trail. They are
+not additional requirements, must not be counted as checklist items, and must
+not be extended with another "latest update". If new evidence changes a row,
+edit the row in the current ledger and let the commit diff record the change.
 
 ## Historical evidence log (retained for context; do not append)
 

@@ -1,5 +1,32 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Current status ledger
+
+This is the only active status summary for the implementation. The A, B, S,
+and C requirements below are fixed acceptance criteria. Update their existing
+rows in place; do not append a new checklist item or a new "latest evidence"
+section after a test run.
+
+| Track | Status | Release-blocking remainder |
+| --- | --- | --- |
+| Track A: persisted Kogwistar runtime integration | PARTIAL | Verify published-core fresh-process recovery, ownership, and final runtime graph lineage. |
+| Track B: strict seam validation | PARTIAL | Close artifact/checkpoint crash ordering, hierarchy publication, and provider completeness gaps. |
+| C01-C02: API and ownership boundary | PARTIAL | Verify against the published compatible Kogwistar package and one root/child ownership model. |
+| C03-C05: reconciliation, equivalence, and true resume | PARTIAL | Complete both-store recovery, bounded incremental equivalence, and duplicate-resume evidence. |
+| C06: OCR quality/completeness | PARTIAL | Prove provider-side non-text coverage and strict recovery behavior. |
+| Typing and interpreter matrix | PARTIAL | Complete package-wide typing and CPython 3.12-3.14/PyPy 3.11 evidence. |
+| Release | OPEN | Version bump and downstream pin updates wait for all release-blocking rows. |
+
+The status history is already represented by Git commits and diffs:
+
+```text
+git log --oneline --follow -- doc/ocr_grouping/SEAM_AND_RUNTIME_IMPLEMENTATION_CHECKLIST.md
+git show <commit> -- doc/ocr_grouping/SEAM_AND_RUNTIME_IMPLEMENTATION_CHECKLIST.md
+```
+
+All dated evidence sections below are archival context only. They must not be
+counted as extra work items or extended with another progress section.
+
 ## Latest evidence update (2026-10-17, local CI selection green)
 
 The focused fresh-process ownership regression
