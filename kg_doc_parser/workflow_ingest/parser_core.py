@@ -980,7 +980,7 @@ def propose_layer_breakdown(
     semantic_tree: SemanticNode,
     propose_layer_fn: ProposeLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
-    cache_namespace: Mapping[str, object] | None = None,
+    cache_namespace: Mapping[str, JsonValue] | None = None,
 ) -> CurrentLayerResult:
     _assert_source_map_matches_session(
         parse_session=parse_session,
@@ -1039,7 +1039,7 @@ def review_layer(
     parser_source_map: ParserSourceMap | None = None,
     review_layer_fn: ReviewLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
-    cache_namespace: Mapping[str, object] | None = None,
+    cache_namespace: Mapping[str, JsonValue] | None = None,
 ) -> tuple[CurrentLayerReview, ParseSessionState]:
     if parser_source_map is not None:
         _assert_source_map_matches_session(
@@ -1162,7 +1162,7 @@ def review_layer(
                     "review_timeout_reason": repr(exc)[:500],
                 },
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - provider boundary must fail closed
             reviewed = CurrentLayerReview(
                 updated_result=current_layer_result,
                 coverage_ok=None,
