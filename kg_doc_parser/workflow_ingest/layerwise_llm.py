@@ -5,7 +5,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Literal, Protocol, TypedDict, TypeVar, cast
+from typing import Literal, NotRequired, Protocol, TypedDict, TypeVar, cast
 
 from kogwistar.fuzzy_offsets import find_fuzzy_spans, offset_repair_threshold
 from kogwistar.runtime import (
@@ -164,6 +164,32 @@ class _BoundaryRefinementPromptContext(TypedDict):
     parent_ids: list[str]
     pointer_excerpt: str
     legal_cutpoints: list[_BoundaryRefinementCutpoint]
+
+
+class _BoundarySegment(TypedDict):
+    start_char: int
+    end_char: int
+    skipped: NotRequired[bool]
+    skip_reason: NotRequired[str]
+
+
+class _BoundaryRange(TypedDict):
+    start_char: int
+    end_char: int
+
+
+class _BoundaryGapRange(_BoundaryRange):
+    reason: str
+
+
+class _BoundaryCoverageReport(TypedDict):
+    parent_node_id: str
+    source_cluster_id: str
+    parent_span: _BoundaryRange
+    covered_span: _BoundaryRange
+    coverage_state: Literal["covered", "covered_with_gaps"]
+    gap_count: int
+    gap_ranges: list[_BoundaryGapRange]
 
 
 class _BoundaryReviewDecisionSummary(TypedDict):
@@ -1439,24 +1465,24 @@ def _boundary_parent_coverage_report(
     source_cluster_id: str,
     start_char: int,
     end_char_exclusive: int,
-    segments: list[dict[str, object]],
-) -> dict[str, object]:
-    covered_ranges = [
+    segments: Sequence[_BoundarySegment],
+) -> _BoundaryCoverageReport:
+    covered_ranges: list[_BoundaryRange] = [
         {
-            "start_char": _offset_value(segment.get("start_char"), 0),
-            "end_char": _offset_value(segment.get("end_char"), 0),
+            "start_char": segment["start_char"],
+            "end_char": segment["end_char"],
         }
         for segment in segments
-        if not bool(segment.get("skipped"))
+        if not segment.get("skipped", False)
     ]
-    gap_ranges = [
+    gap_ranges: list[_BoundaryGapRange] = [
         {
-            "start_char": _offset_value(segment.get("start_char"), 0),
-            "end_char": _offset_value(segment.get("end_char"), 0),
-            "reason": str(segment.get("skip_reason") or "unresolved"),
+            "start_char": segment["start_char"],
+            "end_char": segment["end_char"],
+            "reason": segment.get("skip_reason", "unresolved"),
         }
         for segment in segments
-        if bool(segment.get("skipped"))
+        if segment.get("skipped", False)
     ]
     covered_start = covered_ranges[0]["start_char"] if covered_ranges else start_char
     covered_end = covered_ranges[-1]["end_char"] if covered_ranges else start_char - 1
@@ -1483,10 +1509,10 @@ def _assemble_layer_result_from_boundaries(
     current_layer_context: CurrentLayerContext,
     parser_source_map: Mapping[str, Mapping[str, object]],
     review_batch: BoundaryReviewBatch,
-) -> tuple[CurrentLayerResult, list[BoundaryUnitSummary], list[dict[str, object]]]:
+) -> tuple[CurrentLayerResult, list[BoundaryUnitSummary], list[_BoundaryCoverageReport]]:
     accepted_cutpoints: list[dict[str, object]] = []
     child_items: list[dict[str, object]] = []
-    coverage_reports: list[dict[str, object]] = []
+    coverage_reports: list[_BoundaryCoverageReport] = []
     unresolved_intervals = 0
     decisions_by_parent: dict[tuple[str, str], list[BoundaryReviewDecision]] = {}
     for decision in review_batch.decisions:
@@ -1501,7 +1527,7 @@ def _assemble_layer_result_from_boundaries(
             text = _pointer_text(pointer, parser_source_map=parser_source_map)
             start_char, end_char_exclusive = _pointer_span_bounds(pointer, parser_source_map=parser_source_map)
             absolute_offsets = [start_char]
-            pointer_segments: list[dict[str, object]] = []
+            pointer_segments: list[_BoundarySegment] = []
             pointer_decisions = decisions_by_parent.get((parent_id, source_cluster_id), [])
             for decision in pointer_decisions:
                 resolved_offset = decision.resolved_cut_offset if decision.resolved_cut_offset is not None else decision.cut_offset
