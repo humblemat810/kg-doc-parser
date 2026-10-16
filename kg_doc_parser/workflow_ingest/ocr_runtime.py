@@ -1143,6 +1143,7 @@ def _register_grouping_steps(
                 else None
             ),
             require_no_existing_tree=_state_bool(state, "checkpoint_absent"),
+            last_runtime_step="persist_grouping_result",
         )
         return _success("end", state_update=[("u", {"checkpoint_revision": revision})])
 

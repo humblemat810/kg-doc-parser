@@ -3052,9 +3052,28 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
         total_pages=1,
         input_fingerprint="source-v1",
     )
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO page_state (
+                document_id, page_number, stage, attempt_count, status,
+                content_hash, artifact_path, config_fingerprint
+            ) VALUES (?, ?, 'ocr', ?, 'completed', ?, ?, ?)
+            """,
+            ("grouped-doc", 1, 1, "page-hash", "page-1.json", "ocr-config-v1"),
+        )
     revision = store.save_document_tree(document_id="grouped-doc", tree=tree, grouping_policy_version="group-v1")
     assert len(revision) == 64
     assert store.document_tree_revision(document_id="grouped-doc") == revision
+    checkpoint = store.load_grouping_checkpoint_metadata(
+        document_id="grouped-doc",
+        source_fingerprint=tree.source_fingerprint(),
+        grouping_policy_version="group-v1",
+    )
+    assert checkpoint is not None
+    assert checkpoint.accepted_page_frontier == (1,)
+    assert checkpoint.tree_revision == revision
+    assert checkpoint.last_runtime_step == "grouping_checkpoint"
     with pytest.raises(RuntimeError, match="create conflict"):
         store.save_document_tree(
             document_id="grouped-doc",
@@ -3146,6 +3165,7 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
     )
     assert store.load_document_tree(document_id="grouped-doc") is None
     assert store.load_grouping_frontier(document_id="grouped-doc") is None
+    assert store.load_grouping_checkpoint_metadata(document_id="grouped-doc") is None
 
 
 @pytest.mark.ci

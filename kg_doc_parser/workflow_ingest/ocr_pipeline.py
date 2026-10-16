@@ -262,6 +262,18 @@ class OCRWorkflowArtifacts:
         return self.legacy_dir / "document-tree.json"
 
 
+@dataclass(frozen=True, slots=True)
+class GroupingCheckpointMetadata:
+    """Durable identity for one accepted grouping checkpoint."""
+
+    document_id: str
+    source_fingerprint: str
+    grouping_policy_version: str
+    accepted_page_frontier: tuple[int, ...]
+    tree_revision: str
+    last_runtime_step: str
+
+
 class OCRRunner(Protocol):
     """Run OCR for one page using the selected provider settings."""
 
@@ -529,6 +541,7 @@ def _generate_tree_summaries(
     grouping_policy_version: str,
     expected_tree_revision: str | None = None,
     require_no_existing_tree: bool = False,
+    last_runtime_step: str = "generate_grouping_summaries",
 ) -> DocumentTree:
     """Run optional bounded summary generation without making OCR depend on it."""
     if (generator is None and grounded_generator is None) or policy is None or not policy.enabled:
@@ -598,6 +611,7 @@ def _generate_tree_summaries(
                 grouping_policy_version=grouping_policy_version,
                 expected_tree_revision=expected_tree_revision,
                 require_no_existing_tree=require_no_existing_tree,
+                last_runtime_step=last_runtime_step,
             )
             require_no_existing_tree = False
             current = updated
@@ -639,6 +653,7 @@ def _generate_tree_summaries(
                 grouping_policy_version=grouping_policy_version,
                 expected_tree_revision=expected_tree_revision,
                 require_no_existing_tree=require_no_existing_tree,
+                last_runtime_step=last_runtime_step,
             )
             require_no_existing_tree = False
             state_store.record_summary_attempt(
@@ -1285,6 +1300,7 @@ def _finalize_ocr_workflow_artifacts(
                     document_id=document_id,
                     tree=document_tree,
                     grouping_policy_version=grouping_policy_version,
+                    last_runtime_step="finalize_grouping_checkpoint",
                 )
         if persist_grouping_checkpoint:
             existing_tree_revision = state_store.document_tree_revision(document_id=document_id)
@@ -1446,6 +1462,16 @@ class OCRWorkflowStateStore:
                     last_updated_ts REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS grouping_checkpoint_metadata (
+                    document_id TEXT PRIMARY KEY,
+                    source_fingerprint TEXT NOT NULL,
+                    grouping_policy_version TEXT NOT NULL,
+                    accepted_page_frontier_json TEXT NOT NULL,
+                    tree_revision TEXT NOT NULL,
+                    last_runtime_step TEXT NOT NULL,
+                    last_updated_ts REAL NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS summary_attempts (
                     document_id TEXT NOT NULL,
                     node_id TEXT NOT NULL,
@@ -1499,6 +1525,7 @@ class OCRWorkflowStateStore:
                 conn.execute("DELETE FROM page_state WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM document_tree_state WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM grouping_frontier_state WHERE document_id = ?", (document_id,))
+                conn.execute("DELETE FROM grouping_checkpoint_metadata WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM summary_attempts WHERE document_id = ?", (document_id,))
                 conn.execute("DELETE FROM document_state WHERE document_id = ?", (document_id,))
             conn.execute(
@@ -1535,6 +1562,7 @@ class OCRWorkflowStateStore:
         grouping_policy_version: str = "baseline-v1",
         expected_tree_revision: str | None = None,
         require_no_existing_tree: bool = False,
+        last_runtime_step: str = "grouping_checkpoint",
     ) -> str:
         """Persist a validated tree with an optional atomic revision fence.
 
@@ -1544,6 +1572,8 @@ class OCRWorkflowStateStore:
         """
         if require_no_existing_tree and expected_tree_revision is not None:
             raise ValueError("absence and expected revision fences are mutually exclusive")
+        if not last_runtime_step:
+            raise ValueError("last_runtime_step must not be empty")
         tree_json = json.dumps(tree.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
         tree_revision = hashlib.sha256(tree_json.encode("utf-8")).hexdigest()
         with self._session() as conn:
@@ -1634,7 +1664,86 @@ class OCRWorkflowStateStore:
                     time.time(),
                 ),
             )
+            accepted_pages = tuple(
+                int(row["page_number"])
+                for row in conn.execute(
+                    """
+                    SELECT page_number
+                    FROM page_state
+                    WHERE document_id = ? AND stage = 'ocr' AND status = 'completed'
+                    ORDER BY page_number
+                    """,
+                    (document_id,),
+                ).fetchall()
+            )
+            conn.execute(
+                """
+                INSERT INTO grouping_checkpoint_metadata (
+                    document_id, source_fingerprint, grouping_policy_version,
+                    accepted_page_frontier_json, tree_revision, last_runtime_step,
+                    last_updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(document_id) DO UPDATE SET
+                    source_fingerprint = excluded.source_fingerprint,
+                    grouping_policy_version = excluded.grouping_policy_version,
+                    accepted_page_frontier_json = excluded.accepted_page_frontier_json,
+                    tree_revision = excluded.tree_revision,
+                    last_runtime_step = excluded.last_runtime_step,
+                    last_updated_ts = excluded.last_updated_ts
+                """,
+                (
+                    document_id,
+                    tree.source_fingerprint(),
+                    grouping_policy_version,
+                    json.dumps(accepted_pages, separators=(",", ":")),
+                    tree_revision,
+                    last_runtime_step,
+                    time.time(),
+                ),
+            )
         return tree_revision
+
+    def load_grouping_checkpoint_metadata(
+        self,
+        *,
+        document_id: str,
+        source_fingerprint: str | None = None,
+        grouping_policy_version: str | None = None,
+    ) -> GroupingCheckpointMetadata | None:
+        """Load the atomically committed identity for a grouping checkpoint."""
+        with self._session() as conn:
+            row = conn.execute(
+                """
+                SELECT source_fingerprint, grouping_policy_version,
+                       accepted_page_frontier_json, tree_revision, last_runtime_step
+                FROM grouping_checkpoint_metadata
+                WHERE document_id = ?
+                """,
+                (document_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        stored_source = str(row["source_fingerprint"])
+        stored_policy = str(row["grouping_policy_version"])
+        if source_fingerprint is not None and stored_source != source_fingerprint:
+            return None
+        if grouping_policy_version is not None and stored_policy != grouping_policy_version:
+            return None
+        payload = json.loads(str(row["accepted_page_frontier_json"]))
+        if not isinstance(payload, list) or any(
+            type(page) is not int or page < 1 for page in payload
+        ):
+            raise ValueError("persisted grouping checkpoint page frontier is malformed")
+        if payload != sorted(set(payload)):
+            raise ValueError("persisted grouping checkpoint page frontier is not ordered")
+        return GroupingCheckpointMetadata(
+            document_id=document_id,
+            source_fingerprint=stored_source,
+            grouping_policy_version=stored_policy,
+            accepted_page_frontier=tuple(payload),
+            tree_revision=str(row["tree_revision"]),
+            last_runtime_step=str(row["last_runtime_step"]),
+        )
 
     def document_tree_revision(self, *, document_id: str) -> str | None:
         """Return the current tree digest without applying source/policy filters."""
