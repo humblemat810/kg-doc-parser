@@ -405,20 +405,20 @@ focused test, full matrix, and exact HEAD are verified.
 | B03 | [~] Fixed locally; CI pending | `suggest_cross_page_continuations` now requires both frontier nodes to be canonical text leaves, so page-level incomplete-text flags cannot join a paragraph to a figure/table/caption description or media item. Regressions: `test_cross_page_continuation_never_merges_text_into_nontext` and `test_cross_page_continuation_suggestion_requires_ocr_boundary_signal`. Geometry and stronger paragraph-boundary evidence remain open. |
 | B04 | [~] Fixed locally; CI pending | Added immutable `EvidenceSlice` records and a typed `GroundedSummaryGenerator` boundary. The public preparation, grouping, and root workflows thread this boundary through; `test_grounded_summary_generator_receives_only_owned_source_slices` proves two summaries over one source item receive only their ordered, exact ranges. Legacy `SummaryGenerator` remains available for compatibility; provider adoption and full CI remain open. |
 | B05 | [~] Fixed locally; CI pending | `OCRClusterResponse.spatial_accuracy` and normalized `SourceUnit.metadata` now carry an explicit page/region/line/word/character declaration. Unknown or absent precision fails closed to page accuracy; direct OCR and item-level Docling paths declare region precision. Tests: `test_synthetic_page_box_does_not_claim_region_accuracy`, `test_explicit_region_precision_is_preserved`, and the full `tests/test_document_adapters.py` file (19 passed). |
-| B06 | [ ] Open | Render and legacy artifact paths still need document/revision collision-resistant namespacing for same-named inputs. |
+| B06 | [~] Fixed locally; CI pending | Render and legacy artifact paths use collision-resistant document/source identities. `test_pdf_artifact_directories_do_not_collide_for_same_basename` now exercises two valid PNG renders from distinct same-named PDFs and confirms distinct artifact directories and bytes. |
 | B07 | [~] Fixed locally; CI pending | Page numbers are required to be positive and unique, and resolved paths are deterministic. Focused tests are listed under B01. Out-of-order inputs are normalized by sorted output; conflicting duplicates fail closed. |
 | B08 | [~] Partial | `OCRQualityPolicy.reject_empty_page` now provides an explicit opt-in fail-closed gate for provider-reported empty OCR output, with `test_ocr_quality_policy_can_reject_empty_provider_output`. The default remains permissive for legitimate blank pages; independent image/text completeness checks are still needed. |
 | B09 | [~] Fixed locally; CI pending | Summary target selection now measures the exact ordered `EvidenceSlice` payload owned by each node, including partial slices of a shared source item, instead of charging the whole `SourceItem`. Regression: `test_summary_target_planner_counts_exact_slices_not_whole_source_items`. Provider serialization overhead and full CI remain open. |
 | B10 | [~] Partial | Durable artifact IDs and runtime integration exist, but accumulated `raw_pages` checkpoint serialization and linear-growth evidence remain open. |
-| B11 | [ ] Open | Render identity does not yet include all rasterizer configuration and output properties such as DPI, rotation, and Poppler identity. |
-| B12 | [ ] Open | Reference extraction remains item-local and does not yet map split mentions across ordered OCR units. |
+| B11 | [~] Fixed locally; CI pending | Render manifests now include the PDF page count when the source is a readable PDF, and reuse rejects missing, duplicate, or out-of-order pages. Regression: `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf`. The filtered OCR CI module passed 60 tests locally; built-in renderer identity still needs explicit DPI/rotation/Poppler coverage. |
+| B12 | [~] Fixed locally; CI pending | Reference extraction now maps matches across the deterministic ordered OCR-unit stream back to exact source slices. Regression: `test_reference_mentions_cross_ocr_units_preserve_exact_source_slices`; the filtered OCR CI module passed 60 tests locally. |
 | B13 | [ ] Open | The default PDF path still rasterizes pages; hybrid native PDF text extraction is not implemented. |
-| B14 | [~] Fixed locally; CI pending | `_render_pdf_to_images` now rejects page symlinks, validates cached image decoding, and publishes regenerated PNGs through a temporary file and atomic rename. Test: `test_pdf_rasterization_regenerates_corrupt_cached_page_atomically`. Manifest-level page digests and dimensions remain open. |
+| B14 | [~] Fixed locally; CI pending | `_render_pdf_to_images` now rejects page symlinks, validates cached image decoding, and publishes regenerated PNGs through a temporary file and atomic rename. Render-manifest reuse also verifies page digests, dimensions, and valid-PDF page count. Tests: `test_pdf_rasterization_regenerates_corrupt_cached_page_atomically`, `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf`; the filtered OCR CI module passed 60 tests locally. An injected mid-save failure test remains open. |
 
 This ledger is a release gate, not a claim that the branch is complete. The
-previous parser matrix run `38809250015` failed its deterministic test step in
-all four jobs, so B01/B05/B07 and the broader release remain unverified in CI.
-The current parser commit is being checked by run `38811815564`. Kogwistar
-typing fixes are on `fix/workflow-run-ownership` at `647d9d9`; its current
-required matrix is still running and must complete before downstream pins are
-advanced.
+local filtered OCR CI module passed `60 passed, 14 deselected` with
+`-p no:cacheprovider`; remote CPython/PyPy matrix verification and the
+remaining cross-store, provider-matrix, and crash-window gates are still open.
+Kogwistar runtime fixes are on `fix/workflow-run-ownership`; downstream pins
+must not advance until the required remote matrix is green and the corrected
+release is available.

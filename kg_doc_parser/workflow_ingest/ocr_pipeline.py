@@ -53,6 +53,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
+from pypdf.errors import PdfReadError, PdfStreamError
 
 from ..llm_structured_output import build_structured_output_runnable
 from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
@@ -2487,12 +2488,20 @@ def _pdf_render_manifest_payload(
     configuration_fingerprint = getattr(rasterizer, "configuration_fingerprint", "default")
     if not isinstance(configuration_fingerprint, str) or not configuration_fingerprint:
         configuration_fingerprint = "default"
+    page_count: int | None = None
+    try:
+        page_count = len(PdfReader(str(pdf_path)).pages)
+    except (OSError, PdfReadError, PdfStreamError, ValueError):
+        # Injected/fake rasterizers may intentionally use placeholder PDF bytes.
+        # A valid PDF gets a count; an unreadable placeholder remains compatible.
+        page_count = None
     config: JsonObject = {
         "manifest_version": _PDF_RENDER_MANIFEST_VERSION,
         "pdf_sha256": _sha256_file(pdf_path),
         "renderer_version": _PDF_RENDERER_VERSION,
         "rasterizer": f"{rasterizer_module}.{rasterizer_name}",
         "rasterizer_configuration": configuration_fingerprint,
+        "pdf_page_count": page_count,
     }
     encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
     config["render_identity"] = hashlib.sha256(encoded).hexdigest()
@@ -2549,6 +2558,31 @@ def _render_pdf_with_identity(
                     valid = False
                     break
                 candidate_paths.append(candidate)
+            expected_page_count_value = expected.get("pdf_page_count")
+            expected_page_count = (
+                expected_page_count_value
+                if isinstance(expected_page_count_value, int)
+                and not isinstance(expected_page_count_value, bool)
+                else None
+            )
+            page_numbers_raw = [
+                entry.get("page_number")
+                for entry in page_entries
+                if isinstance(entry, dict)
+            ]
+            page_numbers = [
+                value
+                for value in page_numbers_raw
+                if isinstance(value, int) and not isinstance(value, bool)
+            ]
+            valid = valid and (
+                expected_page_count is None
+                or (
+                    len(page_entries) == expected_page_count
+                    and len(page_numbers) == len(page_entries)
+                    and page_numbers == list(range(1, expected_page_count + 1))
+                )
+            )
             if valid and candidate_paths:
                 paths = candidate_paths
     if not paths:

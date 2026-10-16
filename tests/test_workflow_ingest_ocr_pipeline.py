@@ -2957,7 +2957,8 @@ def test_pdf_artifact_directories_do_not_collide_for_same_basename() -> None:
     def _rasterizer(source_pdf: Path, rendered_dir: Path) -> list[Path]:
         rendered_dir.mkdir(parents=True, exist_ok=True)
         page = rendered_dir / "page_1.png"
-        page.write_bytes(source_pdf.read_bytes())
+        color = "red" if b"first source" in source_pdf.read_bytes() else "blue"
+        Image.new("RGB", (11, 7), color).save(page, format="PNG")
         return [page]
 
     output_dir = scratch / "artifacts"
@@ -2980,8 +2981,7 @@ def test_pdf_artifact_directories_do_not_collide_for_same_basename() -> None:
     assert first.legacy_dir != second.legacy_dir
     assert first.rendered_dir.name.startswith("same-document-report-")
     assert second.rendered_dir.name.startswith("same-document-report-")
-    assert first.page_sources[0][1].read_bytes() == first_pdf.read_bytes()
-    assert second.page_sources[0][1].read_bytes() == second_pdf.read_bytes()
+    assert first.page_sources[0][1].read_bytes() != second.page_sources[0][1].read_bytes()
 
 
 @pytest.mark.ci
@@ -3519,6 +3519,43 @@ def test_pdf_render_manifest_rejects_tampered_page_and_records_identity(tmp_path
     assert calls == [1]
 
     first[0].write_bytes(b"truncated")
+    _render_pdf_with_identity(pdf_path=source, rendered_dir=rendered, rasterizer=rasterizer)
+    assert calls == [1, 1]
+
+
+@pytest.mark.ci
+def test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf(tmp_path: Path) -> None:
+    from pypdf import PdfWriter
+
+    from kg_doc_parser.workflow_ingest.ocr_pipeline import _render_pdf_with_identity
+
+    source = tmp_path / "two-pages.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_blank_page(width=72, height=72)
+    with source.open("wb") as handle:
+        writer.write(handle)
+
+    rendered = tmp_path / "rendered"
+    calls: list[int] = []
+
+    class _Rasterizer:
+        def __call__(self, pdf_path: Path, rendered_dir: Path) -> list[Path]:
+            del pdf_path
+            calls.append(1)
+            rendered_dir.mkdir(parents=True, exist_ok=True)
+            paths = [rendered_dir / "page_1.png", rendered_dir / "page_2.png"]
+            for path in paths:
+                Image.new("RGB", (11, 7), "white").save(path, "PNG")
+            return paths
+
+    rasterizer = _Rasterizer()
+    _render_pdf_with_identity(pdf_path=source, rendered_dir=rendered, rasterizer=rasterizer)
+    manifest_path = rendered / "render-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["pages"] = manifest["pages"][:1]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
     _render_pdf_with_identity(pdf_path=source, rendered_dir=rendered, rasterizer=rasterizer)
     assert calls == [1, 1]
 

@@ -77,7 +77,7 @@ If one page result averages S bytes, writing a cumulative list for N page checkp
 ### B11 — P2: Render cache identity incomplete for variable rasterizer configurations
 Source: `ocr_pipeline.py`, `_pdf_render_manifest_payload`, around lines 2279–2295.
 
-**Current branch status (2026-10-16): partially fixed locally, CI pending.** The render manifest now includes an explicit rasterizer configuration fingerprint, plus every accepted page's SHA-256 and dimensions; cache reuse validates those values. A dedicated tamper/configuration regression passes. Built-in DPI/rotation options and a multi-page page-set regression remain open.
+**Current branch status (2026-10-16): partially fixed locally, CI pending.** The render manifest now includes an explicit rasterizer configuration fingerprint, the readable PDF page count, and every accepted page's SHA-256 and dimensions; cache reuse validates those values. Tamper/configuration and missing-page regressions pass. Built-in DPI/rotation/Poppler identity coverage remains open.
 
 ### B12 — P2: Reference extraction misses mentions split across OCR units
 Source: `document_models.py`, `extract_reference_mentions`, around lines 383–416.
@@ -90,7 +90,7 @@ Source: `ocr_pipeline.py`, `_render_pdf_to_images`; uses `PdfReader` to count pa
 ### B14 — P1: Interrupted rasterization can be reused as a complete PNG
 Source: `ocr_pipeline.py`, `_render_pdf_with_identity` and `_render_pdf_to_images`, around lines 2297–2363.
 
-**Current branch status (2026-10-16): partially fixed locally, CI pending.** Built-in page writes already use decode-verified atomic PNG publication. Render-manifest reuse now validates every recorded page's decode, digest, and dimensions, and a tampered-page restart regression passes. An injected mid-save failure and full page-set recovery test remain open.
+**Current branch status (2026-10-16): partially fixed locally, CI pending.** Built-in page writes already use decode-verified atomic PNG publication. Render-manifest reuse now validates every recorded page's decode, digest, dimensions, and readable-PDF page count; tampered-page and missing-page restart regressions pass. An injected mid-save failure test remains open.
 
 ## Previously tracked release gates (retain, do not silently mark closed)
 

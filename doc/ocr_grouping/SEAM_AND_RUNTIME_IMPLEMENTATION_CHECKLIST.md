@@ -431,8 +431,10 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [x] Test render identity changes, including a typed custom rasterizer
   configuration fingerprint, in
   `tests/test_workflow_ingest_ocr_pipeline.py::test_pdf_render_manifest_rejects_tampered_page_and_records_identity`.
-- [~] Test changed page count and removed pages; page-set manifest validation is
-  implemented, but a dedicated multi-page regression remains open.
+- [~] Test changed page count and removed pages; valid-PDF page-count and ordered
+  page-set validation are implemented and covered by
+  `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf`. Same-path
+  replacement and full crash-window evidence remain open.
 
 ### S02. Source bytes to committed page JSON
 
