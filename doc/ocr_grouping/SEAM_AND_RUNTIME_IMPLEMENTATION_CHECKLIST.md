@@ -1133,3 +1133,17 @@ protocol.
   Ruff and targeted Pyright report no errors; the focused workflow/CLI set
   passes (`4 passed`). This closes the typed state and test-dependency seams
   only; it does not claim the full repository typing or runtime release gates.
+
+### Typed JSON seam follow-up (2026-10-16)
+
+- [x] Commit `b3a0a59` narrows service-layer metadata and review diagnostics to
+  the JSON value union; changed-module Pyright and Ruff pass, and the focused
+  workflow/CLI tests pass (`4 passed`).
+- [x] Commit `957363c` narrows OCR resume identity comparisons to the known
+  `str | list[str]` payload shape; changed-module Pyright and Ruff pass, and
+  the resume/frontier regression selection passes.
+- [x] Commit `3ea269e` narrows workflow cache model dumps to `JsonValue`, with
+  six cache namespace/concurrency regression tests passing. Commit `5cffeff`
+  applies the same contract to canonical graph payload conversion; Pyright and
+  Ruff pass and the selected canonical persistence tests pass. These entries
+  close only the named seams, not the remaining repository-wide typing sweep.

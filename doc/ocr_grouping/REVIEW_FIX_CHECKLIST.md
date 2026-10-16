@@ -691,3 +691,12 @@ release is available.
   Ruff and targeted Pyright report no errors; the focused workflow/CLI set
   passes (`4 passed`). This closes the typed state and test-dependency seams
   only; it does not claim the full repository typing or runtime release gates.
+
+### Typed JSON seam follow-up (2026-10-16)
+
+- [x] Commits `b3a0a59`, `957363c`, `3ea269e`, and `5cffeff` close the
+  verified service, OCR resume-identity, workflow-cache, and canonical-payload
+  JSON seams. Each changed module passes Pyright and Ruff, with focused
+  workflow, resume, cache, and canonical persistence tests passing. This is
+  evidence for these boundaries only; the remaining broad typing and release
+  gates stay open.
