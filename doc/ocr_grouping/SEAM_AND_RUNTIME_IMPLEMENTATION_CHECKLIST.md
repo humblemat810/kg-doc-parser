@@ -1,5 +1,16 @@
 # OCR Runtime And Seam Closure Checklist
 
+## Latest evidence update (2026-10-17, commit `bfc4535` pending CI)
+
+The workflow probe now uses the shared runtime-checkable `ModelDumpLike`
+protocol instead of dynamic `getattr` discovery. Recursive mapping/sequence
+handling preserves the existing backend-dump keyword path for nested models;
+the new regression proves the emitted JSON retains the backend representation.
+Changed-module Pyright and Ruff pass, the focused test passes (`1 passed`),
+and `git diff --check` passes. CI verification is pending; runtime recovery,
+semantic hierarchy publication, OCR completeness, and release gates remain
+open.
+
 ## Latest evidence update (2026-10-17, commit `d588b0d` pending CI)
 
 OCR root/page resume identity reads now use a typed `ResumeIdentityKey` and

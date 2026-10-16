@@ -1,5 +1,14 @@
 # OCR Review Fix Checklist
 
+## Latest evidence update (2026-10-17, commit `bfc4535` pending CI)
+
+Probe event serialization now uses the shared `ModelDumpLike` protocol and
+typed recursive JSON traversal rather than dynamic `getattr`. A regression
+covers nested model-dump payloads and preserves the backend serialization
+mode. Changed-module Pyright and Ruff pass, the focused test passes (`1
+passed`), and the diff check passes. CI and the recovery, semantic-
+publication, OCR-completeness, and release gates remain open.
+
 ## Latest evidence update (2026-10-17, commit `d588b0d` pending CI)
 
 Resume identity comparisons now pass through a typed key/value helper. A
