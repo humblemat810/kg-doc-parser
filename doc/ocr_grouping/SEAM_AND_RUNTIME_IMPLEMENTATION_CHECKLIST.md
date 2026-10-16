@@ -424,11 +424,15 @@ an adapter-only test, or a source-checkout-only runtime test.
   `test_ocr_render_reuse_requires_render_configuration_identity` proves the
   reuse predicate rejects a changed renderer identity.
 - [x] Refuse a rendered-page cache hit when any render identity differs.
-- [ ] Reconcile existing rendered files against state before reuse; stale files
-  must be regenerated or quarantined.
+- [x] Reconcile existing rendered files against state before reuse; the render
+  manifest now records each page digest and dimensions and invalid pages are
+  regenerated.
 - [ ] Test same-path PDF A to PDF B with changed page 2.
-- [ ] Test DPI and rotation changes with otherwise identical PDF bytes.
-- [ ] Test changed page count and removed pages.
+- [x] Test render identity changes, including a typed custom rasterizer
+  configuration fingerprint, in
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_pdf_render_manifest_rejects_tampered_page_and_records_identity`.
+- [~] Test changed page count and removed pages; page-set manifest validation is
+  implemented, but a dedicated multi-page regression remains open.
 
 ### S02. Source bytes to committed page JSON
 
@@ -556,6 +560,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   ordering must use the same guard before this row can be green.
 - [ ] Persist source fingerprint, grouping policy, accepted page frontier, tree
   digest, and last accepted runtime step.
+- [~] Keep OCR page checkpoints compact by persisting artifact identity and a
+  cursor rather than cumulative `raw_pages`. New checkpoints are artifact-backed
+  and `_json_pages()` rehydrates accepted page JSON on demand; legacy checkpoints
+  with `raw_pages` remain readable. The regression
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_new_page_checkpoint_rehydrates_pages_from_artifacts_without_raw_payload`
+  passes, while the 100/500/1000-page size-growth benchmark remains open.
 - [~] Restore before advancing and prove byte-equivalent no-op reruns. The
   grouping runtime has a passing resume test. Grouping summary writes now also
   carry the same expected revision/absence fence, but OCR/page and dual-store
@@ -873,3 +883,8 @@ protocol.
   installed-package release gate or regenerate its release lock until
   `kogwistar==0.6.10` is publicly installable. Installed-package 100-page
   recovery and fresh-process root checkpoint recovery remain open.
+- B10 page-checkpoint compaction is implemented locally in
+  `workflow_ingest/ocr_runtime.py`: page artifacts are the durable payload
+  source, while runtime state stores only stable page identity and progress.
+  Focused compact-state, terminal-resume, and fresh-process tests pass; CI and
+  large-document size measurements remain pending.

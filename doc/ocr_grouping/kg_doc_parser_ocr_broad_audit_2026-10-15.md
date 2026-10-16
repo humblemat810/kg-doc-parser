@@ -72,10 +72,12 @@ Source: `ocr_runtime.py`, `_build_page_resolver` state contains accumulated `raw
 
 If one page result averages S bytes, writing a cumulative list for N page checkpoints results in roughly S×N(N+1)/2 bytes of checkpoint payload, before runtime overhead. **Fix:** checkpoint immutable artifact IDs/digests and a cursor; read exact accepted page payloads on demand. **Test:** 100/500/1000 pages, record checkpoint bytes and peak memory; expect near-linear cumulative growth.
 
+**Current branch status (2026-10-16): fixed locally, CI pending.** New page checkpoints persist the artifact directory, page-source identity, cursor, and completion metadata without `raw_pages`; `_json_pages()` rehydrates accepted page JSON from the durable artifact set. Legacy checkpoints that already contain `raw_pages` remain readable, and repair preserves that field only for the legacy format. `test_new_page_checkpoint_rehydrates_pages_from_artifacts_without_raw_payload`, the terminal-resume test, and the fresh-process resume test pass. A 100/500/1000-page checkpoint-size benchmark remains open.
+
 ### B11 — P2: Render cache identity incomplete for variable rasterizer configurations
 Source: `ocr_pipeline.py`, `_pdf_render_manifest_payload`, around lines 2279–2295.
 
-The manifest includes the source PDF digest, a fixed renderer version string and the Python callable's qualified name, but does not capture actual DPI, rotation, crop, page dimension, Poppler version or custom rasterizer settings. Same callable with changed configuration can reuse incompatible page PNGs. **Fix:** make rasterizer return a versioned config identity; include all rendering inputs, validate cached PNG digest and properties. **Test:** same PDF, same rasterizer callable, changed DPI or rotation.
+**Current branch status (2026-10-16): partially fixed locally, CI pending.** The render manifest now includes an explicit rasterizer configuration fingerprint, plus every accepted page's SHA-256 and dimensions; cache reuse validates those values. A dedicated tamper/configuration regression passes. Built-in DPI/rotation options and a multi-page page-set regression remain open.
 
 ### B12 — P2: Reference extraction misses mentions split across OCR units
 Source: `document_models.py`, `extract_reference_mentions`, around lines 383–416.
@@ -88,7 +90,7 @@ Source: `ocr_pipeline.py`, `_render_pdf_to_images`; uses `PdfReader` to count pa
 ### B14 — P1: Interrupted rasterization can be reused as a complete PNG
 Source: `ocr_pipeline.py`, `_render_pdf_with_identity` and `_render_pdf_to_images`, around lines 2297–2363.
 
-The PDF render manifest is written before all images are produced. Each `page_N.png` is written directly by Pillow without atomic publication; later runs skip it if it simply exists, and manifest validation only checks `Path.is_file()`. A power failure/process kill while a PNG is being written can leave a truncated image that is treated as a cache hit on resume. **Fix:** rasterize to a unique temporary filename, verify image decode, `fsync`/atomic rename, record digest/dimensions for each accepted page, then accept manifest completion. **Test:** injected mid-save failure leaving a partial image, restart without deleting files, verify the bad image is regenerated rather than reused.
+**Current branch status (2026-10-16): partially fixed locally, CI pending.** Built-in page writes already use decode-verified atomic PNG publication. Render-manifest reuse now validates every recorded page's decode, digest, and dimensions, and a tampered-page restart regression passes. An injected mid-save failure and full page-set recovery test remain open.
 
 ## Previously tracked release gates (retain, do not silently mark closed)
 

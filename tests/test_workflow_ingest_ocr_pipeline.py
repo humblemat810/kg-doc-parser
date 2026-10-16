@@ -129,6 +129,8 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     _write_json_atomic,
 )
 from kg_doc_parser.workflow_ingest.ocr_runtime import (
+    _json_pages,
+    _page_workflow_initial_state,
     _reconcile_page_checkpoint,
     _validate_root_resume_identity,
     run_grouping_workflow,
@@ -860,6 +862,40 @@ def test_ocr_pages_run_as_persisted_steps_and_terminal_resume_does_not_recall_pr
     assert repair is not None
     assert repair["page_cursor"] == 1
     assert repair["raw_pages"] == raw_pages[:1]
+
+
+def test_new_page_checkpoint_rehydrates_pages_from_artifacts_without_raw_payload() -> None:
+    scratch = _scratch("ocr_page_compact_checkpoint")
+    legacy_dir = scratch / "legacy"
+    legacy_dir.mkdir(parents=True)
+    image_paths = []
+    for page_number in (1, 2):
+        image_path = scratch / "source" / f"page-{page_number}.png"
+        _draw_test_image(image_path, lines=[f"page {page_number}"])
+        image_paths.append((page_number, image_path))
+        (legacy_dir / f"page_{page_number}.json").write_text(
+            json.dumps(
+                _fake_ocr_response(page_number, f"page {page_number}").model_dump(
+                    dump_format="json"
+                )
+            ),
+            encoding="utf-8",
+        )
+
+    source_plan = OCRSourcePlan(
+        pdf_source=None,
+        rendered_dir=scratch / "rendered",
+        legacy_dir=legacy_dir,
+        page_sources=image_paths,
+        source_kind="image",
+        input_fingerprint="compact-checkpoint-source",
+    )
+    state = _page_workflow_initial_state(source_plan)
+    state.update({"page_cursor": 2, "completed_pages": [1, 2], "reused_pages": []})
+
+    assert "raw_pages" not in state
+    pages = _json_pages(state)
+    assert [page["printed_page_number"] for page in pages] == ["1", "2"]
 
 
 @pytest.mark.ci
@@ -3451,6 +3487,40 @@ def test_ocr_render_reuse_requires_render_configuration_identity() -> None:
         artifact_path=artifact,
         config_fingerprint="renderer-b",
     )
+
+
+@pytest.mark.ci
+def test_pdf_render_manifest_rejects_tampered_page_and_records_identity(tmp_path: Path) -> None:
+    from kg_doc_parser.workflow_ingest.ocr_pipeline import _render_pdf_with_identity
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF-1.4\nsource\n")
+    rendered = tmp_path / "rendered"
+    calls: list[int] = []
+
+    class _Rasterizer:
+        configuration_fingerprint = "dpi=144;rotation=0"
+
+        def __call__(self, pdf_path: Path, rendered_dir: Path) -> list[Path]:
+            del pdf_path
+            calls.append(1)
+            rendered_dir.mkdir(parents=True, exist_ok=True)
+            path = rendered_dir / "page_1.png"
+            Image.new("RGB", (11, 7), "white").save(path, "PNG")
+            return [path]
+
+    rasterizer = _Rasterizer()
+    first = _render_pdf_with_identity(pdf_path=source, rendered_dir=rendered, rasterizer=rasterizer)
+    manifest = json.loads((rendered / "render-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["rasterizer_configuration"] == "dpi=144;rotation=0"
+    assert manifest["pages"][0]["dimensions"] == [11, 7]
+    second = _render_pdf_with_identity(pdf_path=source, rendered_dir=rendered, rasterizer=rasterizer)
+    assert second == first
+    assert calls == [1]
+
+    first[0].write_bytes(b"truncated")
+    _render_pdf_with_identity(pdf_path=source, rendered_dir=rendered, rasterizer=rasterizer)
+    assert calls == [1, 1]
 
 
 @pytest.mark.ci

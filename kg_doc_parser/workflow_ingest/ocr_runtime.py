@@ -9,6 +9,7 @@ into checkpoint state.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -128,10 +129,34 @@ def _page_sources(state: Mapping[str, object]) -> list[tuple[int, Path]]:
 
 
 def _json_pages(state: Mapping[str, object]) -> list[OCRPageJSON]:
-    value = state.get("raw_pages", [])
-    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
-        raise ValueError("OCR page runtime raw page state is malformed")
-    return [cast(OCRPageJSON, item) for item in value]
+    """Load accepted pages without copying their payload into every checkpoint.
+
+    ``raw_pages`` is retained as a compatibility path for checkpoints created
+    before artifact-backed page state was introduced. New checkpoints persist
+    only the artifact directory and cursor, then reload the accepted JSON
+    artifacts when a downstream step needs the page payloads.
+    """
+    value = state.get("raw_pages")
+    if value is not None:
+        if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+            raise ValueError("OCR page runtime raw page state is malformed")
+        return [cast(OCRPageJSON, item) for item in value]
+
+    legacy_dir_value = state.get("legacy_dir")
+    if not isinstance(legacy_dir_value, str) or not legacy_dir_value:
+        raise ValueError("OCR page runtime state has no legacy artifact directory")
+    cursor = _page_cursor(state)
+    pages: list[OCRPageJSON] = []
+    for page_number, _image_path in _page_sources(state)[:cursor]:
+        page_path = Path(legacy_dir_value) / f"page_{page_number}.json"
+        try:
+            payload = json.loads(page_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"OCR page artifact is not readable: {page_path}") from exc
+        if not isinstance(payload, dict):
+            raise TypeError(f"OCR page artifact is not a JSON object: {page_path}")
+        pages.append(cast(OCRPageJSON, payload))
+    return pages
 
 
 def _int_list(state: Mapping[str, object], key: str) -> list[int]:
@@ -184,8 +209,8 @@ def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> dict[str, object
             {"page_number": page_number, "image_path": str(image_path)}
             for page_number, image_path in source_plan.page_sources
         ],
+        "legacy_dir": str(source_plan.legacy_dir),
         "page_cursor": 0,
-        "raw_pages": [],
         "completed_pages": [],
         "reused_pages": [],
     }
@@ -239,7 +264,6 @@ def _reconcile_page_checkpoint(
     sources = _page_sources(state)
     completed = _int_list(state, "completed_pages")
     reused = _int_list(state, "reused_pages")
-    raw_pages = _json_pages(state)
     for index, (page_number, image_path) in enumerate(sources[:cursor]):
         image_digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
         page_path = source_plan.legacy_dir / f"page_{page_number}.json"
@@ -260,12 +284,16 @@ def _reconcile_page_checkpoint(
             config_fingerprint=context.configuration_fingerprints,
         ):
             continue
-        return {
+        repair: dict[str, object] = {
             "page_cursor": index,
-            "raw_pages": raw_pages[:index],
             "completed_pages": completed[:index],
             "reused_pages": [number for number in reused[:index] if number in completed[:index]],
         }
+        # Preserve the old in-checkpoint payload only when repairing a legacy
+        # checkpoint. New checkpoints stay artifact-backed and compact.
+        if "raw_pages" in state:
+            repair["raw_pages"] = _json_pages(state)[:index]
+        return repair
     return None
 
 
@@ -424,6 +452,7 @@ def _build_page_resolver(
             "source_fingerprint": "u",
             "ocr_configuration_fingerprints": "u",
             "page_sources": "u",
+            "legacy_dir": "u",
             "page_cursor": "u",
             "raw_pages": "u",
             "completed_pages": "u",
@@ -494,7 +523,6 @@ def _build_page_resolver(
                     "u",
                     {
                         "page_cursor": cursor + 1,
-                        "raw_pages": raw_pages,
                         "completed_pages": completed_pages,
                         "reused_pages": reused_pages,
                     },

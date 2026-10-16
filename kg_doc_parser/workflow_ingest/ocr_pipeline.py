@@ -230,6 +230,12 @@ class PDFRasterizer(Protocol):
     def __call__(self, pdf_path: Path, rendered_dir: Path, /) -> list[Path]: ...
 
 
+class PDFRasterizerWithIdentity(PDFRasterizer, Protocol):
+    """Optional rasterizer extension for configuration-sensitive cache keys."""
+
+    configuration_fingerprint: str
+
+
 class SummaryGenerator(Protocol):
     """Generate one bounded, evidence-grounded summary for a tree node."""
 
@@ -2478,11 +2484,15 @@ def _pdf_render_manifest_payload(
     """Describe the exact PDF/rendering inputs behind cached page images."""
     rasterizer_name = getattr(rasterizer, "__qualname__", type(rasterizer).__qualname__)
     rasterizer_module = getattr(rasterizer, "__module__", type(rasterizer).__module__)
+    configuration_fingerprint = getattr(rasterizer, "configuration_fingerprint", "default")
+    if not isinstance(configuration_fingerprint, str) or not configuration_fingerprint:
+        configuration_fingerprint = "default"
     config: JsonObject = {
         "manifest_version": _PDF_RENDER_MANIFEST_VERSION,
         "pdf_sha256": _sha256_file(pdf_path),
         "renderer_version": _PDF_RENDERER_VERSION,
         "rasterizer": f"{rasterizer_module}.{rasterizer_name}",
+        "rasterizer_configuration": configuration_fingerprint,
     }
     encoded = json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")
     config["render_identity"] = hashlib.sha256(encoded).hexdigest()
@@ -2507,13 +2517,64 @@ def _render_pdf_with_identity(
                 existing = payload
         except (OSError, ValueError):
             existing = None
-    if existing != expected:
-        for candidate in rendered_dir.glob("page_*.png"):
-            candidate.unlink(missing_ok=True)
-        _write_json_atomic(manifest_path, expected)
-    paths = [Path(path) for path in rasterizer(pdf_path, rendered_dir)]
-    if not paths or any(not path.is_file() for path in paths):
-        raise RuntimeError("pdf rasterizer returned no complete page set")
+    paths: list[Path] = []
+    if existing is not None and all(existing.get(key) == value for key, value in expected.items()):
+        page_entries = existing.get("pages")
+        if isinstance(page_entries, list):
+            candidate_paths: list[Path] = []
+            valid = True
+            for entry in page_entries:
+                if not isinstance(entry, dict):
+                    valid = False
+                    break
+                filename = entry.get("filename")
+                if not isinstance(filename, str) or Path(filename).name != filename:
+                    valid = False
+                    break
+                candidate = rendered_dir / filename
+                if (
+                    candidate.is_symlink()
+                    or not _image_file_is_valid(candidate)
+                    or entry.get("sha256") != _sha256_file(candidate)
+                ):
+                    valid = False
+                    break
+                try:
+                    with Image.open(candidate) as image:
+                        dimensions = [image.width, image.height]
+                except (OSError, SyntaxError, ValueError):
+                    valid = False
+                    break
+                if entry.get("dimensions") != dimensions:
+                    valid = False
+                    break
+                candidate_paths.append(candidate)
+            if valid and candidate_paths:
+                paths = candidate_paths
+    if not paths:
+        for candidate in rendered_dir.glob("page_*"):
+            if candidate.suffix.lower() != ".json":
+                candidate.unlink(missing_ok=True)
+        paths = [Path(path) for path in rasterizer(pdf_path, rendered_dir)]
+        if not paths:
+            raise RuntimeError("pdf rasterizer returned no complete page set")
+        for path in paths:
+            if path.is_symlink() or not path.is_file() or not _image_file_is_valid(path):
+                raise RuntimeError(f"pdf rasterizer returned an invalid page image: {path}")
+        page_entries = []
+        for page_number, path in enumerate(paths, start=1):
+            with Image.open(path) as image:
+                dimensions = [image.width, image.height]
+            page_entries.append(
+                {
+                    "page_number": page_number,
+                    "filename": path.name,
+                    "sha256": _sha256_file(path),
+                    "dimensions": dimensions,
+                }
+            )
+        complete_manifest = {**expected, "pages": page_entries}
+        _write_json_atomic(manifest_path, complete_manifest)
     return paths
 
 
