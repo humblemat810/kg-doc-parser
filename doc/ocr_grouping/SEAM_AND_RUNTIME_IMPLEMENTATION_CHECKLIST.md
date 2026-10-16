@@ -12,6 +12,14 @@ and release gates remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+Commits `bff3f70`, `621acdf`, and `77913f1` narrow source-map excerpts,
+layer child candidates, accepted boundary units, and accepted cutpoints to
+typed records. The affected focused tests pass locally, as do Ruff and the
+diff check. These commits do not change provider or graph behavior; remote CI
+and the broader runtime/release gates remain pending.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 Commit `37ed1e3` preserves compatibility for coverage segments that omit the
 optional `skipped` flag (the default is `False`) while retaining typed range
 records. The reusable regression `test_boundary_parent_coverage_report_marks_gaps_and_spans`

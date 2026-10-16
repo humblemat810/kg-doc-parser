@@ -12,6 +12,14 @@ remain open.
 
 ## Latest evidence update (2026-10-17, pending CI)
 
+Commits `bff3f70`, `621acdf`, and `77913f1` remove additional internal
+`dict[str, object]` widening from source-map excerpts, layer-child grouping,
+and boundary assembly. Focused tests, Ruff, and `git diff --check` pass
+locally; this is seam evidence only and does not close full Pyright, recovery,
+or release verification.
+
+## Latest evidence update (2026-10-17, pending CI)
+
 Commit `37ed1e3` adds a regression-safe optional `skipped` field for normal
 coverage segments, preventing a `KeyError` while keeping gap detection typed.
 The named coverage regression and full layerwise suite pass locally (`45
