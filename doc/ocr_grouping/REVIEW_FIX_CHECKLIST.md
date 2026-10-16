@@ -16,6 +16,13 @@ validation, and cross-page checkpoint preparation. Parser CI run `#282`
 (`38885261941`) passed. Run `#283` (`38885766112`), triggered by `77e7fd5`,
 is still in progress, so the full branch verification remains pending.
 
+Commit `e7139cf` also replaces the direct OCR polygon decoder's untyped
+sequence traversal and `type: ignore` with explicit nested-sequence and
+boolean-coordinate validation. The provider suite passes `19 passed, 1
+skipped`, including `test_direct_rapidocr_adapter_rejects_boolean_polygon_coordinates`.
+Parser CI run `#285` (`38886515971`) is pending for this change; do not promote
+B05 or any release gate based on the local provider result alone.
+
 This evidence does not close the release gates: the package-wide Pyright
 command is not currently usable in this Windows checkout because Node fails
 with `EPERM` while resolving the workspace path, and dual-store reconciliation,
@@ -453,7 +460,7 @@ contract; the current run must verify the published `0.6.10` package.
 
 Source: `kg_doc_parser_ocr_broad_audit_2026-10-15.md`. The source review was
 static and did not prove runtime behavior. The statuses below are deliberately
-conservative and apply to the current parser branch HEAD `e1fb47a`. A row is
+conservative and apply to the current parser branch HEAD `e7139cf`. A row is
 not release-complete until its
 focused test, full matrix, and exact HEAD are verified.
 
@@ -463,7 +470,7 @@ focused test, full matrix, and exact HEAD are verified.
 | B02 | [~] Fixed locally; CI pending | `build_document_tree` now raises typed `UnrepresentedSourceUnitError` with a structured diagnostic instead of silently dropping a non-text unit that lacks a description and verified content-addressed media. Blank pages with no units remain empty. Regression: `test_build_document_tree_rejects_unrepresented_nontext_unit`; `tests/test_document_adapters.py` passes 19 tests locally. Input-unit accounting and full CI remain open. |
 | B03 | [~] Fixed locally; CI pending | `suggest_cross_page_continuations` now requires both frontier nodes to be canonical text leaves, so page-level incomplete-text flags cannot join a paragraph to a figure/table/caption description or media item. Regressions: `test_cross_page_continuation_never_merges_text_into_nontext` and `test_cross_page_continuation_suggestion_requires_ocr_boundary_signal`. Geometry and stronger paragraph-boundary evidence remain open. |
 | B04 | [~] Fixed locally; CI pending | Added immutable `EvidenceSlice` records and a typed `GroundedSummaryGenerator` boundary. The public preparation, grouping, and root workflows thread this boundary through; `test_grounded_summary_generator_receives_only_owned_source_slices` proves two summaries over one source item receive only their ordered, exact ranges. Legacy `SummaryGenerator` remains available for compatibility; provider adoption and full CI remain open. |
-| B05 | [~] Fixed locally; CI pending | `OCRClusterResponse.spatial_accuracy` and normalized `SourceUnit.metadata` now carry an explicit page/region/line/word/character declaration. Unknown or absent precision fails closed to page accuracy; direct OCR and item-level Docling paths declare region precision. Tests: `test_synthetic_page_box_does_not_claim_region_accuracy`, `test_explicit_region_precision_is_preserved`, and the full `tests/test_document_adapters.py` file (19 passed). |
+| B05 | [~] Fixed locally; CI pending | `OCRClusterResponse.spatial_accuracy` and normalized `SourceUnit.metadata` now carry an explicit page/region/line/word/character declaration. Unknown or absent precision fails closed to page accuracy; direct OCR and item-level Docling paths declare region precision. The direct polygon decoder now rejects malformed nested sequences and boolean coordinates before constructing region-grounded clusters. Tests: `test_synthetic_page_box_does_not_claim_region_accuracy`, `test_explicit_region_precision_is_preserved`, `test_direct_rapidocr_adapter_rejects_boolean_polygon_coordinates`, and the provider/document-adapter suites. Full CI and live-provider evidence remain open. |
 | B06 | [~] Fixed locally; CI pending | Render and legacy artifact paths use collision-resistant document/source identities. `test_pdf_artifact_directories_do_not_collide_for_same_basename` now exercises two valid PNG renders from distinct same-named PDFs and confirms distinct artifact directories and bytes. |
 | B07 | [x] Verified on current branch | `_materialize_image_payloads()` requires positive, unique, ascending page numbers before publishing artifacts; it no longer silently sorts explicitly out-of-order input. `tests/test_workflow_ingest_ocr_pipeline.py::test_materialize_image_payloads_rejects_invalid_page_numbers_and_symlinks` covers non-positive, duplicate, and symlink cases, and `::test_materialize_image_payloads_rejects_out_of_order_page_numbers` covers ordering. |
 | B08 | [~] Partial | `OCRQualityPolicy.reject_empty_page` now provides an explicit opt-in fail-closed gate for provider-reported empty OCR output, with `test_ocr_quality_policy_can_reject_empty_provider_output`. The default remains permissive for legitimate blank pages; independent image/text completeness checks are still needed. |
