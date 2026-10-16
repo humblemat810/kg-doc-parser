@@ -2682,14 +2682,30 @@ def _decode_pdf_render_manifest(value: object) -> _PDFRenderManifest | None:
                 "dimensions": dimensions,
             }
         )
+    pdf_sha256 = value.get("pdf_sha256")
+    renderer_version = value.get("renderer_version")
+    rasterizer = value.get("rasterizer")
+    rasterizer_configuration = value.get("rasterizer_configuration")
+    render_identity = value.get("render_identity")
+    if not all(
+        isinstance(item, str)
+        for item in (
+            pdf_sha256,
+            renderer_version,
+            rasterizer,
+            rasterizer_configuration,
+            render_identity,
+        )
+    ):
+        return None
     manifest: _PDFRenderManifest = {
         "manifest_version": manifest_version,
-        "pdf_sha256": value["pdf_sha256"],
-        "renderer_version": value["renderer_version"],
-        "rasterizer": value["rasterizer"],
-        "rasterizer_configuration": value["rasterizer_configuration"],
+        "pdf_sha256": pdf_sha256,
+        "renderer_version": renderer_version,
+        "rasterizer": rasterizer,
+        "rasterizer_configuration": rasterizer_configuration,
         "pdf_page_count": page_count,
-        "render_identity": value["render_identity"],
+        "render_identity": render_identity,
     }
     if raw_pages is not None:
         manifest["pages"] = pages

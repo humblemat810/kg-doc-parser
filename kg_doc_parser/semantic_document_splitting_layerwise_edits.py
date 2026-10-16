@@ -109,7 +109,7 @@ class _TerminalCorrectionResult(Protocol):
     """Structural contract for correction results eligible for caching."""
 
     @property
-    def pending_fix_children(self) -> Sequence[object]: ...
+    def pending_fix_children(self) -> Sequence["LLMChildNodeResponseBE"]: ...
 
 from kogwistar.id_provider import stable_id
 from kogwistar.llm_tasks.providers import SupportsStructuredOutput
