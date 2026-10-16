@@ -536,8 +536,13 @@ an adapter-only test, or a source-checkout-only runtime test.
   `tests/test_workflow_ingest_ocr_pipeline.py::test_failed_summary_is_retryable_without_replaying_ocr`
   proves a failed summary is retried and accepted while the two OCR pages are
   not called again.
-- [ ] Ensure duplicate summary delivery cannot create duplicate accepted summary
-  records.
+- [x] Ensure duplicate summary delivery cannot create duplicate accepted summary
+  records. `OCRWorkflowStateStore.record_summary_attempt()` uses an immediate
+  transaction and returns the existing accepted attempt for the same
+  `(document_id, node_id, input_fingerprint)`; regression:
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_duplicate_accepted_summary_delivery_is_idempotent`.
+  This closes summary-journal idempotence only; root publication and dual-store
+  crash reconciliation remain separate gates.
 
 ### A6. Runtime verification
 
