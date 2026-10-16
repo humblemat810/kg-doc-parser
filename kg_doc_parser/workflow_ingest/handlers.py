@@ -83,10 +83,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _strategy_attempt(state_view: Mapping[str, object], strategy: str) -> int:
-    raw = state_view.get("strategy_attempt_counts")
-    if not isinstance(raw, dict):
-        return 1
-    value = raw.get(strategy)
+    value = _state_mapping(state_view.get("strategy_attempt_counts")).get(strategy)
     if type(value) is int and value >= 0:
         return value
     return 1
@@ -140,6 +137,22 @@ def _state_object_map(value: object) -> dict[str, dict[str, JsonValue]]:
 
 def _state_list(value: object) -> list[object]:
     return list(value) if isinstance(value, list) else []
+
+
+def _state_mapping(value: object) -> Mapping[str, object]:
+    """Narrow a JSON-like state value before reading named fields."""
+
+    if isinstance(value, Mapping):
+        return value
+    return {}
+
+
+def _state_scalar(value: object) -> JsonValue | None:
+    """Return only values safe to emit in a JSON probe snapshot."""
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return None
 
 
 def _state_int(value: object, default: int = 0) -> int:
@@ -280,24 +293,35 @@ def _success(
     )
 
 
-def _probe_snapshot(state_view: dict[str, object]) -> dict[str, object]:
-    snapshot: dict[str, object] = {
-        "state_keys": sorted(k for k, v in state_view.items() if v is not None),
+def _probe_snapshot(state_view: Mapping[str, object]) -> dict[str, JsonValue]:
+    snapshot: dict[str, JsonValue] = {
+        "state_keys": cast(
+            JsonValue,
+            sorted(k for k, v in state_view.items() if v is not None),
+        ),
     }
     frontier = state_view.get("layer_frontier_queue")
     if isinstance(frontier, list):
         snapshot["frontier_size"] = len(frontier)
-    current_layer_context = state_view.get("current_layer_context")
-    if isinstance(current_layer_context, dict):
-        snapshot["current_depth"] = current_layer_context.get("depth")
-        snapshot["retry_count"] = current_layer_context.get("retry_count")
-        snapshot["split_strategy"] = current_layer_context.get("split_strategy")
-    parse_session = state_view.get("parse_session")
-    if isinstance(parse_session, dict):
-        snapshot["parse_mode"] = parse_session.get("mode")
-        snapshot["session_depth"] = parse_session.get("current_depth")
-        snapshot["session_strategy"] = parse_session.get("split_strategy")
-        snapshot["strategy_switch_count"] = parse_session.get("strategy_switch_count")
+    current_layer_context = _state_mapping(state_view.get("current_layer_context"))
+    for field_name, output_name in (
+        ("depth", "current_depth"),
+        ("retry_count", "retry_count"),
+        ("split_strategy", "split_strategy"),
+    ):
+        value = _state_scalar(current_layer_context.get(field_name))
+        if value is not None:
+            snapshot[output_name] = value
+    parse_session = _state_mapping(state_view.get("parse_session"))
+    for field_name, output_name in (
+        ("mode", "parse_mode"),
+        ("current_depth", "session_depth"),
+        ("split_strategy", "session_strategy"),
+        ("strategy_switch_count", "strategy_switch_count"),
+    ):
+        value = _state_scalar(parse_session.get(field_name))
+        if value is not None:
+            snapshot[output_name] = value
     return snapshot
 
 
@@ -308,10 +332,10 @@ def _progress_bar(done: int, total: int, width: int = 20) -> str:
     return ("█" * filled) + ("░" * (width - filled))
 
 
-def _log_runtime_progress(*, step_name: str, state_view: dict[str, object]) -> None:
-    current_layer_context = state_view.get("current_layer_context")
-    parse_session = state_view.get("parse_session")
-    if not isinstance(current_layer_context, dict) or not isinstance(parse_session, dict):
+def _log_runtime_progress(*, step_name: str, state_view: Mapping[str, object]) -> None:
+    current_layer_context = _state_mapping(state_view.get("current_layer_context"))
+    parse_session = _state_mapping(state_view.get("parse_session"))
+    if not current_layer_context or not parse_session:
         return
     depth = _state_int(current_layer_context.get("depth"), 0)
     max_depth = _state_int(parse_session.get("max_depth"), 10)
