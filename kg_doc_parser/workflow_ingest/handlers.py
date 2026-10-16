@@ -136,8 +136,25 @@ def _state_object_map(value: object) -> dict[str, dict[str, JsonValue]]:
     }
 
 
-def _state_list(value: object) -> list[object]:
-    return list(value) if isinstance(value, list) else []
+def _state_object_list(value: object) -> list[dict[str, JsonValue]]:
+    """Decode a persisted list of JSON objects without widening its items."""
+    if not isinstance(value, list):
+        return []
+    objects: list[dict[str, JsonValue]] = []
+    for item in value:
+        if not isinstance(item, dict) or not all(isinstance(key, str) for key in item):
+            raise TypeError("workflow state object list contains a malformed item")
+        objects.append(cast(dict[str, JsonValue], item))
+    return objects
+
+
+def _state_string_list(value: object) -> list[str]:
+    """Decode a persisted list whose values are required to be strings."""
+    if not isinstance(value, list):
+        return []
+    if any(not isinstance(item, str) for item in value):
+        raise TypeError("workflow state string list contains a non-string item")
+    return list(value)
 
 
 def _state_mapping(value: object) -> Mapping[str, object]:
@@ -1080,7 +1097,7 @@ def register_layerwise_parser_steps(
                 queued = requeue_failed_frontier_items(
                     frontier_queue=[
                         LayerFrontierItem.model_validate(item)
-                        for item in _state_list(ctx.state_view.get("layer_frontier_queue"))
+                        for item in _state_object_list(ctx.state_view.get("layer_frontier_queue"))
                     ],
                     parent_node_ids=failed_parent_ids,
                     depth=current_layer_context.depth,
@@ -1105,7 +1122,7 @@ def register_layerwise_parser_steps(
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         frontier_queue = [
             LayerFrontierItem.model_validate(item)
-            for item in _state_list(ctx.state_view.get("layer_frontier_queue"))
+            for item in _state_object_list(ctx.state_view.get("layer_frontier_queue"))
         ]
         updated_queue = enqueue_next_layer_frontier(
             frontier_queue=frontier_queue,
@@ -1282,7 +1299,7 @@ def register_postparse_steps(
 
     @_register_step(resolver, step_name="parse_failure", runtime_deps=runtime_deps)
     def _parse_failure(ctx: StepContext) -> StepRunResult:
-        errors = [str(value) for value in _state_list(ctx.state_view.get("workflow_errors"))]
+        errors = _state_string_list(ctx.state_view.get("workflow_errors"))
         if not errors:
             errors = ["layer parsing failed after all strategies were exhausted"]
         return RunFailure(

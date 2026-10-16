@@ -21,6 +21,10 @@ from kg_doc_parser.workflow_ingest.clients import (
     _jsonable_payload,
 )
 from kg_doc_parser.workflow_ingest.design import build_ingest_workflow_design
+from kg_doc_parser.workflow_ingest.handlers import (
+    _state_object_list,
+    _state_string_list,
+)
 from kg_doc_parser.workflow_ingest.models import (
     BoundingBox,
     GroundedSourceRecord,
@@ -76,6 +80,14 @@ def test_client_jsonable_payload_uses_typed_model_dump_protocol() -> None:
 
     assert _jsonable_payload(_BackendDump()) == {"value": "backend"}
     assert _jsonable_payload(_LegacyDump()) == {"value": "legacy"}
+
+
+@pytest.mark.ci
+def test_handler_persisted_lists_reject_malformed_item_types() -> None:
+    with pytest.raises(TypeError, match="object list contains a malformed item"):
+        _state_object_list([{"valid": True}, "not-an-object"])
+    with pytest.raises(TypeError, match="string list contains a non-string item"):
+        _state_string_list(["valid", 3])
 
 
 def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):
