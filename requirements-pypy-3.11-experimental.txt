@@ -1,25 +1,25 @@
 # PyPy 3.11 source-profile dependencies.  Native PDF and GPU/NumPy extras are
 # intentionally excluded; this lane exercises the parser's text/control path.
-pydantic>=2.12.5
-pydantic-extension>=0.0.7
-anyio>=4.0
-Jinja2>=3.1
-diskcache>=5.6,<6
-pdf2image>=1.17.0
-pypdf>=6.5.0
-pathspec>=0.12.1
-httpx>=0.28.1
-langchain-core>=1.2.5
-langchain-google-genai>=4.1.2
-rapidfuzz>=3.14.3
-fastapi>=0.111
-python-jose[cryptography]>=3.3
-PyJWT>=2.8
-python-dotenv>=1.0.1
-requests>=2.32
-typing-extensions>=4.8
-mcp>=2.2.0,<3
-pytest>=8
+pydantic==2.13.5
+pydantic-extension==0.0.7
+anyio==4.15.1
+Jinja2==3.1.6
+diskcache==5.6.3
+pdf2image==1.17.0
+pypdf==6.19.0
+pathspec==0.12.1
+httpx==0.28.1
+langchain-core==1.6.7
+langchain-google-genai==4.4.0
+rapidfuzz==3.14.6
+fastapi==0.141.1
+python-jose[cryptography]==3.5.0
+PyJWT==2.14.0
+python-dotenv==1.2.3
+requests==2.34.2
+typing-extensions==4.16.0
+mcp==2.2.0
+pytest==9.1.1
 
 # The parser source lane shares the official MCP dependency when its server
 # integration is exercised; the legacy standalone MCP framework is not supported.

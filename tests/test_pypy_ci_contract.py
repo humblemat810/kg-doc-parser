@@ -112,7 +112,7 @@ def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None
         .splitlines()
     )
 
-    assert "diskcache>=5.6,<6" in requirements
+    assert "diskcache==5.6.3" in requirements
     assert "joblib" not in requirements
 
     for forbidden in (
@@ -123,6 +123,24 @@ def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None
         "pikepdf",
     ):
         assert forbidden not in requirements
+
+
+def test_pypy_311_profile_is_pinned_to_the_parser_lockfile() -> None:
+    requirements_path = ROOT / "requirements-pypy-3.11-experimental.txt"
+    requirements = {
+        line.split("#", 1)[0]
+        .strip()
+        .split("==", 1)[0]
+        .split("[", 1)[0]
+        .lower(): line.split("==", 1)[1]
+        for line in requirements_path.read_text(encoding="utf-8").splitlines()
+        if "==" in line and not line.lstrip().startswith("#")
+    }
+    lock_packages = tomllib.loads((ROOT / "poetry.lock").read_text(encoding="utf-8"))["package"]
+    locked = {str(package["name"]): str(package["version"]) for package in lock_packages}
+    for package_name, version in requirements.items():
+        normalized_name = package_name.replace("_", "-")
+        assert locked[normalized_name] == version
 
 
 def test_parser_cache_selects_a_provider_without_hard_coding_joblib() -> None:
