@@ -85,6 +85,7 @@ from kogwistar.llm_tasks.providers import (
 )
 from kogwistar.typing_interfaces import EmbeddingFunctionLike
 from pydantic import BaseModel, Field, model_validator
+from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 from pydantic_extension.model_slicing import BackendField, FrontendField
 from pydantic_extension.model_slicing.mixin import (
@@ -345,8 +346,8 @@ class FakeChatModel:
 
 
 def _default_schema_payload(schema: type[BaseModel]) -> dict[str, object]:
-    def _value_for_field(field: object) -> object:
-        annotation = getattr(field, "annotation", None)
+    def _value_for_field(field: FieldInfo) -> object:
+        annotation = field.annotation
         origin = get_origin(annotation)
         args = get_args(annotation)
         if annotation is str:
@@ -369,13 +370,13 @@ def _default_schema_payload(schema: type[BaseModel]) -> dict[str, object]:
             return None
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             return _default_schema_payload(annotation)
-        default = getattr(field, "default", PydanticUndefined)
+        default = field.default
         if default is not PydanticUndefined and default is not None:
             return default
         return None
 
     payload: dict[str, object] = {}
-    for name, field in getattr(schema, "model_fields", {}).items():
+    for name, field in schema.model_fields.items():
         value = _value_for_field(field)
         if value is not None:
             payload[name] = value
