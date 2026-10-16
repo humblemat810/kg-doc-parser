@@ -59,7 +59,7 @@ from pypdf.errors import PdfReadError, PdfStreamError
 
 from ..llm_structured_output import build_structured_output_runnable
 from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
-from .adapters import OCRPageJSON, normalize_ocr_pages
+from .adapters import OCRPageJSON, _validated_ocr_page_json, normalize_ocr_pages
 from .document_adapters import (
     apply_grouping_proposals,
     apply_summary_updates,
@@ -85,8 +85,8 @@ from .providers import (
     build_chat_model_for_role,
     invoke_with_timeout,
 )
-from .serialization import JsonValue
 from .sdk_boundary import raw_content
+from .serialization import JsonValue
 from .service import _RunCompat
 
 _LOGGER = logging.getLogger(__name__)
@@ -1005,10 +1005,7 @@ def _process_ocr_page(
         artifact_path=page_json_path,
         config_fingerprint=context.configuration_fingerprints,
     ):
-        persisted_page = cast(
-            OCRPageJSON,
-            _read_json_object(page_json_path),
-        )
+        persisted_page = _validated_ocr_page_json(_read_json_object(page_json_path))
         split_page = SplitPage.model_validate(persisted_page)
         raw_page = split_page.dump_supercede_parse()
         raw_page["meaningful_ordering"] = list(split_page.meaningful_ordering)
@@ -1018,7 +1015,7 @@ def _process_ocr_page(
             if persisted_metadata is not None
             else split_page.metadata.model_dump(mode="json")
         )
-        raw_pages.append(cast(OCRPageJSON, raw_page))
+        raw_pages.append(_validated_ocr_page_json(raw_page, default_page_number=page_number))
         completed_pages.append(page_number)
         reused_pages.append(page_number)
         _emit_ocr_event(
@@ -1146,7 +1143,9 @@ def _process_ocr_page(
                 raw_page["metadata"] = persisted_page.get(
                     "metadata", split_page.metadata.model_dump(mode="json")
                 )
-                raw_pages.append(cast(OCRPageJSON, raw_page))
+                raw_pages.append(
+                    _validated_ocr_page_json(raw_page, default_page_number=page_number)
+                )
                 completed_pages.append(page_number)
                 reused_pages.append(page_number)
                 page_completed = True
@@ -1156,7 +1155,7 @@ def _process_ocr_page(
             raw_page = split_page.dump_supercede_parse()
             raw_page["meaningful_ordering"] = list(split_page.meaningful_ordering)
             raw_page["metadata"] = page_payload["metadata"]
-            raw_pages.append(cast(OCRPageJSON, raw_page))
+            raw_pages.append(_validated_ocr_page_json(raw_page, default_page_number=page_number))
             completed_pages.append(page_number)
             page_completed = True
             _emit_ocr_event(

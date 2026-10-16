@@ -10,6 +10,16 @@ seams are also verified: `ed4ac40` passed `38930015792` and `9e0631a` passed
 seams; runtime recovery, semantic hierarchy publication, OCR completeness,
 and release gates remain open.
 
+## Latest evidence update (2026-10-17, pending CI)
+
+The OCR resume and duplicate-delivery paths now validate reconstructed page
+payloads with `_validated_ocr_page_json` rather than using unchecked casts to
+`OCRPageJSON`. The focused boundary/resume selection passes (`7 passed`), and
+Ruff plus `git diff --check` pass. This closes a local typing/runtime seam but
+does not promote the broader recovery, semantic-publication, OCR-completeness,
+or release gates. Package-wide Pyright remains locally blocked by the known
+Windows Node launcher `EPERM` issue; remote CI is the pending matrix evidence.
+
 ## Latest evidence update (2026-10-17, commit `bfc4535`, CI verified)
 
 The workflow probe now uses the shared runtime-checkable `ModelDumpLike`

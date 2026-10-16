@@ -10,6 +10,19 @@ seams are also verified: `ed4ac40` passed `38930015792` and `9e0631a` passed
 seams; recovery, semantic publication, OCR completeness, and release gates
 remain open.
 
+## Latest evidence update (2026-10-17, pending CI)
+
+OCR page payloads reconstructed by the resume, duplicate-delivery, and
+accepted-page paths now pass through `_validated_ocr_page_json` instead of
+being asserted with an unchecked `cast`. This keeps the persisted page shape
+validated at each reconstruction boundary. The focused OCR boundary and
+resume tests pass (`7 passed`), Ruff and `git diff --check` pass; package-wide
+Pyright remains subject to the known Windows Node launcher `EPERM` issue. The
+full long-running OCR selection was not claimed as green because an existing
+grouping process-termination test failed and the 100-page case was stopped
+after reproducing its long runtime. Remote CI for the resulting commit is
+still pending.
+
 ## Latest evidence update (2026-10-17, commit `bfc4535`, CI verified)
 
 Probe event serialization now uses the shared `ModelDumpLike` protocol and
