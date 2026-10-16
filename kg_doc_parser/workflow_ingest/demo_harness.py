@@ -26,7 +26,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from .cache import WorkflowLLMCallCache, workflow_cache_namespace
 from .clients import (
@@ -175,7 +175,7 @@ def _load_isolated_server_app(server_data_dir: Path) -> _ServerContext:
             restore_env()
 
     return _ServerContext(
-        client=client,
+        client=cast(DemoHttpClientLike, client),
         transport="fastapi_testclient",
         base_url="",
         cleanup=cleanup,
@@ -246,7 +246,7 @@ def _start_subprocess_server(server_data_dir: Path) -> _ServerContext:
             if response.ok:
                 session = requests.Session()
                 return _ServerContext(
-                    client=session,
+                    client=cast(DemoHttpClientLike, session),
                     transport="subprocess_http",
                     base_url=base_url,
                     cleanup=lambda *_args, session=session: _shutdown_subprocess_server(proc, session),
@@ -267,7 +267,7 @@ def _connect_external_server(base_url: str) -> _ServerContext:
     response.raise_for_status()
     session = requests.Session()
     return _ServerContext(
-        client=session,
+        client=cast(DemoHttpClientLike, session),
         transport="external_http",
         base_url=base_url,
         cleanup=lambda *_args: session.close(),
