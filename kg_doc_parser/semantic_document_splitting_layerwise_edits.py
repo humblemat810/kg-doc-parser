@@ -1623,7 +1623,7 @@ def iterative_review_loop(
             doc_id=doc_id,
             current_depth=current_depth,
             retry=retries,
-            proposal_count=len(getattr(proposals_response, "proposals", []) or []),
+            proposal_count=len(proposals_response.get_proposals()),
         )
         CUD_reasoning_history.append({"role": "ai_assistant", 'content': proposals_response.reasoning})
         # current_level_nodes.reset(token)
@@ -2294,7 +2294,7 @@ def iterative_correct_children_for_level(
                 "iterative_correct_children_for_level.llm.done",
                 doc_id=doc_id,
                 round_idx=round_idx,
-                returned_count=len(getattr(parsed, "children", []) or []),
+                returned_count=len(parsed.children),
             )
             parsed_be = LLMLevelResponseBE.model_validate(parsed.model_dump())
             # validate each returned child again deterministically (trust but verify)
