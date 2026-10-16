@@ -257,7 +257,10 @@ def _typed_child_state(value: object, *, label: str) -> _OCRWorkflowState:
         isinstance(key, str) for key in value
     ):
         raise TypeError(f"{label} did not return a JSON object state")
-    return cast(_OCRWorkflowState, value)
+    try:
+        return _typed_state(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{label} returned invalid typed state: {exc}") from exc
 
 
 def _state_string(state: Mapping[str, object], key: str, default: str) -> str:

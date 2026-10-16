@@ -235,6 +235,14 @@ def test_ocr_runtime_state_boundary_rejects_wrong_known_field_types() -> None:
         )
 
 
+def test_ocr_runtime_child_state_uses_the_same_typed_boundary() -> None:
+    with pytest.raises(TypeError, match="grouping child returned invalid typed state"):
+        ocr_runtime_module._typed_child_state(
+            {"page_cursor": "not-an-integer"},
+            label="grouping child",
+        )
+
+
 def test_pdf_rasterization_regenerates_corrupt_cached_page_atomically(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
