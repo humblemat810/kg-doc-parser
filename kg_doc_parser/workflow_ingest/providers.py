@@ -61,7 +61,7 @@ import os
 import queue
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import (
     Annotated,
@@ -93,6 +93,8 @@ from pydantic_extension.model_slicing.mixin import (
     LLMField,
     ModeSlicingMixin,
 )
+
+from .serialization import ModelDumpLike
 
 # Compatibility aliases keep older parser integrations source-compatible while
 # the implementations now live in the shared Kogwistar layer.
@@ -252,13 +254,13 @@ def _provider_usage_metrics(value: object) -> dict[str, int | float]:
         if candidate is None or id(candidate) in seen or depth > 4:
             continue
         seen.add(id(candidate))
+        items: Iterable[tuple[object, object]]
         if isinstance(candidate, Mapping):
             items = candidate.items()
         else:
-            model_dump = getattr(candidate, "model_dump", None)
-            if callable(model_dump):
+            if isinstance(candidate, ModelDumpLike):
                 try:
-                    dumped = model_dump()
+                    dumped = candidate.model_dump()
                 except Exception:  # noqa: BLE001 - usage metadata is best effort.
                     dumped = None
                 items = dumped.items() if isinstance(dumped, Mapping) else ()

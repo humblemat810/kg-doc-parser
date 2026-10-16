@@ -13,8 +13,10 @@ import pytest
 from kg_doc_parser.workflow_ingest import ProviderEndpointConfig
 from kg_doc_parser.workflow_ingest.models import FailureCategory
 from kg_doc_parser.workflow_ingest.providers import (
+    ChatProviderName,
     WorkflowProviderSettings,
     _normalize_provider_name,
+    _provider_usage_metrics,
     build_chat_model,
     invoke_with_timeout,
     provider_call_metrics_snapshot,
@@ -84,7 +86,7 @@ def test_openai_adapter_enforces_configured_retry_and_output_caps(
 )
 def test_provider_adapters_map_output_cap_to_native_option(
     monkeypatch: pytest.MonkeyPatch,
-    provider: str,
+    provider: ChatProviderName,
     module_name: str,
     class_name: str,
     expected_output_key: str,
@@ -126,7 +128,7 @@ def test_claude_provider_name_normalizes_to_optional_anthropic_adapter() -> None
 
 def test_provider_timeout_returns_result_without_leaking_into_caller() -> None:
     diagnostics: dict[str, object] = {}
-    assert invoke_with_timeout(
+    result = invoke_with_timeout(
         lambda: {"usage_metadata": {"input_tokens": 10, "output_tokens": 6, "ttft_ms": 12}},
         timeout_seconds=1.0,
         diagnostics=diagnostics,
@@ -134,7 +136,11 @@ def test_provider_timeout_returns_result_without_leaking_into_caller() -> None:
         attempt_index=2,
         call_role="proposal",
         strategy="layer_boundary",
-    )["usage_metadata"]["output_tokens"] == 6
+    )
+    assert isinstance(result, dict)
+    usage_metadata = result.get("usage_metadata")
+    assert isinstance(usage_metadata, dict)
+    assert usage_metadata.get("output_tokens") == 6
     assert diagnostics["operation"] == "test_call"
     assert diagnostics["call_role"] == "proposal"
     assert diagnostics["strategy"] == "layer_boundary"
@@ -142,10 +148,23 @@ def test_provider_timeout_returns_result_without_leaking_into_caller() -> None:
     assert diagnostics["input_tokens"] == 10
     assert diagnostics["output_tokens"] == 6
     assert diagnostics["ttft_ms"] == 12
-    assert diagnostics["elapsed_ms"] >= 0
-    assert float(diagnostics["throughput_tokens_per_second"]) > 0
+    elapsed_ms = diagnostics["elapsed_ms"]
+    throughput = diagnostics["throughput_tokens_per_second"]
+    assert isinstance(elapsed_ms, int) and elapsed_ms >= 0
+    assert isinstance(throughput, (int, float)) and float(throughput) > 0
     assert diagnostics["success"] is True
     assert diagnostics["timed_out"] is False
+
+
+def test_provider_usage_metrics_uses_typed_model_dump_boundary() -> None:
+    class _UsageCarrier:
+        def model_dump(self) -> dict[str, object]:
+            return {"usage_metadata": {"input_tokens": 7, "output_tokens": 3}}
+
+    assert _provider_usage_metrics(_UsageCarrier()) == {
+        "input_tokens": 7,
+        "output_tokens": 3,
+    }
 
 
 def test_provider_timeout_bounds_a_stalled_local_model() -> None:
@@ -162,7 +181,8 @@ def test_provider_timeout_bounds_a_stalled_local_model() -> None:
     assert diagnostics["underlying_call_alive"] is True
     assert diagnostics["failure_type"] == "timeout"
     assert diagnostics["attempt_index"] == 1
-    assert diagnostics["elapsed_ms"] >= 0
+    elapsed_ms = diagnostics["elapsed_ms"]
+    assert isinstance(elapsed_ms, int) and elapsed_ms >= 0
     assert diagnostics["input_tokens"] is None
     assert diagnostics["output_tokens"] is None
     release.set()
@@ -271,8 +291,13 @@ def test_provider_safe_json_serializes_nested_structured_values() -> None:
     }
     payload["self"] = payload
     converted = json_safe(payload)
-    assert converted["metadata"]["identifier"] == "00000000-0000-0000-0000-000000000001"
-    assert sorted(converted["metadata"]["values"]) == ["a", "b"]
+    assert isinstance(converted, dict)
+    metadata = converted["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["identifier"] == "00000000-0000-0000-0000-000000000001"
+    values = metadata["values"]
+    assert isinstance(values, list)
+    assert sorted(values) == ["a", "b"]
     assert converted["self"] == "<cycle>"
     assert '"metadata"' in safe_json_dumps(payload, sort_keys=True)
 
