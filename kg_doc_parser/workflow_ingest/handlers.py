@@ -72,7 +72,7 @@ from .semantics import (
     correct_and_validate_pointer,
     semantic_tree_to_kge_payload,
 )
-from .serialization import JsonValue
+from .serialization import JsonValue, decode_json_object
 from .strategy import (
     ParseStrategy,
     StrategyTriageFn,
@@ -93,9 +93,7 @@ def _strategy_attempt(state_view: Mapping[str, object], strategy: str) -> int:
 def _parser_payload(value: object) -> ParserPayload:
     """Decode one JSON object from runtime state into parser payload shape."""
 
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        raise TypeError("parser payload must be a JSON object")
-    return cast(ParserPayload, value)
+    return decode_json_object(value, label="parser payload")
 
 
 def _parser_source_map(value: object | None) -> ParserSourceMap:
@@ -103,13 +101,12 @@ def _parser_source_map(value: object | None) -> ParserSourceMap:
 
     if value is None:
         return {}
-    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        raise TypeError("parser source map must be a JSON object")
     source_map: ParserSourceMap = {}
-    for cluster_id, payload in value.items():
-        if not isinstance(payload, dict) or not all(isinstance(key, str) for key in payload):
-            raise TypeError(f"parser source cluster {cluster_id!r} must be a JSON object")
-        source_map[cluster_id] = cast(ParserPayload, payload)
+    decoded = decode_json_object(value, label="parser source map")
+    for cluster_id, payload in decoded.items():
+        source_map[cluster_id] = decode_json_object(
+            payload, label=f"parser source cluster {cluster_id!r}"
+        )
     return source_map
 
 
