@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from kogwistar.id_provider import stable_id
 from pydantic import BaseModel, Field, model_validator
@@ -96,6 +96,7 @@ class SemanticNode(BaseModel):
 SemanticNode.model_rebuild()
 
 
+@runtime_checkable
 class SemanticTreeNodeLike(Protocol):
     """Minimum shape required by the shared tree-branching validator."""
 
@@ -106,6 +107,7 @@ class SemanticTreeNodeLike(Protocol):
     def child_nodes(self) -> Sequence[object]: ...
 
 
+@runtime_checkable
 class SemanticIntegrityNodeLike(Protocol):
     """Fields shared by current and legacy semantic-node models."""
 
@@ -122,6 +124,18 @@ class SemanticIntegrityNodeLike(Protocol):
     def total_content_pointers(self) -> Sequence[TextPointerLike]: ...
 
 
+@runtime_checkable
+class _MetadataNodeLike(Protocol):
+    @property
+    def metadata(self) -> object: ...
+
+
+@runtime_checkable
+class _AggregatePointerNodeLike(Protocol):
+    @property
+    def aggregate_content_pointers(self) -> Sequence[TextPointerLike]: ...
+
+
 def _attribute_sequence(value: object) -> tuple[object, ...]:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return tuple(value)
@@ -129,21 +143,36 @@ def _attribute_sequence(value: object) -> tuple[object, ...]:
 
 
 def _node_id_for_shape(node: object) -> str:
-    value = getattr(node, "node_id", None)
+    value = node.node_id if isinstance(node, SemanticTreeNodeLike) else None
     return "<missing>" if value is None else str(value)
 
 
 def _node_children_for_shape(node: object) -> tuple[object, ...]:
-    return _attribute_sequence(getattr(node, "child_nodes", ()))
+    if not isinstance(node, SemanticTreeNodeLike):
+        return ()
+    return _attribute_sequence(node.child_nodes)
 
 
 def _node_metadata_for_shape(node: object) -> Mapping[str, object]:
-    value = getattr(node, "metadata", {})
+    value = node.metadata if isinstance(node, _MetadataNodeLike) else {}
     return value if isinstance(value, Mapping) else {}
 
 
 def _node_pointers_for_shape(node: object, attribute: str) -> tuple[TextPointerLike, ...]:
-    values = _attribute_sequence(getattr(node, attribute, ()))
+    if attribute == "total_content_pointers":
+        values = (
+            _attribute_sequence(node.total_content_pointers)
+            if isinstance(node, SemanticIntegrityNodeLike)
+            else ()
+        )
+    elif attribute == "aggregate_content_pointers":
+        values = (
+            _attribute_sequence(node.aggregate_content_pointers)
+            if isinstance(node, _AggregatePointerNodeLike)
+            else ()
+        )
+    else:
+        values = ()
     return cast(tuple[TextPointerLike, ...], values)
 
 
