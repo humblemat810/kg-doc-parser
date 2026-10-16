@@ -11,14 +11,14 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver
-from kogwistar.runtime.contract import Predicate
+from kogwistar.runtime.design import Predicate as RuntimeDesignPredicate
 from kogwistar.runtime.models import (
     RunFailure,
     RunSuccess,
@@ -29,7 +29,6 @@ from kogwistar.runtime.models import (
 from kogwistar.runtime.runtime import (
     RunResult,
     StepContext,
-    StepResolver,
     WorkflowRuntime,
 )
 
@@ -76,6 +75,10 @@ from .service import workflow_predicates
 if TYPE_CHECKING:
     from .providers import WorkflowProviderSettings
 
+
+class StepResolver(Protocol):
+    def __call__(self, op: str) -> Callable[[StepContext], StepRunResult]: ...
+
 _OCR_ROOT_STATE_VERSION = "ocr-root-v2"
 _OCR_PAGE_STATE_VERSION = "ocr-page-v2"
 
@@ -88,7 +91,7 @@ class _WorkflowRuntimeArgs(TypedDict):
     workflow_engine: GraphKnowledgeEngine
     conversation_engine: GraphKnowledgeEngine
     step_resolver: StepResolver
-    predicate_registry: dict[str, Predicate]
+    predicate_registry: dict[str, RuntimeDesignPredicate]
     trace: bool
 
 
@@ -101,7 +104,7 @@ def _workflow_runtime(
     workflow_engine: GraphKnowledgeEngine,
     conversation_engine: GraphKnowledgeEngine,
     step_resolver: StepResolver,
-    predicate_registry: dict[str, Predicate],
+    predicate_registry: dict[str, RuntimeDesignPredicate],
     trace: bool,
     run_ownership_lease_ms: int | None = None,
 ) -> WorkflowRuntime:
@@ -137,8 +140,8 @@ def _workflow_runtime(
             **runtime_args,
             "run_ownership_lease_ms": run_ownership_lease_ms,
         }
-        return WorkflowRuntime(**lease_args)
-    return WorkflowRuntime(**runtime_args)
+        return cast(Callable[..., WorkflowRuntime], WorkflowRuntime)(**lease_args)
+    return cast(Callable[..., WorkflowRuntime], WorkflowRuntime)(**runtime_args)
 
 
 class _PageSourceState(TypedDict):
@@ -1599,7 +1602,9 @@ def run_ocr_root_workflow(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
         step_resolver=dispatch.resolve,
-        predicate_registry=workflow_predicates(),
+        predicate_registry=cast(
+            dict[str, RuntimeDesignPredicate], workflow_predicates()
+        ),
         trace=True,
         run_ownership_lease_ms=run_ownership_lease_ms,
     )

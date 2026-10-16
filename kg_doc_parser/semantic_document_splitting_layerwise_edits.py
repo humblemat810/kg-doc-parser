@@ -85,7 +85,7 @@ from enum import Enum
 from functools import wraps
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self, TYPE_CHECKING
+from typing import Annotated, Any, Literal, Self
 
 try:
     from typing import TypeAlias
@@ -121,17 +121,14 @@ from kogwistar.utils.cache_backend import (
     cache_load,
 )
 
-if TYPE_CHECKING:
-    from kogwistar.utils.cache_backend import CachedCallable
-else:
-    class CachedCallable(Protocol[P, R_co]):
-        """Compatibility protocol for released Core cache backends."""
+class CachedCallable(Protocol[P, R_co]):
+    """Compatibility protocol for released Core cache backends."""
 
-        def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
 
-        def clear(self, *args: object, **kwargs: object) -> None: ...
+    def clear(self, *args: object, **kwargs: object) -> None: ...
 
-        def check_call_in_cache(self, *args: object, **kwargs: object) -> bool: ...
+    def check_call_in_cache(self, *args: object, **kwargs: object) -> bool: ...
 from pydantic import (
     BaseModel,
     Field,

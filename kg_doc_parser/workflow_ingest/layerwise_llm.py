@@ -11,7 +11,6 @@ from kogwistar.fuzzy_offsets import find_fuzzy_spans, offset_repair_threshold
 from kogwistar.runtime import (
     RetryAttemptRecord,
     RetryExhaustedError,
-    RetryResult,
     retry_with_context,
 )
 from kogwistar.utils import SourcePointerValidationError, validate_source_pointer
@@ -2325,9 +2324,7 @@ def build_layerwise_llm_callbacks(
                         parser_source_map=parser_source_map,
                     )
 
-                boundary_result: RetryResult[
-                    list[tuple[str, str]], LLMBoundaryProposalBatch
-                ] = retry_with_context(
+                boundary_result = retry_with_context(
                     max_attempts=proposal_retry_rounds + 1,
                     build_request=_build_boundary_messages,
                     invoke=_invoke_boundary,
@@ -2912,9 +2909,7 @@ def build_layerwise_llm_callbacks(
                 split_strategy=split_strategy,
                 parent_count=len(current_layer_context.parent_node_ids),
             )
-            child_result: RetryResult[
-                list[tuple[str, str]], LLMCurrentLayerResult
-            ] = retry_with_context(
+            child_result = retry_with_context(
                 max_attempts=proposal_retry_rounds + 1,
                 build_request=_build_child_messages,
                 invoke=_invoke_child_provider,

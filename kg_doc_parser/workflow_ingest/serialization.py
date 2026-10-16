@@ -7,11 +7,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
-from typing_extensions import TypeAliasType
 from uuid import UUID
 
-JsonScalar = TypeAliasType("JsonScalar", None | bool | int | float | str)
-JsonValue = TypeAliasType(
+from typing_extensions import TypeAliasType  # noqa: UP035 - PyPy 3.11 compatibility
+
+JsonScalar = TypeAliasType(  # noqa: UP040 - PyPy 3.11 compatibility
+    "JsonScalar", None | bool | int | float | str
+)
+JsonValue = TypeAliasType(  # noqa: UP040 - PyPy 3.11 compatibility
     "JsonValue",
     None
     | bool

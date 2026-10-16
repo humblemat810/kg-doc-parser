@@ -25,7 +25,6 @@ from kogwistar.runtime.models import StepRunResult
 
 from .design import (
     DEFAULT_WORKFLOW_ID,
-    WorkflowEngineLike,
     ensure_ingest_workflow_design,
 )
 from .models import (
@@ -378,9 +377,9 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
     def __init__(
         self,
         *,
-        workflow_engine: WorkflowEngineLike,
-        conversation_engine: WorkflowEngineLike,
-        knowledge_engine: WorkflowEngineLike | None = None,
+        workflow_engine: GraphKnowledgeEngine,
+        conversation_engine: GraphKnowledgeEngine,
+        knowledge_engine: GraphKnowledgeEngine | None = None,
     ) -> None:
         self.workflow_engine = workflow_engine
         self.conversation_engine = conversation_engine
@@ -584,8 +583,8 @@ class ServerCanonicalKgClient(IngestExecutionClient):
     def __init__(
         self,
         *,
-        workflow_engine: WorkflowEngineLike,
-        conversation_engine: WorkflowEngineLike,
+        workflow_engine: GraphKnowledgeEngine,
+        conversation_engine: GraphKnowledgeEngine,
         persistence_client: CanonicalGraphPersistenceClient,
     ) -> None:
         self.workflow_engine = workflow_engine

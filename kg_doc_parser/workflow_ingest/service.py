@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
+from typing import Literal, Protocol, TypedDict, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import StorageBackend
+from kogwistar.runtime.contract import WorkflowEdgeInfo
+from kogwistar.runtime.design import Predicate as RuntimeDesignPredicate
 from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.typing_interfaces import EmbeddingFunctionLike
 
@@ -18,27 +20,21 @@ from .providers import WorkflowProviderSettings, build_embedding_function
 from .runtime_contracts import WorkflowRuntimeDeps
 from .serialization import JsonValue
 
-if TYPE_CHECKING:
-    from kogwistar.runtime.contract import Predicate, WorkflowEdgeInfo
-else:
-    class WorkflowEdgeInfo(Protocol):
-        """Runtime fallback for Core releases without the newer contract export."""
-
-        dst: str
-
-    class Predicate(Protocol):
-        """Runtime fallback for the Core predicate callback contract."""
-
-        def __call__(
-            self,
-            edge: WorkflowEdgeInfo,
-            state: Mapping[str, object],
-            result: object,
-        ) -> bool: ...
-
-
 WorkflowState = Mapping[str, object]
-WorkflowPredicates = dict[str, Predicate]
+
+
+class _WorkflowPredicate(Protocol):
+    """Parser-side predicate shape before the runtime adapter boundary."""
+
+    def __call__(
+        self,
+        edge: WorkflowEdgeInfo,
+        state: WorkflowState,
+        result: object,
+    ) -> bool: ...
+
+
+WorkflowPredicates = dict[str, _WorkflowPredicate]
 
 
 class _LayerContext(TypedDict, total=False):
@@ -344,7 +340,9 @@ def build_runtime(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
         step_resolver=resolver.resolve,
-        predicate_registry=workflow_predicates(),
+        predicate_registry=cast(
+            dict[str, RuntimeDesignPredicate], workflow_predicates()
+        ),
         trace=False,
     )
 

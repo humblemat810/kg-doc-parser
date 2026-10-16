@@ -4,9 +4,8 @@ import logging
 from collections.abc import Iterable
 from typing import Protocol
 
-from kogwistar.engine_core.models import Grounding, Span
+from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
-from kogwistar.typing_interfaces import ReadLike, WriteLike
 from pydantic_extension.model_slicing.mixin import use_mode
 
 DEFAULT_WORKFLOW_ID = "kg_doc_parser.ingest.v1"
@@ -31,10 +30,15 @@ class WorkflowEngineLike(Protocol):
     def persist(self) -> WorkflowPersistenceLike: ...
 
     @property
-    def read(self) -> ReadLike: ...
+    def write(self) -> WorkflowWriteLike: ...
 
-    @property
-    def write(self) -> WriteLike: ...
+
+class WorkflowWriteLike(Protocol):
+    """Write operations required to install a persisted workflow design."""
+
+    def add_node(self, node: Node, doc_id: str | None = None) -> None: ...
+
+    def add_edge(self, edge: Edge, doc_id: str | None = None) -> None: ...
 
 
 def _progress_bar(done: int, total: int, width: int = 20) -> str:
