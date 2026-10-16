@@ -730,12 +730,13 @@ release is available.
   module reports zero Pyright errors, Ruff passes, and the focused proposal /
   boundary suite passes (`23 passed`). CI is queued; release readiness remains
   open.
-- [x] Commit `f0bb1cc` makes the client workflow-state boundary normalize through
+- [x] Parser CI run `38928577822` verified commit `f0bb1cc`, which makes the client workflow-state boundary normalize through
   `json_safe` and reject a non-object result instead of casting arbitrary mapping
   values to `dict[str, JsonValue]`. Pyright and the CI Ruff selection pass for
   `clients.py`; the focused client/demo contract selection passes (`11 passed,
   4 skipped`). This closes one client serialization seam only; the repository-wide
-  typing and release gates remain open.
+  typing and release gates remain open. The checklist push `89b8dc3` was also
+  verified by Parser CI run `38928761211`.
 - [~] Commit `eb02d6c` replaces provider-response `model_dump` discovery with the
   shared runtime-checkable `ModelDumpLike` protocol and strengthens the provider
   regression reads with explicit JSON/diagnostic narrowing. Provider and test
