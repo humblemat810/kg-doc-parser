@@ -43,12 +43,12 @@ import shutil
 import sqlite3
 import tempfile
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 from types import FunctionType
-from typing import Literal, Protocol, cast, runtime_checkable
+from typing import Literal, NotRequired, Protocol, TypedDict, cast, runtime_checkable
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -189,6 +189,50 @@ class OCRWorkflowProgress(BaseModel):
     source_kind: str
     total_pages: int
     pages: dict[str, OCRPageProgress] = Field(default_factory=dict)
+
+
+class _OCRArtifactMetadata(TypedDict, total=False):
+    """Known metadata fields read from a persisted OCR artifact.
+
+    Artifact JSON remains an external compatibility boundary. Keeping the
+    fields we consume explicit prevents later ``dict.get`` calls from
+    degrading known strings and numeric values back to ``object``.
+    """
+
+    ocr_provider: NotRequired[str]
+    ocr_model_name: NotRequired[str]
+    ocr_configuration_fingerprint: NotRequired[str]
+    source_image_sha256: NotRequired[str]
+    ocr_json_version: NotRequired[str]
+    ocr_datetime: NotRequired[float]
+
+
+def _ocr_artifact_metadata(payload: Mapping[str, object]) -> _OCRArtifactMetadata:
+    """Narrow the metadata fields used by reuse and recovery decisions."""
+
+    raw_metadata = payload.get("metadata")
+    if not isinstance(raw_metadata, dict):
+        return {}
+    metadata: _OCRArtifactMetadata = {}
+    ocr_provider = raw_metadata.get("ocr_provider")
+    if isinstance(ocr_provider, str):
+        metadata["ocr_provider"] = ocr_provider
+    ocr_model_name = raw_metadata.get("ocr_model_name")
+    if isinstance(ocr_model_name, str):
+        metadata["ocr_model_name"] = ocr_model_name
+    configuration_fingerprint = raw_metadata.get("ocr_configuration_fingerprint")
+    if isinstance(configuration_fingerprint, str):
+        metadata["ocr_configuration_fingerprint"] = configuration_fingerprint
+    source_image_sha256 = raw_metadata.get("source_image_sha256")
+    if isinstance(source_image_sha256, str):
+        metadata["source_image_sha256"] = source_image_sha256
+    ocr_json_version = raw_metadata.get("ocr_json_version")
+    if isinstance(ocr_json_version, str):
+        metadata["ocr_json_version"] = ocr_json_version
+    timestamp = raw_metadata.get("ocr_datetime")
+    if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool):
+        metadata["ocr_datetime"] = float(timestamp)
+    return metadata
 
 
 @dataclass(slots=True)
@@ -1675,11 +1719,8 @@ class OCRWorkflowStateStore:
                 persisted = _read_json_object(json_path)
                 SplitPage.model_validate(persisted)
                 artifact_valid = True
-                metadata = persisted.get("metadata")
-                if isinstance(metadata, dict):
-                    candidate = metadata.get("ocr_configuration_fingerprint")
-                    if isinstance(candidate, str):
-                        config_fingerprint = candidate
+                metadata = _ocr_artifact_metadata(persisted)
+                config_fingerprint = metadata.get("ocr_configuration_fingerprint")
             except (OSError, ValueError) as exc:
                 artifact_error = f"invalid OCR artifact during state rebuild: {exc}"
             if content_hash is None:
@@ -1832,9 +1873,7 @@ class OCRWorkflowStateStore:
             return False
         if split_page.pdf_page_num != page_number:
             return False
-        metadata = persisted.get("metadata")
-        if not isinstance(metadata, dict):
-            return False
+        metadata = _ocr_artifact_metadata(persisted)
         source_digest = metadata.get("source_image_sha256")
         config_fingerprint = metadata.get("ocr_configuration_fingerprint")
         if source_digest != content_hash or not isinstance(config_fingerprint, str):
