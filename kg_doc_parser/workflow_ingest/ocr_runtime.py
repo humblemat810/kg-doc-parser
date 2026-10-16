@@ -164,6 +164,14 @@ StateStringKey = Literal[
 ]
 StateBoolKey = Literal["checkpoint_absent", "checkpoint_restored", "summaries_generated"]
 ResumeIdentityValue = str | list[str]
+ResumeIdentityKey = Literal[
+    "ocr_root_state_version",
+    "ocr_page_state_version",
+    "document_id",
+    "source_fingerprint",
+    "ocr_configuration_fingerprints",
+    "grouping_policy_version",
+]
 
 
 class _OCRWorkflowState(TypedDict, total=False):
@@ -274,6 +282,20 @@ def _typed_child_state(value: object, *, label: str) -> _OCRWorkflowState:
         return _typed_state(value)
     except (TypeError, ValueError) as exc:
         raise TypeError(f"{label} returned invalid typed state: {exc}") from exc
+
+
+def _resume_identity_value(
+    state: _OCRWorkflowState,
+    key: ResumeIdentityKey,
+) -> ResumeIdentityValue | None:
+    """Read an immutable resume identity field without widening it to object."""
+    value = state.get(key)
+    if value is None or isinstance(value, str):
+        return value
+    if key == "ocr_configuration_fingerprints" and isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            return list(value)
+    raise TypeError(f"OCR checkpoint identity field {key!r} has an invalid type")
 
 
 def _state_string(
@@ -443,7 +465,9 @@ def _validate_root_resume_identity(
             + ", ".join(sorted(missing))
         )
     mismatches = [
-        key for key, expected_value in expected.items() if state.get(key) != expected_value
+        key
+        for key, expected_value in expected.items()
+        if _resume_identity_value(state, cast(ResumeIdentityKey, key)) != expected_value
     ]
     if mismatches:
         raise RuntimeError(
@@ -488,7 +512,9 @@ def _validate_page_resume_identity(
             + ", ".join(sorted(missing))
         )
     mismatches = [
-        key for key, expected_value in expected.items() if state.get(key) != expected_value
+        key
+        for key, expected_value in expected.items()
+        if _resume_identity_value(state, cast(ResumeIdentityKey, key)) != expected_value
     ]
     if mismatches:
         raise RuntimeError(
