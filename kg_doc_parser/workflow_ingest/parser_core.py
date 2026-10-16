@@ -29,7 +29,7 @@ from .semantics import (
     pointer_source_validation_error,
     validate_semantic_tree_integrity,
 )
-from .serialization import JsonObject, JsonValue
+from .serialization import JsonObject, JsonValue, ModelDumpLike
 
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
@@ -261,9 +261,8 @@ def default_parse_semantic_fn(
 def _coerce_semantic_tree(tree: object) -> SemanticNode:
     if isinstance(tree, tuple):
         tree = tree[0]
-    model_dump = getattr(tree, "model_dump", None)
-    if callable(model_dump):
-        tree = model_dump(mode="json")
+    if isinstance(tree, ModelDumpLike):
+        tree = tree.model_dump(mode="json")
     if isinstance(tree, dict):
         tree = SemanticNode.model_validate(tree)
     if isinstance(tree, SemanticNode):
