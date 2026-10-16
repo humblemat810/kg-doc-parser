@@ -990,3 +990,9 @@ release is available.
   value regressions pass (`2 passed`), and the changed module has no `F` lint
   findings. Pre-existing `E402`, full Pyright, remote CI, and release
   readiness remain open.
+- [x] Commit `02722b5` wires `_validated_ocr_page_json()` into
+  `normalize_ocr_pages()` and validates nested OCR text/media scalar fields,
+  while preserving the established page/container diagnostics and string page
+  number compatibility. The compatibility and malformed nested-field matrix
+  passes (`16 passed`); changed-module Ruff and `git diff --check` pass. Full
+  Pyright, remote CI, and release readiness remain open.
