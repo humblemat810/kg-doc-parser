@@ -13,6 +13,7 @@ from typing import TypeVar, cast
 from kogwistar.id_provider import stable_id
 
 from .probe import WorkflowProbe, emit_probe_event
+from .serialization import ModelDumpLike
 
 T = TypeVar("T")
 CACHE_CONTRACT_VERSION = 2
@@ -33,12 +34,11 @@ def workflow_cache_namespace(provider_settings: object | None = None) -> dict[st
     except PackageNotFoundError:
         package_version = "uninstalled"
     settings: object = provider_settings
-    model_dump = getattr(settings, "model_dump", None)
-    if callable(model_dump):
+    if isinstance(settings, ModelDumpLike):
         try:
-            settings = model_dump(mode="json", exclude_none=True)
+            settings = settings.model_dump(mode="json", exclude_none=True)
         except TypeError:
-            settings = model_dump()
+            settings = settings.model_dump()
     return {
         "cache_contract_version": CACHE_CONTRACT_VERSION,
         "parser_package": _PACKAGE_NAME,
@@ -50,13 +50,11 @@ def workflow_cache_namespace(provider_settings: object | None = None) -> dict[st
 
 
 def _jsonable(value: object) -> object:
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        dump = cast(Callable[..., object], model_dump)
+    if isinstance(value, ModelDumpLike):
         try:
-            return dump(field_mode="backend", dump_format="json")
+            return value.model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return dump()
+            return value.model_dump()
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):

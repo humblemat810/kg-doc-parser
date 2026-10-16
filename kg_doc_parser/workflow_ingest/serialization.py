@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 try:
@@ -22,6 +22,7 @@ JsonValue = TypeAliasType(  # noqa: UP040
 JsonObject = dict[str, JsonValue]
 
 
+@runtime_checkable
 class ModelDumpLike(Protocol):
     """Minimal serialization seam for Pydantic-like provider payloads."""
 
@@ -46,13 +47,11 @@ def json_safe(value: object, *, _seen: set[int] | None = None) -> JsonValue:
         return "<cycle>"
     seen.add(identity)
     try:
-        model_dump = getattr(value, "model_dump", None)
-        if callable(model_dump):
-            dumper = cast(ModelDumpLike, value)
+        if isinstance(value, ModelDumpLike):
             try:
-                return json_safe(dumper.model_dump(mode="python"), _seen=seen)
+                return json_safe(value.model_dump(mode="python"), _seen=seen)
             except TypeError:
-                return json_safe(dumper.model_dump(), _seen=seen)
+                return json_safe(value.model_dump(), _seen=seen)
         if is_dataclass(value) and not isinstance(value, type):
             return json_safe(asdict(value), _seen=seen)
         if isinstance(value, Mapping):
