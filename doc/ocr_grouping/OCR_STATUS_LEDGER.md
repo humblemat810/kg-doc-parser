@@ -15,7 +15,7 @@ git show <commit> -- doc/ocr_grouping/OCR_STATUS_LEDGER.md
 
 | Area | Status | Release-blocking remainder |
 | --- | --- | --- |
-| Persisted Kogwistar runtime integration | PARTIAL | Parser CI run `39011917164` verifies published-core fresh-process lineage, duplicate resume, single graph publication, and the Linux recovery gate. Persistent graph-backend publication across restart remains a Kogwistar backend-specific gate, so it is not duplicated here. |
+| Persisted Kogwistar runtime integration | PARTIAL | Parser CI run `39015963660` (#492) on `4f54000` verifies published-core fresh-process lineage, duplicate resume, single graph publication, the deterministic 100-page PDF acceptance fixture, and the Linux recovery gate. Persistent graph-backend publication across restart remains a Kogwistar backend-specific gate, so it is not duplicated here. |
 | Artifact/checkpoint crash consistency | PASS (parser gate) | Parser CI run `39011917164` passes artifact-first, checkpoint-first, grouping-commit-before-child-checkpoint, and semantic-graph-before-checkpoint recovery tests. |
 | Grouping and summary durability | PARTIAL | Monotonic frontier fencing, large-frontier identity stability, bounded linear frontier access, summary journaling, and all parser writer call sites are covered. Long-run size-growth benchmarking and durable graph-backend publication remain separate gates. |
 | Semantic hierarchy publication | PARTIAL | Accepted grouping is consumed by the semantic callback and preserved in graph export. Fresh-process publication against a durable graph backend remains open and is Kogwistar-owned. |

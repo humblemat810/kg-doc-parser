@@ -16,7 +16,7 @@ section after a test run.
 | Track A: persisted Kogwistar runtime integration | PARTIAL | Published-core fresh-process recovery, ownership, and root/child lineage are verified. Persistent graph-backend publication across process restart remains a Kogwistar backend-specific gate, not a parser reimplementation task. |
 | Track B: strict seam validation | PARTIAL | Artifact/checkpoint crash ordering and accepted hierarchy consumption are verified. Provider completeness and durable graph-backend evidence remain open. |
 | C01-C02: API and ownership boundary | PASS (focused matrix) | Installed Kogwistar `0.6.12` exposes the required persisted workflow API; stable root/page/grouping/semantic ownership and concurrent resume fencing are covered by the fresh-process tests. |
-| C03-C05: reconciliation, equivalence, and true resume | PARTIAL | C03 crash-order reconciliation is PASS in the parser gate; C04 bounded-cost frontier evidence is PASS via `test_merge_groups_scans_frontier_linearly_without_nested_rebuilds`; C05 process recovery and duplicate-resume are remotely verified, while durable graph-backend publication remains delegated to Kogwistar backend tests. |
+| C03-C05: reconciliation, equivalence, and true resume | PARTIAL | C03 crash-order reconciliation is PASS in the parser gate; C04 bounded-cost frontier evidence is PASS via `test_merge_groups_scans_frontier_linearly_without_nested_rebuilds`; C05 process recovery, duplicate-resume, and the deterministic 100-page PDF acceptance fixture are remotely verified in Parser CI #492 on `4f54000`, while durable graph-backend publication remains delegated to Kogwistar backend tests. |
 | C06: OCR quality/completeness | PARTIAL | Prove provider-side non-text coverage and strict recovery behavior. |
 | Typing and interpreter matrix | PASS | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39011917164` passed CPython 3.12-3.14, PyPy 3.11, and the Linux recovery gate on exact commit `e57fd43`. |
 | Release | OPEN | Version bump and downstream pin updates wait for all release-blocking rows. |
@@ -1193,10 +1193,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   nested frontier rebuilding.
 - [~] **C05 — True resume:** completed OCR, grouping, and summaries are not
   rerun after the covered worker/process stops, and duplicate resume accepts
-  one result. The remaining release evidence is the rich 100-page fixture and
-  durable graph-backend publication across process restart. The acceptance
-  target is at-least-once execution with exactly one accepted canonical result,
-  not exactly-once provider calls.
+  one result. The deterministic 100-page PDF fixture now passes locally and in
+  Parser CI #492 on `4f54000`, including mixed text/non-text evidence and
+  canonical equality with the uninterrupted reference. Durable graph-backend
+  publication across process restart remains open. The acceptance target is
+  at-least-once execution with exactly one accepted canonical result, not
+  exactly-once provider calls.
 - [~] **C06 — OCR quality/completeness:** interval coverage is necessary but not
   sufficient. `OCRQualityPolicy` records typed provider diagnostics and can
   reject incomplete text, edge-word loss, or excessive data-loss likelihood;
