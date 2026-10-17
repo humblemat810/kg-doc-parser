@@ -1031,7 +1031,11 @@ an adapter-only test, or a source-checkout-only runtime test.
   grouping runtime has a passing resume test. Grouping summary writes now also
   carry the same expected revision/absence fence, but OCR/page and dual-store
   resume remain unproven.
-- [ ] Test crash at page 63 and concurrent late writers.
+- [x] Test crash at page 63 and concurrent late writers. The 100-page
+  `test_ocr_root_fresh_process_resume_after_page_63` regression covers fresh
+  process recovery; `test_ocr_root_concurrent_resume_has_one_owner_and_one_result`
+  covers competing resumes, and page completion/failure tests cover late
+  writers.
 
 ### S07. Grouping to summary generation
 
@@ -1276,14 +1280,18 @@ demonstrated:
   page reuse path;
 - [x] atomic rename is used for publication and the real page path survives an
   injected crash immediately after publication;
-- [ ] both artifact/checkpoint crash orders reconcile without accepting a
-  partial or stale result.
+- [x] Both artifact/checkpoint crash orders reconcile without accepting a
+  partial or stale result. `test_ocr_page_artifact_publish_crash_is_recoverable`
+  and `test_prepare_ocr_workflow_retries_checkpoint_without_artifact` cover the
+  two page orders; grouping-SQLite and semantic-graph ordering tests cover the
+  nested runtime boundaries.
 
 The current implementation has atomic publication, digest fields, a
-fresh-process configuration fence, exact tamper rejection, and a
-rename-before-database orphan-adoption path. These are implementation facts,
-not yet a complete S02 release proof because the two-store crash protocol is
-still incomplete.
+fresh-process configuration fence, exact tamper rejection, a
+rename-before-database orphan-adoption path, and both page/checkpoint crash
+orders are covered by the parser recovery matrix. Durable graph-backend
+publication across process restart remains delegated to Kogwistar backend
+contracts rather than duplicated here.
 
 ## C. Required End-to-End Acceptance Fixture
 
@@ -1356,16 +1364,17 @@ protocol.
 - [ ] For every S01-S12 item, record source lines, pre-fix failing test or
   demonstrated risk, post-fix passing test, and whether it exercised the real
   Kogwistar runtime or only a standalone adapter.
-- [ ] Run Ruff with the repository CI selection.
-- [ ] Run Pyright with supported CPython/PyPy-compatible syntax.
-- [ ] Run `git diff --check` and lock verification.
-- [ ] Run focused seam tests with `-p no:cacheprovider` and repository-local
+- [x] Run Ruff with the repository CI selection. Parser CI run `39011917164`
+  passed its quality checks.
+- [x] Run Pyright with supported CPython/PyPy-compatible syntax. Production
+  package Pyright reports zero errors, warnings, and informations.
+- [x] Run `git diff --check` and lock verification.
+- [x] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
-- [~] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11. Earlier
-  runs passed the four required jobs, but the current pushed run
-  `38851635751` is still in progress. Earlier failures came from the old
-  installed Kogwistar package contract; this is not a reason to weaken the
-  parser contract. Slow/manual provider experiments remain separate gates.
+- [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11. Run
+  `39011917164` passed all four interpreter jobs and the Linux recovery gate on
+  exact commit `e57fd43`. Slow/manual provider experiments remain separate
+  gates.
 - [ ] Only after all release gates pass, update version/release notes and pins.
 
 ### Evidence update (2026-10-15)
