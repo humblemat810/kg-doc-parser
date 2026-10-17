@@ -1960,7 +1960,12 @@ class OCRWorkflowStateStore:
         progress_pages: dict[str, OCRPageProgress] = (
             progress_payload.pages if progress_payload is not None else {}
         )
+        expected_page_numbers = set(range(1, total_pages + 1))
         for page_number, path in _scan_rendered_pages(rendered_dir):
+            # A rebuilt state store may share an artifact directory with an
+            # older, longer document revision. Never resurrect removed pages.
+            if page_number not in expected_page_numbers:
+                continue
             rebuilt_any = True
             self._upsert_page_state(
                 document_id=document_id,
@@ -1975,6 +1980,8 @@ class OCRWorkflowStateStore:
                 config_fingerprint=render_configuration_fingerprint,
             )
         for page_number, json_path in _scan_legacy_json_pages(legacy_dir):
+            if page_number not in expected_page_numbers:
+                continue
             content_hash = None
             record = progress_pages.get(str(page_number))
             if record is not None and _is_sha256_digest(record.image_sha256):

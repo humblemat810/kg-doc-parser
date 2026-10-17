@@ -5005,6 +5005,56 @@ def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
 
 
 @pytest.mark.ci
+def test_rebuild_ignores_artifacts_removed_by_a_shorter_source_revision() -> None:
+    """A shorter replacement document cannot resurrect old trailing pages."""
+    scratch = _scratch("ocr_removed_trailing_pages")
+    rendered_dir = scratch / "rendered"
+    legacy_dir = scratch / "legacy"
+    rendered_dir.mkdir(parents=True)
+    legacy_dir.mkdir(parents=True)
+
+    for page_number in (1, 2):
+        rendered = rendered_dir / f"page_{page_number}.png"
+        rendered.write_bytes(f"source-page-{page_number}".encode("ascii"))
+        split_page = SplitPage(
+            pdf_page_num=page_number,
+            metadata=SplitPageMeta(
+                ocr_model_name="model-a",
+                ocr_datetime=0.0,
+                ocr_json_version="workflow_ingest_v1",
+            ),
+            **_fake_ocr_response(page_number, f"page {page_number}").model_dump(
+                dump_format="python"
+            ),
+        )
+        (legacy_dir / f"page_{page_number}.json").write_text(
+            json.dumps(split_page.dump_raw(dump_format="json")),
+            encoding="utf-8",
+        )
+
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    assert store.rebuild_from_artifacts(
+        document_id="shorter-source-revision",
+        title="Shorter Source Revision",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="new-input-fingerprint",
+        rendered_dir=rendered_dir,
+        legacy_dir=legacy_dir,
+        progress_path=scratch / "missing-progress.json",
+    )
+
+    page_one = store.get_page_state(
+        document_id="shorter-source-revision", page_number=1, stage="ocr"
+    )
+    assert page_one is not None and page_one.status == "completed"
+    assert store.get_page_state(
+        document_id="shorter-source-revision", page_number=2, stage="ocr"
+    ) is None
+    assert store.read_document_completed(document_id="shorter-source-revision")
+
+
+@pytest.mark.ci
 def test_ocr_state_rejects_stale_provider_config_or_tampered_artifact() -> None:
     scratch = _scratch("ocr_config_identity")
     artifact = scratch / "page-1.json"
