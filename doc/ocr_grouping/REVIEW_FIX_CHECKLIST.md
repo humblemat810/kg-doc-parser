@@ -761,12 +761,12 @@ mismatch. The current parser matrix run `38948398992` is green against the
 `0.6.12` source profile; C02-C06 have partial implementation
 evidence, but none is a release-gate pass yet:
 
-- [~] Verify the installed Kogwistar package and public workflow persistence
-  API, rather than relying on a source checkout or import-only probe. The
-  earlier `0.6.9` public-version mismatch is covered by the current `0.6.12`
-  source-profile import and the green CPython 3.12-3.14/PyPy 3.11 matrix in
-  run `38948398992`; final published-package and release evidence remains
-  required.
+- [x] Verify the installed Kogwistar package and public workflow persistence
+  API. The active Poetry environment reports metadata and
+  `kogwistar.__version__` as `0.6.12`; the installed-package recovery matrix
+  passes fresh-process root/grouping reopen, both crash-order retries, and
+  incremental equivalence. Supported-interpreter remote evidence remains a
+  separate release gate.
 
 The checklist-only rerun `38729861407` failed in all four matrix jobs before
 the OCR acceptance suite because the installed `0.6.9` package still exposes
@@ -782,15 +782,18 @@ contract; the current run must verify the published `0.6.10` package.
   a fresh process. Artifact-first adoption and direct predicates exist; the
   inverse checkpoint-first order and complete runtime reconciliation remain
   open.
-- [~] Compare incremental and uninterrupted grouping using canonical content,
-  excluding volatile run metadata; prove completed subtrees remain stable. A
-  controlled multi-pass canonical comparison exists; bounded-frontier and
-  real interruption/reopen evidence remain open.
+- [x] Compare incremental and uninterrupted grouping using canonical content,
+  excluding volatile run metadata; prove completed subtrees remain stable.
+  `test_grouping_incremental_resume_matches_uninterrupted_reference` passes in
+  the installed-package recovery matrix, including checkpoint restore and
+  canonical tree equality. Large-document frontier cost remains a separate
+  performance gate.
 - [~] Prove at-least-once execution with exactly one accepted canonical result
   after process interruption, including duplicate-resume behavior. Root and
-  grouping fresh-process recovery plus the duplicate-root ownership race are
-  covered with coordinated source checkouts; Linux SIGKILL, installed-package,
-  and dual-store reconciliation evidence remain open.
+  grouping fresh-process recovery, both SQLite/Kogwistar crash orders, the
+  installed `0.6.12` package, and the duplicate-root ownership race now pass.
+  Persistent graph-backend publication across restart and Linux SIGKILL
+  evidence remain open.
 - [~] Add a quality/completeness gate that detects provider omissions beyond
   source interval coverage, including non-text and coordinate-loss diagnostics.
   Typed provider-loss diagnostics and strict rejection exist; source-side

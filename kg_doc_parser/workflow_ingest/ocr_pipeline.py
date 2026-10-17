@@ -2046,6 +2046,12 @@ class OCRWorkflowStateStore:
                     config_fingerprint = excluded.config_fingerprint,
                     artifact_sha256 = excluded.artifact_sha256,
                     last_attempted_ts = excluded.last_attempted_ts
+                WHERE page_state.status <> 'completed'
+                   OR (
+                       page_state.content_hash IS excluded.content_hash
+                       AND page_state.config_fingerprint IS excluded.config_fingerprint
+                       AND page_state.artifact_sha256 IS excluded.artifact_sha256
+                   )
                 """,
                 (
                     document_id,

@@ -4574,6 +4574,56 @@ def test_ocr_page_completion_rejects_a_late_writer_after_acceptance() -> None:
 
 
 @pytest.mark.ci
+def test_legacy_state_upsert_cannot_replace_completed_page() -> None:
+    """Compatibility rebuilds must not downgrade an accepted page state."""
+    scratch = _scratch("ocr_legacy_upsert_cas")
+    artifact = scratch / "page-1.json"
+    artifact.write_text('{"page": 1}', encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="legacy-upsert-cas-doc",
+        title="Legacy Upsert CAS",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    store._upsert_page_state(
+        document_id="legacy-upsert-cas-doc",
+        page_number=1,
+        stage="ocr",
+        attempt_count=1,
+        status="completed",
+        content_hash="image-a",
+        artifact_path=str(artifact),
+        last_error=None,
+        last_model="model-a",
+        config_fingerprint="provider-a/model-a",
+        artifact_sha256="artifact-a",
+    )
+    store._upsert_page_state(
+        document_id="legacy-upsert-cas-doc",
+        page_number=1,
+        stage="ocr",
+        attempt_count=2,
+        status="pending",
+        content_hash="image-b",
+        artifact_path=str(artifact),
+        last_error="stale rebuild",
+        last_model="model-b",
+        config_fingerprint="provider-b/model-b",
+        artifact_sha256=None,
+    )
+
+    state = store.get_page_state(
+        document_id="legacy-upsert-cas-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None
+    assert state.status == "completed"
+    assert state.content_hash == "image-a"
+    assert state.config_fingerprint == "provider-a/model-a"
+
+
+@pytest.mark.ci
 def test_ocr_page_failure_cannot_downgrade_an_accepted_result() -> None:
     scratch = _scratch("ocr_page_failure_cas")
     artifact = scratch / "page-1.json"
