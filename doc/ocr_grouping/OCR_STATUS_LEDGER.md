@@ -20,7 +20,7 @@ git show <commit> -- doc/ocr_grouping/OCR_STATUS_LEDGER.md
 | Grouping and summary durability | PARTIAL | Prove monotonic frontier/generation behavior and bounded long-document work. |
 | Semantic hierarchy publication | PARTIAL | Prove accepted grouping is consumed and preserved by semantic parsing and graph export. |
 | OCR completeness and positional fidelity | PARTIAL | Coordinate precision and provider loss diagnostics are enforced; `unresolved_item_count` now records Docling items without usable provenance and `OCRQualityPolicy(reject_unresolved_items=True)` fails closed. Independent completeness for non-text regions, tables, and figures remains open. |
-| Typing and supported interpreters | PARTIAL | Keep the explicit Pyright CPython 3.12 gate and verify the full CPython 3.12-3.14/PyPy 3.11 matrix. |
+| Typing and supported interpreters | PASS | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39000683517` passed CPython 3.12-3.14 and PyPy 3.11. |
 | Release | OPEN | Do not bump or publish until the release-blocking rows have evidence. |
 
 ## Evidence Standard

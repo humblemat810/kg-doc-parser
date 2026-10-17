@@ -18,7 +18,7 @@ section after a test run.
 | C01-C02: API and ownership boundary | PARTIAL | Verify against the published compatible Kogwistar package and one root/child ownership model. |
 | C03-C05: reconciliation, equivalence, and true resume | PARTIAL | Complete both-store recovery, bounded incremental equivalence, and duplicate-resume evidence. |
 | C06: OCR quality/completeness | PARTIAL | Prove provider-side non-text coverage and strict recovery behavior. |
-| Typing and interpreter matrix | PARTIAL | Pyright is now an explicit CPython 3.12 CI gate; promote it only after the remote package check passes, then retain the CPython 3.12-3.14/PyPy 3.11 matrix evidence. |
+| Typing and interpreter matrix | PASS | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39000683517` passed CPython 3.12-3.14 and PyPy 3.11. |
 | Release | OPEN | Version bump and downstream pin updates wait for all release-blocking rows. |
 
 The status history is already represented by Git commits and diffs:
