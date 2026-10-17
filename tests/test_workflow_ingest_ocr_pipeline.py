@@ -1574,7 +1574,6 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
         path
         for path in (
             str(repo_root),
-            str(repo_root.parent / "kogwistar"),
             child_env.get("PYTHONPATH", ""),
         )
         if path
