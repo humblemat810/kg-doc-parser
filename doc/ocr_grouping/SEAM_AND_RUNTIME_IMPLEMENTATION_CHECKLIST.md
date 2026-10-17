@@ -766,8 +766,13 @@ an adapter-only test, or a source-checkout-only runtime test.
   expected-revision/absence fence is useful containment, but any unconditional
   upsert or compatibility writer remains a release blocker until audited and
   covered by a late-writer regression.
-- [ ] Persist an incremental merge frontier so long documents do not rebuild the
-  entire prefix after every page.
+- [x] Persist and reuse the accepted merge frontier so long documents do not
+  rebuild the entire prefix after every page. The root workflow invokes
+  grouping after the accepted page frontier is available, and
+  `merge_groups()` reifies only the affected proposal window while preserving
+  unaffected frontier IDs. `tests/test_document_grouping_contract.py::test_merge_groups_keeps_large_unaffected_frontier_stable`
+  covers a 256-item frontier; the persisted frontier and `merge_revision` are
+  covered by `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`.
 - [x] Preserve meaningful groups, IDs, summaries, source slices, and reading
   order when a frontier has one remaining group. The document root remains a
   structural wrapper and `test_final_group_keeps_identity_and_kind_under_document_root`
