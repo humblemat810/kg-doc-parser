@@ -36,12 +36,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Check out Kogwistar 0.6.8 source profile for PyPy
+      - name: Check out Kogwistar 0.6.12 source profile for PyPy
         if: matrix.is_pypy
         uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: v0.6.8
+          ref: v0.6.12
           path: kogwistar
 
       - name: Set up Python
@@ -62,12 +62,18 @@ jobs:
         if: matrix.is_pypy == false
         run: poetry run pip install ruff
 
+      - name: Install Pyright
+        if: matrix.label == 'cpython312'
+        run: poetry run pip install pyright
+
       - name: Install PyPy 3.11 Python-authority dependencies
         if: matrix.is_pypy
         env:
           KOGWISTAR_IMPL_MODE: python
         run: |
           python -c 'import sys; assert sys.implementation.name == "pypy"; assert sys.version_info[:2] == (3, 11); print(sys.implementation); print(sys.version)'
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libjpeg-dev zlib1g-dev
           python -m pip install --upgrade pip
           python -m pip install -r requirements-pypy-3.11-experimental.txt
 
@@ -85,7 +91,11 @@ jobs:
         if: matrix.is_pypy == false
         run: poetry run ruff check kg_doc_parser/workflow_ingest/providers.py
 
-      - name: Verify Kogwistar 0.6.8 source-profile import on PyPy
+      - name: Run package type check
+        if: matrix.label == 'cpython312'
+        run: poetry run pyright
+
+      - name: Verify Kogwistar 0.6.12 source-profile import on PyPy
         if: matrix.is_pypy
         env:
           KOGWISTAR_IMPL_MODE: python
@@ -128,3 +138,31 @@ jobs:
           tests/test_workflow_ingest_page_index_pipeline.py
           tests/test_workflow_ingest_resolver_invariants.py
           -q --durations=25 --durations-min=0 -p no:cacheprovider
+
+  recovery-gate:
+    name: Linux recovery release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Poetry and dependencies
+        run: |
+          python -m pip install --upgrade poetry
+          poetry install --no-interaction --no-root
+
+      - name: Run process-recovery release gate
+        run: >-
+          poetry run pytest -p no:cacheprovider -q
+          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_after_page_63
+          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable
+          tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact
+          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_retries_after_grouping_sqlite_commit_before_nested_checkpoint
+          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_retries_after_semantic_graph_commit_before_checkpoint

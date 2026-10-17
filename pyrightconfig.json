@@ -1,0 +1,8 @@
+{
+  "include": ["kg_doc_parser"],
+  "exclude": ["**/__pycache__"],
+  "typeCheckingMode": "standard",
+  "pythonVersion": "3.11",
+  "reportMissingImports": "warning",
+  "reportMissingTypeStubs": "none"
+}

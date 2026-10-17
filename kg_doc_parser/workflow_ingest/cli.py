@@ -12,7 +12,7 @@ import argparse
 import json
 from collections.abc import Iterable
 from pathlib import Path
-from typing import get_args
+from typing import TypeVar, cast, get_args
 
 from .demo_harness import DemoHarnessConfig
 from .page_index import PageIndexMode
@@ -30,7 +30,25 @@ from .runners import (
     run_page_index_batch_workflow,
     run_page_index_source_workflow,
 )
+from .runtime_contracts import WorkflowRuntimeDeps
 from .smoke_assets import generate_ocr_smoke_assets
+
+TNamespaceValue = TypeVar("TNamespaceValue")
+
+
+def _optional_namespace_value(
+    args: argparse.Namespace,
+    name: str,
+    expected_type: type[TNamespaceValue],
+) -> TNamespaceValue | None:
+    """Read an optional CLI value without leaking ``Any`` from Namespace."""
+    namespace_values = cast(dict[str, object], vars(args))
+    value = namespace_values.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, expected_type):
+        raise TypeError(f"CLI argument {name!r} must be {expected_type.__name__}")
+    return value
 
 
 def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSettings | None:
@@ -46,13 +64,13 @@ def _provider_settings_from_args(args: argparse.Namespace) -> WorkflowProviderSe
         "base_url": args.parser_base_url,
         "api_key_env": args.parser_api_key_env,
     }
-    proposal_mode = getattr(args, "proposal_mode", None)
-    parse_strategy = getattr(args, "parse_strategy", None)
-    parse_strategy_order = getattr(args, "parse_strategy_order", None)
-    triage_enabled = getattr(args, "triage_enabled", None)
-    page_index_summary_enabled = getattr(args, "page_index_summary_enabled", None)
-    page_index_hierarchical_summary_enabled = getattr(
-        args, "page_index_hierarchical_summary_enabled", None
+    proposal_mode = _optional_namespace_value(args, "proposal_mode", str)
+    parse_strategy = _optional_namespace_value(args, "parse_strategy", str)
+    parse_strategy_order = _optional_namespace_value(args, "parse_strategy_order", str)
+    triage_enabled = _optional_namespace_value(args, "triage_enabled", bool)
+    page_index_summary_enabled = _optional_namespace_value(args, "page_index_summary_enabled", bool)
+    page_index_hierarchical_summary_enabled = _optional_namespace_value(
+        args, "page_index_hierarchical_summary_enabled", bool
     )
     ocr_override = any(value is not None for value in ocr_values.values())
     parser_override = any(value is not None for value in parser_values.values())
@@ -202,7 +220,10 @@ def _ocr_command(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     probe = _build_probe(output_dir, command="ocr")
-    deps: dict[str, object] = {"parse_semantic_fn": _fallback_parse_semantic_fn}
+    deps = cast(
+        WorkflowRuntimeDeps,
+        {"parse_semantic_fn": _fallback_parse_semantic_fn},
+    )
     if any(
         value is not None
         for value in (
@@ -213,12 +234,15 @@ def _ocr_command(args: argparse.Namespace) -> int:
         )
     ):
         effective_settings = provider_settings or WorkflowProviderSettings.from_env()
-        deps = {
-            "parse_semantic_fn": build_legacy_parse_semantic_fn(
-                provider_settings=effective_settings,
-                model_names=[args.parser_model] if args.parser_model else None,
-            )
-        }
+        deps = cast(
+            WorkflowRuntimeDeps,
+            {
+                "parse_semantic_fn": build_legacy_parse_semantic_fn(
+                    provider_settings=effective_settings,
+                    model_names=[args.parser_model] if args.parser_model else None,
+                )
+            },
+        )
     try:
         inputs = [Path(item) for item in args.inputs]
         if len(inputs) == 1 and inputs[0].is_file():
@@ -229,9 +253,15 @@ def _ocr_command(args: argparse.Namespace) -> int:
                 ocr_candidate_models=args.ocr_candidate_model or None,
                 probe=probe,
                 deps=deps,
+                run_id=args.run_id,
+                resume_from_checkpoint=args.resume_from_checkpoint,
             )
             _emit_result(result)
         else:
+            if args.run_id is not None or args.resume_from_checkpoint:
+                raise ValueError(
+                    "--run-id and --resume-from-checkpoint require one OCR file, not a batch"
+                )
             result = run_ocr_batch_workflow(
                 inputs,
                 output_dir=output_dir,
@@ -352,6 +382,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_output_args(ocr)
     _add_provider_args(ocr)
     ocr.add_argument("--ocr-candidate-model", action="append", default=[], help="Candidate OCR model names")
+    ocr.add_argument(
+        "--run-id",
+        default=None,
+        help="Persisted Kogwistar runtime run ID to continue after a semantic-stage suspension",
+    )
+    ocr.add_argument(
+        "--resume-from-checkpoint",
+        action="store_true",
+        help="Resume the semantic OCR workflow from its persisted Kogwistar checkpoint",
+    )
     ocr.set_defaults(func=_ocr_command)
 
     page_index = subparsers.add_parser("page-index", help="Parse text/markdown into a page-index tree")

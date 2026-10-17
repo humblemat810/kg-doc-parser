@@ -1,0 +1,15 @@
+{
+  "fixture": "ocr_smoke_document.pdf",
+  "pages": 2,
+  "environment": "kg-doc-parser parser environment",
+  "providers": [
+    {"provider": "rapidocr", "mode": "direct", "status": "succeeded", "clusters": [4, 4]},
+    {"provider": "easyocr", "mode": "direct", "language": "fr", "status": "succeeded", "clusters": [7, 11]},
+    {"provider": "docling", "engine": "rapidocr", "status": "succeeded", "clusters": [1, 1]},
+    {"provider": "docling", "engine": "easyocr", "status": "succeeded", "clusters": [1, 1]},
+    {"provider": "bonsai", "status": "succeeded", "clusters": [4, 4]},
+    {"provider": "codex", "model": "gpt-5.6-luna", "status": "succeeded", "clusters": [4, 4], "page_2_note": "one terminal punctuation mark omitted"}
+  ],
+  "audio_video_covered": false,
+  "cloud_providers_covered": false
+}

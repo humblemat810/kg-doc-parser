@@ -82,6 +82,7 @@ NOTES
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import sqlite3
@@ -91,9 +92,9 @@ import traceback
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from threading import Lock
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -103,11 +104,19 @@ from langchain_core.outputs.llm_result import LLMResult
 
 from kg_doc_parser.workflow_ingest.serialization import safe_json_dumps
 
+_LOGGER = logging.getLogger(__name__)
+
 
 class TextRedactor(Protocol):
     """Redact one text value before it is written to ingestion telemetry."""
 
     def __call__(self, text: str, /) -> str: ...
+
+
+@runtime_checkable
+class _UsageMetadataCarrier(Protocol):
+    @property
+    def usage_metadata(self) -> object: ...
 
 
 def _metadata_float(value: object, default: float = 0.0) -> float:
@@ -368,9 +377,9 @@ class SQLiteIngestEventWriter:
                 with closing(conn.execute("PRAGMA wal_checkpoint;")):
                     pass
                 conn.commit()
-        except Exception:
+        except (OSError, sqlite3.Error) as exc:
             # Swallow writer shutdown errors; don't crash application exit.
-            pass
+            _LOGGER.debug("telemetry writer checkpoint failed during shutdown: %r", exc)
 
     def _flush(self, batch: list[_IngestEvent]) -> None:
         rows = [
@@ -434,7 +443,7 @@ def _best_effort_error_location(exc: BaseException) -> tuple[str | None, int | N
 
 def _utc_now_iso() -> str:
     """UTC ISO timestamp with timezone, suitable for sqlite TEXT."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ---------------------------
@@ -442,6 +451,12 @@ def _utc_now_iso() -> str:
 # ---------------------------
 def _as_mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _message_usage_metadata(message: object) -> Mapping[str, object]:
+    if isinstance(message, _UsageMetadataCarrier):
+        return _as_mapping(message.usage_metadata)
+    return {}
 
 
 def _invoked_model_name(kwargs: Mapping[str, object]) -> str | None:
@@ -559,10 +574,10 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                     {
                         "type": m.type,
                         "content": self._clip(str(m.content)),
-                        "additional_kwargs": getattr(m, "additional_kwargs", None),
-                        "response_metadata": getattr(m, "response_metadata", None),
-                        "name": getattr(m, "name", None),
-                        "id": getattr(m, "id", None),
+                        "additional_kwargs": m.additional_kwargs,
+                        "response_metadata": m.response_metadata,
+                        "name": m.name,
+                        "id": m.id,
                     }
                     for m in batch
                 ]
@@ -672,24 +687,22 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
         # LangChain response.generations: List[List[Generation]]
         for gen_list in response.generations:
             for gen in gen_list:
-                if isinstance(gen, ChatGeneration) and hasattr(gen, "message"):
+                if isinstance(gen, ChatGeneration):
                     msg = gen.message
-                    # Gemini usage_metadata is commonly stored on the message
-                    usage = getattr(msg, "usage_metadata", None)
+                    # Gemini usage_metadata is an optional provider extension.
+                    usage = _message_usage_metadata(msg)
                     if usage:
-                        input_tokens = int(usage.get("input_tokens", 0) or 0)
-                        output_tokens = int(usage.get("output_tokens", 0) or 0)
-                        try:
-                            cached_tokens = int(usage["input_token_details"]["cache_read"] or 0)
-                        except Exception:
-                            cached_tokens = 0
-                        try:
-                            reasoning_tokens = int(usage["output_token_details"]["reasoning"] or 0)
-                        except Exception:
-                            reasoning_tokens = 0
+                        input_tokens = _metadata_int_or_none(usage.get("input_tokens")) or 0
+                        output_tokens = _metadata_int_or_none(usage.get("output_tokens")) or 0
+                        cached_tokens = _metadata_int_or_none(
+                            _as_mapping(usage.get("input_token_details")).get("cache_read")
+                        ) or 0
+                        reasoning_tokens = _metadata_int_or_none(
+                            _as_mapping(usage.get("output_token_details")).get("reasoning")
+                        ) or 0
 
                     # Model name is often in generation_info
-                    gi = getattr(gen, "generation_info", None) or {}
+                    gi = gen.generation_info or {}
                     model_name = gi.get("model_name") or model_name
         if model_name is None:
             inv_params = kwargs.get("invocation_params")
@@ -711,7 +724,7 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
             "output_tokens": output_tokens,
             "cached_tokens": cached_tokens,
             "reasoning_tokens": reasoning_tokens,
-            "response_llm_output": getattr(response, "llm_output", None),
+            "response_llm_output": response.llm_output,
         }            
         if self.log_responses:
             outs: list[dict[str, object]] = []
@@ -724,16 +737,16 @@ class DocumentIngestSQLiteCallback(BaseCallbackHandler):
                         item["text"] = self._clip(str(gen.text))
 
                     # Chat-y
-                    if isinstance(gen, ChatGeneration) and hasattr(gen, "message"):
+                    if isinstance(gen, ChatGeneration):
                         msg = gen.message
                         item["message"] = {
-                            "type": getattr(msg, "type", None),
-                            "content": self._clip(str(getattr(msg, "content", ""))),
-                            "additional_kwargs": getattr(msg, "additional_kwargs", None),
-                            "response_metadata": getattr(msg, "response_metadata", None),
+                            "type": msg.type,
+                            "content": self._clip(str(msg.content)),
+                            "additional_kwargs": msg.additional_kwargs,
+                            "response_metadata": msg.response_metadata,
                         }
 
-                    item["generation_info"] = getattr(gen, "generation_info", None)
+                    item["generation_info"] = gen.generation_info
                     outs.append(item)
 
             payload["outputs"] = outs

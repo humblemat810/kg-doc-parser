@@ -39,7 +39,7 @@ import re
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from kogwistar.id_provider import stable_id
 from kogwistar.utils.fuzzy_offsets import FuzzySpanHit as _FuzzyHit
@@ -60,8 +60,9 @@ from .models import (
     SourceUnit,
     WorkflowIngestInput,
 )
-from .parser_core import finalize_semantic_tree
+from .parser_core import ParserSourceMap, finalize_semantic_tree
 from .providers import (
+    ProviderDiagnostics,
     ProviderDiagnosticsSink,
     WorkflowProviderSettings,
     build_chat_model_for_role,
@@ -75,13 +76,27 @@ from .semantics import (
     correct_and_validate_pointer,
     validate_semantic_tree_integrity,
 )
-from .serialization import JsonValue
+from .serialization import JsonObject, JsonValue
 
 
 class PageIndexTraceLogger(Protocol):
     """Receive bounded diagnostic messages from page-index parsing."""
 
     def __call__(self, message: str, /) -> None: ...
+
+
+@runtime_checkable
+class ProviderCallCounter(Protocol):
+    """Optional callback accounting exposed by provider test/telemetry sinks."""
+
+    recorded_call_count: int | None
+
+
+@runtime_checkable
+class ProviderCallRecorder(ProviderCallCounter, Protocol):
+    """Optional callback hook for adapters that bypass LangChain callbacks."""
+
+    def record_untracked_call(self, call_key: str, /) -> None: ...
 
 
 PageIndexMode = Literal[
@@ -109,9 +124,10 @@ PageIndexNodeType = Literal[
     "TABLE_ROW",
 ]
 PageIndexSourceRole = Literal["heading", "content"]
+PageIndexDiagnostics = dict[str, JsonValue]
 
 
-def _increment_diagnostic(diagnostics: dict[str, object], key: str, amount: int = 1) -> None:
+def _increment_diagnostic(diagnostics: PageIndexDiagnostics, key: str, amount: int = 1) -> None:
     current = diagnostics.get(key)
     current_count = current if type(current) is int and current >= 0 else 0
     diagnostics[key] = current_count + amount
@@ -141,10 +157,11 @@ def _object_int(value: object, default: int) -> int:
 def _callback_call_counts(callbacks: list[object] | None) -> dict[int, int | None]:
     """Snapshot callback accounting before a provider invocation."""
 
-    return {
-        id(callback): getattr(callback, "recorded_call_count", None)
-        for callback in callbacks or []
-    }
+    counts: dict[int, int | None] = {}
+    for callback in callbacks or []:
+        counter = callback if isinstance(callback, ProviderCallCounter) else None
+        counts[id(callback)] = counter.recorded_call_count if counter is not None else None
+    return counts
 
 
 def _notify_untracked_provider_call(
@@ -155,13 +172,13 @@ def _notify_untracked_provider_call(
     """Account for successful adapters that do not emit LangChain callbacks."""
 
     for callback in callbacks or []:
-        recorder = getattr(callback, "record_untracked_call", None)
-        if not callable(recorder):
+        recorder = callback if isinstance(callback, ProviderCallRecorder) else None
+        if recorder is None:
             continue
         before = before_counts.get(id(callback))
-        after = getattr(callback, "recorded_call_count", None)
+        after = recorder.recorded_call_count
         if before is not None and after == before:
-            recorder(call_key)
+            recorder.record_untracked_call(call_key)
 
 
 class PageIndexBlockSpec(BaseModel):
@@ -290,11 +307,11 @@ class PageIndexParseResult:
     source_format: PageIndexSourceFormat
     workflow_input: WorkflowIngestInput
     authoritative_source_map: dict[str, GroundedSourceRecord]
-    parser_input_dict: dict[str, object]
-    parser_source_map: dict[str, dict[str, object]]
+    parser_input_dict: JsonObject
+    parser_source_map: dict[str, JsonObject]
     semantic_tree: SemanticNode
-    coverage: dict[str, object]
-    diagnostics: dict[str, object]
+    coverage: dict[str, JsonValue]
+    diagnostics: PageIndexDiagnostics
 
 
 @dataclass(slots=True)
@@ -319,7 +336,7 @@ class _BlockSpan:
     heading_level: int | None = None
 
 
-def _page_index_assignment_debug_payload(assignments: list[BlockAssignment]) -> list[dict[str, object]]:
+def _page_index_assignment_debug_payload(assignments: list[BlockAssignment]) -> list[JsonObject]:
     return [
         {
             "block_id": assignment.block_id,
@@ -331,8 +348,8 @@ def _page_index_assignment_debug_payload(assignments: list[BlockAssignment]) -> 
     ]
 
 
-def _page_index_block_spec_debug_payload(block_specs: list[PageIndexBlockSpec]) -> list[dict[str, object]]:
-    def _walk(spec: PageIndexBlockSpec, *, path: str) -> dict[str, object]:
+def _page_index_block_spec_debug_payload(block_specs: list[PageIndexBlockSpec]) -> list[JsonObject]:
+    def _walk(spec: PageIndexBlockSpec, *, path: str) -> JsonObject:
         return {
             "path": path,
             "title": spec.title,
@@ -1005,7 +1022,7 @@ def _salvage_page_index_assignments(
     candidates: list[CandidateBlock],
     assignments: list[BlockAssignment],
     page_text: str,
-) -> tuple[list[BlockAssignment] | None, dict[str, object]]:
+) -> tuple[list[BlockAssignment] | None, PageIndexDiagnostics]:
     """Keep valid provider branches while replacing locally invalid blocks.
 
     Salvage is deliberately conservative: the assignment set must still cover
@@ -1322,7 +1339,7 @@ def _refine_page_index_block_excerpts(
     callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
-) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
     entries = [
         {
             "path_id": _page_index_path_id(path),
@@ -1367,7 +1384,7 @@ def _refine_page_index_block_excerpts(
         f"Page text: {page_text}\n"
         f"Blocks: {_json.dumps(entries, ensure_ascii=False, sort_keys=True)}"
     )
-    call_diagnostics: dict[str, object] = {}
+    call_diagnostics: ProviderDiagnostics = {}
     provider_returned = False
     try:
         callback_counts = _callback_call_counts(callbacks)
@@ -1447,6 +1464,14 @@ def _refine_page_index_block_excerpts(
         if _normalize_page_index_excerpt(proposed) == _normalize_page_index_excerpt(page_text):
             diagnostics["refine_excerpts_rejected"] += 1
             continue
+        normalized_current = _normalize_page_index_excerpt(current_excerpt)
+        normalized_proposed = _normalize_page_index_excerpt(proposed)
+        if not original_spec.child_nodes and normalized_proposed in normalized_current:
+            # A leaf owns its complete terminal source interval.  Accepting a
+            # strict substring here would create an uncovered source gap even
+            # though the proposed text is a valid substring of the old excerpt.
+            diagnostics["refine_excerpts_rejected"] += 1
+            continue
         try:
             _resolve_pointer(unit_id=unit_id, page_text=page_text, excerpt=proposed)
         except Exception:  # noqa: BLE001 - an invalid grounded pointer rejects only this candidate.
@@ -1467,7 +1492,6 @@ def _refine_page_index_block_excerpts(
             for sibling_index, sibling in enumerate(parent_nodes)
             if sibling_index != path[-1] and _normalize_page_index_excerpt(sibling.excerpt)
         }
-        normalized_proposed = _normalize_page_index_excerpt(proposed)
         if normalized_proposed in ancestor_excerpts:
             diagnostics["refine_excerpts_rejected"] += 1
             continue
@@ -1506,7 +1530,7 @@ def _refine_page_index_summaries_hierarchically(
     callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
-) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
     """Optionally regenerate summaries one tree depth at a time.
 
     The initial assignment remains authoritative for structure and grounding.
@@ -1515,7 +1539,7 @@ def _refine_page_index_summaries_hierarchically(
     """
 
     paths = list(_iter_page_index_block_specs_with_paths(block_specs))
-    diagnostics: dict[str, object] = {
+    diagnostics: PageIndexDiagnostics = {
         "hierarchical_summary_enabled": True,
         "hierarchical_summary_attempted": len(paths),
         "hierarchical_summary_accepted": 0,
@@ -1593,7 +1617,7 @@ def _refine_page_index_summaries_hierarchically(
                 f"Tree depth: {depth}\n"
                 f"Blocks: {json.dumps(entries, ensure_ascii=False, sort_keys=True)}"
             )
-            call_diagnostics: dict[str, object] = {}
+            call_diagnostics: ProviderDiagnostics = {}
             provider_returned = False
             try:
                 callback_counts = _callback_call_counts(callbacks)
@@ -1679,7 +1703,7 @@ def _build_page_outline_from_candidates(
     assignment_mode: str,
     assignments: list[BlockAssignment],
     validation: PageIndexValidationResult,
-) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     if validation.valid:
         block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=assignments)
@@ -1705,7 +1729,7 @@ def _heuristic_page_outline(
     *,
     page_number: int,
     source_format: PageIndexSourceFormat,
-) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     assignments = _deterministic_block_assignments(candidates)
     validation = _validate_block_assignments(candidates, assignments, page_text=page_text)
@@ -1730,7 +1754,7 @@ def _llm_page_outline(
     callbacks: list[object] | None = None,
     trace_log: PageIndexTraceLogger | None = None,
     provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
-) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
     candidates = _extract_candidate_blocks(page_text, page_number=page_number, source_format=source_format)
     assignment_mode_prefix = "ollama" if provider_settings.parser.provider == "ollama" else "llm"
     if not candidates:
@@ -1784,7 +1808,7 @@ def _llm_page_outline(
             trace_log(
                 f"page_index_llm_invoke_start page_number={page_number} attempt={attempt_label} source_format={source_format}"
         )
-        call_diagnostics: dict[str, object] = {}
+        call_diagnostics: ProviderDiagnostics = {}
         provider_returned = False
         try:
             callback_counts = _callback_call_counts(callbacks)
@@ -1872,7 +1896,7 @@ def _llm_page_outline(
         fallback_reason: str,
         retry_prompt_summary: str | None = None,
         structure_retry_prompt_summary: str | None = None,
-    ) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+    ) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
         fallback_assignments = _deterministic_block_assignments(candidates)
         fallback_block_specs = _assemble_page_index_blocks(
             candidates=candidates,
@@ -1916,7 +1940,7 @@ def _llm_page_outline(
         validation_warnings: list[str],
         retry_prompt_summary: str | None = None,
         structure_retry_prompt_summary: str | None = None,
-    ) -> tuple[list[PageIndexBlockSpec], dict[str, object]] | None:
+    ) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics] | None:
         if batch is None:
             return None
         salvaged_assignments, salvage_diagnostics = _salvage_page_index_assignments(
@@ -1970,7 +1994,7 @@ def _llm_page_outline(
         assignment_retry_validation_errors: list[str],
         validation_warnings: list[str],
         retry_prompt_summary: str | None = None,
-    ) -> tuple[list[PageIndexBlockSpec], dict[str, object]]:
+    ) -> tuple[list[PageIndexBlockSpec], PageIndexDiagnostics]:
         block_specs = _assemble_page_index_blocks(candidates=candidates, assignments=batch.assignments)
         structure_validation = _validate_page_index_block_structure(
             candidates=candidates,
@@ -2312,7 +2336,7 @@ def _make_semantic_node(
     level_from_root: int,
     pointers: list[HydratedTextPointer],
     summary: str = "",
-    metadata: dict[str, object] | None = None,
+    metadata: JsonObject | None = None,
 ) -> SemanticNode:
     return SemanticNode(
         title=title,
@@ -2591,7 +2615,7 @@ def parse_page_index_layer(
     parent_id: str,
     parent_title: str,
     parent_pointers: list[HydratedTextPointer],
-    parser_source_map: dict[str, dict[str, object]],
+    parser_source_map: ParserSourceMap,
     source_format: PageIndexSourceFormat = "text",
     summary_enabled: bool = True,
 ) -> list[LayerChildCandidate]:
@@ -2821,7 +2845,7 @@ def parse_page_index_document(
         child_nodes=[],
     )
     page_nodes: list[SemanticNode] = []
-    page_diagnostics: list[dict[str, object]] = []
+    page_diagnostics: list[PageIndexDiagnostics] = []
     for page_number, (unit_id, record) in enumerate(page_units, start=1):
         if trace_log is not None:
             trace_log(
@@ -3071,6 +3095,6 @@ def parse_page_index_document(
         parser_input_dict=parser_input_dict,
         parser_source_map=parser_source_map,
         semantic_tree=semantic_tree,
-        coverage=cast(dict[str, object], coverage),
+        coverage=coverage,
         diagnostics=diagnostics,
     )

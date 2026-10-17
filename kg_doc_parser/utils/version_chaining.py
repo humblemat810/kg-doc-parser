@@ -14,11 +14,16 @@ sqlite_handler = SQLiteHandler(os.path.join('.','logs', 'application_logs.db'))
 sqlite_handler.setLevel(logging.DEBUG)
 logger.addHandler(sqlite_handler)
 
+
 import datetime
 import hashlib
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, BinaryIO, Literal, ParamSpec, Protocol, TypeVar, cast
+
+
+class _StatWithBirthtime(Protocol):
+    st_birthtime: float
 
 import dotenv
 from kogwistar.utils.cache_backend import Memory
@@ -919,13 +924,18 @@ def get_folder_metadata(
             file_hash = get_file_hash(file_path, last_modified = stats.st_mtime,
                                       size_bytes= stats.st_size,
                                       algorithm=hash_algorithm)
+            if hasattr(stats, "st_birthtime"):
+                birthtime = cast(_StatWithBirthtime, stats).st_birthtime
+            else:
+                birthtime = stats.st_ctime
+            date_created = str(datetime.datetime.fromtimestamp(birthtime))
             metadata_list.append(
                 FileMetadata(
                     document_name = name,
                     file_size = stats.st_size,
                     file_hash = file_hash,
                     date_modified= str(datetime.datetime.fromtimestamp(stats.st_mtime)),
-                    date_created =str(datetime.datetime.fromtimestamp(stats.st_birthtime ))
+                    date_created=date_created,
                 )
             )
     return metadata_list

@@ -3,29 +3,32 @@ from __future__ import annotations
 import json
 import sys
 import threading
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import CodeType
+
+from .serialization import JsonObject, JsonValue, ModelDumpLike, json_safe
 
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
-def _jsonable(value: object) -> object:
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
+def _jsonable(value: object) -> JsonValue:
+    if isinstance(value, ModelDumpLike):
         try:
-            return model_dump(field_mode="backend", dump_format="json")
+            return _jsonable(value.model_dump(field_mode="backend", dump_format="json"))
         except TypeError:
-            return model_dump()
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
+            return _jsonable(value.model_dump())
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_jsonable(item) for item in value]
     if isinstance(value, Path):
         return str(value)
-    return value
+    return json_safe(value)
 
 
 @dataclass
@@ -46,9 +49,9 @@ class WorkflowProbe:
 
     def emit(self, kind: str, /, **payload: object) -> None:
         normalized_payload = _jsonable(payload)
-        event: dict[str, object] = {"ts": _utc_now(), "kind": str(kind)}
+        event: JsonObject = {"ts": _utc_now(), "kind": str(kind)}
         if isinstance(normalized_payload, dict):
-            event.update({str(key): value for key, value in normalized_payload.items()})
+            event.update(normalized_payload)
         line = json.dumps(event, ensure_ascii=True)
         with self._lock, self.path.open("a", encoding="utf-8") as fh:
             fh.write(line)
@@ -93,36 +96,36 @@ class WorkflowProbe:
             )
             self._sys_monitoring = state
 
-            def _should_log(code: object) -> bool:
-                filename = str(getattr(code, "co_filename", "") or "")
-                if state.code_name_allowlist and getattr(code, "co_name", "") not in state.code_name_allowlist:
+            def _should_log(code: CodeType) -> bool:
+                filename = code.co_filename
+                if state.code_name_allowlist and code.co_name not in state.code_name_allowlist:
                     return False
                 return any(part in filename for part in state.file_substrings)
 
-            def _on_start(code: object, offset: int) -> None:
+            def _on_start(code: CodeType, offset: int) -> None:
                 if _should_log(code):
                     self.emit(
                         "probe.sys_monitoring.start",
-                        code_name=getattr(code, "co_name", None),
-                        filename=getattr(code, "co_filename", None),
+                        code_name=code.co_name,
+                        filename=code.co_filename,
                         offset=int(offset),
                     )
 
-            def _on_return(code: object, offset: int, value: object) -> None:
+            def _on_return(code: CodeType, offset: int, value: object) -> None:
                 if _should_log(code):
                     self.emit(
                         "probe.sys_monitoring.return",
-                        code_name=getattr(code, "co_name", None),
-                        filename=getattr(code, "co_filename", None),
+                        code_name=code.co_name,
+                        filename=code.co_filename,
                         offset=int(offset),
                     )
 
-            def _on_raise(code: object, offset: int, exc: object) -> None:
+            def _on_raise(code: CodeType, offset: int, exc: object) -> None:
                 if _should_log(code):
                     self.emit(
                         "probe.sys_monitoring.raise",
-                        code_name=getattr(code, "co_name", None),
-                        filename=getattr(code, "co_filename", None),
+                        code_name=code.co_name,
+                        filename=code.co_filename,
                         offset=int(offset),
                         error=repr(exc),
                     )

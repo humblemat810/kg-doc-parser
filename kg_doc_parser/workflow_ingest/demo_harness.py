@@ -26,12 +26,13 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from .cache import WorkflowLLMCallCache, workflow_cache_namespace
 from .clients import (
     DocumentTreeApiPersistenceClient,
     HttpClientLike,
+    HttpResponseLike,
     ServerCanonicalKgClient,
 )
 from .models import (
@@ -44,6 +45,7 @@ from .models import (
 )
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
+from .runtime_contracts import WorkflowRuntimeDeps
 from .semantics import HydratedTextPointer
 from .serialization import JsonValue
 from .service import StorageBackendFactory, build_default_engines
@@ -56,6 +58,54 @@ class DemoHttpClientLike(HttpClientLike, Protocol):
     """HTTP client surface used by the demo server and persistence helpers."""
 
     def close(self) -> None: ...
+
+
+class _ExternalPost(Protocol):
+    """Minimal callable shape exposed by the optional HTTP clients."""
+
+    def __call__(self, url: str, *, json: JsonValue | None = None) -> object: ...
+
+
+@runtime_checkable
+class _ExternalHttpResponse(Protocol):
+    """Minimal response shape accepted from a third-party HTTP client."""
+
+    status_code: object
+    text: object
+
+    def json(self) -> object: ...
+
+
+class _DemoHttpResponse:
+    """Normalize a third-party response at the demo transport boundary."""
+
+    def __init__(self, response: object) -> None:
+        if not isinstance(response, _ExternalHttpResponse):
+            raise TypeError("demo HTTP response does not expose the required fields")
+        status_code = response.status_code
+        text = response.text
+        if not isinstance(status_code, int) or not isinstance(text, str):
+            raise TypeError("demo HTTP response fields have invalid types")
+        self.status_code = status_code
+        self.text = text
+        self._json_method: Callable[[], object] = response.json
+
+    def json(self) -> object:
+        return self._json_method()
+
+
+class _DemoHttpClient:
+    """Adapt requests/TestClient without weakening the application protocol."""
+
+    def __init__(self, post: _ExternalPost, close: Callable[[], None]) -> None:
+        self._post = post
+        self._close = close
+
+    def post(self, url: str, *, json: JsonValue | None = None) -> HttpResponseLike:
+        return _DemoHttpResponse(self._post(url, json=json))
+
+    def close(self) -> None:
+        self._close()
 
 
 @dataclass
@@ -76,7 +126,9 @@ class DemoHarnessConfig:
     probe_filename: str = "probe-events.jsonl"
     summary_filename: str = "demo-summary.json"
     cache_dirname: str = "llm-cache"
-    deps: dict[str, object] = field(default_factory=dict)
+    deps: WorkflowRuntimeDeps = field(
+        default_factory=lambda: cast(WorkflowRuntimeDeps, {})
+    )
 
 
 @dataclass
@@ -175,7 +227,10 @@ def _load_isolated_server_app(server_data_dir: Path) -> _ServerContext:
             restore_env()
 
     return _ServerContext(
-        client=client,
+        client=_DemoHttpClient(
+            post=cast(_ExternalPost, client.post),
+            close=client.close,
+        ),
         transport="fastapi_testclient",
         base_url="",
         cleanup=cleanup,
@@ -246,7 +301,10 @@ def _start_subprocess_server(server_data_dir: Path) -> _ServerContext:
             if response.ok:
                 session = requests.Session()
                 return _ServerContext(
-                    client=session,
+                    client=_DemoHttpClient(
+                        post=cast(_ExternalPost, session.post),
+                        close=session.close,
+                    ),
                     transport="subprocess_http",
                     base_url=base_url,
                     cleanup=lambda *_args, session=session: _shutdown_subprocess_server(proc, session),
@@ -267,7 +325,10 @@ def _connect_external_server(base_url: str) -> _ServerContext:
     response.raise_for_status()
     session = requests.Session()
     return _ServerContext(
-        client=session,
+        client=_DemoHttpClient(
+            post=cast(_ExternalPost, session.post),
+            close=session.close,
+        ),
         transport="external_http",
         base_url=base_url,
         cleanup=lambda *_args: session.close(),
@@ -289,7 +350,7 @@ def _shutdown_subprocess_server(
             proc.wait(timeout=5)
 
 
-def _fake_layered_deps(inp: WorkflowIngestInput) -> dict[str, object]:
+def _fake_layered_deps(inp: WorkflowIngestInput) -> WorkflowRuntimeDeps:
     """Build deterministic proposal/review hooks for the fake layered demo mode."""
     text = inp.collections[0].pages[0].units[0].text or ""
     unit_id = f"{inp.request_id}|p1_t0"
@@ -384,10 +445,9 @@ def _seed_demo_document(server_ctx: _ServerContext, *, document_id: str, text: s
         "content": text,
     }
     response = server_ctx.client.post(f"{server_ctx.base_url}/api/document", json=payload)
-    status_code = int(getattr(response, "status_code", 500))
+    status_code = response.status_code
     if status_code >= 400:
-        body = getattr(response, "text", "")
-        raise RuntimeError(f"demo document seed failed: {body}")
+        raise RuntimeError(f"demo document seed failed: {response.text}")
 
 
 def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
@@ -414,7 +474,7 @@ def run_demo_harness(config: DemoHarnessConfig) -> DemoHarnessArtifacts:
         title=config.title,
     )
 
-    deps = dict(config.deps)
+    deps = cast(WorkflowRuntimeDeps, dict(config.deps))
     deps["llm_cache"] = WorkflowLLMCallCache(
         artifacts.cache_dir,
         probe=probe,

@@ -6,6 +6,7 @@ if True:
     logger.addHandler(logging.NullHandler())
     ocr_json_version = "0.1"
 import base64
+import json
 import time
 from collections.abc import Iterable, Iterator, Mapping
 from typing import (
@@ -16,6 +17,7 @@ from typing import (
     Self,
     TypedDict,
     cast,
+    runtime_checkable,
 )
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -34,7 +36,6 @@ try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover
     from typing import TypeAlias
-import json
 
 from kogwistar.llm_tasks.providers import SupportsStructuredOutput
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
@@ -50,8 +51,10 @@ from pydantic_extension.model_slicing import (
 from pydantic_extension.model_slicing.mixin import DtoField
 
 from .pdf2png import RawFileLoader
-from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
 from .utils.langchain import GeminiCostCallbackHandler, get_gemini_callback_cost
+from .workflow_ingest.providers import WorkflowProviderSettings, build_chat_model
+from .workflow_ingest.sdk_boundary import raw_content
+from .workflow_ingest.serialization import decode_json_object
 
 PastCompatibleSplitPage: TypeAlias = SplitPage
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -59,10 +62,38 @@ JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
 
 
+@runtime_checkable
+class _UsageMetadataCarrier(Protocol):
+    usage_metadata: object
+
+
+def _raw_usage_metadata(value: object) -> object | None:
+    """Read optional provider usage without treating mappings as SDK messages."""
+
+    if isinstance(value, _UsageMetadataCarrier):
+        return value.usage_metadata
+    return None
+
+
 class StructuredOutputPayload(TypedDict):
     parsed: NotRequired[BaseModel | None]
     raw: NotRequired[object]
     parsing_error: NotRequired[object]
+
+
+def _structured_output_payload(value: object) -> StructuredOutputPayload:
+    if not isinstance(value, Mapping):
+        raise TypeError("structured OCR output must be a mapping")
+    payload: StructuredOutputPayload = {}
+    parsed = value.get("parsed")
+    if parsed is not None and not isinstance(parsed, BaseModel):
+        raise TypeError("structured OCR output parsed value must be a model or null")
+    payload["parsed"] = parsed
+    if "raw" in value:
+        payload["raw"] = value["raw"]
+    if "parsing_error" in value:
+        payload["parsing_error"] = value["parsing_error"]
+    return payload
 
 
 def _build_ocr_llm(
@@ -78,7 +109,7 @@ def _build_ocr_llm(
 def get_page_json(folder_path: str, page_num: int) -> JsonObject:
     with open(os.path.join(folder_path, 'page_'+str(page_num)+'.json'), 'r') as f:
         file_json_raw = json.load(f)
-    return cast(JsonObject, file_json_raw)
+    return decode_json_object(file_json_raw, label="OCR page JSON")
 
 
 def regen_page(file_json_raw: Mapping[str, JsonValue], use_raw: bool) -> JsonObject:
@@ -86,12 +117,12 @@ def regen_page(file_json_raw: Mapping[str, JsonValue], use_raw: bool) -> JsonObj
     """regen from json returned by SplitPage.to_doc(), can be view as SplitPage.FromJson(filepath)"""
     p = PastCompatibleSplitPage.model_validate(file_json_raw)
     if use_raw:
-        return cast(JsonObject, p.dump_supercede_parse())
+        return p.dump_supercede_parse()
     try:
         res = p.to_doc()
     except:
         raise
-    return cast(JsonObject, res)
+    return res
 
 
 def regen_doc(folder_path: str, use_raw: bool = False) -> list[JsonObject]:
@@ -129,7 +160,7 @@ class RawOCRResponse(BaseModel):
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
-    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of the identified text clusters. Must cover all OCR_text_clusters once and only once. ")
+    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of all text and non-text clusters. Must cover every cluster once and only once. ")
     page_x_min : DtoType[float]=Field(description='the page x min in pixel coordinate. ')
     page_x_max : DtoType[float]=Field(description='the page x max in pixel coordinate. ')
     page_y_min : DtoType[float]=Field(description='the page y min in pixel coordinate. ')
@@ -150,17 +181,18 @@ class RawOCRResponse(BaseModel):
     
     @model_validator(mode='after')
     def check_cluster_meaningful_ordering_agreement(self) -> Self:
-        if bool(self.is_empty_page) == (len(self.boxes_2d) > 0):
+        all_clusters = self.boxes_2d + self.non_text_objects
+        if bool(self.is_empty_page) == (len(all_clusters) > 0):
             raise ValueError(
-                f"is_empty_page value {self.is_empty_page} disagree with boxes_2d "
-                f"len={len(self.boxes_2d)}"
+                f"is_empty_page value {self.is_empty_page} disagree with OCR clusters "
+                f"len={len(all_clusters)}"
             )
-        text_ids = {item.id for item in self.boxes_2d}
-        all_ids = [item.id for item in self.non_text_objects] + [item.id for item in self.boxes_2d]
+        all_ids = [item.id for item in all_clusters]
         if len(all_ids) != len(set(all_ids)):
             raise ValueError(f"cluster number from non_text_objects block and boxes_2d must be ALL distinct. overlap ids {set(all_ids)}")
-        if len(self.meaningful_ordering) != len(text_ids) or set(self.meaningful_ordering) != text_ids:
-            raise ValueError("meaningful_ordering must cover each text cluster exactly once")
+        all_ids_set = set(all_ids)
+        if len(self.meaningful_ordering) != len(all_ids_set) or set(self.meaningful_ordering) != all_ids_set:
+            raise ValueError("meaningful_ordering must cover each text and non-text cluster exactly once")
         return self
 
 
@@ -203,8 +235,7 @@ class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
 
 def _raw_content(value: object) -> object | None:
     """Extract raw SDK content without pretending it is a parsed OCR model."""
-    content = getattr(value, "content", None)
-    return content if content is not None else value
+    return raw_content(value)
 
 
 def get_first_round_response(
@@ -225,13 +256,11 @@ def get_first_round_response(
                                             )
                     
                     
-                    if hasattr(raw_response,"usage_metadata"):
-                        usage_metadata.append(raw_response.usage_metadata)
-                    else:
-                        usage_metadata.append(None)
-                    response_with_raw = cast(StructuredOutputPayload, after_parse.invoke(raw_response))
+                    usage_metadata.append(_raw_usage_metadata(raw_response))
+                    response_with_raw = _structured_output_payload(after_parse.invoke(raw_response))
                     response: RawOCRResponse | OCRClusterResponse | None
-                    response1 = cast(RawOCRResponse | None, response_with_raw.get('parsed'))
+                    parsed_response = response_with_raw.get('parsed')
+                    response1 = parsed_response if isinstance(parsed_response, RawOCRResponse) else None
                     parsing_error = response_with_raw.get('parsing_error')
                     if response1 is None:
                         
@@ -254,20 +283,25 @@ def get_first_round_response(
                         sys_message_2 = sys_message.model_copy(deep = True)
                         class OCRDraftResponse(BaseModel):
                             text: str = Field(description = "OCR identified text with layout")
-                        ocr_draft_response = cast(
-                                                    OCRDraftResponse | None,
-                                                    build_structured_output_runnable(llm, OCRDraftResponse, include_raw=True).invoke(messages),
-                                                )
+                        draft_value = build_structured_output_runnable(
+                            llm, OCRDraftResponse, include_raw=True
+                        ).invoke(messages)
+                        ocr_draft_response = (
+                            draft_value if isinstance(draft_value, OCRDraftResponse) else None
+                        )
                         if (ocr_draft_response is not None) and (ocr_draft_response.text is not None) and ocr_draft_response.text != "":
                             draft_responses[model_name] = ocr_draft_response.text
                         sys_message_2.content += ("If your internal OCR fails. Focus on table parsing mode because my error analysis modes often show that the failing OCR pages are usually highly complicated tables. "
                                                  f"Try to put in as much data as possible given all text found by simple OCR for your reference:```{ocr_draft_response.text}```"  if ocr_draft_response else"")
-                        response_with_raw = cast(StructuredOutputPayload, build_structured_output_runnable(llm, RawOCRResponse, include_raw=True).invoke(
-                            [sys_message, img_message]
-                        ))
+                        response_with_raw = _structured_output_payload(
+                            build_structured_output_runnable(
+                                llm, RawOCRResponse, include_raw=True
+                            ).invoke([sys_message, img_message])
+                        )
                         raw_ocr_response : None | RawOCRResponse= None
-                        if response_with_raw.get('parsed'):
-                            raw_ocr_response = cast(RawOCRResponse, response_with_raw.get('parsed'))
+                        parsed_retry = response_with_raw.get('parsed')
+                        if isinstance(parsed_retry, RawOCRResponse):
+                            raw_ocr_response = parsed_retry
                         else:
                             try:
                                 raw = _raw_content(response_with_raw.get('raw'))

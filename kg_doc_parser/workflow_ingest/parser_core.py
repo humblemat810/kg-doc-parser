@@ -29,12 +29,12 @@ from .semantics import (
     pointer_source_validation_error,
     validate_semantic_tree_integrity,
 )
-from .serialization import JsonValue
+from .serialization import JsonObject, JsonValue, ModelDumpLike, json_safe
 
 _LOGGER = logging.getLogger(__name__)
 _LEGACY_POINTER_ID_RE = re.compile(r"^p(?P<page>\d+)_c(?P<cluster>\d+)$")
 SplitStrategy = Literal["excerpt_first", "boundary_first"]
-ParserPayload = dict[str, object]
+ParserPayload = JsonObject
 ParserSourceMap = dict[str, ParserPayload]
 
 
@@ -261,9 +261,8 @@ def default_parse_semantic_fn(
 def _coerce_semantic_tree(tree: object) -> SemanticNode:
     if isinstance(tree, tuple):
         tree = tree[0]
-    model_dump = getattr(tree, "model_dump", None)
-    if callable(model_dump):
-        tree = model_dump(mode="json")
+    if isinstance(tree, ModelDumpLike):
+        tree = tree.model_dump(mode="json")
     if isinstance(tree, dict):
         tree = SemanticNode.model_validate(tree)
     if isinstance(tree, SemanticNode):
@@ -981,7 +980,7 @@ def propose_layer_breakdown(
     semantic_tree: SemanticNode,
     propose_layer_fn: ProposeLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
-    cache_namespace: Mapping[str, object] | None = None,
+    cache_namespace: Mapping[str, JsonValue] | None = None,
 ) -> CurrentLayerResult:
     _assert_source_map_matches_session(
         parse_session=parse_session,
@@ -1011,11 +1010,11 @@ def propose_layer_breakdown(
                 fingerprint={
                     "cache_namespace": dict(cache_namespace or {}),
                     "collection_id": collection.collection_id,
-                    "parse_session": parse_session,
-                    "current_layer_context": current_layer_context,
-                    "semantic_tree": semantic_tree,
-                    "parser_input_dict": parser_input_dict,
-                    "parser_source_map": parser_source_map,
+                    "parse_session": json_safe(parse_session),
+                    "current_layer_context": json_safe(current_layer_context),
+                    "semantic_tree": json_safe(semantic_tree),
+                    "parser_input_dict": json_safe(parser_input_dict),
+                    "parser_source_map": json_safe(parser_source_map),
                 },
                 fn=call,
             )
@@ -1040,7 +1039,7 @@ def review_layer(
     parser_source_map: ParserSourceMap | None = None,
     review_layer_fn: ReviewLayerFn | None = None,
     llm_cache: WorkflowLLMCallCache | None = None,
-    cache_namespace: Mapping[str, object] | None = None,
+    cache_namespace: Mapping[str, JsonValue] | None = None,
 ) -> tuple[CurrentLayerReview, ParseSessionState]:
     if parser_source_map is not None:
         _assert_source_map_matches_session(
@@ -1121,10 +1120,10 @@ def review_layer(
                     operation=f"review_cud_proposal:{current_layer_context.split_strategy}",
                     fingerprint={
                         "cache_namespace": dict(cache_namespace or {}),
-                        "parse_session": parse_session,
-                        "current_layer_context": current_layer_context,
-                        "current_layer_result": current_layer_result,
-                        "parser_source_map": parser_source_map or {},
+                        "parse_session": json_safe(parse_session),
+                        "current_layer_context": json_safe(current_layer_context),
+                        "current_layer_result": json_safe(current_layer_result),
+                        "parser_source_map": json_safe(parser_source_map or {}),
                         "split_strategy": current_layer_context.split_strategy,
                     },
                     fn=call,
@@ -1163,7 +1162,7 @@ def review_layer(
                     "review_timeout_reason": repr(exc)[:500],
                 },
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - provider boundary must fail closed
             reviewed = CurrentLayerReview(
                 updated_result=current_layer_result,
                 coverage_ok=None,

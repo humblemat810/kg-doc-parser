@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from kogwistar.id_provider import stable_id
 from pydantic import BaseModel, Field, model_validator
 
-from .serialization import JsonValue
+from .serialization import JsonObject, JsonValue, json_safe
 
 
 def _normalize_text(text: str) -> str:
@@ -96,6 +96,7 @@ class SemanticNode(BaseModel):
 SemanticNode.model_rebuild()
 
 
+@runtime_checkable
 class SemanticTreeNodeLike(Protocol):
     """Minimum shape required by the shared tree-branching validator."""
 
@@ -106,6 +107,7 @@ class SemanticTreeNodeLike(Protocol):
     def child_nodes(self) -> Sequence[object]: ...
 
 
+@runtime_checkable
 class SemanticIntegrityNodeLike(Protocol):
     """Fields shared by current and legacy semantic-node models."""
 
@@ -120,6 +122,58 @@ class SemanticIntegrityNodeLike(Protocol):
 
     @property
     def total_content_pointers(self) -> Sequence[TextPointerLike]: ...
+
+
+@runtime_checkable
+class _MetadataNodeLike(Protocol):
+    @property
+    def metadata(self) -> object: ...
+
+
+@runtime_checkable
+class _AggregatePointerNodeLike(Protocol):
+    @property
+    def aggregate_content_pointers(self) -> Sequence[TextPointerLike]: ...
+
+
+def _attribute_sequence(value: object) -> tuple[object, ...]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(value)
+    return ()
+
+
+def _node_id_for_shape(node: object) -> str:
+    value = node.node_id if isinstance(node, SemanticTreeNodeLike) else None
+    return "<missing>" if value is None else str(value)
+
+
+def _node_children_for_shape(node: object) -> tuple[object, ...]:
+    if not isinstance(node, SemanticTreeNodeLike):
+        return ()
+    return _attribute_sequence(node.child_nodes)
+
+
+def _node_metadata_for_shape(node: object) -> Mapping[str, object]:
+    value = node.metadata if isinstance(node, _MetadataNodeLike) else {}
+    return value if isinstance(value, Mapping) else {}
+
+
+def _node_pointers_for_shape(node: object, attribute: str) -> tuple[TextPointerLike, ...]:
+    if attribute == "total_content_pointers":
+        values = (
+            _attribute_sequence(node.total_content_pointers)
+            if isinstance(node, SemanticIntegrityNodeLike)
+            else ()
+        )
+    elif attribute == "aggregate_content_pointers":
+        values = (
+            _attribute_sequence(node.aggregate_content_pointers)
+            if isinstance(node, _AggregatePointerNodeLike)
+            else ()
+        )
+    else:
+        values = ()
+    return cast(tuple[TextPointerLike, ...], values)
 
 
 def validate_semantic_tree_shape(
@@ -146,15 +200,15 @@ def validate_semantic_tree_shape(
         if object_id in active_object_ids:
             raise ValueError("semantic tree contains a cycle while checking branching")
         active_object_ids.add(object_id)
-        node_id = str(getattr(node, "node_id", "<missing>"))
-        children = list(getattr(node, "child_nodes", ()) or ())
+        node_id = _node_id_for_shape(node)
+        children = _node_children_for_shape(node)
         if len(children) == 1:
             raise ValueError(f"unary semantic node: {node_id}")
         if max_depth is not None and depth > max_depth:
             raise ValueError(f"semantic tree exceeds maximum depth {max_depth}: {node_id}")
-        metadata = getattr(node, "metadata", {})
-        total_pointers = getattr(node, "total_content_pointers", ())
-        aggregate_pointers = getattr(node, "aggregate_content_pointers", ())
+        metadata = _node_metadata_for_shape(node)
+        total_pointers = _node_pointers_for_shape(node, "total_content_pointers")
+        aggregate_pointers = _node_pointers_for_shape(node, "aggregate_content_pointers")
         if (
             isinstance(metadata, Mapping)
             and metadata.get("atomic_retained") is True
@@ -314,7 +368,7 @@ def validate_semantic_tree_integrity(
             )
         if max_depth is not None and depth > max_depth:
             raise ValueError(f"semantic tree exceeds maximum depth {max_depth}: {node_id}")
-        aggregate_pointers = getattr(node, "aggregate_content_pointers", ())
+        aggregate_pointers = _node_pointers_for_shape(node, "aggregate_content_pointers")
         pointers = [*node.total_content_pointers, *aggregate_pointers]
         for pointer in pointers:
             if pointer.start_char < 0 or pointer.end_char < -1:
@@ -514,8 +568,8 @@ def semantic_tree_to_kge_payload(
     if parser_source_map is None and has_source_pointers:
         raise ValueError("source-grounded graph export requires parser_source_map")
     validate_semantic_tree_integrity(root, parser_source_map=parser_source_map)
-    nodes: list[dict[str, object]] = []
-    edges: list[dict[str, object]] = []
+    nodes: list[JsonObject] = []
+    edges: list[JsonObject] = []
 
     def spans(ptrs: list[HydratedTextPointer]) -> list[dict[str, JsonValue]]:
         if not ptrs:
@@ -565,13 +619,17 @@ def semantic_tree_to_kge_payload(
         # A structural page-index container is grounded by its aggregate span;
         # ordinary legacy structural nodes retain the existing synthetic fallback.
         mentions = [{"spans": spans(node.total_content_pointers or node.aggregate_content_pointers)}]
-        node_metadata = {
+        raw_node_metadata = {
             "semantic_node_type": node.node_type,
             "doc_id": doc_id,
             "parent_id": node.parent_id,
             "level_from_root": node.level_from_root,
             **dict(node.metadata or {}),
         }
+        node_metadata_value = json_safe(raw_node_metadata)
+        if not isinstance(node_metadata_value, dict):
+            raise TypeError("semantic node metadata must serialize to a JSON object")
+        node_metadata: JsonObject = node_metadata_value
         if not node.summary and "summary_unavailable" not in node_metadata:
             # Do not silently turn a title into an LLM summary.  Consumers can
             # decide whether to request a summary or display the title only.
@@ -581,6 +639,7 @@ def semantic_tree_to_kge_payload(
                 "id": node.node_id,
                 "label": node.title,
                 "type": "entity",
+                "doc_id": doc_id,
                 "summary": node.summary,
                 "metadata": node_metadata,
                 "mentions": mentions,
@@ -601,6 +660,7 @@ def semantic_tree_to_kge_payload(
                     ),
                     "label": "parent-child",
                     "type": "relationship",
+                    "doc_id": doc_id,
                     "summary": f"{node.node_id}->{child.node_id}",
                     "relation": "HAS_CHILD",
                     "source_ids": [node.node_id],

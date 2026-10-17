@@ -13,6 +13,7 @@ from typing import TypeVar, cast
 from kogwistar.id_provider import stable_id
 
 from .probe import WorkflowProbe, emit_probe_event
+from .serialization import JsonValue, ModelDumpLike, json_safe
 
 T = TypeVar("T")
 CACHE_CONTRACT_VERSION = 2
@@ -20,7 +21,7 @@ _PACKAGE_NAME = "graph-knowledge-doc-parser"
 _CACHE_WRITE_LOCK = threading.Lock()
 
 
-def workflow_cache_namespace(provider_settings: object | None = None) -> dict[str, object]:
+def workflow_cache_namespace(provider_settings: object | None = None) -> dict[str, JsonValue]:
     """Return stable, non-secret identity for workflow LLM cache entries.
 
     The request fingerprint remains responsible for source and prompt inputs.
@@ -33,12 +34,11 @@ def workflow_cache_namespace(provider_settings: object | None = None) -> dict[st
     except PackageNotFoundError:
         package_version = "uninstalled"
     settings: object = provider_settings
-    model_dump = getattr(settings, "model_dump", None)
-    if callable(model_dump):
+    if isinstance(settings, ModelDumpLike):
         try:
-            settings = model_dump(mode="json", exclude_none=True)
+            settings = settings.model_dump(mode="json", exclude_none=True)
         except TypeError:
-            settings = model_dump()
+            settings = settings.model_dump()
     return {
         "cache_contract_version": CACHE_CONTRACT_VERSION,
         "parser_package": _PACKAGE_NAME,
@@ -49,19 +49,18 @@ def workflow_cache_namespace(provider_settings: object | None = None) -> dict[st
     }
 
 
-def _jsonable(value: object) -> object:
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        dump = cast(Callable[..., object], model_dump)
+def _jsonable(value: object) -> JsonValue:
+    if isinstance(value, ModelDumpLike):
         try:
-            return dump(field_mode="backend", dump_format="json")
+            dumped = value.model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return dump()
+            dumped = value.model_dump()
+        return _jsonable(dumped)
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
-    return value
+    return json_safe(value)
 
 
 class WorkflowLLMCallCache:
@@ -70,14 +69,14 @@ class WorkflowLLMCallCache:
         cache_dir: str | Path,
         *,
         probe: WorkflowProbe | None = None,
-        namespace: Mapping[str, object] | None = None,
+        namespace: Mapping[str, JsonValue] | None = None,
     ) -> None:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.probe = probe
         self.namespace = dict(namespace or workflow_cache_namespace())
 
-    def _cache_path(self, operation: str, fingerprint: Mapping[str, object]) -> Path:
+    def _cache_path(self, operation: str, fingerprint: Mapping[str, JsonValue]) -> Path:
         payload = json.dumps(
             _jsonable({"namespace": self.namespace, "request": fingerprint}),
             sort_keys=True,
@@ -91,7 +90,7 @@ class WorkflowLLMCallCache:
         self,
         *,
         operation: str,
-        fingerprint: Mapping[str, object],
+        fingerprint: Mapping[str, JsonValue],
         fn: Callable[[], T],
     ) -> T:
         path = self._cache_path(operation, fingerprint)

@@ -5,13 +5,15 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-import kg_doc_parser.workflow_ingest.page_index as page_index_module
 import pytest
 from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
 )
 from _ollama_test_helpers import ollama_available
+from kogwistar.utils.cache_backend import Memory
+
+import kg_doc_parser.workflow_ingest.page_index as page_index_module
 from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
     BlockAssignmentBatch,
@@ -33,7 +35,6 @@ from kg_doc_parser.workflow_ingest.semantics import (
     validate_semantic_tree_integrity,
 )
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
-from kogwistar.utils.cache_backend import Memory
 
 pytestmark = [pytest.mark.workflow]
 
@@ -146,6 +147,85 @@ def test_page_index_atomic_fallback_preserves_child_evidence_metadata() -> None:
         "title": "Meaningful child",
         "node_type": "SECTION",
     }
+
+
+@pytest.mark.ci
+def test_graph_export_consumes_hierarchy_for_identical_source_evidence() -> None:
+    source_text = "alpha beta gamma delta"
+    source_map = {"unit": {"text": source_text}}
+    spans = {
+        name: HydratedTextPointer(
+            source_cluster_id="unit",
+            start_char=start,
+            end_char=end,
+            verbatim_text=source_text[start : end + 1],
+        )
+        for name, start, end in (
+            ("alpha", 0, 4),
+            ("beta", 6, 9),
+            ("gamma", 11, 15),
+            ("delta", 17, 21),
+        )
+    }
+
+    def _tree(first_group: tuple[str, str], second_group: tuple[str, str]) -> SemanticNode:
+        leaves = {
+            name: SemanticNode(
+                node_id=name,
+                parent_id="group-a" if name in first_group else "group-b",
+                title=name,
+                total_content_pointers=[spans[name]],
+                level_from_root=2,
+            )
+            for name in spans
+        }
+        return SemanticNode(
+            node_id="root",
+            title="Root",
+            node_type="DOCUMENT_ROOT",
+            child_nodes=[
+                SemanticNode(
+                    node_id="group-a",
+                    parent_id="root",
+                    title="First group",
+                    level_from_root=1,
+                    child_nodes=[leaves[name] for name in first_group],
+                ),
+                SemanticNode(
+                    node_id="group-b",
+                    parent_id="root",
+                    title="Second group",
+                    level_from_root=1,
+                    child_nodes=[leaves[name] for name in second_group],
+                ),
+            ],
+        )
+
+    first = semantic_tree_to_kge_payload(
+        _tree(("alpha", "beta"), ("gamma", "delta")),
+        doc_id="hierarchy-metamorphic",
+        parser_source_map=source_map,
+    )
+    second = semantic_tree_to_kge_payload(
+        _tree(("alpha", "gamma"), ("beta", "delta")),
+        doc_id="hierarchy-metamorphic",
+        parser_source_map=source_map,
+    )
+
+    def _parent_child_pairs(payload: dict[str, object]) -> set[tuple[str, str]]:
+        edges = payload["edges"]
+        assert isinstance(edges, list)
+        return {
+            (str(edge["source_ids"][0]), str(edge["target_ids"][0]))
+            for edge in edges
+            if isinstance(edge, dict)
+        }
+
+    first_pairs = _parent_child_pairs(first)
+    second_pairs = _parent_child_pairs(second)
+    assert first_pairs != second_pairs
+    assert ("group-a", "alpha") in first_pairs
+    assert ("group-a", "gamma") in second_pairs
 
 
 @pytest.mark.ci
@@ -1974,7 +2054,7 @@ def test_page_index_refinement_disabled_by_default_preserves_behavior(monkeypatc
     assert default_result.diagnostics["refine_excerpts_attempted"] == 0
 
 
-def test_page_index_refinement_accepts_shorter_exact_substring(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_page_index_refinement_rejects_shorter_leaf_substring(monkeypatch: pytest.MonkeyPatch) -> None:
     raw_text = "# Root\n\nIntro paragraph.\n\n## Child\n\n- Term item\n"
     refinement = page_index_module.ExcerptRefinementBatch(
         suggestions=[
@@ -2014,10 +2094,10 @@ def test_page_index_refinement_accepts_shorter_exact_substring(monkeypatch: pyte
         provider_settings=provider_settings,
     )
 
-    assert refined[0].child_nodes[0].excerpt == "Intro paragraph"
+    assert refined[0].child_nodes[0].excerpt == "Intro paragraph."
     assert diagnostics["refine_excerpts_enabled"] is True
-    assert diagnostics["refine_excerpts_accepted"] == 1
-    assert diagnostics["refine_excerpts_rejected"] == 0
+    assert diagnostics["refine_excerpts_accepted"] == 0
+    assert diagnostics["refine_excerpts_rejected"] == 1
     assert diagnostics["refine_excerpts_fallback"] is False
 
 
@@ -2211,10 +2291,64 @@ def test_page_index_refinement_reports_counts(monkeypatch: pytest.MonkeyPatch) -
 
     assert result.diagnostics["refine_excerpts_enabled"] is True
     assert result.diagnostics["refine_excerpts_attempted"] == 2
-    assert result.diagnostics["refine_excerpts_accepted"] == 1
-    assert result.diagnostics["refine_excerpts_rejected"] == 0
+    assert result.diagnostics["refine_excerpts_accepted"] == 0
+    assert result.diagnostics["refine_excerpts_rejected"] == 1
     assert result.diagnostics["refine_excerpts_fallback"] is False
     assert usage_callback.call_keys == ["page-1-first", "refine-page-1"]
+
+
+def test_page_index_refinement_preserves_terminal_coverage_when_punctuation_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A shorter model excerpt must not remove authoritative terminal text."""
+    raw_text = "# Root\n\nIntro paragraph.\n"
+    assignments = BlockAssignmentBatch(
+        assignments=[
+            BlockAssignment(block_id="p0001-b001", parent_id=None, node_type="SECTION", title="Root"),
+            BlockAssignment(
+                block_id="p0001-b002",
+                parent_id="p0001-b001",
+                node_type="PARAGRAPH",
+                title="Intro paragraph",
+            ),
+        ]
+    )
+    refinement = page_index_module.ExcerptRefinementBatch(
+        suggestions=[
+            page_index_module.ExcerptRefinementSuggestion(
+                path_id="0.0", excerpt="Intro paragraph"
+            ),
+        ]
+    )
+    _install_fake_page_index_chat(
+        monkeypatch,
+        assignment_payload=assignments,
+        refinement_payload=refinement,
+    )
+
+    result = parse_page_index_document(
+        document_id="page-index-refinement-terminal-coverage",
+        title="Page Index Document",
+        raw_text=raw_text,
+        source_format="markdown",
+        mode="openai",
+        provider_settings=WorkflowProviderSettings(
+            parser=ProviderEndpointConfig(provider="openai", model="fake")
+        ),
+        refine_excerpts=True,
+    )
+
+    assert result.coverage["overall"] == pytest.approx(1.0)
+    assert result.diagnostics["refine_excerpts_accepted"] == 0
+    assert result.diagnostics["refine_excerpts_rejected"] == 1
+    pending = [result.semantic_tree]
+    pointers = []
+    while pending:
+        node = pending.pop()
+        pointers.extend(node.total_content_pointers)
+        pointers.extend(node.aggregate_content_pointers)
+        pending.extend(node.child_nodes)
+    assert any(pointer.verbatim_text == "Intro paragraph." for pointer in pointers)
 
 
 def test_page_index_ollama_flat_but_shallow_assignment_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:

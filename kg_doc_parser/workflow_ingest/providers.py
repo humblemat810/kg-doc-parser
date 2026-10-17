@@ -61,7 +61,7 @@ import os
 import queue
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import (
     Annotated,
@@ -85,6 +85,7 @@ from kogwistar.llm_tasks.providers import (
 )
 from kogwistar.typing_interfaces import EmbeddingFunctionLike
 from pydantic import BaseModel, Field, model_validator
+from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 from pydantic_extension.model_slicing import BackendField, FrontendField
 from pydantic_extension.model_slicing.mixin import (
@@ -94,6 +95,8 @@ from pydantic_extension.model_slicing.mixin import (
     ModeSlicingMixin,
 )
 
+from .serialization import ModelDumpLike
+
 # Compatibility aliases keep older parser integrations source-compatible while
 # the implementations now live in the shared Kogwistar layer.
 CodexBridgeChatModel = StructuredBridgeChatModel
@@ -101,7 +104,22 @@ _codex_messages = bridge_messages
 
 TStructuredModel = TypeVar("TStructuredModel", bound=BaseModel)
 TConstructedProvider = TypeVar("TConstructedProvider")
-ChatProviderName = Literal["anthropic", "gemini", "ollama", "openai", "azure", "vertex", "fake", "codex"]
+ChatProviderName = Literal[
+    "anthropic",
+    "gemini",
+    "ollama",
+    "openai",
+    "bonsai",
+    "azure",
+    "vertex",
+    "fake",
+    "codex",
+    "docling",
+    "rapidocr",
+    "easyocr",
+    "custom",
+    "kserve",
+]
 EmbeddingProviderName = Literal["fake", "openai", "vertex", "ollama"]
 ProposalMode = Literal["children", "boundaries"]
 ParseStrategyName = Literal["layer_excerpt", "layer_boundary", "page_index"]
@@ -121,10 +139,14 @@ def _parse_strategy_order(raw: str) -> ParseStrategyOrder:
     return cast(ParseStrategyOrder, values)
 
 
+ProviderDiagnosticValue = str | int | float | bool | None
+ProviderDiagnostics = dict[str, ProviderDiagnosticValue]
+
+
 class ProviderDiagnosticsSink(Protocol):
     """Receive one structured provider-call diagnostic record."""
 
-    def __call__(self, diagnostics: Mapping[str, object], /) -> None: ...
+    def __call__(self, diagnostics: Mapping[str, ProviderDiagnosticValue], /) -> None: ...
 
 
 class _EmbeddingBackend(Protocol):
@@ -226,24 +248,24 @@ _PROVIDER_USAGE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _provider_usage_metrics(value: object) -> dict[str, int | float]:
+def _provider_usage_metrics(value: object) -> ProviderDiagnostics:
     """Extract optional provider usage metadata without serializing the response."""
 
     pending: list[tuple[object, int]] = [(value, 0)]
     seen: set[int] = set()
-    found: dict[str, int | float] = {}
+    found: ProviderDiagnostics = {}
     while pending:
         candidate, depth = pending.pop()
         if candidate is None or id(candidate) in seen or depth > 4:
             continue
         seen.add(id(candidate))
+        items: Iterable[tuple[object, object]]
         if isinstance(candidate, Mapping):
             items = candidate.items()
         else:
-            model_dump = getattr(candidate, "model_dump", None)
-            if callable(model_dump):
+            if isinstance(candidate, ModelDumpLike):
                 try:
-                    dumped = model_dump()
+                    dumped = candidate.model_dump()
                 except Exception:  # noqa: BLE001 - usage metadata is best effort.
                     dumped = None
                 items = dumped.items() if isinstance(dumped, Mapping) else ()
@@ -324,8 +346,8 @@ class FakeChatModel:
 
 
 def _default_schema_payload(schema: type[BaseModel]) -> dict[str, object]:
-    def _value_for_field(field: object) -> object:
-        annotation = getattr(field, "annotation", None)
+    def _value_for_field(field: FieldInfo) -> object:
+        annotation = field.annotation
         origin = get_origin(annotation)
         args = get_args(annotation)
         if annotation is str:
@@ -348,13 +370,13 @@ def _default_schema_payload(schema: type[BaseModel]) -> dict[str, object]:
             return None
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             return _default_schema_payload(annotation)
-        default = getattr(field, "default", PydanticUndefined)
+        default = field.default
         if default is not PydanticUndefined and default is not None:
             return default
         return None
 
     payload: dict[str, object] = {}
-    for name, field in getattr(schema, "model_fields", {}).items():
+    for name, field in schema.model_fields.items():
         value = _value_for_field(field)
         if value is not None:
             payload[name] = value
@@ -381,10 +403,16 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
             "gemini",
             "ollama",
             "openai",
+            "bonsai",
+            "docling",
+            "rapidocr",
+            "easyocr",
             "azure",
             "vertex",
             "fake",
             "codex",
+            "custom",
+            "kserve",
         ],
         DtoField(),
         BackendField(),
@@ -428,6 +456,27 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
+    ocr_engine: Annotated[
+        Literal["rapidocr", "easyocr", "tesseract", "tesserocr", "ocrmac", "nemotron-ocr"] | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
+    pdf_text_mode: Annotated[
+        Literal["disabled", "prefer_native", "native_only"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = "disabled"
+    ocr_language: Annotated[
+        str,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = "en"
     location: Annotated[
         str | None,
         DtoField(),
@@ -731,6 +780,15 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 api_version=_env("KG_DOC_OCR_API_VERSION"),
                 project=_env("KG_DOC_OCR_PROJECT"),
                 location=_env("KG_DOC_OCR_LOCATION"),
+                ocr_engine=cast(
+                    Literal["rapidocr", "easyocr", "tesseract", "tesserocr", "ocrmac", "nemotron-ocr"] | None,
+                    _env("KG_DOC_OCR_ENGINE"),
+                ),
+                pdf_text_mode=cast(
+                    Literal["disabled", "prefer_native", "native_only"],
+                    str(_env("KG_DOC_OCR_PDF_TEXT_MODE", "disabled") or "disabled"),
+                ),
+                ocr_language=str(_env("KG_DOC_OCR_LANGUAGE", "en") or "en"),
                 max_retries=int(_env("KG_DOC_OCR_MAX_RETRIES", "2") or "2"),
                 timeout_seconds=float(_env("KG_DOC_OCR_TIMEOUT_SECONDS", "120") or "120"),
                 retry_backoff_seconds=float(_env("KG_DOC_OCR_RETRY_BACKOFF_SECONDS", "0.25") or "0.25"),
@@ -776,7 +834,7 @@ def invoke_with_timeout(
     callable_obj: Callable[[], object],
     *,
     timeout_seconds: float,
-    diagnostics: dict[str, object] | None = None,
+    diagnostics: ProviderDiagnostics | None = None,
     operation: str = "provider_call",
     max_in_flight: int = 1,
     attempt_index: int = 1,
@@ -1059,7 +1117,7 @@ def build_chat_model(
         if spec.api_key_env and os.getenv(spec.api_key_env):
             kwargs["google_api_key"] = os.getenv(spec.api_key_env)
         return cast(SupportsStructuredOutput, _construct_provider(ChatGoogleGenerativeAI, kwargs))
-    if spec.provider == "openai":
+    if spec.provider in {"openai", "bonsai"}:
         max_output_tokens = (
             spec.max_output_tokens
             if spec.max_output_tokens is not None
@@ -1115,7 +1173,9 @@ def build_chat_model(
         return cast(SupportsStructuredOutput, _construct_provider(AzureChatOpenAI, kwargs))
     if spec.provider == "anthropic":
         try:
-            from langchain_anthropic import ChatAnthropic
+            from langchain_anthropic import (  # pyright: ignore[reportMissingImports]
+                ChatAnthropic,
+            )
         except ImportError as exc:
             raise RuntimeError(
                 "Anthropic provider selected; install the optional langchain-anthropic package"

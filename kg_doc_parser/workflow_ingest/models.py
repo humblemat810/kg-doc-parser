@@ -1001,6 +1001,23 @@ class WorkflowExportBundle(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"dto", "backend", "frontend", "llm"}
 
     graph_payload: Annotated[dict[str, JsonValue], DtoField(), BackendField(), FrontendField(), LLMField()]
+    # The accepted OCR/grouping artifact is part of the export contract. It
+    # remains optional for ordinary parser callers that do not run OCR
+    # grouping, but OCR root workflows must populate and verify it.
+    grouping_tree: Annotated[
+        dict[str, JsonValue] | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
+    grouping_contract: Annotated[
+        Literal["optional", "required"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = "optional"
     authoritative_source_map: Annotated[
         dict[str, GroundedSourceRecord],
         DtoField(),
@@ -1023,6 +1040,12 @@ class WorkflowExportBundle(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _require_grouping_tree_when_declared(self) -> WorkflowExportBundle:
+        if self.grouping_contract == "required" and self.grouping_tree is None:
+            raise ValueError("required grouping contract needs grouping_tree")
+        return self
     persistence_mode: Annotated[
         Literal["local_debug", "server_canonical"],
         DtoField(),

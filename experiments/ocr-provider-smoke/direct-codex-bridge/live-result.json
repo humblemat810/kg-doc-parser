@@ -1,0 +1,10 @@
+{
+  "credentials_recorded": false,
+  "empty_page": false,
+  "image": "experiments\\ocr-provider-smoke\\assets\\ocr_layout_page.png",
+  "non_text_objects": 0,
+  "page_number": 1,
+  "provider": "configured",
+  "status": "succeeded",
+  "text_clusters": 16
+}

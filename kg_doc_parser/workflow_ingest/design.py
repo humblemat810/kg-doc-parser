@@ -4,11 +4,14 @@ import logging
 from collections.abc import Iterable
 from typing import Protocol
 
-from kogwistar.engine_core.models import Grounding, Span
+from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
-from kogwistar.typing_interfaces import ReadLike, WriteLike
+from pydantic_extension.model_slicing.mixin import use_mode
 
 DEFAULT_WORKFLOW_ID = "kg_doc_parser.ingest.v1"
+DEFAULT_OCR_WORKFLOW_ID = "kg_doc_parser.ocr.v1"
+DEFAULT_OCR_GROUPING_WORKFLOW_ID = "kg_doc_parser.ocr_grouping.v1"
+DEFAULT_OCR_PAGE_WORKFLOW_ID = "kg_doc_parser.ocr_pages.v1"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -27,10 +30,15 @@ class WorkflowEngineLike(Protocol):
     def persist(self) -> WorkflowPersistenceLike: ...
 
     @property
-    def read(self) -> ReadLike: ...
+    def write(self) -> WorkflowWriteLike: ...
 
-    @property
-    def write(self) -> WriteLike: ...
+
+class WorkflowWriteLike(Protocol):
+    """Write operations required to install a persisted workflow design."""
+
+    def add_node(self, node: Node, doc_id: str | None = None) -> None: ...
+
+    def add_edge(self, edge: Edge, doc_id: str | None = None) -> None: ...
 
 
 def _progress_bar(done: int, total: int, width: int = 20) -> str:
@@ -52,27 +60,28 @@ def _workflow_node(
     start: bool = False,
     terminal: bool = False,
 ) -> WorkflowNode:
-    return WorkflowNode(
-        id=node_id,
-        label=node_id.split("|")[-1],
-        type="entity",
-        doc_id=node_id,
-        summary=op,
-        properties={},
-        metadata={
-            "entity_type": "workflow_node",
-            "workflow_id": workflow_id,
-            "wf_op": op,
-            "wf_start": bool(start),
-            "wf_terminal": bool(terminal),
-            "wf_version": "v1",
-        },
-        mentions=[_grounding(workflow_id)],
-        level_from_root=0,
-        domain_id=None,
-        canonical_entity_id=None,
-        embedding=None,
-    )
+    with use_mode("backend"):
+        return WorkflowNode(
+            id=node_id,
+            label=node_id.split("|")[-1],
+            type="entity",
+            doc_id=node_id,
+            summary=op,
+            properties={},
+            metadata={
+                "entity_type": "workflow_node",
+                "workflow_id": workflow_id,
+                "wf_op": op,
+                "wf_start": bool(start),
+                "wf_terminal": bool(terminal),
+                "wf_version": "v1",
+            },
+            mentions=[_grounding(workflow_id)],
+            level_from_root=0,
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
 
 
 def _workflow_edge(
@@ -85,32 +94,33 @@ def _workflow_edge(
     is_default: bool = True,
 ) -> WorkflowEdge:
     dst_name = dst.split("|")[-1]
-    return WorkflowEdge(
-        id=edge_id,
-        label=dst_name,
-        type="relationship",
-        doc_id=edge_id,
-        summary=f"next:{dst_name}",
-        properties={},
-        source_ids=[src],
-        target_ids=[dst],
-        relation="wf_next",
-        source_edge_ids=[],
-        target_edge_ids=[],
-        metadata={
-            "entity_type": "workflow_edge",
-            "workflow_id": workflow_id,
-            "wf_priority": 100,
-            "wf_predicate": predicate,
-            "wf_is_default": is_default,
-            "wf_multiplicity": "one",
-            "wf_version": "v1",
-        },
-        mentions=[_grounding(workflow_id)],
-        domain_id=None,
-        canonical_entity_id=None,
-        embedding=None,
-    )
+    with use_mode("backend"):
+        return WorkflowEdge(
+            id=edge_id,
+            label=dst_name,
+            type="relationship",
+            doc_id=edge_id,
+            summary=f"next:{dst_name}",
+            properties={},
+            source_ids=[src],
+            target_ids=[dst],
+            relation="wf_next",
+            source_edge_ids=[],
+            target_edge_ids=[],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": workflow_id,
+                "wf_priority": 100,
+                "wf_predicate": predicate,
+                "wf_is_default": is_default,
+                "wf_multiplicity": "one",
+                "wf_version": "v1",
+            },
+            mentions=[_grounding(workflow_id)],
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
 
 
 def build_ingest_workflow_design(
@@ -250,3 +260,179 @@ def ensure_ingest_workflow_design(
             len(edges),
             edge.label,
         )
+
+
+def build_ocr_grouping_workflow_design(
+    workflow_id: str = DEFAULT_OCR_GROUPING_WORKFLOW_ID,
+) -> tuple[list[WorkflowNode], list[WorkflowEdge]]:
+    """Build the durable workflow design for document grouping and summaries."""
+    specs = [
+        ("start", "start", True, False),
+        ("restore_grouping_checkpoint", "restore_grouping_checkpoint", False, False),
+        ("apply_grouping_pass", "apply_grouping_pass", False, False),
+        ("generate_grouping_summaries", "generate_grouping_summaries", False, False),
+        ("persist_grouping_result", "persist_grouping_result", False, False),
+        ("end", "end", False, True),
+    ]
+    nodes = [
+        _workflow_node(
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|{suffix}",
+            op=op,
+            start=start,
+            terminal=terminal,
+        )
+        for suffix, op, start, terminal in specs
+    ]
+    by_suffix = {node.safe_get_id().split("|")[-1]: node for node in nodes}
+    pairs = [
+        ("start", "restore_grouping_checkpoint"),
+        ("restore_grouping_checkpoint", "apply_grouping_pass"),
+        ("apply_grouping_pass", "apply_grouping_pass"),
+        ("apply_grouping_pass", "generate_grouping_summaries"),
+        ("generate_grouping_summaries", "persist_grouping_result"),
+        ("persist_grouping_result", "end"),
+    ]
+    edges = [
+        _workflow_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|{index}|{src}->{dst}",
+            src=by_suffix[src].safe_get_id(),
+            dst=by_suffix[dst].safe_get_id(),
+        )
+        for index, (src, dst) in enumerate(pairs)
+    ]
+    return nodes, edges
+
+
+def ensure_ocr_grouping_workflow_design(
+    workflow_engine: WorkflowEngineLike,
+    workflow_id: str = DEFAULT_OCR_GROUPING_WORKFLOW_ID,
+) -> None:
+    """Install the grouping workflow nodes/edges idempotently."""
+    nodes, edges = build_ocr_grouping_workflow_design(workflow_id)
+    for node in nodes:
+        if not workflow_engine.persist.exists_node(node.safe_get_id()):
+            workflow_engine.write.add_node(node)
+    for edge in edges:
+        if not workflow_engine.persist.exists_edge(edge.safe_get_id()):
+            workflow_engine.write.add_edge(edge)
+
+
+def build_ocr_page_workflow_design(
+    workflow_id: str = DEFAULT_OCR_PAGE_WORKFLOW_ID,
+) -> tuple[list[WorkflowNode], list[WorkflowEdge]]:
+    """Build the persisted per-page OCR workflow design."""
+    specs = [
+        ("start", "start", True, False),
+        ("process_ocr_page", "process_ocr_page", False, False),
+        ("finalize_ocr_pages", "finalize_ocr_pages", False, False),
+        ("end", "end", False, True),
+    ]
+    nodes = [
+        _workflow_node(
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|{suffix}",
+            op=op,
+            start=start,
+            terminal=terminal,
+        )
+        for suffix, op, start, terminal in specs
+    ]
+    by_suffix = {node.safe_get_id().split("|")[-1]: node for node in nodes}
+    pairs = [
+        ("start", "process_ocr_page"),
+        ("process_ocr_page", "process_ocr_page"),
+        ("process_ocr_page", "finalize_ocr_pages"),
+        ("finalize_ocr_pages", "end"),
+    ]
+    edges = [
+        _workflow_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|{index}|{src}->{dst}",
+            src=by_suffix[src].safe_get_id(),
+            dst=by_suffix[dst].safe_get_id(),
+        )
+        for index, (src, dst) in enumerate(pairs)
+    ]
+    return nodes, edges
+
+
+def ensure_ocr_page_workflow_design(
+    workflow_engine: WorkflowEngineLike,
+    workflow_id: str = DEFAULT_OCR_PAGE_WORKFLOW_ID,
+) -> None:
+    """Install the per-page OCR workflow nodes and edges idempotently."""
+    nodes, edges = build_ocr_page_workflow_design(workflow_id)
+    for node in nodes:
+        if not workflow_engine.persist.exists_node(node.safe_get_id()):
+            workflow_engine.write.add_node(node)
+    for edge in edges:
+        if not workflow_engine.persist.exists_edge(edge.safe_get_id()):
+            workflow_engine.write.add_edge(edge)
+
+
+def build_ocr_workflow_design(
+    workflow_id: str = DEFAULT_OCR_WORKFLOW_ID,
+) -> tuple[list[WorkflowNode], list[WorkflowEdge]]:
+    """Build the durable parent workflow for OCR, grouping, and parsing.
+
+    The three expensive stages remain independently versioned child workflows,
+    but their invocation records are owned by this parent run.  A caller can
+    therefore resume one root identity and recover the complete stage lineage.
+    """
+
+    specs = [
+        ("start", "ocr_root_start", True, False),
+        ("invoke_ocr_pages", "ocr_root_invoke_pages", False, False),
+        ("prepare_grouping_input", "ocr_root_prepare_grouping_input", False, False),
+        ("invoke_grouping", "ocr_root_invoke_grouping", False, False),
+        ("prepare_semantic_input", "ocr_root_prepare_semantic_input", False, False),
+        ("invoke_semantic", "ocr_root_invoke_semantic", False, False),
+        ("finalize", "ocr_root_finalize", False, False),
+        ("end", "ocr_root_end", False, True),
+    ]
+    nodes = [
+        _workflow_node(
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|{suffix}",
+            op=op,
+            start=start,
+            terminal=terminal,
+        )
+        for suffix, op, start, terminal in specs
+    ]
+    by_suffix = {node.safe_get_id().split("|")[-1]: node for node in nodes}
+    pairs = [
+        ("start", "invoke_ocr_pages"),
+        ("invoke_ocr_pages", "prepare_grouping_input"),
+        ("prepare_grouping_input", "invoke_grouping"),
+        ("invoke_grouping", "prepare_semantic_input"),
+        ("prepare_semantic_input", "invoke_semantic"),
+        ("invoke_semantic", "finalize"),
+        ("finalize", "end"),
+    ]
+    edges = [
+        _workflow_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|{index}|{src}->{dst}",
+            src=by_suffix[src].safe_get_id(),
+            dst=by_suffix[dst].safe_get_id(),
+        )
+        for index, (src, dst) in enumerate(pairs)
+    ]
+    return nodes, edges
+
+
+def ensure_ocr_workflow_design(
+    workflow_engine: WorkflowEngineLike,
+    workflow_id: str = DEFAULT_OCR_WORKFLOW_ID,
+) -> None:
+    """Install the OCR parent workflow design idempotently."""
+    nodes, edges = build_ocr_workflow_design(workflow_id)
+    for node in nodes:
+        if not workflow_engine.persist.exists_node(node.safe_get_id()):
+            workflow_engine.write.add_node(node)
+    for edge in edges:
+        if not workflow_engine.persist.exists_edge(edge.safe_get_id()):
+            workflow_engine.write.add_edge(edge)

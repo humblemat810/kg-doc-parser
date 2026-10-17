@@ -189,6 +189,43 @@ An example template is provided in [`.env.example`](.env.example).
 
 ## Provider Guide
 
+### OCR provider abstraction
+
+`run_ocr_source_workflow(...)` remains the single OCR workflow entrypoint.
+Existing chat providers (`gemini`, `ollama`, `openai`, `azure`, `vertex`, and
+the local OpenAI-compatible `bonsai` alias) use the existing structured OCR
+contract. The Codex bridge can also receive OCR images when it is configured
+with a vision-capable Codex model and the bridge's CLI image forwarding is
+available.
+
+Docling is an optional adapter selected with `KG_DOC_OCR_PROVIDER=docling` and
+`KG_DOC_OCR_ENGINE` set to `rapidocr`, `easyocr`, `tesseract`, `tesserocr`,
+`ocrmac`, or `nemotron-ocr`. Install Docling and the selected engine separately;
+the base package does not install these dependencies. The adapter returns
+page-level geometry when it cannot prove precise word coordinates rather than
+inventing them.
+
+Direct local OCR is also available without Docling:
+`KG_DOC_OCR_PROVIDER=rapidocr` uses `rapidocr-onnxruntime`, and
+`KG_DOC_OCR_PROVIDER=easyocr` uses `easyocr`. These adapters preserve one
+typed cluster per detected text region and its pixel bounding box. They do not
+claim table structure or merged-cell semantics; use the Docling path when
+layout interpretation is required.
+
+User VLM adapters can be registered explicitly with
+`register_ocr_provider(name, provider)` and selected with
+`KG_DOC_OCR_PROVIDER=custom` plus `KG_DOC_OCR_MODEL=<name>`. A KServe v2
+endpoint is available with `KG_DOC_OCR_PROVIDER=kserve`; it sends a base64
+image to `/v2/models/<model>/infer` and accepts only a response that can be
+validated as the existing `OCRClusterResponse` (model-specific tensor layouts
+should use a registered adapter).
+
+Run `ocr-provider-smoke --output-dir experiments/ocr-provider-smoke` for an
+offline capability report. Add `--live --image <page.png>` to execute one real
+OCR request through the same provider path used by the workflow. The live
+result is sanitized and written beside the report; page artifacts, resume
+state, and diagnostics from a full workflow run remain separate and durable.
+
 The workflow layer is vendor-neutral, but the concrete OCR, parser, and embedding
 backends are selected by config.
 

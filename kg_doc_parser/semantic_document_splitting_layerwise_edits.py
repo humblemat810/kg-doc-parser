@@ -85,7 +85,7 @@ from enum import Enum
 from functools import wraps
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self, TYPE_CHECKING
+from typing import Annotated, Any, Literal, Self
 
 try:
     from typing import TypeAlias
@@ -94,7 +94,7 @@ except ImportError:  # pragma: no cover
 import math
 import os
 from collections import deque
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from typing import ClassVar, ParamSpec, Protocol, TypeVar, cast
 from uuid import UUID
@@ -102,6 +102,14 @@ from uuid import UUID
 P = ParamSpec("P")
 R = TypeVar("R")
 R_co = TypeVar("R_co", covariant=True)
+TTerminalResult = TypeVar("TTerminalResult", bound="_TerminalCorrectionResult")
+
+
+class _TerminalCorrectionResult(Protocol):
+    """Structural contract for correction results eligible for caching."""
+
+    @property
+    def pending_fix_children(self) -> Sequence["LLMChildNodeResponseBE"]: ...
 
 from kogwistar.id_provider import stable_id
 from kogwistar.llm_tasks.providers import SupportsStructuredOutput
@@ -113,17 +121,14 @@ from kogwistar.utils.cache_backend import (
     cache_load,
 )
 
-if TYPE_CHECKING:
-    from kogwistar.utils.cache_backend import CachedCallable
-else:
-    class CachedCallable(Protocol[P, R_co]):
-        """Compatibility protocol for released Core cache backends."""
+class CachedCallable(Protocol[P, R_co]):
+    """Compatibility protocol for released Core cache backends."""
 
-        def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co: ...
 
-        def clear(self, *args: object, **kwargs: object) -> None: ...
+    def clear(self, *args: object, **kwargs: object) -> None: ...
 
-        def check_call_in_cache(self, *args: object, **kwargs: object) -> bool: ...
+    def check_call_in_cache(self, *args: object, **kwargs: object) -> bool: ...
 from pydantic import (
     BaseModel,
     Field,
@@ -306,7 +311,7 @@ class HydratedTextPointer(ModeSlicingMixin, BaseModel):
             end_delimiter=None,
             validation_method = ref.get('verification')
         )
-HydratedTextPointerLLM : TypeAlias = HydratedTextPointer['llm']
+HydratedTextPointerLLM: TypeAlias = HydratedTextPointer
 
 class LLMChildNodeResponse(ModeSlicingMixin, BaseModel): # for LLM
     default_include_modes:  ClassVar= {"dto"}
@@ -1146,11 +1151,16 @@ def parser_llm_cache(fn: Callable[P, R]) -> Callable[P, R]:
     return _parser_llm_cache(fn, should_stage=lambda _value: True)
 
 
-def parser_llm_cache_terminal_correction(fn: Callable[P, R]) -> Callable[P, R]:
+def parser_llm_cache_terminal_correction(
+    fn: Callable[P, TTerminalResult],
+) -> Callable[P, TTerminalResult]:
     """Cache a correction layer only when it has no remaining pending nodes."""
 
-    def _is_terminal(value: R) -> bool:
-        return not bool(getattr(value, "pending_fix_children", None))
+    def _is_terminal(value: TTerminalResult) -> bool:
+        pending = value.pending_fix_children
+        if not isinstance(pending, Sequence):
+            raise TypeError("terminal correction result must expose a sequence of pending children")
+        return not pending
 
     return _parser_llm_cache(fn, should_stage=_is_terminal)
 
@@ -1623,7 +1633,7 @@ def iterative_review_loop(
             doc_id=doc_id,
             current_depth=current_depth,
             retry=retries,
-            proposal_count=len(getattr(proposals_response, "proposals", []) or []),
+            proposal_count=len(proposals_response.get_proposals()),
         )
         CUD_reasoning_history.append({"role": "ai_assistant", 'content': proposals_response.reasoning})
         # current_level_nodes.reset(token)
@@ -1638,7 +1648,6 @@ def iterative_review_loop(
         )
         if err_messages:
             CUD_reasoning_history.append({"role": "system", 'content': err_messages})
-        fe_children_tft = [{i.title + "|" + i.node_type: [j.verbatim_text for j in i.pointers]} for i in fe_children]
         fe_children = [
             ch for ch in fe_children
             if not reject_self_recursion_multi(layer_parent_types, ch)
@@ -1919,7 +1928,7 @@ def resolve_delimiter_pointer(
     end_idx = end_matches[0][1] # end (inclusive) of end_delimiter
     
     if end_idx < start_idx:
-        raise ValueError(f"End delimiter occurs before Start delimiter")
+        raise ValueError("End delimiter occurs before Start delimiter")
         
     verbatim_text = _safe_slice(text, start_idx, end_idx)
     
@@ -2036,7 +2045,7 @@ def correct_and_validate_pointer(
             for quote in quotes:
                 try:
                     verbatim =ast.literal_eval(quote + (proposed_pointer.verbatim_text or "") + quote)
-                except:
+                except Exception:
                     continue
                 source_cluster_text = _source_map_entry_text(source_cluster)
                 if source_cluster_text and verbatim in source_cluster_text:
@@ -2044,7 +2053,7 @@ def correct_and_validate_pointer(
                     if candidates:
                         validation_method = verification_method
                     pass
-        except:
+        except Exception:
             pass
         # --- TIER 2: search for verbatim (raw then WS‑collapsed)
         if not candidates:
@@ -2294,7 +2303,7 @@ def iterative_correct_children_for_level(
                 "iterative_correct_children_for_level.llm.done",
                 doc_id=doc_id,
                 round_idx=round_idx,
-                returned_count=len(getattr(parsed, "children", []) or []),
+                returned_count=len(parsed.children),
             )
             parsed_be = LLMLevelResponseBE.model_validate(parsed.model_dump())
             # validate each returned child again deterministically (trust but verify)
@@ -2915,7 +2924,7 @@ def _merge_child_ranges_for_cluster(
     """
     # sort by start
     child_ranges.sort(key=lambda x: x[0])
-    prev_start, prev_end, prev_child = child_ranges[0]
+    _, prev_end, prev_child = child_ranges[0]
 
     for i in range(1, len(child_ranges)):
         cur_start, cur_end, cur_child = child_ranges[i]
@@ -2931,7 +2940,7 @@ def _merge_child_ranges_for_cluster(
             # if same child, we just widen it
         else:
             # no overlap, advance
-            prev_start, prev_end, prev_child = cur_start, cur_end, cur_child
+            prev_end, prev_child = cur_end, cur_child
 
     return True
 
@@ -3141,7 +3150,8 @@ def reconstruct_text_from_pointers(pointers: list[HydratedTextPointer], source_m
     pointers.sort(key=lambda p: (p.source_cluster_id, p.start_char))
     for pointer in pointers:
         source_cluster = source_map.get(pointer.source_cluster_id)
-        if not source_cluster: continue
+        if not source_cluster:
+            continue
         source_text = _source_map_entry_text(source_cluster)
         if not source_text:
             continue
@@ -3254,7 +3264,7 @@ def parse_doc(
 def semantic_tree_to_kge_payload(
     root: "SemanticNode",
     *,
-    parser_source_map: dict[str, dict[str, object]] | None = None,
+    parser_source_map: Mapping[str, Mapping[str, object]] | None = None,
     doc_id: str | None = None,
     insertion_method: str = "semantic_document_parser_v1",
 ) -> dict[str, Any]:
@@ -3264,7 +3274,7 @@ def semantic_tree_to_kge_payload(
     has_source_pointers = False
     while pending_nodes:
         node = pending_nodes.pop()
-        if node.total_content_pointers or getattr(node, "aggregate_content_pointers", []):
+        if node.total_content_pointers:
             has_source_pointers = True
             break
         pending_nodes.extend(node.child_nodes)
@@ -3349,8 +3359,7 @@ def semantic_tree_to_kge_payload(
         nodes.append(node_dict)
 
         for child in node.child_nodes:
-            edge_ptr_refs = _pointers_to_references(ptrs)  # parent’s pointers as provenance
-            edge_ptr_mentions= _spans_to_groundings_to_mentions(_pointers_to_spans(ptrs))
+            edge_ptr_mentions = _spans_to_groundings_to_mentions(_pointers_to_spans(ptrs))
             edge_dict = {
                 "id": str(
                     stable_id(
@@ -3389,29 +3398,95 @@ def semantic_tree_to_kge_payload(
 from collections import defaultdict
 
 
+def _legacy_object_list(value: object, *, label: str) -> list[Mapping[str, object]]:
+    """Narrow a legacy JSON list before semantic reconstruction."""
+
+    if not isinstance(value, list) or not all(isinstance(item, Mapping) for item in value):
+        raise TypeError(f"legacy graph field {label!r} must be a list of objects")
+    return [
+        _legacy_mapping(item, label=f"{label}[{index}]")
+        for index, item in enumerate(value)
+    ]
+
+
+def _legacy_string_list(value: object, *, label: str) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"legacy graph field {label!r} must be a list of strings")
+    return list(value)
+
+
+def _legacy_mapping(value: object, *, label: str) -> Mapping[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError(f"legacy graph field {label!r} must be an object")
+    if not all(isinstance(key, str) for key in value):
+        raise TypeError(f"legacy graph field {label!r} must have string keys")
+    return dict(value)
+
+
+def _legacy_string(value: object, *, label: str, default: str | None = None) -> str:
+    if value is None and default is not None:
+        return default
+    if not isinstance(value, str):
+        raise TypeError(f"legacy graph field {label!r} must be a string")
+    return value
+
+
+def _legacy_int(value: object, *, label: str, default: int | None = None) -> int:
+    if value is None and default is not None:
+        return default
+    if type(value) is not int:
+        raise TypeError(f"legacy graph field {label!r} must be an integer")
+    return value
+
+
+def _legacy_node_type(value: object) -> Literal[
+    "DOCUMENT_ROOT", "TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"
+]:
+    if value == "DOCUMENT_ROOT":
+        return "DOCUMENT_ROOT"
+    if value == "TEXT_FLOW":
+        return "TEXT_FLOW"
+    if value == "KEY_VALUE_PAIR":
+        return "KEY_VALUE_PAIR"
+    if value == "TABLE":
+        return "TABLE"
+    raise ValueError(f"unsupported legacy semantic node type: {value!r}")
+
+
 def _extract_pointers_from_mentions(
-    mentions: list[dict[str, list[dict[str, Any]]]],
+    mentions: Sequence[Mapping[str, object]],
 ) -> list[HydratedTextPointer]:
-    if len(mentions) > 1 :
-        raise Exception("unsupported multiple mentions")
+    if len(mentions) != 1:
+        raise ValueError("legacy semantic nodes must contain exactly one mention group")
     mention = mentions[0]
-    spans = mention['spans']
-    results = []
+    spans = _legacy_object_list(mention.get("spans"), label="mentions.spans")
+    results: list[HydratedTextPointer] = []
     for span in spans:
-        doc_page = span.get("document_page_url") or ""
-        source_cluster_id = None
+        doc_page = _legacy_string(
+            span.get("document_page_url"), label="document_page_url", default=""
+        )
+        source_cluster_id: str | None = None
         if "#" in doc_page:
             source_cluster_id = doc_page.split("#", 1)[1]
-        # fallback
         if not source_cluster_id:
-            source_cluster_id = "p1_c0"        
-        span_verification = span['verification']
+            source_cluster_id = "p1_c0"
+        span_verification = span.get("verification")
+        if span_verification is not None and not isinstance(span_verification, str):
+            raise TypeError("legacy graph field 'verification' must be a string or null")
         results.append(
             HydratedTextPointer(
                 source_cluster_id=source_cluster_id,
-                start_char=span.get("start_char", 0),
-                end_char=( -1 if span.get("end_char") == 10**9 else span.get("end_char", -1) ),
-                verbatim_text=span.get("excerpt", ""),
+                start_char=_legacy_int(span.get("start_char"), label="start_char", default=0),
+                end_char=(
+                    -1
+                    if span.get("end_char") == 10**9
+                    else _legacy_int(span.get("end_char"), label="end_char", default=-1)
+                ),
+                verbatim_text=_legacy_string(
+                    span.get("excerpt"), label="excerpt", default=""
+                ),
                 start_delimiter=None,
                 end_delimiter=None,
                 validation_method=span_verification,
@@ -3419,35 +3494,45 @@ def _extract_pointers_from_mentions(
         )
     return results
 def _extract_pointers_from_references(
-    refs: list[dict[str, Any]],
+    refs: Sequence[Mapping[str, object]],
 ) -> list[HydratedTextPointer]:
     # turn MCP ref → HydratedTextPointer-like
-    results = []
-    for r in refs or []:
+    results: list[HydratedTextPointer] = []
+    for r in refs:
         # document_page_url: "doc://{doc_id}#{source_cluster_id}"
-        doc_page = r.get("document_page_url") or ""
-        source_cluster_id = None
+        doc_page = _legacy_string(
+            r.get("document_page_url"), label="document_page_url", default=""
+        )
+        source_cluster_id: str | None = None
         if "#" in doc_page:
             source_cluster_id = doc_page.split("#", 1)[1]
         # fallback
         if not source_cluster_id:
             source_cluster_id = "p1_c0"
-        r_mentions = r.get('mentions', [])
+        r_mentions = _legacy_object_list(r.get("mentions", []), label="references.mentions")
         if len(r_mentions) == 0:
             r_mention_verification = None
         else:
             if len(r_mentions) > 1 :
                 # unsupported multiple mentions, possibly try load from wrong doc parsing results
-                raise Exception("UnsupportedDocumentParsingFormat")
+                raise ValueError("legacy references support at most one mention group")
             else:
-                r_mention_verification = r_mentions[0].get('verification')
+                r_mention_verification = r_mentions[0].get("verification")
+                if r_mention_verification is not None and not isinstance(
+                    r_mention_verification, str
+                ):
+                    raise TypeError("legacy graph field 'verification' must be a string or null")
         
         results.append(
             HydratedTextPointer(
                 source_cluster_id=source_cluster_id,
-                start_char=r.get("start_char", 0),
-                end_char=( -1 if r.get("end_char") == 10**9 else r.get("end_char", -1) ),
-                verbatim_text=r.get("snippet", ""),
+                start_char=_legacy_int(r.get("start_char"), label="start_char", default=0),
+                end_char=(
+                    -1
+                    if r.get("end_char") == 10**9
+                    else _legacy_int(r.get("end_char"), label="end_char", default=-1)
+                ),
+                verbatim_text=_legacy_string(r.get("snippet"), label="snippet", default=""),
                 start_delimiter=None,
                 end_delimiter=None,
                 validation_method=r_mention_verification,
@@ -3456,32 +3541,39 @@ def _extract_pointers_from_references(
     return results
 
 
-def kge_payload_to_semantic_tree(payload: dict[str, Any]) -> "SemanticNode":
-    nodes_data: list[dict[str, Any]] = payload.get("nodes", [])
-    edges_data: list[dict[str, Any]] = payload.get("edges", [])
+def kge_payload_to_semantic_tree(payload: Mapping[str, object]) -> "SemanticNode":
+    nodes_data = _legacy_object_list(payload.get("nodes", []), label="nodes")
+    edges_data = _legacy_object_list(payload.get("edges", []), label="edges")
 
     sem_nodes: dict[str, SemanticNode] = {}
     for n in nodes_data:
-        md = n.get("metadata") or {}
+        md = _legacy_mapping(n.get("metadata"), label="metadata")
         # old path
         # pointers = _extract_pointers_from_metadata(md)
         # new path (MCP-style references)
         # if not pointers and n.get("references"):
         # pointers = _extract_pointers_from_references(n["references"])
-        level_from_root = md.get("level_from_root")
-        if level_from_root is None:
-            raise Exception("Data corruption error, level_from_root information is lost")
-        mentions = _extract_pointers_from_mentions(n["mentions"])
+        level_from_root = _legacy_int(md.get("level_from_root"), label="level_from_root")
+        mentions = _extract_pointers_from_mentions(
+            _legacy_object_list(n.get("mentions"), label="mentions")
+        )
+        node_id = _legacy_string(n.get("id"), label="id")
+        parent_id_raw = md.get("parent_id")
+        parent_id = (
+            UUID(_legacy_string(parent_id_raw, label="parent_id"))
+            if parent_id_raw
+            else None
+        )
         sem = SemanticNode(
-            node_id=UUID(n["id"]),
-            parent_id=UUID(md["parent_id"]) if md.get("parent_id") else None,
-            node_type=md.get("semantic_node_type", "TEXT_FLOW"),
-            title=n.get("label") or "",
+            node_id=UUID(node_id),
+            parent_id=parent_id,
+            node_type=_legacy_node_type(md.get("semantic_node_type", "TEXT_FLOW")),
+            title=_legacy_string(n.get("label"), label="label", default=""),
             total_content_pointers=mentions,
             child_nodes=[],
-            level_from_root=level_from_root
+            level_from_root=level_from_root,
         )
-        sem_nodes[n["id"]] = sem
+        sem_nodes[node_id] = sem
 
     children_by_parent: dict[str, list[str]] = defaultdict(list)
     for e in edges_data:
@@ -3490,8 +3582,14 @@ def kge_payload_to_semantic_tree(payload: dict[str, Any]) -> "SemanticNode":
             continue
 
         if "source_ids" in e or "target_ids" in e:
-            src_ids = e.get("source_ids") or []
-            tgt_ids = e.get("target_ids") or []
+            src_ids = [
+                item
+                for item in _legacy_string_list(e.get("source_ids", []), label="source_ids")
+            ]
+            tgt_ids = [
+                item
+                for item in _legacy_string_list(e.get("target_ids", []), label="target_ids")
+            ]
             if not src_ids or not tgt_ids:
                 continue
             parent_id = src_ids[0]
@@ -3499,6 +3597,10 @@ def kge_payload_to_semantic_tree(payload: dict[str, Any]) -> "SemanticNode":
         else:
             parent_id = e.get("subject_id")
             child_id = e.get("object_id")
+            if parent_id is not None:
+                parent_id = _legacy_string(parent_id, label="subject_id")
+            if child_id is not None:
+                child_id = _legacy_string(child_id, label="object_id")
             if not parent_id or not child_id:
                 continue
 

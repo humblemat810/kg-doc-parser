@@ -6,21 +6,57 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-try:
-    from typing import TypeAliasType
-except ImportError:  # PyPy 3.11 does not expose the Python 3.12 alias API.
-    from typing_extensions import TypeAliasType  # noqa: UP035
+from typing_extensions import TypeAliasType  # noqa: UP035 - PyPy 3.11 compatibility
 
-JsonScalar = TypeAliasType("JsonScalar", None | bool | int | float | str)  # noqa: UP040
-JsonValue = TypeAliasType(  # noqa: UP040
-    "JsonValue",
-    JsonScalar | list["JsonValue"] | dict[str, "JsonValue"],
+JsonScalar = TypeAliasType(  # noqa: UP040 - PyPy 3.11 compatibility
+    "JsonScalar", None | bool | int | float | str
 )
+JsonValue = TypeAliasType(  # noqa: UP040 - PyPy 3.11 compatibility
+    "JsonValue",
+    None
+    | bool
+    | int
+    | float
+    | str
+    | list["JsonValue"]  # pyright: ignore[reportInvalidTypeForm]
+    | dict[str, "JsonValue"],  # pyright: ignore[reportInvalidTypeForm]
+)
+JsonObject = dict[str, JsonValue]
 
 
+def decode_json_value(value: object, *, label: str = "value") -> JsonValue:
+    """Validate and copy a JSON value at an internal persistence boundary."""
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, list):
+        return [
+            decode_json_value(item, label=f"{label}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, Mapping):
+        decoded: JsonObject = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{label} must be a JSON object with string keys")
+            decoded[key] = decode_json_value(item, label=f"{label}.{key}")
+        return decoded
+    raise TypeError(f"{label} is not JSON serializable: {type(value).__name__}")
+
+
+def decode_json_object(value: object, *, label: str = "object") -> JsonObject:
+    """Validate and copy a JSON object without an unchecked cast."""
+
+    decoded = decode_json_value(value, label=label)
+    if not isinstance(decoded, dict):
+        raise TypeError(f"{label} must be JSON objects")
+    return decoded
+
+
+@runtime_checkable
 class ModelDumpLike(Protocol):
     """Minimal serialization seam for Pydantic-like provider payloads."""
 
@@ -45,13 +81,11 @@ def json_safe(value: object, *, _seen: set[int] | None = None) -> JsonValue:
         return "<cycle>"
     seen.add(identity)
     try:
-        model_dump = getattr(value, "model_dump", None)
-        if callable(model_dump):
-            dumper = cast(ModelDumpLike, value)
+        if isinstance(value, ModelDumpLike):
             try:
-                return json_safe(dumper.model_dump(mode="python"), _seen=seen)
+                return json_safe(value.model_dump(mode="python"), _seen=seen)
             except TypeError:
-                return json_safe(dumper.model_dump(), _seen=seen)
+                return json_safe(value.model_dump(), _seen=seen)
         if is_dataclass(value) and not isinstance(value, type):
             return json_safe(asdict(value), _seen=seen)
         if isinstance(value, Mapping):
@@ -83,4 +117,11 @@ def safe_json_dumps(
     )
 
 
-__all__ = ["JsonValue", "json_safe", "safe_json_dumps"]
+__all__ = [
+    "JsonObject",
+    "JsonValue",
+    "decode_json_object",
+    "decode_json_value",
+    "json_safe",
+    "safe_json_dumps",
+]

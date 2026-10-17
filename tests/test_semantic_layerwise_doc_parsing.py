@@ -1045,13 +1045,6 @@ def test_semantic_document_splitting_pdf_indexed(gemini_key, monkeypatch, parser
     compare_root = os.path.join("..", "doc_data", "raw_documents")
     walk_root = os.path.join("..", "doc_data", "raw_documents", "Samples - 9 Oct 2025")
 
-    loader = RawFileLoader(
-        env_flist_path=None,
-        walk_root=walk_root,
-        compare_root=compare_root,
-        include=["files"],
-    )
-
     @lru_cache(maxsize=10)
     def get_chain_index(folder_path):
         rel_path = pathlib.Path(folder_path).relative_to(compare_root)

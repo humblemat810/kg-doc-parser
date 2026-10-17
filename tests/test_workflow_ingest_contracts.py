@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -10,16 +11,34 @@ from _kogwistar_test_helpers import (
     drain_phase1_indexes_with_workers_until_idle,
 )
 
+from kg_doc_parser.ocr import _structured_output_payload, get_page_json
+from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
+    _legacy_mapping,
+    _legacy_node_type,
+    _legacy_object_list,
+)
 from kg_doc_parser.workflow_ingest.adapters import (
     build_authoritative_source_map,
     build_parser_input_dict,
     normalize_ocr_pages,
 )
 from kg_doc_parser.workflow_ingest.clients import (
+    DirectRuntimeIngestClient,
     ServerCanonicalKgClient,
     UnsupportedClientOperation,
+    _jsonable_payload,
 )
 from kg_doc_parser.workflow_ingest.design import build_ingest_workflow_design
+from kg_doc_parser.workflow_ingest.handlers import (
+    _build_export_bundle,
+    _parser_payload,
+    _parser_source_map,
+    _state_mapping,
+    _state_object_list,
+    _state_object_map,
+    _state_string_list,
+    _validate_public_runtime_policy_conflicts,
+)
 from kg_doc_parser.workflow_ingest.models import (
     BoundingBox,
     GroundedSourceRecord,
@@ -33,6 +52,31 @@ from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, Semanti
 from kg_doc_parser.workflow_ingest.service import run_ingest_workflow
 
 pytestmark = [pytest.mark.workflow]
+
+
+def test_public_and_runtime_parse_strategy_conflict_fails_closed() -> None:
+    normalized = WorkflowIngestInput.from_text(
+        document_id="policy-conflict",
+        text="alpha",
+    ).model_copy(update={"parse_strategy": "layer_excerpt"})
+
+    with pytest.raises(ValueError, match="conflicting parse strategy policies"):
+        _validate_public_runtime_policy_conflicts(
+            normalized,
+            {"split_strategy": "boundary_first"},
+        )
+
+
+def test_matching_public_and_runtime_parse_strategy_is_accepted() -> None:
+    normalized = WorkflowIngestInput.from_text(
+        document_id="policy-match",
+        text="alpha",
+    ).model_copy(update={"parse_strategy": "layer_boundary"})
+
+    _validate_public_runtime_policy_conflicts(
+        normalized,
+        {"split_strategy": "boundary_first"},
+    )
 
 
 @pytest.fixture(
@@ -60,6 +104,83 @@ def _local_scratch_dir(name: str) -> Path:
     path = root / f"{name}_{uuid4().hex}"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+@pytest.mark.ci
+def test_client_jsonable_payload_uses_typed_model_dump_protocol() -> None:
+    class _BackendDump:
+        def model_dump(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs == {"field_mode": "backend", "dump_format": "json"}
+            return {"value": "backend"}
+
+    class _LegacyDump:
+        def model_dump(self) -> dict[str, object]:
+            return {"value": "legacy"}
+
+    assert _jsonable_payload(_BackendDump()) == {"value": "backend"}
+    assert _jsonable_payload(_LegacyDump()) == {"value": "legacy"}
+
+
+@pytest.mark.ci
+def test_handler_persisted_lists_reject_malformed_item_types() -> None:
+    with pytest.raises(TypeError, match="object list contains a malformed item"):
+        _state_object_list([{"valid": True}, "not-an-object"])
+    with pytest.raises(TypeError, match="string list contains a non-string item"):
+        _state_string_list(["valid", 3])
+
+
+@pytest.mark.ci
+def test_handler_persisted_parser_objects_reject_non_json_keys_and_entries() -> None:
+    with pytest.raises(TypeError, match="parser payload must be a JSON object"):
+        _parser_payload({1: "not-a-json-key"})
+    with pytest.raises(TypeError, match="parser source map.*must be a JSON object"):
+        _parser_source_map({"cluster": {1: "not-a-json-key"}})
+    with pytest.raises(TypeError, match="object map entry.*is malformed"):
+        _state_object_map({"cluster": {1: "not-a-json-key"}})
+    with pytest.raises(TypeError, match="JSON serializable"):
+        _state_object_list([{"nested": object()}])
+    with pytest.raises(TypeError, match="JSON serializable"):
+        _state_mapping({"nested": object()})
+
+
+@pytest.mark.ci
+def test_legacy_ocr_page_loader_rejects_non_object_json(tmp_path: Path) -> None:
+    (tmp_path / "page_1.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(TypeError, match="OCR page JSON must be JSON objects"):
+        get_page_json(str(tmp_path), 1)
+
+
+@pytest.mark.ci
+def test_legacy_ocr_structured_output_envelope_is_runtime_checked() -> None:
+    semantic = SemanticNode(
+        title="response",
+        node_type="DOCUMENT_ROOT",
+        total_content_pointers=[],
+        child_nodes=[],
+        level_from_root=0,
+    )
+    assert _structured_output_payload({"parsed": semantic})["parsed"] is semantic
+
+    with pytest.raises(TypeError, match="structured OCR output parsed value"):
+        _structured_output_payload({"parsed": {"text": "not a model"}})
+
+
+@pytest.mark.ci
+def test_legacy_graph_helpers_validate_mapping_key_types() -> None:
+    assert _legacy_mapping({"id": "node-1"}, label="node") == {"id": "node-1"}
+
+    with pytest.raises(TypeError, match="must have string keys"):
+        _legacy_mapping({1: "node-1"}, label="node")
+    with pytest.raises(TypeError, match="must have string keys"):
+        _legacy_object_list([{1: "node-1"}], label="nodes")
+
+
+@pytest.mark.ci
+def test_legacy_node_type_narrows_the_finite_sum_type() -> None:
+    assert _legacy_node_type("TABLE") == "TABLE"
+    with pytest.raises(ValueError, match="unsupported legacy semantic node type"):
+        _legacy_node_type("unknown")
 
 
 def _fake_semantic_tree(*, collection, parser_input_dict, parser_source_map):
@@ -243,6 +364,7 @@ def test_normalize_ocr_and_source_map_contract():
                 "pdf_page_num": 1,
                 "printed_page_number": "1",
                 "contains_table": False,
+                "unresolved_item_count": 2,
                 "OCR_text_clusters": [
                     {
                         "text": "Alpha clause",
@@ -260,7 +382,7 @@ def test_normalize_ocr_and_source_map_contract():
                         "bb_x_max": 6,
                         "bb_y_min": 7,
                         "bb_y_max": 8,
-                        "cluster_number": 0,
+                        "cluster_number": 1,
                     }
                 ],
             }
@@ -273,7 +395,8 @@ def test_normalize_ocr_and_source_map_contract():
     assert any(record.modality == "ocr_text" for record in source_map.values())
     assert any(record.modality == "image_region" for record in source_map.values())
     assert any(unit_id.endswith("_t0") for unit_id in source_map)
-    assert any(unit_id.endswith("_i0") for unit_id in source_map)
+    assert any(unit_id.endswith("_i1") for unit_id in source_map)
+    assert inp.collections[0].pages[0].metadata["unresolved_item_count"] == 2
 
 
 @pytest.mark.ci
@@ -353,6 +476,24 @@ def test_normalize_ocr_rejects_malformed_coordinates_and_clusters(field, value):
 
 
 @pytest.mark.ci
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("text", 42), ("description", 42), ("media_byte_length", "1024")],
+)
+def test_normalize_ocr_rejects_malformed_nested_cluster_fields(field, value) -> None:
+    page = {
+        "pdf_page_num": 1,
+        "OCR_text_clusters": [{"text": "Alpha", "cluster_number": 0}],
+        "non_text_objects": [{"description": "Figure", "cluster_number": 1}],
+    }
+    target = page["OCR_text_clusters"][0] if field == "text" else page["non_text_objects"][0]
+    target[field] = value
+
+    with pytest.raises(TypeError, match="must be"):
+        normalize_ocr_pages(document_id="ocr-invalid-nested", title="OCR", pages=[page])
+
+
+@pytest.mark.ci
 def test_normalize_ocr_rejects_inverted_boxes_and_cluster_collisions():
     with pytest.raises(ValueError, match="minimums"):
         normalize_ocr_pages(
@@ -385,6 +526,18 @@ def test_normalize_ocr_rejects_inverted_boxes_and_cluster_collisions():
                         {"text": "Alpha", "cluster_number": 0},
                         {"text": "Beta", "cluster_number": 0},
                     ],
+                }
+            ],
+        )
+    with pytest.raises(ValueError, match="duplicate OCR image cluster_number"):
+        normalize_ocr_pages(
+            document_id="ocr-cross-modality-duplicate-cluster",
+            title="OCR Cross Modality Duplicate Cluster",
+            pages=[
+                {
+                    "pdf_page_num": 1,
+                    "OCR_text_clusters": [{"text": "Alpha", "cluster_number": 0}],
+                    "non_text_objects": [{"description": "Figure", "cluster_number": 0}],
                 }
             ],
         )
@@ -550,6 +703,39 @@ def test_fake_workflow_run_text_success_and_knowledge_persist(
     assert any(event["event"] == "succeeded" for event in history)
 
 
+@pytest.mark.ci
+def test_direct_graph_publication_is_idempotent_for_replayed_bundle() -> None:
+    """A replayed accepted bundle must not create a second graph publication."""
+    scratch_dir = _local_scratch_dir("direct_graph_publication_idempotence")
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", "in_memory"
+    )
+    result, bundle = run_ingest_workflow(
+        inp=WorkflowIngestInput.from_text(
+            document_id="replayed-publication-doc",
+            text="Alpha clause\nBeta clause",
+            title="Replayed Publication",
+        ),
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        deps={"parse_semantic_fn": _fake_semantic_tree},
+    )
+    assert result.status == "succeeded"
+    assert bundle is not None
+
+    client = DirectRuntimeIngestClient(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+    )
+    replay = client.persist_graph_payload(bundle)
+
+    assert replay.nodes_written == 0
+    assert replay.edges_written == 0
+    assert bundle.graph_payload["nodes"]
+
+
 def test_fake_workflow_run_ocr_success(workflow_backend_kind):
     scratch_dir = _local_scratch_dir("ocr_success")
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
@@ -646,6 +832,36 @@ def test_fake_workflow_validation_failure_is_structured(workflow_backend_kind):
     assert all(count >= 1 for count in attempt_counts.values())
     history = run.final_state["strategy_execution_history"]
     assert any(event["event"] == "selected" for event in history)
+
+
+@pytest.mark.ci
+def test_export_rejects_opaque_nested_grouping_metadata() -> None:
+    base = WorkflowIngestInput.from_text(
+        document_id="opaque-grouping-doc",
+        text="A small document",
+        title="Opaque grouping",
+    )
+    collection = base.collections[0].model_copy(
+        update={"metadata": {"document_tree": {"nodes": [{"summary": object()}]}}}
+    )
+    inp = base.model_copy(update={"collections": [collection]})
+    ctx = SimpleNamespace(
+        state_view={
+            "normalized_input": inp,
+            "semantic_tree": SemanticNode(
+                title="Opaque grouping",
+                node_type="DOCUMENT_ROOT",
+                total_content_pointers=[],
+                child_nodes=[],
+                level_from_root=0,
+            ),
+            "parser_source_map": {},
+            "authoritative_source_map": {},
+        }
+    )
+
+    with pytest.raises(TypeError, match="document_tree metadata.*JSON serializable"):
+        _build_export_bundle(ctx=ctx)
 
 
 @pytest.mark.ci
@@ -791,6 +1007,18 @@ def test_export_bundle_llm_slicing_excludes_backend_grounding_data():
     assert "authoritative_source_map" not in llm_view
     assert "embedding_spaces" not in llm_view
     assert backend_view["authoritative_source_map"]["u1"]["parser_text"] == "Alpha"
+    assert bundle.grouping_contract == "optional"
+
+
+@pytest.mark.ci
+def test_export_bundle_required_grouping_contract_fails_closed_without_tree() -> None:
+    with pytest.raises(ValueError, match="required grouping contract needs grouping_tree"):
+        WorkflowExportBundle(
+            graph_payload={"nodes": [], "edges": []},
+            grouping_contract="required",
+            authoritative_source_map={},
+            persisted_to_knowledge_engine=False,
+        )
 
 
 def test_pointer_correction_is_applied_before_validation(workflow_backend_kind):

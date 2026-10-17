@@ -51,6 +51,7 @@ if True:
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
 from typing import Literal, Self, TypeAlias
+
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_extension.model_slicing import (
     DtoType,
@@ -59,8 +60,14 @@ from pydantic_extension.model_slicing import (
 from pydantic_extension.model_slicing.mixin import DtoField
 
 JsonPrimitive = str | int | float | bool | None
-JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
+JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]  # noqa: UP040 - PyPy 3.11 support
+JsonObject: TypeAlias = dict[str, JsonValue]  # noqa: UP040 - PyPy 3.11 support
+
+
+class ModelInvariantError(ValueError):
+    """Raised when an OCR model cannot satisfy its structural contract."""
+
+
 #========================= OCR DOC
 
 # pre-validation model
@@ -102,7 +109,7 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
-    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of the identified text clusters. Must cover all OCR_text_clusters once and only once. ")
+    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of all text and non-text clusters. Must cover every cluster once and only once. ")
     page_x_min : DtoType[float]=Field(description='the page x min in pixel coordinate. ')
     page_x_max : DtoType[float]=Field(description='the page x max in pixel coordinate. ')
     page_y_min : DtoType[float]=Field(description='the page y min in pixel coordinate. ')
@@ -115,20 +122,38 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
                                                                                       '"low", "medium" or "high". '
                                 'low: text barely legible. medium: Legible with non smooth due to pixelation. high: texts are easily and highly identifiable. ' )
     contains_table: DtoType[bool] = Field(description='Whether this page contains table. ')
+    unresolved_item_count: DtoType[int] = Field(
+        default=0,
+        ge=0,
+        description=(
+            'Number of provider-recognised items that could not be represented '
+            'with a usable bounding box or modality record.'
+        ),
+    )
+    spatial_accuracy: DtoType[Literal['page', 'region', 'line', 'word', 'character']] = Field(
+        default='page',
+        description=(
+            'The declared precision of the bounding boxes. Use page for a '
+            'synthetic page-wide fallback; providers with item-level boxes '
+            'must explicitly declare region or finer precision.'
+        ),
+    )
 
     @model_validator(mode='after')
     def check_cluster_meaningful_ordering_agreement(self) -> Self:
-        if bool(self.is_empty_page) == (len(self.OCR_text_clusters) > 0):
+        all_clusters = self.OCR_text_clusters + self.non_text_objects
+        if bool(self.is_empty_page) == (len(all_clusters) > 0):
             raise ValueError(
-                f"is_empty_page value {self.is_empty_page} disagree with OCR_text_clusters "
-                f"len={len(self.OCR_text_clusters)}"
+                f"is_empty_page value {self.is_empty_page} disagree with OCR clusters "
+                f"len={len(all_clusters)}"
             )
-        text_ids = {item.cluster_number for item in self.OCR_text_clusters}
-        overlap_id = text_ids.intersection({item.cluster_number for item in self.non_text_objects})
+        all_ids = [item.cluster_number for item in all_clusters]
+        overlap_id = {cluster_id for cluster_id in all_ids if all_ids.count(cluster_id) > 1}
         if overlap_id:
             raise ValueError(f"cluster number from non_text_objects block and ocr text blocks must be ALL distinct. Overlapped ids: {list(overlap_id)}")
-        if len(self.meaningful_ordering) != len(text_ids) or set(self.meaningful_ordering) != text_ids:
-            raise ValueError("meaningful_ordering must cover each text cluster exactly once")
+        all_ids_set = set(all_ids)
+        if len(self.meaningful_ordering) != len(all_ids_set) or set(self.meaningful_ordering) != all_ids_set:
+            raise ValueError("meaningful_ordering must cover each text and non-text cluster exactly once")
         return self
 
     
@@ -155,9 +180,11 @@ class SplitPage(OCRClusterResponseBc):
     def model_dump(self, *arg: object, **kwarg: object) -> JsonObject:
         return self.to_doc()
     def dump_raw(self, *arg: object, **kwarg: object) -> JsonObject:
-        return super(SplitPage, self).model_dump(exclude = ["refined_version"], *arg, **kwarg)
+        options = {**kwarg, "exclude": ["refined_version"]}
+        return super().model_dump(*arg, **options)
     def dump_supercede_parse(self, *arg: object, **kwarg: object) -> JsonObject:
-        return super(SplitPage, self).model_dump(exclude = ["refined_version", "metadata"], *arg, **kwarg)
+        options = {**kwarg, "exclude": ["refined_version", "metadata"]}
+        return super().model_dump(*arg, **options)
     @model_validator(mode="after")
     def roundtrip_invariant(self, info: ValidationInfo) -> "SplitPage":
         # Context may be None if caller didn't pass it
@@ -238,7 +265,10 @@ class SplitPage(OCRClusterResponseBc):
                     elif (i_non_ocr < len(non_ocr_cluster)) and expected_next == non_ocr_cluster[i_non_ocr].cluster_number:
                         i_non_ocr += 1
                     else:
-                        raise Exception(f'expected index {expected_next} not found in both ocr_cluster nor signature_blocks')
+                        raise ModelInvariantError(
+                            f"expected index {expected_next} not found in both "
+                            "ocr_cluster nor signature_blocks"
+                        )
                     expected_next += 1
 
             

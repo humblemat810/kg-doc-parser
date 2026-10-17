@@ -11,7 +11,7 @@ import shutil
 import tempfile
 import threading
 from collections.abc import Generator
-from typing import BinaryIO
+from typing import BinaryIO, Protocol, cast
 
 from pdf2image import convert_from_path
 from pypdf import PdfReader, PdfWriter
@@ -212,12 +212,21 @@ def batch_pdf2png(
 # OS-specific file locking
 if platform.system() == "Windows":
     import msvcrt
+
+    class _MsvcrtLike(Protocol):
+        LK_NBLCK: int
+        LK_UNLCK: int
+
+        def locking(self, fd: int, mode: int, nbytes: int) -> None: ...
+
+    _msvcrt = cast(_MsvcrtLike, msvcrt)
+
     def lock_file(file_handle: BinaryIO) -> None:
-        msvcrt.locking(file_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        _msvcrt.locking(file_handle.fileno(), _msvcrt.LK_NBLCK, 1)
 
     def unlock_file(file_handle: BinaryIO) -> None:
         try:
-            msvcrt.locking(file_handle.fileno(), msvcrt.LK_UNLCK, 1)
+            _msvcrt.locking(file_handle.fileno(), _msvcrt.LK_UNLCK, 1)
         except OSError:
             pass
 

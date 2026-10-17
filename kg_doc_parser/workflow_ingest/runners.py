@@ -7,22 +7,26 @@ workflow code can also reuse the same wrappers directly.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
+from .document_grouping import GroupProposal
 from .ocr_pipeline import (
     OCRImagePayload,
     OCRRunner,
     OCRWorkflowArtifacts,
     PDFRasterizer,
+    SummaryGenerator,
+    SummaryPolicy,
     run_ocr_ingest_workflow,
 )
 from .page_index import PageIndexParseResult, PageIndexSourceFormat
@@ -37,7 +41,9 @@ from .parser_core import (
 from .parsing import parse_page_index_document, parse_tree_document
 from .probe import WorkflowProbe, emit_probe_event
 from .providers import WorkflowProviderSettings
+from .runtime_contracts import WorkflowRuntimeDeps
 from .semantics import HydratedTextPointer, SemanticNode
+from .serialization import JsonObject
 from .service import build_default_engines
 
 if TYPE_CHECKING:
@@ -60,7 +66,7 @@ class WorkflowCommandResult:
     status: str | None = None
     probe_path: Path | None = None
     summary_path: Path | None = None
-    extra: dict[str, object] = field(default_factory=dict)
+    extra: JsonObject = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -76,8 +82,8 @@ class PageIndexWorkflowCommandResult(WorkflowCommandResult):
 @dataclass(slots=True)
 class LayerwiseWorkflowCommandResult(WorkflowCommandResult):
     tree: LegacySemanticNode | None = None
-    source_map: dict[str, dict[str, object]] | None = None
-    graph_payload: dict[str, object] | None = None
+    source_map: ParserSourceMap | None = None
+    graph_payload: JsonObject | None = None
 
 
 def _fallback_parse_semantic_fn(
@@ -104,7 +110,7 @@ def _fallback_parse_semantic_fn(
             parent_id=root.node_id,
         )
         for unit in page.units:
-            if not getattr(unit, "text", None):
+            if not unit.text:
                 continue
             text = str(unit.text)
             page_text_parts.append(text)
@@ -179,8 +185,8 @@ def build_legacy_parse_semantic_fn(
     def _parse_semantic_fn(
         *,
         collection: SourceCollectionLike,
-        parser_input_dict: dict[str, object],
-        parser_source_map: dict[str, dict[str, object]],
+        parser_input_dict: ParserPayload,
+        parser_source_map: ParserSourceMap,
         model_names: list[str] | None = None,
     ) -> object:
         env_overrides = {
@@ -234,6 +240,15 @@ def discover_input_files(
     return sorted({p.resolve(): p for p in files}.values(), key=lambda p: str(p))
 
 
+def _collision_safe_batch_identity(source_path: Path, stem_counts: Mapping[str, int]) -> str:
+    """Keep legacy stems when unique and fence duplicate batch identities."""
+    stem = source_path.stem
+    if stem_counts.get(stem, 0) <= 1:
+        return stem
+    digest = hashlib.sha256(str(source_path.resolve()).encode("utf-8")).hexdigest()[:16]
+    return f"{stem}-{digest}"
+
+
 def run_ocr_source_workflow(
     source_path: str | Path,
     *,
@@ -246,9 +261,16 @@ def run_ocr_source_workflow(
     conversation_engine: GraphKnowledgeEngine | None = None,
     knowledge_engine: GraphKnowledgeEngine | None = None,
     probe: WorkflowProbe | None = None,
-    deps: Mapping[str, object] | None = None,
+    deps: WorkflowRuntimeDeps | None = None,
     document_id: str | None = None,
     title: str | None = None,
+    grouping_proposals: Sequence[GroupProposal] | None = None,
+    grouping_passes: Sequence[Sequence[GroupProposal]] | None = None,
+    grouping_policy_version: str = "baseline-v1",
+    summary_policy: SummaryPolicy | None = None,
+    summary_generator: SummaryGenerator | None = None,
+    run_id: str | None = None,
+    resume_from_checkpoint: bool = False,
 ) -> OcrWorkflowCommandResult:
     source_path = Path(source_path)
     output_dir = Path(output_dir)
@@ -294,8 +316,15 @@ def run_ocr_source_workflow(
         ocr_runner=ocr_runner,
         pdf_rasterizer=pdf_rasterizer,
         ocr_candidate_models=ocr_candidate_models,
-        deps={"probe": probe, **(deps or {})},
+        deps=cast(WorkflowRuntimeDeps, {"probe": probe, **(deps or {})}),
         probe=probe,
+        grouping_proposals=grouping_proposals,
+        grouping_passes=grouping_passes,
+        grouping_policy_version=grouping_policy_version,
+        summary_policy=summary_policy,
+        summary_generator=summary_generator,
+        run_id=run_id,
+        resume_from_checkpoint=resume_from_checkpoint,
     )
     _emit(
         probe,
@@ -320,6 +349,7 @@ def run_ocr_source_workflow(
             "state_db_path": str(artifacts.state_db_path),
             "legacy_dir": str(artifacts.legacy_dir),
             "rendered_dir": str(artifacts.rendered_dir),
+            "document_tree_path": str(artifacts.document_tree_path) if artifacts.document_tree is not None else None,
         },
         artifacts=artifacts,
     )
@@ -337,16 +367,22 @@ def run_ocr_batch_workflow(
     conversation_engine: GraphKnowledgeEngine | None = None,
     knowledge_engine: GraphKnowledgeEngine | None = None,
     probe: WorkflowProbe | None = None,
-    deps: Mapping[str, object] | None = None,
+    deps: WorkflowRuntimeDeps | None = None,
+    summary_policy: SummaryPolicy | None = None,
+    summary_generator: SummaryGenerator | None = None,
 ) -> list[OcrWorkflowCommandResult]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     probe = _ensure_probe(output_dir, probe)
     files = discover_input_files(source_paths, allowed_suffixes=OCR_FILE_SUFFIXES, recursive=True)
+    stem_counts: dict[str, int] = {}
+    for source_path in files:
+        stem_counts[source_path.stem] = stem_counts.get(source_path.stem, 0) + 1
     _emit(probe, "workflow.batch_started", workflow_kind="ocr", file_count=len(files), output_dir=str(output_dir))
     results: list[OcrWorkflowCommandResult] = []
     for source_path in files:
-        relative_output = output_dir / source_path.stem
+        batch_identity = _collision_safe_batch_identity(source_path, stem_counts)
+        relative_output = output_dir / batch_identity
         result = run_ocr_source_workflow(
             source_path,
             output_dir=relative_output,
@@ -359,7 +395,9 @@ def run_ocr_batch_workflow(
             knowledge_engine=knowledge_engine,
             probe=probe,
             deps=deps,
-            document_id=source_path.stem,
+            summary_policy=summary_policy,
+            summary_generator=summary_generator,
+            document_id=batch_identity,
             title=source_path.stem,
         )
         results.append(result)

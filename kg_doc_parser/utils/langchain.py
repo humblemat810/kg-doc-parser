@@ -1,8 +1,8 @@
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from logging import Logger
-from typing import Any, Iterator, TypedDict
+from typing import Protocol, TypedDict, cast, runtime_checkable
 from uuid import UUID
 
 from langchain_core.callbacks.base import BaseCallbackHandler
@@ -32,6 +32,42 @@ class UsageHistoryEntry(TypedDict):
     end_time: float | None
 
 
+class TokenDetails(TypedDict, total=False):
+    cache_read: int | float | str
+    reasoning: int | float | str
+
+
+class UsageMetadata(TypedDict, total=False):
+    input_tokens: int | float | str
+    output_tokens: int | float | str
+    input_token_details: TokenDetails
+    output_token_details: TokenDetails
+
+
+@runtime_checkable
+class _UsageMetadataCarrier(Protocol):
+    @property
+    def usage_metadata(self) -> object: ...
+
+
+@runtime_checkable
+class _GenerationInfoCarrier(Protocol):
+    @property
+    def generation_info(self) -> object: ...
+
+
+@runtime_checkable
+class _MessageCarrier(Protocol):
+    @property
+    def message(self) -> object: ...
+
+
+@runtime_checkable
+class _ResponseMetadataCarrier(Protocol):
+    @property
+    def response_metadata(self) -> object: ...
+
+
 cost_table: dict[str, ModelCost] = {
     "gemini-2.0-flash": {"input": 0.0001, "output": 0.0004, "cache" : 0.0, "storage_per_hour": 0.0},
     "gemini-1.5-pro": {"input": 0.001250, "output": 0.005, "cache" : 0.0, "storage_per_hour": 0.0},
@@ -43,18 +79,60 @@ cost_table: dict[str, ModelCost] = {
 }
 
 
-def _usage_metadata(message: object) -> Mapping[str, Any] | None:
-    value = getattr(message, "usage_metadata", None)
-    return value if isinstance(value, Mapping) else None
+def _usage_metadata(message: object) -> UsageMetadata | None:
+    value = message.usage_metadata if isinstance(message, _UsageMetadataCarrier) else None
+    return cast(UsageMetadata, dict(value)) if isinstance(value, Mapping) else None
+
+
+def _non_negative_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        return max(0, int(value))
+    if isinstance(value, str):
+        try:
+            return max(0, int(value))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _usage_count(usage: Mapping[str, object], key: str) -> int:
+    return _non_negative_int(usage.get(key, 0))
+
+
+def _nested_usage_count(usage: Mapping[str, object], key: str, nested_key: str) -> int:
+    details = usage.get(key)
+    if not isinstance(details, Mapping):
+        return 0
+    return _non_negative_int(details.get(nested_key, 0))
 
 
 def _model_name(generation: object) -> str:
-    value = getattr(generation, "generation_info", None)
+    value = (
+        generation.generation_info
+        if isinstance(generation, _GenerationInfoCarrier)
+        else None
+    )
     if isinstance(value, Mapping):
         model = value.get("model_name")
         if isinstance(model, str):
             return model
     return "unknown"
+
+
+def _generation_message(generation: object) -> object | None:
+    if isinstance(generation, _MessageCarrier):
+        return generation.message
+    return None
+
+
+def _response_metadata(message: object) -> object | None:
+    if isinstance(message, _ResponseMetadataCarrier):
+        return message.response_metadata
+    return None
 keys = list(cost_table.keys())
 for k in keys:
     if k.startswith('models/'):
@@ -98,13 +176,13 @@ class GeminiCostCallbackHandler(BaseCallbackHandler):
         self.run_end_time: float | None = None
     def on_llm_start(
         self,
-        serialized: dict[str, Any],
+        serialized: dict[str, object],
         prompts: list[str],
         *,
         run_id: UUID,
         parent_run_id: UUID | None = None,
         tags: list[str] | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: dict[str, object] | None = None,
         **kwargs: object,
     ) -> object:
         self.run_start_time = time.time()
@@ -117,27 +195,19 @@ class GeminiCostCallbackHandler(BaseCallbackHandler):
             for gen in generation:
                 # Check if the generation object is a ChatGeneration instance
                 # and has the 'usage_metadata' attribute.
-                if isinstance(gen, ChatGeneration) and hasattr(gen, 'message'):
+                if isinstance(gen, ChatGeneration):
                     message = gen.message
                     usage_metadata = _usage_metadata(message)
                     if usage_metadata is not None:
                                     
                     
-                            input_tokens = usage_metadata.get("input_tokens", 0)
-                            output_tokens = usage_metadata.get("output_tokens", 0)
-
-                            input_details = usage_metadata.get("input_token_details")
-                            cached_tokens = (
-                                input_details.get("cache_read", 0)
-                                if isinstance(input_details, Mapping)
-                                else 0
+                            input_tokens = _usage_count(usage_metadata, "input_tokens")
+                            output_tokens = _usage_count(usage_metadata, "output_tokens")
+                            cached_tokens = _nested_usage_count(
+                                usage_metadata, "input_token_details", "cache_read"
                             )
-                            output_tokens = usage_metadata.get("output_tokens", 0)
-                            output_details = usage_metadata.get("output_token_details")
-                            reasoning_tokens = (
-                                output_details.get("reasoning", 0)
-                                if isinstance(output_details, Mapping)
-                                else 0
+                            reasoning_tokens = _nested_usage_count(
+                                usage_metadata, "output_token_details", "reasoning"
                             )
 
                             if input_tokens > 0 or output_tokens > 0:
@@ -237,9 +307,12 @@ class PromptCostTokenLogger(BaseCallbackHandler):
             for gg in g:
                 
                 to_log: dict[str, str | None] = {'response_metadata': None, 'usage_metadata': None}
-                message = getattr(gg, "message", None)
-                if message is not None and hasattr(message, "response_metadata"):
-                    to_log["response_metadata"] = f"{message.response_metadata}"
+                message = _generation_message(gg)
+                response_metadata = (
+                    _response_metadata(message) if message is not None else None
+                )
+                if response_metadata is not None:
+                    to_log["response_metadata"] = f"{response_metadata}"
                 usage = _usage_metadata(message) if message is not None else None
                 if usage is not None:
                     to_log["usage_metadata"] = f"{usage}"
@@ -251,26 +324,20 @@ class PromptCostTokenLogger(BaseCallbackHandler):
             for gen in generation:
                 # Check if the generation object is a ChatGeneration instance
                 # and has the 'usage_metadata' attribute.
-                message = getattr(gen, "message", None)
+                message = _generation_message(gen)
                 if message is not None and _usage_metadata(message) is not None:
                     
                     usage_metadata = _usage_metadata(message)
                     if usage_metadata is None:
                         continue
                     
-                    input_tokens = usage_metadata.get("input_tokens", 0)
-                    input_details = usage_metadata.get("input_token_details")
-                    cached_tokens = (
-                        input_details.get("cache_read", 0)
-                        if isinstance(input_details, Mapping)
-                        else 0
+                    input_tokens = _usage_count(usage_metadata, "input_tokens")
+                    cached_tokens = _nested_usage_count(
+                        usage_metadata, "input_token_details", "cache_read"
                     )
-                    output_tokens = usage_metadata.get("output_tokens", 0)
-                    output_details = usage_metadata.get("output_token_details")
-                    reasoning_tokens = (
-                        output_details.get("reasoning", 0)
-                        if isinstance(output_details, Mapping)
-                        else 0
+                    output_tokens = _usage_count(usage_metadata, "output_tokens")
+                    reasoning_tokens = _nested_usage_count(
+                        usage_metadata, "output_token_details", "reasoning"
                     )
                     if input_tokens > 0 or output_tokens > 0:
                         cost = calculate_gemini_cost(input_tokens, output_tokens, cached_tokens, model_name=_model_name(gen))
@@ -305,7 +372,7 @@ class PromptCostTokenLogger(BaseCallbackHandler):
 class PromptTokenCounter(BaseCallbackHandler):
     def on_llm_start(
         self,
-        serialized: dict[str, Any],
+        serialized: dict[str, object],
         prompts: list[str],
         **kwargs: object,
     ) -> None:

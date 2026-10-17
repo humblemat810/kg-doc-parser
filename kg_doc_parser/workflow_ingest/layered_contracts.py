@@ -10,17 +10,18 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .models import (
+    CurrentLayerContext,
     CurrentLayerResult,
     LayerChildCandidate,
     LayerFrontierItem,
     ParseSessionState,
 )
 from .parser_core import (
+    ParserSourceMap,
     ProposeLayerFn,
     commit_layer_children,
     enqueue_next_layer_frontier,
@@ -83,7 +84,7 @@ class LayeredParseSeedResult(BaseModel):
     usage: LayeredParseUsage = Field(default_factory=LayeredParseUsage)
 
     @model_validator(mode="after")
-    def _validate_root(self) -> "LayeredParseSeedResult":
+    def _validate_root(self) -> LayeredParseSeedResult:
         validate_semantic_tree_integrity(self.root, max_depth=self.session.max_depth)
         return self
 
@@ -100,10 +101,10 @@ class LayeredParseExpandRequest(BaseModel):
     limits: LayeredParseLimits = Field(default_factory=LayeredParseLimits)
 
     @model_validator(mode="after")
-    def _validate_input_tree(self) -> "LayeredParseExpandRequest":
+    def _validate_input_tree(self) -> LayeredParseExpandRequest:
         validate_semantic_tree_integrity(
             SemanticNode.model_validate(self.semantic_tree),
-            parser_source_map=cast(dict[str, dict[str, object]], self.source_map),
+            parser_source_map=self.source_map,
             max_depth=min(self.limits.max_depth, self.session.max_depth),
         )
         return self
@@ -122,7 +123,7 @@ class LayeredParseExpandResult(BaseModel):
     usage: LayeredParseUsage = Field(default_factory=LayeredParseUsage)
 
     @model_validator(mode="after")
-    def _validate_result_tree(self) -> "LayeredParseExpandResult":
+    def _validate_result_tree(self) -> LayeredParseExpandResult:
         validate_semantic_tree_integrity(self.semantic_tree, max_depth=self.session.max_depth)
         return self
 
@@ -287,25 +288,20 @@ def expand_layered_frontier(
     )
 
 
-def _estimate_context_tokens(context: object) -> int:
+def _estimate_context_tokens(context: CurrentLayerContext) -> int:
     """Use a deterministic conservative estimate when no tokenizer is present."""
 
-    parent_titles = getattr(context, "parent_titles", ()) or ()
-    pointers = getattr(context, "parent_content_pointers_by_id", {}) or {}
-    text = " ".join(str(title) for title in parent_titles)
-    for pointer_list in pointers.values():
+    text = " ".join(context.parent_titles)
+    for pointer_list in context.parent_content_pointers_by_id.values():
         for pointer in pointer_list:
-            text += " " + str(getattr(pointer, "verbatim_text", "") or "")
+            text += " " + pointer.verbatim_text
     return max(1, (len(text) + 3) // 4)
 
 
-def _parser_source_map(source_map: LayeredSourceMap) -> dict[str, dict[str, object]]:
-    """Adapt JSON-safe DTO records to the parser core's open payload contract."""
+def _parser_source_map(source_map: LayeredSourceMap) -> ParserSourceMap:
+    """Return the DTO source map without widening its JSON value contract."""
 
-    return {
-        source_id: cast(dict[str, object], dict(record))
-        for source_id, record in source_map.items()
-    }
+    return dict(source_map)
 
 
 def _model_or_mapping(value: Mapping[str, JsonValue], name: str) -> _LayeredCollection:

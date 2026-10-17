@@ -25,13 +25,24 @@ def test_parser_ci_pypy311_matrix_leg_is_required() -> None:
 def test_parser_ci_uses_the_declared_kogwistar_release() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = metadata["tool"]["poetry"]["dependencies"]["kogwistar"]
-    assert version == "0.6.8"
+    assert version == "0.6.12"
 
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "ref: v0.6.8" in workflow
+    assert "ref: v0.6.12" in workflow
 
     exported_requirements = (ROOT / "req.txt").read_text(encoding="utf-8")
-    assert "kogwistar==0.6.8" in exported_requirements
+    assert "kogwistar==0.6.12" in exported_requirements
+
+
+def test_installed_kogwistar_exposes_the_persisted_workflow_api() -> None:
+    from kogwistar.runtime.models import WorkflowInvocationRequest
+    from kogwistar.runtime.runtime import WorkflowRuntime
+
+    import kogwistar
+
+    assert kogwistar.__version__ == "0.6.12"
+    assert WorkflowInvocationRequest is not None
+    assert callable(WorkflowRuntime.resume_from_latest_checkpoint)
 
 
 def test_parser_has_gated_pypi_release_workflow() -> None:
@@ -80,6 +91,16 @@ def test_parser_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes() -> None:
         assert "\n          tests\n" not in block
 
 
+def test_pypy_ci_supports_pillow_source_fallback_on_hosted_runners() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    pypy_block = workflow.split("Install PyPy 3.11 Python-authority dependencies", 1)[1]
+
+    assert (
+        "sudo apt-get install --no-install-recommends -y libjpeg-dev zlib1g-dev"
+        in pypy_block
+    )
+
+
 def test_parser_mcp_dependency_is_official_sdk_only() -> None:
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = metadata["tool"]["poetry"]["dependencies"]
@@ -101,7 +122,8 @@ def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None
         .splitlines()
     )
 
-    assert "diskcache>=5.6,<6" in requirements
+    assert "diskcache==5.6.3" in requirements
+    assert "pillow==11.3.0" in requirements
     assert "joblib" not in requirements
 
     for forbidden in (
@@ -112,6 +134,24 @@ def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None
         "pikepdf",
     ):
         assert forbidden not in requirements
+
+
+def test_pypy_311_profile_is_pinned_to_the_parser_lockfile() -> None:
+    requirements_path = ROOT / "requirements-pypy-3.11-experimental.txt"
+    requirements = {
+        line.split("#", 1)[0]
+        .strip()
+        .split("==", 1)[0]
+        .split("[", 1)[0]
+        .lower(): line.split("==", 1)[1]
+        for line in requirements_path.read_text(encoding="utf-8").splitlines()
+        if "==" in line and not line.lstrip().startswith("#")
+    }
+    lock_packages = tomllib.loads((ROOT / "poetry.lock").read_text(encoding="utf-8"))["package"]
+    locked = {str(package["name"]): str(package["version"]) for package in lock_packages}
+    for package_name, version in requirements.items():
+        normalized_name = package_name.replace("_", "-")
+        assert locked[normalized_name] == version
 
 
 def test_parser_cache_selects_a_provider_without_hard_coding_joblib() -> None:

@@ -1,0 +1,243 @@
+{
+  "created_at": 1791992046.1850789,
+  "implementation": "CPython",
+  "live_requested": true,
+  "live_status": "succeeded",
+  "providers": [
+    {
+      "coordinates": false,
+      "engine": "rapidocr",
+      "local": true,
+      "optional_dependency": "docling",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "docling",
+      "structured_output": false,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": "easyocr",
+      "local": true,
+      "optional_dependency": "docling[easyocr]",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "docling",
+      "structured_output": false,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": "tesseract",
+      "local": true,
+      "optional_dependency": "docling + tesseract",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "docling",
+      "structured_output": false,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": "tesserocr",
+      "local": true,
+      "optional_dependency": "docling[tesserocr]",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "docling",
+      "structured_output": false,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": "ocrmac",
+      "local": true,
+      "optional_dependency": "docling[ocrmac]",
+      "platforms": [
+        "macos"
+      ],
+      "provider": "docling",
+      "structured_output": false,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": "nemotron-ocr",
+      "local": true,
+      "optional_dependency": "docling[nemotron]",
+      "platforms": [
+        "linux"
+      ],
+      "provider": "docling",
+      "structured_output": false,
+      "vision": true
+    },
+    {
+      "coordinates": true,
+      "engine": null,
+      "local": true,
+      "optional_dependency": "rapidocr-onnxruntime",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "rapidocr",
+      "structured_output": false,
+      "vision": true
+    },
+    {
+      "coordinates": true,
+      "engine": null,
+      "local": true,
+      "optional_dependency": "easyocr",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "easyocr",
+      "structured_output": false,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": null,
+      "local": true,
+      "optional_dependency": "langchain-openai",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "bonsai",
+      "structured_output": true,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": null,
+      "local": false,
+      "optional_dependency": "langchain-google-genai",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "gemini",
+      "structured_output": true,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": null,
+      "local": true,
+      "optional_dependency": "langchain-ollama",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "ollama",
+      "structured_output": true,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": null,
+      "local": false,
+      "optional_dependency": "langchain-openai",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "openai",
+      "structured_output": true,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": null,
+      "local": false,
+      "optional_dependency": "langchain-openai",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "azure",
+      "structured_output": true,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": null,
+      "local": false,
+      "optional_dependency": "langchain-google-vertexai",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "vertex",
+      "structured_output": true,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": null,
+      "local": false,
+      "optional_dependency": "langchain-anthropic",
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "anthropic",
+      "structured_output": true,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": null,
+      "local": false,
+      "optional_dependency": null,
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "codex",
+      "structured_output": true,
+      "vision": true
+    },
+    {
+      "coordinates": false,
+      "engine": null,
+      "local": true,
+      "optional_dependency": null,
+      "platforms": [
+        "linux",
+        "windows",
+        "macos"
+      ],
+      "provider": "fake",
+      "structured_output": true,
+      "vision": false
+    }
+  ],
+  "python": "3.13.3"
+}

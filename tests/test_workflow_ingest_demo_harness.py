@@ -17,13 +17,13 @@ from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowLLMCallCache,
     WorkflowProviderSettings,
-    workflow_cache_namespace,
     build_chat_model,
     build_embedding_function,
     run_demo_harness,
+    workflow_cache_namespace,
 )
 from kg_doc_parser.workflow_ingest.clients import _json_int
-from kg_doc_parser.workflow_ingest.demo_harness import _start_subprocess_server
+from kg_doc_parser.workflow_ingest.demo_harness import _DemoHttpResponse, _start_subprocess_server
 
 
 def _scratch(name: str) -> Path:
@@ -309,6 +309,45 @@ def test_document_tree_client_adapts_export_ids_to_temp_batch_tokens():
     assert payload["edges"][0]["target_ids"] == ["nn:2"]
 
 
+def test_document_tree_client_rejects_malformed_canonical_response_fields():
+    class _MalformedResponseClient(_CaptureHttpClient):
+        def post(self, endpoint: str, json: dict):
+            self.calls.append((endpoint, json))
+
+            class _Response:
+                status_code = 200
+                text = "ok"
+
+                @staticmethod
+                def json():
+                    return {"status": "ok", "engine_result": []}
+
+            return _Response()
+
+    persistence_client = DocumentTreeApiPersistenceClient(
+        client=_MalformedResponseClient(), transport="test"
+    )
+    with pytest.raises(TypeError, match="engine_result must be an object"):
+        persistence_client.persist_graph_payload(
+            type(
+                "_Bundle",
+                (),
+                {
+                    "graph_payload": {
+                        "doc_id": "doc-1",
+                        "nodes": [{"id": "n1"}],
+                        "edges": [],
+                    }
+                },
+            )()
+        )
+
+
+def test_demo_http_response_rejects_objects_without_typed_response_protocol():
+    with pytest.raises(TypeError, match="does not expose the required fields"):
+        _DemoHttpResponse(object())
+
+
 def test_document_tree_client_rejects_non_list_graph_records():
     client = _CaptureHttpClient()
     persistence_client = DocumentTreeApiPersistenceClient(client=client, transport="test")
@@ -433,6 +472,13 @@ def test_demo_harness_writes_probe_summary_and_cache():
     assert "workflow.run_started" in kinds
     assert "workflow.step_started" in kinds
     assert "workflow.step_finished" in kinds
+    finished = [event for event in events if event["kind"] == "workflow.step_finished"]
+    assert finished
+    assert all(isinstance(event.get("route_next"), list) for event in finished)
+    assert all(
+        all(isinstance(step, str) for step in event["route_next"])
+        for event in finished
+    )
     assert "workflow.persistence_result" in kinds
     assert "workflow.llm_cache_miss" in kinds
     assert "demo.finished" in kinds

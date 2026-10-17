@@ -1,0 +1,3 @@
+{"ts": "2026-10-14T15:37:37.663179Z", "kind": "cli.command_started", "command": "ocr", "output_dir": "experiments\\ocr-provider-smoke\\direct-codex-bridge-multipage"}
+{"ts": "2026-10-14T15:37:39.308027Z", "kind": "workflow.file_started", "workflow_kind": "ocr", "source_path": "experiments\\ocr-provider-smoke\\assets\\ocr_smoke_document.pdf", "output_dir": "experiments\\ocr-provider-smoke\\direct-codex-bridge-multipage", "document_id": "ocr_smoke_document"}
+{"ts": "2026-10-14T15:37:40.020886Z", "kind": "probe.closed", "path": "experiments\\ocr-provider-smoke\\direct-codex-bridge-multipage\\workflow-events.jsonl"}

@@ -25,7 +25,6 @@ from kogwistar.runtime.models import StepRunResult
 
 from .design import (
     DEFAULT_WORKFLOW_ID,
-    WorkflowEngineLike,
     ensure_ingest_workflow_design,
 )
 from .models import (
@@ -36,7 +35,8 @@ from .models import (
     WorkflowIngestInput,
 )
 from .probe import WorkflowProbe, emit_probe_event
-from .serialization import JsonValue
+from .runtime_contracts import WorkflowRuntimeDeps
+from .serialization import JsonValue, ModelDumpLike, json_safe
 
 
 class UnsupportedClientOperation(RuntimeError):
@@ -45,6 +45,18 @@ class UnsupportedClientOperation(RuntimeError):
 
 IngestStatus = Literal["succeeded", "failed", "failure", "suspended"]
 JsonObject = dict[str, JsonValue]
+
+
+class _EngineResultPayload(TypedDict, total=False):
+    nodes_added: int | str
+    edges_added: int | str
+
+
+class _CanonicalResponsePayload(TypedDict, total=False):
+    status: str
+    engine_result: _EngineResultPayload
+    inserted_nodes: int | str
+    inserted_edges: int | str
 
 
 class ResumeIngestArguments(TypedDict, total=False):
@@ -62,7 +74,7 @@ class ResumeIngestArguments(TypedDict, total=False):
     workflow_id: Required[str]
     conversation_id: Required[str]
     turn_node_id: Required[str]
-    deps: dict[str, object]
+    deps: WorkflowRuntimeDeps
 
 
 def _workflow_probe(deps: Mapping[str, object] | None) -> WorkflowProbe | None:
@@ -71,13 +83,55 @@ def _workflow_probe(deps: Mapping[str, object] | None) -> WorkflowProbe | None:
 
 
 def _state_json(value: Mapping[str, object]) -> dict[str, JsonValue]:
-    return cast(dict[str, JsonValue], dict(value))
+    normalized = json_safe(value)
+    if not isinstance(normalized, dict):
+        raise TypeError("workflow state must serialize to a JSON object")
+    return normalized
+
+
+def _decode_canonical_response(value: object) -> _CanonicalResponsePayload:
+    """Validate the small response contract used by canonical persistence."""
+    if not isinstance(value, Mapping):
+        raise TypeError("canonical server persistence returned a non-object JSON body")
+
+    decoded: _CanonicalResponsePayload = {}
+    status = value.get("status")
+    if status is not None:
+        if not isinstance(status, str):
+            raise TypeError("canonical server persistence response status must be a string")
+        decoded["status"] = status
+
+    engine_result = value.get("engine_result")
+    if engine_result is not None:
+        if not isinstance(engine_result, Mapping):
+            raise TypeError("canonical server persistence engine_result must be an object")
+        decoded_engine: _EngineResultPayload = {}
+        for key in ("nodes_added", "edges_added"):
+            counter = engine_result.get(key)
+            if counter is not None:
+                if not (type(counter) is int or isinstance(counter, str)):
+                    raise TypeError(
+                        f"canonical server persistence engine_result {key!r} must be an integer or string"
+                    )
+                decoded_engine[key] = counter
+        decoded["engine_result"] = decoded_engine
+
+    for key in ("inserted_nodes", "inserted_edges"):
+        counter = value.get(key)
+        if counter is not None:
+            if not (type(counter) is int or isinstance(counter, str)):
+                raise TypeError(
+                    f"canonical server persistence response {key!r} must be an integer or string"
+                )
+            decoded[key] = counter
+    return decoded
 
 
 class HttpResponseLike(Protocol):
     """Small response surface required from an HTTP transport adapter."""
 
     status_code: int
+    text: str
 
     def json(self) -> object: ...
 
@@ -113,20 +167,20 @@ class CanonicalGraphPersistenceClient(ABC):
         raise NotImplementedError
 
 
-def _jsonable_payload(value: object) -> object:
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
+def _jsonable_payload(value: object) -> JsonValue:
+    if isinstance(value, ModelDumpLike):
         try:
-            return model_dump(field_mode="backend", dump_format="json")
+            dumped = value.model_dump(field_mode="backend", dump_format="json")
         except TypeError:
-            return model_dump()
+            dumped = value.model_dump()
+        return _jsonable_payload(dumped)
     if isinstance(value, Mapping):
         return {str(k): _jsonable_payload(v) for k, v in value.items()}
     if isinstance(value, list):
         return [_jsonable_payload(item) for item in value]
     if isinstance(value, tuple):
         return [_jsonable_payload(item) for item in value]
-    return value
+    return json_safe(value)
 
 
 def _record_list(value: object, *, field_name: str) -> list[JsonObject]:
@@ -137,7 +191,7 @@ def _record_list(value: object, *, field_name: str) -> list[JsonObject]:
         converted = _jsonable_payload(item)
         if not isinstance(converted, dict):
             raise TypeError(f"graph payload {field_name!r} items must be objects")
-        records.append(cast(JsonObject, {str(key): payload for key, payload in converted.items()}))
+        records.append({key: payload for key, payload in converted.items()})
     return records
 
 
@@ -151,7 +205,7 @@ def _string_list(value: object, *, field_name: str) -> list[str]:
     return list(value)
 
 
-def _optional_record_id(record: Mapping[str, object], *, field_name: str) -> str:
+def _optional_record_id(record: Mapping[str, JsonValue], *, field_name: str) -> str:
     value = record.get("id")
     if value is None:
         return ""
@@ -176,7 +230,7 @@ def _json_int(value: object, default: int = 0) -> int:
     return default
 
 
-def _to_temp_id_graph_payload(graph_payload: Mapping[str, object]) -> JsonObject:
+def _to_temp_id_graph_payload(graph_payload: Mapping[str, JsonValue]) -> JsonObject:
     """Adapt a canonical export bundle into the server's batch-temp-id contract."""
 
     nodes = _record_list(graph_payload.get("nodes", []), field_name="nodes")
@@ -254,22 +308,20 @@ class DocumentTreeApiPersistenceClient(CanonicalGraphPersistenceClient):
         if self.base_url and not endpoint.startswith("http://") and not endpoint.startswith("https://"):
             endpoint = f"{self.base_url}{endpoint}"
         response = self.client.post(endpoint, json=payload)
-        status_code = int(getattr(response, "status_code", 500))
+        status_code = response.status_code
         if status_code >= 400:
-            body = getattr(response, "text", "")
             raise RuntimeError(
-                f"canonical server persistence failed: status={status_code} body={body}"
+                f"canonical server persistence failed: status={status_code} body={response.text}"
             )
         response_payload = response.json()
-        if not isinstance(response_payload, Mapping):
-            raise TypeError("canonical server persistence returned a non-object JSON body")
-        response_json = cast(Mapping[str, JsonValue], response_payload)
+        response_json = _decode_canonical_response(response_payload)
         raw_engine_result = response_json.get("engine_result")
-        engine_result = raw_engine_result if isinstance(raw_engine_result, Mapping) else {}
+        engine_result = raw_engine_result if raw_engine_result is not None else {}
+        status = response_json.get("status", "")
         return CanonicalGraphWriteResult(
             persistence_mode="server_canonical",
             kg_authority="server",
-            canonical_write_confirmed=str(response_json.get("status") or "").lower() == "ok",
+            canonical_write_confirmed=status.lower() == "ok",
             nodes_written=_json_int(
                 engine_result.get("nodes_added")
                 or response_json.get("inserted_nodes")
@@ -294,7 +346,7 @@ class IngestExecutionClient(ABC):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, object] | None = None,
+        deps: WorkflowRuntimeDeps | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
@@ -325,9 +377,9 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
     def __init__(
         self,
         *,
-        workflow_engine: WorkflowEngineLike,
-        conversation_engine: WorkflowEngineLike,
-        knowledge_engine: WorkflowEngineLike | None = None,
+        workflow_engine: GraphKnowledgeEngine,
+        conversation_engine: GraphKnowledgeEngine,
+        knowledge_engine: GraphKnowledgeEngine | None = None,
     ) -> None:
         self.workflow_engine = workflow_engine
         self.conversation_engine = conversation_engine
@@ -338,7 +390,7 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, object] | None = None,
+        deps: WorkflowRuntimeDeps | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:
@@ -531,8 +583,8 @@ class ServerCanonicalKgClient(IngestExecutionClient):
     def __init__(
         self,
         *,
-        workflow_engine: WorkflowEngineLike,
-        conversation_engine: WorkflowEngineLike,
+        workflow_engine: GraphKnowledgeEngine,
+        conversation_engine: GraphKnowledgeEngine,
         persistence_client: CanonicalGraphPersistenceClient,
     ) -> None:
         self.workflow_engine = workflow_engine
@@ -544,7 +596,7 @@ class ServerCanonicalKgClient(IngestExecutionClient):
         *,
         inp: WorkflowIngestInput,
         workflow_id: str = DEFAULT_WORKFLOW_ID,
-        deps: dict[str, object] | None = None,
+        deps: WorkflowRuntimeDeps | None = None,
         run_id: str | None = None,
         resume_from_checkpoint: bool = False,
     ) -> IngestRunResult:

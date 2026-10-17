@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Mapping
-from typing import Literal, Protocol, TypedDict, cast
+from typing import Literal, Protocol, cast
 
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import (
@@ -12,6 +12,7 @@ from kogwistar.runtime.models import (
     RunSuspended,
     StateUpdate,
     StepRunResult,
+    get_route_next_names,
 )
 from kogwistar.runtime.runtime import StepContext
 
@@ -21,8 +22,7 @@ from .adapters import (
     build_parser_source_map,
     select_primary_collection,
 )
-from .cache import WorkflowLLMCallCache, workflow_cache_namespace
-from .clients import CanonicalGraphPersistenceClient
+from .cache import workflow_cache_namespace
 from .models import (
     CanonicalGraphWriteResult,
     CurrentLayerContext,
@@ -40,10 +40,6 @@ from .page_index import PageIndexSourceFormat, parse_page_index_layer
 from .parser_core import (
     ParserPayload,
     ParserSourceMap,
-    ParseSemanticFn,
-    ProposeLayerFn,
-    ReviewLayerFn,
-    SplitStrategy,
     apply_cud_update,
     check_layer_coverage,
     commit_layer_children,
@@ -60,8 +56,8 @@ from .parser_core import (
     switch_split_strategy,
     validate_layer_commit,
 )
-from .probe import WorkflowProbe, emit_probe_event
-from .providers import ProviderDiagnosticsSink, WorkflowProviderSettings
+from .probe import emit_probe_event
+from .runtime_contracts import WorkflowRuntimeDeps
 from .semantics import (
     HydratedTextPointer,
     SemanticNode,
@@ -71,10 +67,9 @@ from .semantics import (
     correct_and_validate_pointer,
     semantic_tree_to_kge_payload,
 )
-from .serialization import JsonValue
+from .serialization import JsonValue, decode_json_object
 from .strategy import (
     ParseStrategy,
-    StrategyTriageFn,
     build_llm_strategy_triage,
     select_parse_strategy,
 )
@@ -83,21 +78,33 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _strategy_attempt(state_view: Mapping[str, object], strategy: str) -> int:
-    raw = state_view.get("strategy_attempt_counts")
-    if not isinstance(raw, dict):
-        return 1
-    value = raw.get(strategy)
+    value = _state_mapping(state_view.get("strategy_attempt_counts")).get(strategy)
     if type(value) is int and value >= 0:
         return value
     return 1
 
 
+def _validate_public_runtime_policy_conflicts(
+    normalized_input: WorkflowIngestInput,
+    runtime_deps: WorkflowRuntimeDeps,
+) -> None:
+    """Reject contradictory request and runtime strategy policies."""
+    requested = normalized_input.parse_strategy
+    configured = runtime_deps.get("split_strategy")
+    if requested not in {"layer_excerpt", "layer_boundary"} or configured is None:
+        return
+    expected = "excerpt_first" if requested == "layer_excerpt" else "boundary_first"
+    if configured != expected:
+        raise ValueError(
+            "conflicting parse strategy policies: request specifies "
+            f"{requested!r}, runtime specifies {configured!r}"
+        )
+
+
 def _parser_payload(value: object) -> ParserPayload:
     """Decode one JSON object from runtime state into parser payload shape."""
 
-    if not isinstance(value, dict):
-        raise TypeError("parser payload must be a JSON object")
-    return dict(value)
+    return decode_json_object(value, label="parser payload")
 
 
 def _parser_source_map(value: object | None) -> ParserSourceMap:
@@ -105,13 +112,12 @@ def _parser_source_map(value: object | None) -> ParserSourceMap:
 
     if value is None:
         return {}
-    if not isinstance(value, dict):
-        raise TypeError("parser source map must be a JSON object")
     source_map: ParserSourceMap = {}
-    for cluster_id, payload in value.items():
-        if not isinstance(payload, dict):
-            raise TypeError(f"parser source cluster {cluster_id!r} must be a JSON object")
-        source_map[str(cluster_id)] = dict(payload)
+    decoded = decode_json_object(value, label="parser source map")
+    for cluster_id, payload in decoded.items():
+        source_map[cluster_id] = decode_json_object(
+            payload, label=f"parser source cluster {cluster_id!r}"
+        )
     return source_map
 
 
@@ -131,15 +137,65 @@ def _correct_parser_pointer(
 def _state_object_map(value: object) -> dict[str, dict[str, JsonValue]]:
     if not isinstance(value, dict):
         return {}
-    return {
-        str(key): cast(dict[str, JsonValue], item)
-        for key, item in value.items()
-        if isinstance(item, dict)
-    }
+    objects: dict[str, dict[str, JsonValue]] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError("workflow state object map contains a non-string key")
+        try:
+            objects[key] = decode_json_object(
+                item, label=f"workflow state object map entry {key!r}"
+            )
+        except TypeError as exc:
+            if not isinstance(item, dict) or not all(
+                isinstance(item_key, str) for item_key in item
+            ):
+                raise TypeError(
+                    f"workflow state object map entry {key!r} is malformed"
+                ) from exc
+            raise
+    return objects
 
 
-def _state_list(value: object) -> list[object]:
-    return list(value) if isinstance(value, list) else []
+def _state_object_list(value: object) -> list[dict[str, JsonValue]]:
+    """Decode a persisted list of JSON objects without widening its items."""
+    if not isinstance(value, list):
+        return []
+    objects: list[dict[str, JsonValue]] = []
+    for item in value:
+        if not isinstance(item, dict) or not all(isinstance(key, str) for key in item):
+            raise TypeError("workflow state object list contains a malformed item")
+        objects.append(decode_json_object(item, label="workflow state object list item"))
+    return objects
+
+
+def _state_string_list(value: object) -> list[str]:
+    """Decode a persisted list whose values are required to be strings."""
+    if not isinstance(value, list):
+        return []
+    if any(not isinstance(item, str) for item in value):
+        raise TypeError("workflow state string list contains a non-string item")
+    return list(value)
+
+
+def _state_mapping(value: object) -> Mapping[str, JsonValue]:
+    """Narrow a persisted JSON object before reading named fields.
+
+    Runtime state is decoded from JSON at this boundary.  Keeping the value
+    as ``Mapping[str, JsonValue]`` makes nested reads use the actual JSON sum
+    type instead of widening every ``.get`` result to ``object``.
+    """
+
+    if isinstance(value, Mapping) and all(isinstance(key, str) for key in value):
+        return decode_json_object(value, label="workflow state mapping")
+    return {}
+
+
+def _state_scalar(value: object) -> JsonValue | None:
+    """Return only values safe to emit in a JSON probe snapshot."""
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return None
 
 
 def _state_int(value: object, default: int = 0) -> int:
@@ -190,35 +246,6 @@ class StepHandler(Protocol):
     def __call__(self, context: StepContext, /) -> StepRunResult: ...
 
 
-class WorkflowRuntimeDeps(TypedDict, total=False):
-    """Optional, typed dependencies injected into workflow steps.
-
-    The state carried by the runtime remains JSON-like and intentionally
-    dynamic. This contract applies only to executable collaborators and
-    bounded workflow policy, so a malformed dependency cannot silently pass
-    through as an arbitrary object.
-    """
-
-    probe: WorkflowProbe | None
-    parse_semantic_fn: ParseSemanticFn
-    propose_layer_fn: ProposeLayerFn
-    review_layer_fn: ReviewLayerFn
-    llm_cache: WorkflowLLMCallCache
-    graph_persistence_client: CanonicalGraphPersistenceClient
-    persistence_mode: str
-    kg_authority: str
-    max_depth: int
-    allow_review: bool
-    split_strategy: SplitStrategy
-    fallback_split_strategy: SplitStrategy
-    max_review_retries: int
-    layer_frontier_batch_size: int
-    coverage_threshold: float
-    provider_settings: WorkflowProviderSettings
-    triage_strategy_fn: StrategyTriageFn
-    provider_diagnostics_sink: ProviderDiagnosticsSink
-
-
 def _build_export_bundle(
     *,
     ctx: StepContext,
@@ -232,11 +259,23 @@ def _build_export_bundle(
         doc_id=collection.collection_id,
         parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
     )
+    raw_grouping_tree = collection.metadata.get("document_tree")
+    grouping_tree: dict[str, JsonValue] | None = None
+    if raw_grouping_tree is not None:
+        grouping_tree = decode_json_object(
+            raw_grouping_tree,
+            label="document_tree metadata",
+        )
     deps = runtime_deps or {}
+    grouping_contract: Literal["optional", "required"] = (
+        "required" if deps.get("require_grouping_tree") is True else "optional"
+    )
     persistence_mode = str(ctx.state_view.get("persistence_mode", deps.get("persistence_mode", "local_debug")))
     kg_authority = str(ctx.state_view.get("kg_authority", deps.get("kg_authority", "local")))
     return WorkflowExportBundle(
         graph_payload=graph_payload,
+        grouping_tree=grouping_tree,
+        grouping_contract=grouping_contract,
         authoritative_source_map=cast(
             dict[str, GroundedSourceRecord],
             ctx.state_view["authoritative_source_map"],
@@ -273,24 +312,35 @@ def _success(
     )
 
 
-def _probe_snapshot(state_view: dict[str, object]) -> dict[str, object]:
-    snapshot: dict[str, object] = {
-        "state_keys": sorted(k for k, v in state_view.items() if v is not None),
+def _probe_snapshot(state_view: Mapping[str, object]) -> dict[str, JsonValue]:
+    snapshot: dict[str, JsonValue] = {
+        "state_keys": cast(
+            JsonValue,
+            sorted(k for k, v in state_view.items() if v is not None),
+        ),
     }
     frontier = state_view.get("layer_frontier_queue")
     if isinstance(frontier, list):
         snapshot["frontier_size"] = len(frontier)
-    current_layer_context = state_view.get("current_layer_context")
-    if isinstance(current_layer_context, dict):
-        snapshot["current_depth"] = current_layer_context.get("depth")
-        snapshot["retry_count"] = current_layer_context.get("retry_count")
-        snapshot["split_strategy"] = current_layer_context.get("split_strategy")
-    parse_session = state_view.get("parse_session")
-    if isinstance(parse_session, dict):
-        snapshot["parse_mode"] = parse_session.get("mode")
-        snapshot["session_depth"] = parse_session.get("current_depth")
-        snapshot["session_strategy"] = parse_session.get("split_strategy")
-        snapshot["strategy_switch_count"] = parse_session.get("strategy_switch_count")
+    current_layer_context = _state_mapping(state_view.get("current_layer_context"))
+    for field_name, output_name in (
+        ("depth", "current_depth"),
+        ("retry_count", "retry_count"),
+        ("split_strategy", "split_strategy"),
+    ):
+        value = _state_scalar(current_layer_context.get(field_name))
+        if value is not None:
+            snapshot[output_name] = value
+    parse_session = _state_mapping(state_view.get("parse_session"))
+    for field_name, output_name in (
+        ("mode", "parse_mode"),
+        ("current_depth", "session_depth"),
+        ("split_strategy", "session_strategy"),
+        ("strategy_switch_count", "strategy_switch_count"),
+    ):
+        value = _state_scalar(parse_session.get(field_name))
+        if value is not None:
+            snapshot[output_name] = value
     return snapshot
 
 
@@ -301,10 +351,15 @@ def _progress_bar(done: int, total: int, width: int = 20) -> str:
     return ("█" * filled) + ("░" * (width - filled))
 
 
-def _log_runtime_progress(*, step_name: str, state_view: dict[str, object]) -> None:
-    current_layer_context = state_view.get("current_layer_context")
-    parse_session = state_view.get("parse_session")
-    if not isinstance(current_layer_context, dict) or not isinstance(parse_session, dict):
+def _log_runtime_progress(*, step_name: str, state_view: Mapping[str, object]) -> None:
+    try:
+        current_layer_context = _state_mapping(state_view.get("current_layer_context"))
+        parse_session = _state_mapping(state_view.get("parse_session"))
+    except (TypeError, ValueError):
+        # Progress reporting must not turn malformed diagnostic state into a
+        # workflow failure; strict decoding remains enforced by state consumers.
+        return
+    if not current_layer_context or not parse_session:
         return
     depth = _state_int(current_layer_context.get("depth"), 0)
     max_depth = _state_int(parse_session.get("max_depth"), 10)
@@ -372,7 +427,7 @@ def _register_step(
                 "workflow.step_finished",
                 step=step_name,
                 status=status,
-                route_next=list(getattr(result, "_route_next", []) or []),
+                route_next=get_route_next_names(result),
                 **_probe_snapshot(dict(ctx.state_view)),
             )
             return result
@@ -420,6 +475,7 @@ def register_base_ingest_steps(
     @_register_step(resolver, step_name="init_parse_session", runtime_deps=runtime_deps)
     def _init_parse_session(ctx: StepContext) -> StepRunResult:
         normalized = WorkflowIngestInput.model_validate(ctx.state_view["normalized_input"])
+        _validate_public_runtime_policy_conflicts(normalized, runtime_deps)
         collection = select_primary_collection(normalized)
         parse_semantic_fn = runtime_deps.get("parse_semantic_fn", default_parse_semantic_fn)
         propose_layer_fn = runtime_deps.get("propose_layer_fn")
@@ -731,9 +787,7 @@ def register_layerwise_parser_steps(
         if configured_batch_size is None:
             settings = runtime_deps.get("provider_settings")
             configured_batch_size = (
-                getattr(settings, "layer_frontier_batch_size", None)
-                if settings is not None
-                else 1
+                settings.layer_frontier_batch_size if settings is not None else 1
             )
         raw_frontier = ctx.state_view.get("layer_frontier_queue")
         frontier_items = raw_frontier if isinstance(raw_frontier, list) else []
@@ -1050,7 +1104,7 @@ def register_layerwise_parser_steps(
                 queued = requeue_failed_frontier_items(
                     frontier_queue=[
                         LayerFrontierItem.model_validate(item)
-                        for item in _state_list(ctx.state_view.get("layer_frontier_queue"))
+                        for item in _state_object_list(ctx.state_view.get("layer_frontier_queue"))
                     ],
                     parent_node_ids=failed_parent_ids,
                     depth=current_layer_context.depth,
@@ -1075,7 +1129,7 @@ def register_layerwise_parser_steps(
         current_layer_result = CurrentLayerResult.model_validate(ctx.state_view["current_layer_result"])
         frontier_queue = [
             LayerFrontierItem.model_validate(item)
-            for item in _state_list(ctx.state_view.get("layer_frontier_queue"))
+            for item in _state_object_list(ctx.state_view.get("layer_frontier_queue"))
         ]
         updated_queue = enqueue_next_layer_frontier(
             frontier_queue=frontier_queue,
@@ -1252,7 +1306,7 @@ def register_postparse_steps(
 
     @_register_step(resolver, step_name="parse_failure", runtime_deps=runtime_deps)
     def _parse_failure(ctx: StepContext) -> StepRunResult:
-        errors = [str(value) for value in _state_list(ctx.state_view.get("workflow_errors"))]
+        errors = _state_string_list(ctx.state_view.get("workflow_errors"))
         if not errors:
             errors = ["layer parsing failed after all strategies were exhausted"]
         return RunFailure(
