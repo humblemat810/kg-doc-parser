@@ -1403,7 +1403,6 @@ def test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process() -> None:
         path
         for path in (
             str(repo_root),
-            str(repo_root.parent / "kogwistar"),
             child_env.get("PYTHONPATH", ""),
         )
         if path
