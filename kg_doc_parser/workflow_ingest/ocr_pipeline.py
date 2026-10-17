@@ -2882,6 +2882,13 @@ def _pdf_render_manifest_payload(
     return config
 
 
+def _rasterizer_has_stable_identity(rasterizer: PDFRasterizer) -> bool:
+    """Return whether rendered pages may be safely reused across runs."""
+    return rasterizer is _render_pdf_to_images or isinstance(
+        rasterizer, PDFRasterizerWithIdentity
+    )
+
+
 def _decode_pdf_render_manifest(value: object) -> _PDFRenderManifest | None:
     """Narrow a persisted render manifest before using cache identity fields."""
     if not isinstance(value, dict):
@@ -3006,7 +3013,9 @@ def _render_pdf_with_identity(
         except (OSError, ValueError):
             existing = None
     paths: list[Path] = []
-    if existing is not None and all(existing.get(key) == value for key, value in expected.items()):
+    if _rasterizer_has_stable_identity(rasterizer) and existing is not None and all(
+        existing.get(key) == value for key, value in expected.items()
+    ):
         loaded_page_entries: list[_PDFRenderPageEntry] | None = existing.get("pages")
         if loaded_page_entries is not None:
             candidate_paths: list[Path] = []

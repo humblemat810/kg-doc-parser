@@ -5483,6 +5483,31 @@ def test_pdf_render_manifest_rejects_same_path_replacement(tmp_path: Path) -> No
 
 
 @pytest.mark.ci
+def test_unidentified_pdf_rasterizer_never_reuses_render_manifest(
+    tmp_path: Path,
+) -> None:
+    from kg_doc_parser.workflow_ingest.ocr_pipeline import _render_pdf_with_identity
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"placeholder")
+    rendered = tmp_path / "rendered"
+    calls: list[int] = []
+
+    def _rasterizer(pdf_path: Path, rendered_dir: Path) -> list[Path]:
+        del pdf_path
+        calls.append(1)
+        rendered_dir.mkdir(parents=True, exist_ok=True)
+        path = rendered_dir / "page_1.png"
+        Image.new("RGB", (11, 7), "white").save(path, "PNG")
+        return [path]
+
+    _render_pdf_with_identity(pdf_path=source, rendered_dir=rendered, rasterizer=_rasterizer)
+    _render_pdf_with_identity(pdf_path=source, rendered_dir=rendered, rasterizer=_rasterizer)
+
+    assert calls == [1, 1]
+
+
+@pytest.mark.ci
 def test_builtin_pdf_render_identity_includes_poppler_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
