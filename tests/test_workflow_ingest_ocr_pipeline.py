@@ -475,7 +475,9 @@ def test_ocr_root_lineage_rejects_missing_or_duplicate_child_edges() -> None:
 
 
 @pytest.mark.ci
-def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
+def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scratch = _scratch("ocr_grouping_runtime")
     workflow_engine, conversation_engine, _knowledge_engine = build_workflow_engine_triplet(
         scratch / "engines",
@@ -584,6 +586,59 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
         "apply_grouping_pass",
         "persist_grouping_result",
     }
+
+    # Exercise the two-store crash seam directly: the SQLite grouping commit
+    # succeeds, but the process dies before Kogwistar checkpoints the step.
+    crash_scratch = _scratch("ocr_grouping_sqlite_commit_before_runtime_checkpoint")
+    crash_workflow, crash_conversation, _ = build_workflow_engine_triplet(
+        crash_scratch / "engines",
+        "in_memory",
+    )
+    crash_store = OCRWorkflowStateStore(crash_scratch / "ocr-state.sqlite")
+    original_save = crash_store.save_document_tree
+    crashed = False
+
+    def _save_then_crash(*args: object, **kwargs: object) -> str:
+        nonlocal crashed
+        revision = original_save(*args, **kwargs)  # type: ignore[arg-type]
+        if not crashed:
+            crashed = True
+            raise RuntimeError("simulated crash after SQLite grouping commit")
+        return revision
+
+    monkeypatch.setattr(crash_store, "save_document_tree", _save_then_crash)
+    with pytest.raises(RuntimeError, match="OCR grouping workflow"):
+        run_grouping_workflow(
+            workflow_engine=crash_workflow,
+            conversation_engine=crash_conversation,
+            state_store=crash_store,
+            tree=tree,
+            document_id=tree.document_id,
+            grouping_policy_version="test-v1",
+            grouping_proposals=(
+                GroupProposal(kind="section", members=("leaf:item-a", "leaf:item-b")),
+            ),
+            run_id="ocr-grouping-sqlite-commit-crash",
+        )
+    resumed_after_crash, _ = run_grouping_workflow(
+        workflow_engine=crash_workflow,
+        conversation_engine=crash_conversation,
+        state_store=OCRWorkflowStateStore(crash_scratch / "ocr-state.sqlite"),
+        tree=tree,
+        document_id=tree.document_id,
+        grouping_policy_version="test-v1",
+        grouping_proposals=(
+            GroupProposal(kind="section", members=("leaf:item-a", "leaf:item-b")),
+        ),
+        run_id="ocr-grouping-sqlite-commit-crash",
+        resume_from_checkpoint=True,
+    )
+    expected_after_crash = apply_grouping_proposals(
+        tree,
+        (GroupProposal(kind="section", members=("leaf:item-a", "leaf:item-b")),),
+        grouping_policy_version="test-v1:1",
+    )
+    assert resumed_after_crash == expected_after_crash
 
 
 def test_workflow_runtime_compatibility_rejects_unsupported_lease_argument(
