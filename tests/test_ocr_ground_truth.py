@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from kg_doc_parser.models import NonTextCluster, OCRClusterResponse, TextCluster
@@ -155,3 +157,24 @@ def test_ground_truth_contract_rejects_invalid_annotations() -> None:
             x_max=float("inf"),
             y_max=1.0,
         )
+
+
+def test_recorded_codex_layout_fixture_has_independent_spatial_coverage() -> None:
+    fixture_dir = Path(__file__).parent / "fixtures" / "ocr_ground_truth"
+    response = OCRClusterResponse.model_validate_json(
+        (fixture_dir / "codex_ocr_layout_page_response.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    ground_truth = OCRGroundTruth.model_validate_json(
+        (fixture_dir / "codex_ocr_layout_page_ground_truth.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    report = evaluate_ocr_ground_truth(response, ground_truth)
+
+    assert report.item_recall == pytest.approx(1.0)
+    assert report.mean_spatial_iou >= report.minimum_iou
+    assert report.text_mismatch_item_ids == ()
+    assert report.extra_cluster_numbers == ()
