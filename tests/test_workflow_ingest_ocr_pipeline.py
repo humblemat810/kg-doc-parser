@@ -78,6 +78,7 @@ from _kogwistar_test_helpers import (
     drain_phase1_indexes_until_idle,
 )
 from PIL import Image, ImageDraw
+from pypdf import PdfReader, PdfWriter
 
 import kg_doc_parser.workflow_ingest.ocr_pipeline as ocr_pipeline_module
 import kg_doc_parser.workflow_ingest.ocr_runtime as ocr_runtime_module
@@ -123,6 +124,7 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     OCRQualityPolicy,
     OCRSourcePlan,
     OCRWorkflowStateStore,
+    PDFRasterizer,
     _compute_input_fingerprint,
     _evaluate_ocr_quality,
     _generate_tree_summaries,
@@ -1782,14 +1784,26 @@ def test_grouping_checkpoint_reopens_after_process_termination() -> None:
 @pytest.mark.ci
 @pytest.mark.slow
 def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() -> None:
-    def _make_case(name: str) -> tuple[Path, list[OCRImagePayload]]:
+    def _make_case(name: str) -> tuple[Path, Path, PDFRasterizer]:
         scratch = _scratch(name)
-        payloads: list[OCRImagePayload] = []
-        for page_number in range(1, 101):
-            image_path = scratch / "source" / f"page-{page_number}.png"
-            _draw_test_image(image_path, lines=[f"Acceptance page {page_number}"])
-            payloads.append(OCRImagePayload(page_number=page_number, image_path=str(image_path)))
-        return scratch, payloads
+        pdf_path = scratch / "source" / "acceptance.pdf"
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        writer = PdfWriter()
+        for _ in range(100):
+            writer.add_blank_page(width=1200, height=800)
+        with pdf_path.open("wb") as stream:
+            writer.write(stream)
+
+        def _rasterizer(source: Path, rendered_dir: Path) -> list[Path]:
+            page_count = len(PdfReader(str(source)).pages)
+            paths: list[Path] = []
+            for page_number in range(1, page_count + 1):
+                image_path = rendered_dir / f"page_{page_number}.png"
+                _draw_test_image(image_path, lines=[f"Acceptance page {page_number}"])
+                paths.append(image_path)
+            return paths
+
+        return scratch, pdf_path, _rasterizer
 
     def _acceptance_response(page_number: int) -> OCRClusterResponse:
         """Return deterministic mixed-modality evidence for the release fixture."""
@@ -1866,8 +1880,12 @@ def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() ->
         embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
         triage_enabled=False,
     )
-    interrupted_scratch, interrupted_payloads = _make_case("ocr_root_100_interrupted")
-    reference_scratch, reference_payloads = _make_case("ocr_root_100_reference")
+    interrupted_scratch, interrupted_pdf, interrupted_rasterizer = _make_case(
+        "ocr_root_100_interrupted"
+    )
+    reference_scratch, reference_pdf, reference_rasterizer = _make_case(
+        "ocr_root_100_reference"
+    )
     interrupted_engines = build_workflow_engine_triplet(
         interrupted_scratch / "engines", "in_memory"
     )
@@ -1906,7 +1924,8 @@ def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() ->
         document_id="ocr-root-100-doc",
         title="OCR Root 100 Reference",
         output_dir=reference_scratch / "artifacts",
-        image_payloads=reference_payloads,
+        pdf_path=reference_pdf,
+        pdf_rasterizer=reference_rasterizer,
         provider_settings=settings,
         workflow_engine=reference_engines[0],
         conversation_engine=reference_engines[1],
@@ -1920,7 +1939,8 @@ def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() ->
             document_id="ocr-root-100-doc",
             title="OCR Root 100 Reference",
             output_dir=interrupted_scratch / "artifacts",
-            image_payloads=interrupted_payloads,
+            pdf_path=interrupted_pdf,
+            pdf_rasterizer=interrupted_rasterizer,
             provider_settings=settings,
             workflow_engine=interrupted_engines[0],
             conversation_engine=interrupted_engines[1],
@@ -1934,7 +1954,8 @@ def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() ->
         document_id="ocr-root-100-doc",
         title="OCR Root 100 Reference",
         output_dir=interrupted_scratch / "artifacts",
-        image_payloads=interrupted_payloads,
+        pdf_path=interrupted_pdf,
+        pdf_rasterizer=interrupted_rasterizer,
         provider_settings=settings,
         workflow_engine=interrupted_engines[0],
         conversation_engine=interrupted_engines[1],
