@@ -15,8 +15,8 @@ git show <commit> -- doc/ocr_grouping/OCR_STATUS_LEDGER.md
 
 | Area | Status | Release-blocking remainder |
 | --- | --- | --- |
-| Persisted Kogwistar runtime integration | PARTIAL | Verify published-core fresh-process lineage, duplicate resume, and single graph publication. |
-| Artifact/checkpoint crash consistency | PARTIAL | Reconcile artifact-first and checkpoint-first crashes across SQLite and runtime checkpoints. |
+| Persisted Kogwistar runtime integration | PARTIAL | Parser CI run `39011186190` verifies published-core fresh-process lineage, duplicate resume, single graph publication, and the Linux recovery gate. Persistent graph-backend publication across restart remains a Kogwistar backend-specific gate. |
+| Artifact/checkpoint crash consistency | PASS (parser gate) | Parser CI run `39011186190` passes artifact-first, checkpoint-first, grouping-commit-before-child-checkpoint, and semantic-graph-before-checkpoint recovery tests. |
 | Grouping and summary durability | PARTIAL | Prove monotonic frontier/generation behavior and bounded long-document work. |
 | Semantic hierarchy publication | PARTIAL | Prove accepted grouping is consumed and preserved by semantic parsing and graph export. |
 | OCR completeness and positional fidelity | PARTIAL | Coordinate precision and provider loss diagnostics are enforced; `unresolved_item_count` now records Docling items without usable provenance and `OCRQualityPolicy(reject_unresolved_items=True)` fails closed. Independent completeness for non-text regions, tables, and figures remains open. |
