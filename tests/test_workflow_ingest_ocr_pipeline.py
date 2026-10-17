@@ -2130,7 +2130,9 @@ def _fake_ocr_response(page_number: int, text: str) -> OCRClusterResponse:
     )
 
 
-def _write_valid_ocr_artifact(path: Path, *, page_number: int = 1) -> None:
+def _write_valid_ocr_artifact(
+    path: Path, *, page_number: int = 1, source_image_sha256: str | None = None
+) -> None:
     split_page = SplitPage(
         pdf_page_num=page_number,
         metadata=SplitPageMeta(
@@ -2142,10 +2144,13 @@ def _write_valid_ocr_artifact(path: Path, *, page_number: int = 1) -> None:
             dump_format="python"
         ),
     )
-    path.write_text(
-        json.dumps(split_page.dump_raw(dump_format="json")),
-        encoding="utf-8",
-    )
+    payload = split_page.dump_raw(dump_format="json")
+    if source_image_sha256 is not None:
+        payload["metadata"] = {
+            **split_page.metadata.model_dump(mode="json"),
+            "source_image_sha256": source_image_sha256,
+        }
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 @pytest.mark.ci
@@ -5083,8 +5088,14 @@ def test_rebuild_ignores_artifacts_removed_by_a_shorter_source_revision() -> Non
                 dump_format="python"
             ),
         )
+        rendered_digest = hashlib.sha256(rendered.read_bytes()).hexdigest()
+        page_payload = split_page.dump_raw(dump_format="json")
+        page_payload["metadata"] = {
+            **split_page.metadata.model_dump(mode="json"),
+            "source_image_sha256": rendered_digest,
+        }
         (legacy_dir / f"page_{page_number}.json").write_text(
-            json.dumps(split_page.dump_raw(dump_format="json")),
+            json.dumps(page_payload),
             encoding="utf-8",
         )
 
@@ -5108,6 +5119,44 @@ def test_rebuild_ignores_artifacts_removed_by_a_shorter_source_revision() -> Non
         document_id="shorter-source-revision", page_number=2, stage="ocr"
     ) is None
     assert store.read_document_completed(document_id="shorter-source-revision")
+
+
+@pytest.mark.ci
+def test_rebuild_rejects_legacy_ocr_from_replaced_same_numbered_page() -> None:
+    """A same-sized source replacement must not reuse old page OCR."""
+    scratch = _scratch("ocr_replaced_same_page")
+    rendered_dir = scratch / "rendered"
+    legacy_dir = scratch / "legacy"
+    rendered_dir.mkdir(parents=True)
+    legacy_dir.mkdir(parents=True)
+    rendered = rendered_dir / "page_1.png"
+    rendered.write_bytes(b"new-source-page")
+    old_digest = hashlib.sha256(b"old-source-page").hexdigest()
+    _write_valid_ocr_artifact(
+        legacy_dir / "page_1.json", source_image_sha256=old_digest
+    )
+
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    assert store.rebuild_from_artifacts(
+        document_id="replaced-same-page-doc",
+        title="Replaced Same Page",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="new-source-fingerprint",
+        rendered_dir=rendered_dir,
+        legacy_dir=legacy_dir,
+        progress_path=scratch / "missing-progress.json",
+    )
+
+    state = store.get_page_state(
+        document_id="replaced-same-page-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None
+    assert state.status == "pending"
+    assert state.content_hash == hashlib.sha256(rendered.read_bytes()).hexdigest()
+    assert state.last_error == (
+        "OCR artifact source-image digest does not match the current rendered page"
+    )
 
 
 @pytest.mark.ci

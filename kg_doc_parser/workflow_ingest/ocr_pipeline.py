@@ -1997,6 +1997,13 @@ class OCRWorkflowStateStore:
                 artifact_valid = True
                 metadata = _ocr_artifact_metadata(persisted)
                 config_fingerprint = metadata.get("ocr_configuration_fingerprint")
+                source_digest = metadata.get("source_image_sha256")
+                if source_digest != content_hash:
+                    artifact_valid = False
+                    artifact_error = (
+                        "OCR artifact source-image digest does not match the "
+                        "current rendered page"
+                    )
             except (OSError, ValueError) as exc:
                 artifact_error = f"invalid OCR artifact during state rebuild: {exc}"
             if content_hash is None:
