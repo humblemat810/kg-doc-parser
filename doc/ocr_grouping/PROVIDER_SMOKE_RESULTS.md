@@ -18,13 +18,16 @@ was also used for the Codex bridge run.
 | Codex bridge | Real two-page PDF run | Passed | 2/2 pages; page order preserved; one terminal punctuation mark omitted on page 2 |
 | Bonsai loopback | Real local loopback endpoint | Passed | 4/4 returned regions; 159/160 expected characters; 3 exact regions and one minor spacing difference |
 | Bonsai external endpoint | Real configured endpoint | Failed | Request timeout; not counted as an OCR success |
-| Docling + EasyOCR | Real optional Docling runtime | Passed in prior artifact | One full-page text cluster; no word/region geometry is claimed |
-| Docling + RapidOCR | Prior v2 artifact | Passed in prior artifact | One full-page text cluster; no detailed region geometry is claimed |
+| Docling + EasyOCR | Real optional Docling runtime | Passed in prior artifact | Five positioned items: four text items and one positioned picture covering the table region; no semantic table object was emitted |
+| Docling + RapidOCR | Prior v2 artifact | Passed in prior artifact | Five positioned items: four text items and one positioned picture covering the table region; no semantic table object was emitted |
 
 The direct RapidOCR and EasyOCR smoke was rerun locally on this date. The
 EasyOCR model download was initialization, not test data generation. The
 Docling rerun was stopped after it produced no output during optional model
-initialization; its prior successful artifacts remain labeled as prior runs.
+initialization; its prior successful artifacts remain labeled as prior runs. The
+prior provenance reports contain four text items and one positioned picture with
+the table bounding box, but `tables` is empty. This proves spatial coverage of
+the rendered table region, not table-structure or cell-recall correctness.
 
 ## Interpretation
 
@@ -34,9 +37,10 @@ initialization; its prior successful artifacts remain labeled as prior runs.
   fixture, so it should not be treated as table-complete.
 - Codex produced the best measured fixture result, but its geometry check is
   approximate and does not include word-level IoU ground truth.
-- Docling's adapter intentionally reports page-level geometry when its export
-  does not expose finer reliable coordinates. A full-page box is not evidence
-  of region accuracy.
+- Docling's adapter reports item-level geometry when provenance is exposed and
+  falls back to page-level geometry only when it is not. The live artifacts
+  expose separate text and picture boxes; the picture classification of the
+  rendered table is not evidence of semantic table extraction.
 - A provider marked available by the capability inventory is not thereby a
   successful deployment. Missing optional packages, model initialization
   failures, endpoint timeouts, and platform restrictions remain explicit

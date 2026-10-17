@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import overload
+
 import pytest
 
 from kg_doc_parser.workflow_ingest.document_adapters import (
@@ -36,6 +39,27 @@ def _leaf(node_id: str, item_id: str, text: str, *, kind: str = "paragraph") -> 
         kind=kind,
         parts=(SourceSlice(item_id=item_id, start=0, end=len(text)),),
     )
+
+
+class _CountingSequence(Sequence[str]):
+    """Expose frontier access counts without making the grouping test timing-based."""
+
+    def __init__(self, values: tuple[str, ...]) -> None:
+        self._values = values
+        self.accesses = 0
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    @overload
+    def __getitem__(self, index: int) -> str: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[str, ...]: ...
+
+    def __getitem__(self, index: int | slice) -> str | tuple[str, ...]:
+        self.accesses += 1
+        return self._values[index]
 
 
 def test_document_tree_requires_exact_source_coverage() -> None:
@@ -112,6 +136,26 @@ def test_merge_groups_keeps_large_unaffected_frontier_stable() -> None:
     assert len(updated_frontier) == 255
     assert updated_frontier[:-1] == frontier[:-2]
     assert updated_frontier[-1].startswith("merge:")
+
+
+def test_merge_groups_scans_frontier_linearly_without_nested_rebuilds() -> None:
+    values = tuple(f"leaf-{index}" for index in range(512))
+    frontier = _CountingSequence(values)
+    proposal = GroupProposal(kind="section", members=("leaf-254", "leaf-255"))
+
+    updated_frontier, created = merge_groups(
+        document_id="linear-frontier-doc",
+        frontier=frontier,
+        proposals=(proposal,),
+        grouping_policy_version="v1",
+    )
+
+    assert len(created) == 1
+    assert len(updated_frontier) == 511
+    # Validation, position indexing, and result emission each scan once. The
+    # small allowance covers Python's sequence-stop probes; a quadratic
+    # rebuild would exceed this bound as the frontier grows.
+    assert frontier.accesses <= 3 * len(values) + 3
 
 
 def test_grouping_replay_can_include_accepted_and_new_proposals() -> None:

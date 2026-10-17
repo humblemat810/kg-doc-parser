@@ -15,12 +15,12 @@ git show <commit> -- doc/ocr_grouping/OCR_STATUS_LEDGER.md
 
 | Area | Status | Release-blocking remainder |
 | --- | --- | --- |
-| Persisted Kogwistar runtime integration | PARTIAL | Parser CI run `39011186190` verifies published-core fresh-process lineage, duplicate resume, single graph publication, and the Linux recovery gate. Persistent graph-backend publication across restart remains a Kogwistar backend-specific gate, so it is not duplicated here. |
-| Artifact/checkpoint crash consistency | PASS (parser gate) | Parser CI run `39011186190` passes artifact-first, checkpoint-first, grouping-commit-before-child-checkpoint, and semantic-graph-before-checkpoint recovery tests. |
-| Grouping and summary durability | PARTIAL | Monotonic frontier fencing and large-frontier identity stability are covered. Bounded long-document cost and a complete writer audit remain open. |
+| Persisted Kogwistar runtime integration | PARTIAL | Parser CI run `39011917164` verifies published-core fresh-process lineage, duplicate resume, single graph publication, and the Linux recovery gate. Persistent graph-backend publication across restart remains a Kogwistar backend-specific gate, so it is not duplicated here. |
+| Artifact/checkpoint crash consistency | PASS (parser gate) | Parser CI run `39011917164` passes artifact-first, checkpoint-first, grouping-commit-before-child-checkpoint, and semantic-graph-before-checkpoint recovery tests. |
+| Grouping and summary durability | PARTIAL | Monotonic frontier fencing, large-frontier identity stability, and a linear frontier-access regression are covered. A complete writer audit remains open. |
 | Semantic hierarchy publication | PARTIAL | Accepted grouping is consumed by the semantic callback and preserved in graph export. Fresh-process publication against a durable graph backend remains open and is Kogwistar-owned. |
 | OCR completeness and positional fidelity | PARTIAL | Coordinate precision and provider loss diagnostics are enforced; `unresolved_item_count` now records Docling items without usable provenance and `OCRQualityPolicy(reject_unresolved_items=True)` fails closed. Independent completeness for non-text regions, tables, and figures remains open. |
-| Typing and supported interpreters | PASS | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39011917164` passed CPython 3.12-3.14, PyPy 3.11, and the Linux recovery gate on exact commit `e57fd43`. |
+| Typing and supported interpreters | PASS (source matrix) | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39011917164` passed CPython 3.12-3.14, PyPy 3.11, and the Linux recovery gate on exact commit `e57fd43`. PyPI installation under PyPy remains unavailable while published Kogwistar `0.6.12` declares Python >=3.12; this is a dependency-release gate, not a parser source failure. |
 | Release | OPEN | Do not bump or publish until the release-blocking rows have evidence. |
 
 ## Evidence Standard
