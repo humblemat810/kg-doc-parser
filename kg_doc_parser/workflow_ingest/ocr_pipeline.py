@@ -3317,6 +3317,7 @@ def _minimal_ocr_response_from_text(*, text: str, page_number: int, image_path: 
             data_loss_likelihood=0.0,
             scan_quality="medium",
             contains_table=False,
+            source_item_count=0,
             spatial_accuracy="page",
         )
     return OCRClusterResponse(
@@ -3344,6 +3345,7 @@ def _minimal_ocr_response_from_text(*, text: str, page_number: int, image_path: 
         data_loss_likelihood=0.0,
         scan_quality="medium",
         contains_table=False,
+        source_item_count=1,
         spatial_accuracy="page",
     )
 

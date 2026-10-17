@@ -2346,6 +2346,25 @@ def test_ocr_quality_policy_can_reject_unaccounted_source_items() -> None:
 
 
 @pytest.mark.ci
+def test_raw_text_ocr_fallback_declares_source_item_accounting() -> None:
+    image_path = _scratch("raw_text_ocr_fallback_accounting") / "page.png"
+    Image.new("RGB", (80, 40), "white").save(image_path)
+
+    empty = ocr_pipeline_module._minimal_ocr_response_from_text(
+        text="{}", page_number=1, image_path=image_path
+    )
+    assert empty.source_item_count == 0
+    assert empty.unresolved_item_count == 0
+
+    fallback = ocr_pipeline_module._minimal_ocr_response_from_text(
+        text="raw provider text", page_number=1, image_path=image_path
+    )
+    assert fallback.source_item_count == 1
+    assert fallback.unresolved_item_count == 0
+    assert len(fallback.OCR_text_clusters) + len(fallback.non_text_objects) == 1
+
+
+@pytest.mark.ci
 def test_ocr_quality_policy_rejects_invalid_coordinates_for_item_precision() -> None:
     response = _fake_ocr_response(1, "quality signal").model_copy(
         update={
@@ -2544,7 +2563,7 @@ def test_ocr_strict_quality_rejection_recovers_with_valid_provider_result() -> N
     assert failed_state is not None
     assert failed_state.status == "failed"
 
-    recovered = prepare_ocr_workflow_input(
+    prepare_ocr_workflow_input(
         document_id="ocr-strict-quality-recovery-doc",
         title="OCR Strict Quality Recovery",
         output_dir=scratch,
