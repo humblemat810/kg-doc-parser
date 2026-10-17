@@ -79,7 +79,7 @@ if TYPE_CHECKING:
 class StepResolver(Protocol):
     def __call__(self, op: str) -> Callable[[StepContext], StepRunResult]: ...
 
-_OCR_ROOT_STATE_VERSION = "ocr-root-v2"
+_OCR_ROOT_STATE_VERSION = "ocr-root-v3"
 _OCR_PAGE_STATE_VERSION = "ocr-page-v2"
 
 
@@ -201,6 +201,7 @@ StateStringKey = Literal[
     "document_id",
     "source_fingerprint",
     "grouping_policy_version",
+    "parse_generation",
     "legacy_dir",
     "checkpoint_revision",
 ]
@@ -222,6 +223,7 @@ ResumeIdentityKey = Literal[
     "source_fingerprint",
     "ocr_configuration_fingerprints",
     "grouping_policy_version",
+    "parse_generation",
 ]
 
 
@@ -232,6 +234,7 @@ class _OCRWorkflowState(TypedDict, total=False):
     source_fingerprint: str
     ocr_configuration_fingerprints: list[str]
     grouping_policy_version: str
+    parse_generation: str
     tree: JsonObject
     pass_index: int
     ocr_page_recovery_generation: int
@@ -286,6 +289,7 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
         "document_id",
         "source_fingerprint",
         "grouping_policy_version",
+        "parse_generation",
         "legacy_dir",
         "checkpoint_revision",
     )
@@ -524,6 +528,7 @@ def _validate_root_resume_identity(
     source_fingerprint: str,
     configuration_fingerprints: Sequence[str],
     grouping_policy_version: str,
+    parse_generation: str,
     require_match: bool,
 ) -> None:
     """Reject a root checkpoint built from a different immutable input set."""
@@ -535,6 +540,7 @@ def _validate_root_resume_identity(
         "source_fingerprint": source_fingerprint,
         "ocr_configuration_fingerprints": list(configuration_fingerprints),
         "grouping_policy_version": grouping_policy_version,
+        "parse_generation": parse_generation,
     }
     missing = [key for key in expected if key not in state]
     if missing:
@@ -749,6 +755,14 @@ def _validate_root_page_result(
         )
 
 
+def _semantic_parse_generation(recovery_generation: int) -> str:
+    """Return the immutable semantic-parser generation for one root run."""
+
+    return (
+        "semantic-v1"
+        if recovery_generation == 0
+        else f"semantic-recovery-v{recovery_generation}"
+    )
 def _page_result_needs_recovery(
     *,
     page_result: _OCRWorkflowState,
@@ -1388,6 +1402,7 @@ def run_ocr_root_workflow(
             "ocr_root_lineage_id": "u",
             "source_fingerprint": "u",
             "ocr_configuration_fingerprints": "u",
+            "parse_generation": "u",
             "checkpoint_revision": "u",
             "checkpoint_absent": "u",
             **page_resolver._state_schema,
@@ -1573,6 +1588,14 @@ def run_ocr_root_workflow(
         if not isinstance(input_payload, dict):
             raise TypeError("OCR root has no semantic workflow input")
         recovery_generation = _recovery_generation(state)
+        parse_generation = state.get("parse_generation")
+        expected_parse_generation = _semantic_parse_generation(recovery_generation)
+        if parse_generation != expected_parse_generation:
+            raise RuntimeError(
+                "OCR root parse-generation identity mismatch; refusing to invoke "
+                f"semantic parser with {parse_generation!r}, expected "
+                f"{expected_parse_generation!r}"
+            )
         recovery_suffix = (
             f"|recovery-{recovery_generation}" if recovery_generation else ""
         )
@@ -1585,11 +1608,7 @@ def run_ocr_root_workflow(
                     initial_state={"input": input_payload},
                     result_state_key="semantic_result",
                     run_id=f"{ctx.run_id}|semantic{recovery_suffix}",
-                    invocation_key=(
-                        "semantic-v1"
-                        if not recovery_generation
-                        else f"semantic-recovery-v{recovery_generation}"
-                    ),
+                    invocation_key=parse_generation,
                     conversation_id=f"ingest:{document_id}",
                     turn_node_id=f"ingest:{document_id}:turn",
                 )
@@ -1653,6 +1672,7 @@ def run_ocr_root_workflow(
                     source_fingerprint=preparation.source_plan.input_fingerprint,
                     configuration_fingerprints=preparation.page_context.configuration_fingerprints,
                     grouping_policy_version=grouping_policy_version,
+                    parse_generation=_semantic_parse_generation(recovery_generation),
                     require_match=resume_from_checkpoint,
                 )
                 return root_resolver.resolve(operation)(ctx)
@@ -1712,6 +1732,7 @@ def run_ocr_root_workflow(
                     preparation.page_context.configuration_fingerprints
                 ),
                 "grouping_policy_version": grouping_policy_version,
+                "parse_generation": _semantic_parse_generation(recovery_generation),
                 "ocr_page_recovery_generation": recovery_generation,
                 "ocr_root_lineage_id": run_id or f"ocr|{document_id}",
                 "grouping_proposals": [proposal.model_dump(mode="json") for proposal in grouping_proposals],
@@ -1734,7 +1755,8 @@ def run_ocr_root_workflow(
         source_fingerprint=preparation.source_plan.input_fingerprint,
         configuration_fingerprints=preparation.page_context.configuration_fingerprints,
         grouping_policy_version=grouping_policy_version,
-        require_match=root_resume,
+        parse_generation=_semantic_parse_generation(_recovery_generation(final_state)),
+        require_match=True,
     )
     _validate_root_invocation_lineage(
         conversation_engine,

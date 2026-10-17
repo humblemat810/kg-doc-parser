@@ -140,6 +140,7 @@ from kg_doc_parser.workflow_ingest.ocr_runtime import (
     _json_pages,
     _page_workflow_initial_state,
     _reconcile_page_checkpoint,
+    _semantic_parse_generation,
     _validate_root_resume_identity,
     run_grouping_workflow,
     run_ocr_page_workflow,
@@ -373,11 +374,12 @@ def _write_two_page_pdf(image_paths: list[Path], pdf_path: Path) -> None:
 @pytest.mark.ci
 def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None:
     expected = {
-        "ocr_root_state_version": "ocr-root-v2",
+        "ocr_root_state_version": "ocr-root-v3",
         "document_id": "doc",
         "source_fingerprint": "source-a",
         "ocr_configuration_fingerprints": ["ocr-a"],
         "grouping_policy_version": "group-a",
+        "parse_generation": "semantic-v1",
     }
 
     _validate_root_resume_identity(
@@ -386,6 +388,7 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
         source_fingerprint="source-a",
         configuration_fingerprints=("ocr-a",),
         grouping_policy_version="group-a",
+        parse_generation="semantic-v1",
         require_match=True,
     )
     with pytest.raises(RuntimeError, match="immutable identity fields"):
@@ -395,6 +398,7 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
             source_fingerprint="source-a",
             configuration_fingerprints=("ocr-a",),
             grouping_policy_version="group-a",
+            parse_generation="semantic-v1",
             require_match=True,
         )
     changed = dict(expected, source_fingerprint="source-b")
@@ -405,8 +409,34 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
             source_fingerprint="source-a",
             configuration_fingerprints=("ocr-a",),
             grouping_policy_version="group-a",
+            parse_generation="semantic-v1",
             require_match=True,
         )
+
+
+@pytest.mark.ci
+def test_ocr_root_resume_rejects_a_different_parse_generation() -> None:
+    state = {
+        "ocr_root_state_version": "ocr-root-v3",
+        "document_id": "doc",
+        "source_fingerprint": "source-a",
+        "ocr_configuration_fingerprints": ["ocr-a"],
+        "grouping_policy_version": "group-a",
+        "parse_generation": "semantic-v1",
+    }
+
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        _validate_root_resume_identity(
+            state,
+            document_id="doc",
+            source_fingerprint="source-a",
+            configuration_fingerprints=("ocr-a",),
+            grouping_policy_version="group-a",
+            parse_generation="semantic-recovery-v1",
+            require_match=True,
+        )
+    assert _semantic_parse_generation(0) == "semantic-v1"
+    assert _semantic_parse_generation(1) == "semantic-recovery-v1"
 
 
 @pytest.mark.ci

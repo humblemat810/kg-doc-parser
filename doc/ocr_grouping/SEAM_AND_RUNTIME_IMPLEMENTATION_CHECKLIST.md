@@ -1087,8 +1087,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   authoritative revision identity. The current document revision includes the
   input fingerprint, but same-stem/cross-path identity and immutable revision
   separation still lack acceptance tests.
-- [ ] Separate document ID, source revision, OCR config, grouping revision, and
-  parse generation namespaces.
+- [~] Separate document ID, source revision, OCR config, grouping revision, and
+  parse generation namespaces. The OCR root now persists a dedicated
+  `parse_generation`, validates it on resume, and derives the semantic child
+  invocation key from it; `test_ocr_root_resume_rejects_a_different_parse_generation`
+  covers the mismatch. Same-stem/cross-path and complete downstream revision
+  acceptance evidence remain open.
 - [x] Make default batch document IDs collision-safe for same-stem files. The
   batch runner uses a resolved-path digest when stems collide, and
   `test_ocr_batch_workflow_fences_duplicate_source_stems` verifies distinct IDs

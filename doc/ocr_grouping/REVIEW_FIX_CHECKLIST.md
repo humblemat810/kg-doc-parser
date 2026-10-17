@@ -605,7 +605,10 @@ S01-S12 and C01-C06 rows in
   invalidate summaries; S08's final-group identity loss is fixed and covered,
   while monotonic generation and the complete writer audit remain open.
 - [~] S09-S10 verify runtime checkpoint ownership and collision-safe identity
-  separation for same-stem, changed-path, and changed-content inputs.
+  separation for same-stem, changed-path, changed-content, and parse-generation
+  inputs. The root now persists and fences `parse_generation`, covered by
+  `test_ocr_root_resume_rejects_a_different_parse_generation`; same-stem,
+  cross-path, and complete downstream revision evidence remain open.
 - [~] S11-S12 cover cross-page references, preserve references outside the
   primary coverage partition, and reject conflicting public versus
   internal policy values. Multiple reference slices now round-trip and validate
