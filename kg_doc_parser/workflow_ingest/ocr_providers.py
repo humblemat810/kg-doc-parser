@@ -547,7 +547,7 @@ def run_docling_ocr_page(
             marker_count = text.count(marker)
             unresolved_markers += marker_count
             text = text.replace(marker, "").strip()
-        if "picture" in label or "figure" in label:
+        if any(kind in label for kind in ("picture", "figure", "image", "table")):
             represented_visual_items += 1
         cluster_number = len(ordering)
         if text and "table" not in label and "picture" not in label and "figure" not in label:

@@ -343,7 +343,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
         def iterate_items(self) -> list[Item]:
             return [
                 Item("text", "heading", BBox(-10, 40, 5, 20)),
-                Item("table", "| a | b |", BBox(20, 120, 25, 90)),
+                Item("table", "<!-- table --> | a | b |", BBox(20, 120, 25, 90)),
                 Item("picture", "", BBox(45, 70, 30, 60)),
                 Item("figure", "missing provenance", None),
             ]
