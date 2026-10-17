@@ -368,20 +368,51 @@ class TextBoxResponse(BaseModel):
     printed_page_number: str = Field("",description='the page number identified')    
 def RawOCRResponse_to_OCRClusterResponse(raw_response: RawOCRResponse | RawOCRResponseMetaless | TextBoxResponse) -> OCRClusterResponse:        
     temp = raw_response.model_dump()
-    boxes_2d = temp.pop('boxes_2d')  # y min x min, y max x max
-    temp['OCR_text_clusters'] = [TextCluster.model_validate({"text" : i['label'], 
-                                                             "bb_y_min" : i['box_2d'][0],
-                                                             "bb_x_min" : i['box_2d'][1],
-                                                             "bb_y_max" : i['box_2d'][2],
-                                                             "bb_x_max" : i['box_2d'][3],
-                                                             "cluster_number" : i['id']}) for i in boxes_2d]
-    non_text_objects = temp.pop('non_text_objects')
-    temp['non_text_objects'] = [NonTextCluster.model_validate({"description" : i.get('label', i['description']), 
-                                                             "bb_y_min" : i['box_2d'][0],
-                                                             "bb_x_min" : i['box_2d'][1],
-                                                             "bb_y_max" : i['box_2d'][2],
-                                                             "bb_x_max" : i['box_2d'][3],
-                                                             "cluster_number" : i['id']}) for i in non_text_objects]
+    if isinstance(raw_response, TextBoxResponse):
+        boxes_2d = temp.pop('text_blocks')
+        non_text_objects = temp.pop('non_text_blocks')
+        temp['OCR_text_clusters'] = [TextCluster.model_validate({"text" : i['text'],
+                                                                 "bb_y_min" : i['bounding_box'][0],
+                                                                 "bb_x_min" : i['bounding_box'][1],
+                                                                 "bb_y_max" : i['bounding_box'][2],
+                                                                 "bb_x_max" : i['bounding_box'][3],
+                                                                 "cluster_number" : i['id']}) for i in boxes_2d]
+        temp['non_text_objects'] = [NonTextCluster.model_validate({"description" : i['text'],
+                                                                   "bb_y_min" : i['bounding_box'][0],
+                                                                   "bb_x_min" : i['bounding_box'][1],
+                                                                   "bb_y_max" : i['bounding_box'][2],
+                                                                   "bb_x_max" : i['bounding_box'][3],
+                                                                   "cluster_number" : i['id']}) for i in non_text_objects]
+    else:
+        boxes_2d = temp.pop('boxes_2d')  # y min x min, y max x max
+        non_text_objects = temp.pop('non_text_objects')
+        temp['OCR_text_clusters'] = [TextCluster.model_validate({"text" : i['label'],
+                                                                 "bb_y_min" : i['box_2d'][0],
+                                                                 "bb_x_min" : i['box_2d'][1],
+                                                                 "bb_y_max" : i['box_2d'][2],
+                                                                 "bb_x_max" : i['box_2d'][3],
+                                                                 "cluster_number" : i['id']}) for i in boxes_2d]
+        temp['non_text_objects'] = [NonTextCluster.model_validate({"description" : i.get('label', i['description']),
+                                                                   "bb_y_min" : i['box_2d'][0],
+                                                                   "bb_x_min" : i['box_2d'][1],
+                                                                   "bb_y_max" : i['box_2d'][2],
+                                                                   "bb_x_max" : i['box_2d'][3],
+                                                                   "cluster_number" : i['id']}) for i in non_text_objects]
+    temp.setdefault('is_empty_page', not bool(temp['OCR_text_clusters'] or temp['non_text_objects']))
+    temp.setdefault('printed_page_number', None)
+    temp.setdefault('page_x_min', 0.0)
+    temp.setdefault('page_x_max', 0.0)
+    temp.setdefault('page_y_min', 0.0)
+    temp.setdefault('page_y_max', 0.0)
+    temp.setdefault('estimated_rotation_degrees', 0.0)
+    temp.setdefault('incomplete_words_on_edge', False)
+    temp.setdefault('incomplete_text', False)
+    temp.setdefault('data_loss_likelihood', 0.0)
+    temp.setdefault('scan_quality', 'medium')
+    temp.setdefault('contains_table', False)
+    temp.setdefault('spatial_accuracy', 'region')
+    temp['unresolved_item_count'] = 0
+    temp['source_item_count'] = len(temp['OCR_text_clusters']) + len(temp['non_text_objects'])
     return OCRClusterResponse.model_validate(temp)
 def final_resort(draft_responses: dict[str, str], messages: list[BaseMessage], page_file_name: str, model_name: str, image_file_path: str, cb: BaseCallbackHandler) -> None:
                         """
@@ -419,21 +450,9 @@ def final_resort(draft_responses: dict[str, str], messages: list[BaseMessage], p
                                 else:
                                     response = RawOCRResponse_to_OCRClusterResponse(response3)
 
-                                    coered_response = OCRClusterResponse(
-                                                    printed_page_number = ocr_meta_response.printed_page_number,
-                                                    page_x_min = ocr_meta_response.page_x_min,
-                                                    page_x_max = ocr_meta_response.page_x_max,
-                                                    page_y_min = ocr_meta_response.page_y_min,
-                                                    page_y_max = ocr_meta_response.page_y_max,
-                                                    estimated_rotation_degrees = ocr_meta_response.estimated_rotation_degrees,
-                                                    incomplete_words_on_edge =  ocr_meta_response.incomplete_words_on_edge,
-                                                    incomplete_text = ocr_meta_response.incomplete_text,
-                                                    data_loss_likelihood = ocr_meta_response.data_loss_likelihood,
-                                                    scan_quality = ocr_meta_response.scan_quality,
-                                                    contains_table = ocr_meta_response.contains_table,
-                                                    
-                                                    **response.model_dump()
-                                                )
+                                    response_payload = response.model_dump()
+                                    response_payload.update(ocr_meta_response.model_dump())
+                                    coered_response = OCRClusterResponse.model_validate(response_payload)
                             except Exception as _e:
                                 try:
                                     coered_response = OCRClusterResponse(
@@ -456,6 +475,8 @@ def final_resort(draft_responses: dict[str, str], messages: list[BaseMessage], p
                                                 data_loss_likelihood = ocr_meta_response.data_loss_likelihood,
                                                 scan_quality = ocr_meta_response.scan_quality,
                                                 contains_table = ocr_meta_response.contains_table,
+                                                unresolved_item_count=0,
+                                                source_item_count=1,
                                             )
                                     response_dict = coered_response.model_dump()
                                     response_dict['pdf_page_num'] = page_file_name.rsplit('.',1)[0].rsplit("_",1)[-1]
@@ -484,12 +505,15 @@ def TextBoxResponsePlusMetaResponse_to_OCRClusterResponse(raw_response: TextBoxR
                                                              "bb_x_max" : i['bounding_box'][3],
                                                              "cluster_number" : i['id']}) for i in text_blocks]
     non_text_blocks = temp.pop('non_text_blocks')
-    temp['non_text_objects'] = [TextCluster.model_validate({"text" : i['text'], 
+    temp['non_text_objects'] = [NonTextCluster.model_validate({"description" : i['text'],
                                                              "bb_y_min" : i['bounding_box'][0],
                                                              "bb_x_min" : i['bounding_box'][1],
                                                              "bb_y_max" : i['bounding_box'][2],
                                                              "bb_x_max" : i['bounding_box'][3],
                                                              "cluster_number" : i['id']}) for i in non_text_blocks]
+    temp.setdefault('spatial_accuracy', 'region')
+    temp['unresolved_item_count'] = 0
+    temp['source_item_count'] = len(temp['OCR_text_clusters']) + len(temp['non_text_objects'])
     return OCRClusterResponse.model_validate(temp)
 def refine_image_response(
     ok2: bool,
