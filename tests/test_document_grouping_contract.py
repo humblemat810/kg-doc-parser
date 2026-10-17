@@ -97,6 +97,23 @@ def test_merge_groups_only_reifies_the_affected_frontier_window() -> None:
     assert tuple(child.node_id for child in created[0].children) == ("b", "c")
 
 
+def test_merge_groups_keeps_large_unaffected_frontier_stable() -> None:
+    frontier = tuple(f"leaf-{index}" for index in range(256))
+    proposal = GroupProposal(kind="section", members=("leaf-254", "leaf-255"))
+
+    updated_frontier, created = merge_groups(
+        document_id="large-doc",
+        frontier=frontier,
+        proposals=(proposal,),
+        grouping_policy_version="v1",
+    )
+
+    assert len(created) == 1
+    assert len(updated_frontier) == 255
+    assert updated_frontier[:-1] == frontier[:-2]
+    assert updated_frontier[-1].startswith("merge:")
+
+
 def test_grouping_replay_can_include_accepted_and_new_proposals() -> None:
     tree = DocumentTree(
         document_id="mixed-replay",
