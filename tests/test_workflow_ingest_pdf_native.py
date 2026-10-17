@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from PIL import Image
 
+from kg_doc_parser.models import OCRClusterResponse, TextCluster
 from kg_doc_parser.workflow_ingest import ocr_pipeline, pdf_native
 from kg_doc_parser.workflow_ingest.providers import (
     ProviderEndpointConfig,
@@ -76,3 +78,104 @@ def test_pdf_text_mode_is_part_of_ocr_cache_identity() -> None:
     assert ocr_pipeline._ocr_configuration_fingerprint(native) != ocr_pipeline._ocr_configuration_fingerprint(
         raster
     )
+
+
+def _native_response() -> OCRClusterResponse:
+    return OCRClusterResponse(
+        OCR_text_clusters=[
+            TextCluster(
+                text="native text",
+                bb_x_min=0,
+                bb_x_max=20,
+                bb_y_min=0,
+                bb_y_max=10,
+                cluster_number=0,
+            )
+        ],
+        non_text_objects=[],
+        is_empty_page=False,
+        printed_page_number="1",
+        meaningful_ordering=[0],
+        page_x_min=0,
+        page_x_max=100,
+        page_y_min=0,
+        page_y_max=100,
+        estimated_rotation_degrees=0,
+        incomplete_words_on_edge=False,
+        incomplete_text=False,
+        data_loss_likelihood=0,
+        scan_quality="high",
+        contains_table=False,
+    )
+
+
+def test_pdf_preparation_prefers_native_text_at_the_production_runner_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_path = tmp_path / "report.pdf"
+    pdf_path.write_bytes(b"placeholder pdf")
+    image_path = tmp_path / "page-1.png"
+    Image.new("RGB", (10, 10), "white").save(image_path)
+    native = _native_response()
+    fallback_calls = 0
+
+    monkeypatch.setattr(pdf_native, "extract_native_pdf_page", lambda _path, _page: native)
+
+    def fallback(_image: Path, _page: int, _settings: WorkflowProviderSettings) -> OCRClusterResponse:
+        nonlocal fallback_calls
+        fallback_calls += 1
+        return _native_response()
+
+    preparation = ocr_pipeline._build_ocr_page_preparation(
+        document_id="native-boundary-doc",
+        title="Native boundary",
+        output_dir=tmp_path / "artifacts",
+        image_payloads=None,
+        pdf_path=pdf_path,
+        provider_settings=WorkflowProviderSettings(
+            ocr=ProviderEndpointConfig(pdf_text_mode="prefer_native")
+        ),
+        ocr_runner=fallback,
+        pdf_rasterizer=lambda _source, _rendered: [image_path],
+        ocr_candidate_models=None,
+        probe=None,
+    )
+
+    result = preparation.page_context.ocr_page_runner(
+        image_path, 1, preparation.page_context.provider_settings
+    )
+
+    assert result is native
+    assert fallback_calls == 0
+
+
+def test_pdf_preparation_native_only_fails_closed_without_native_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_path = tmp_path / "scan.pdf"
+    pdf_path.write_bytes(b"placeholder pdf")
+    image_path = tmp_path / "page-1.png"
+    Image.new("RGB", (10, 10), "white").save(image_path)
+    monkeypatch.setattr(pdf_native, "extract_native_pdf_page", lambda _path, _page: None)
+
+    preparation = ocr_pipeline._build_ocr_page_preparation(
+        document_id="native-only-doc",
+        title="Native only",
+        output_dir=tmp_path / "artifacts",
+        image_payloads=None,
+        pdf_path=pdf_path,
+        provider_settings=WorkflowProviderSettings(
+            ocr=ProviderEndpointConfig(pdf_text_mode="native_only")
+        ),
+        ocr_runner=lambda *_args: _native_response(),
+        pdf_rasterizer=lambda _source, _rendered: [image_path],
+        ocr_candidate_models=None,
+        probe=None,
+    )
+
+    with pytest.raises(ValueError, match="native PDF text is unavailable"):
+        preparation.page_context.ocr_page_runner(
+            image_path, 1, preparation.page_context.provider_settings
+        )
