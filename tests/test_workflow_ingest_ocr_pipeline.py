@@ -77,6 +77,7 @@ from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
 )
+from kogwistar.runtime.runtime import apply_state_update_inplace
 from PIL import Image, ImageDraw
 from pypdf import PdfReader, PdfWriter
 
@@ -1161,7 +1162,9 @@ def test_summary_checkpoint_conflict_is_retryable_not_a_summary_warning() -> Non
 
 
 @pytest.mark.ci
-def test_ocr_pages_run_as_persisted_steps_and_terminal_resume_does_not_recall_provider() -> None:
+def test_ocr_pages_run_as_persisted_steps_and_terminal_resume_does_not_recall_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     scratch = _scratch("ocr_page_runtime")
     image_paths = []
     for page_number, text in ((1, "page one"), (2, "page two")):
@@ -1177,6 +1180,19 @@ def test_ocr_pages_run_as_persisted_steps_and_terminal_resume_does_not_recall_pr
         embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
     )
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    reconcile_calls = 0
+    original_reconcile = store.reconcile_orphan_artifact
+
+    def _count_reconcile_orphan_artifact(*args, **kwargs):
+        nonlocal reconcile_calls
+        reconcile_calls += 1
+        return original_reconcile(*args, **kwargs)
+
+    monkeypatch.setattr(
+        store,
+        "reconcile_orphan_artifact",
+        _count_reconcile_orphan_artifact,
+    )
     calls = {"count": 0}
 
     def _runner(image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings):
@@ -1252,6 +1268,80 @@ def test_ocr_pages_run_as_persisted_steps_and_terminal_resume_does_not_recall_pr
         "finalize_ocr_pages",
         "end",
     }
+
+    # Per-page durable progress is an append-only scalar delta. Repeating a
+    # cumulative page-number list in every step would grow history quadratically.
+    for step in trace:
+        result = json.loads(step.metadata["result_json"])
+        for operation, payload in result.get("state_update", []):
+            if operation == "u":
+                assert not {"completed_pages", "reused_pages"}.intersection(payload)
+            if operation == "a":
+                for key in {"completed_pages", "reused_pages"}.intersection(payload):
+                    assert type(payload[key]) is int
+
+    # Prove the parser's persisted updates are a complete state history, not
+    # merely useful when replayed on top of a Kogwistar checkpoint. Start from
+    # the exact initial state and fold every recorded delta without reading any
+    # checkpoint, then compare with the workflow's materialized final snapshot.
+    initial_state = _page_workflow_initial_state(source_plan)
+    initial_state.update(
+        {
+            "document_id": context.document_id,
+            "ocr_configuration_fingerprints": list(
+                context.configuration_fingerprints
+            ),
+        }
+    )
+    for step in sorted(trace, key=lambda node: int(node.metadata["step_seq"])):
+        result = json.loads(step.metadata["result_json"])
+        apply_state_update_inplace(
+            initial_state,
+            result.get("state_update", []),
+        )
+
+    checkpoints = list(
+        conversation_engine.read.get_nodes(
+            where={
+                "$and": [
+                    {"entity_type": "workflow_checkpoint"},
+                    {"run_id": run_id},
+                ]
+            }
+        )
+    )
+    assert checkpoints
+    final_checkpoint = max(
+        checkpoints,
+        key=lambda node: int(node.metadata["step_seq"]),
+    )
+    snapshot_state = {
+        key: value
+        for key, value in json.loads(final_checkpoint.metadata["state_json"]).items()
+        if not key.startswith("_")
+    }
+    assert initial_state == snapshot_state
+    assert _json_pages(initial_state) == raw_pages
+
+    # The reconciliation helper can resume verification at the already-checked
+    # prefix boundary instead of re-reading every earlier source artifact.
+    reconcile_calls = 0
+    assert _reconcile_page_checkpoint(
+        state={
+            "page_sources": [
+                {"page_number": number, "image_path": str(path)}
+                for number, path in image_paths
+            ],
+            "page_cursor": 2,
+            "raw_pages": None,
+            "completed_pages": completed,
+            "reused_pages": [],
+        },
+        context=context,
+        source_plan=source_plan,
+        start_index=1,
+    ) is None
+    assert reconcile_calls == 1
 
     page_two = source_plan.legacy_dir / "page_2.json"
     page_two.write_text(page_two.read_text(encoding="utf-8") + "\n", encoding="utf-8")

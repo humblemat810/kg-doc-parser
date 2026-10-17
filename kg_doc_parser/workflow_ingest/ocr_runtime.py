@@ -241,7 +241,7 @@ class _OCRWorkflowState(TypedDict, total=False):
     page_cursor: int
     page_sources: list[_PageSourceState]
     legacy_dir: str
-    raw_pages: list[OCRPageJSON]
+    raw_pages: list[OCRPageJSON] | None
     completed_pages: list[int]
     reused_pages: list[int]
     last_failed_page: int
@@ -677,6 +677,7 @@ def _reconcile_page_checkpoint(
     state: _OCRWorkflowState,
     context: OCRPageProcessingContext,
     source_plan: OCRSourcePlan,
+    start_index: int = 0,
 ) -> _OCRCheckpointPatch | None:
     """Find the first checkpointed page whose accepted artifact is no longer valid.
 
@@ -690,7 +691,10 @@ def _reconcile_page_checkpoint(
     sources = _page_sources(state)
     completed = _int_list(state, "completed_pages")
     reused = _int_list(state, "reused_pages")
-    for index, (page_number, image_path) in enumerate(sources[:cursor]):
+    if start_index < 0 or start_index > cursor:
+        raise ValueError("OCR checkpoint reconciliation start index is out of range")
+    for index in range(start_index, cursor):
+        page_number, image_path = sources[index]
         image_digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
         page_path = source_plan.legacy_dir / f"page_{page_number}.json"
         if context.state_store.reconcile_orphan_artifact(
@@ -879,6 +883,10 @@ def _build_page_resolver(
 ) -> MappingStepResolver:
     """Build the page child resolver for both standalone and nested runs."""
     resolver = MappingStepResolver()
+    # The checkpoint prefix is checked once when execution reaches it, then
+    # each newly accepted page is checked on the next loop iteration. A fresh
+    # resolver on process restart naturally revalidates the restored prefix.
+    verified_prefix_cursor = 0
     resolver.set_state_schema(
         {
             "ocr_page_state_version": "u",
@@ -907,23 +915,29 @@ def _build_page_resolver(
 
     @resolver.register("process_ocr_page")
     def _process(ctx: StepContext) -> StepRunResult:
+        nonlocal verified_prefix_cursor
         state = _typed_state(ctx.state_view)
         repair = _reconcile_page_checkpoint(
             state=state,
             context=context,
             source_plan=source_plan,
+            start_index=verified_prefix_cursor,
         )
         if repair is not None:
+            verified_prefix_cursor = repair["page_cursor"]
             repair_update: StateUpdate = ("u", dict(repair))
             return _success("process_ocr_page", state_update=[repair_update])
         sources = _page_sources(state)
         cursor = _page_cursor(state)
+        verified_prefix_cursor = cursor
         if cursor >= len(sources):
             return _success("finalize_ocr_pages")
         page_number, image_path = sources[cursor]
         raw_pages = _json_pages(state)
         completed_pages = _int_list(state, "completed_pages")
         reused_pages = _int_list(state, "reused_pages")
+        completed_count = len(completed_pages)
+        reused_count = len(reused_pages)
         failures: list[int] = []
         _process_ocr_page(
             context=context,
@@ -952,22 +966,38 @@ def _build_page_resolver(
             total_pages=context.total_pages,
             progress_path=progress_path,
         )
-        return _success(
-            "process_ocr_page",
-            state_update=[
-                (
-                    "u",
-                    {
-                        "page_cursor": cursor + 1,
-                        "completed_pages": completed_pages,
-                        "reused_pages": reused_pages,
-                    },
-                )
-            ],
-        )
+        new_completed = completed_pages[completed_count:]
+        new_reused = reused_pages[reused_count:]
+        if new_completed != [page_number] or len(new_reused) > 1 or any(
+            reused_page != page_number for reused_page in new_reused
+        ):
+            raise RuntimeError("OCR page processing produced inconsistent progress deltas")
+
+        updates: list[StateUpdate] = [
+            ("u", {"page_cursor": cursor + 1}),
+            ("a", {"completed_pages": page_number}),
+        ]
+        if new_reused:
+            updates.append(("a", {"reused_pages": page_number}))
+        # Old checkpoints may contain cumulative raw_pages. Once the page
+        # artifact has been accepted, drop that payload and use the artifact
+        # directory for subsequent reads and checkpoints.
+        if state.get("raw_pages") is not None:
+            updates.append(("u", {"raw_pages": None}))
+        return _success("process_ocr_page", state_update=updates)
 
     @resolver.register("finalize_ocr_pages")
     def _finalize(ctx: StepContext) -> StepRunResult:
+        nonlocal verified_prefix_cursor
+        state = _typed_state(ctx.state_view)
+        repair = _reconcile_page_checkpoint(
+            state=state,
+            context=context,
+            source_plan=source_plan,
+        )
+        if repair is not None:
+            verified_prefix_cursor = repair["page_cursor"]
+            return _success("process_ocr_page", state_update=[("u", dict(repair))])
         context.state_store.refresh_document_completion(document_id=context.document_id)
         _sync_progress_from_state(
             state_store=context.state_store,
