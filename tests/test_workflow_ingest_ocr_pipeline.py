@@ -1305,6 +1305,41 @@ def test_new_page_checkpoint_rehydrates_pages_from_artifacts_without_raw_payload
     assert [page["printed_page_number"] for page in pages] == ["1", "2"]
 
 
+@pytest.mark.ci
+def test_large_page_checkpoint_stays_artifact_backed_and_linearly_bounded() -> None:
+    """A long document checkpoint stores references, not cumulative OCR JSON."""
+
+    def _checkpoint_size(page_count: int) -> int:
+        source_plan = OCRSourcePlan(
+            pdf_source=None,
+            rendered_dir=Path("rendered"),
+            legacy_dir=Path("legacy"),
+            page_sources=[
+                (page_number, Path(f"page-{page_number}.png"))
+                for page_number in range(1, page_count + 1)
+            ],
+            source_kind="image",
+            input_fingerprint=f"checkpoint-{page_count}",
+        )
+        state = _page_workflow_initial_state(source_plan)
+        state.update(
+            {
+                "page_cursor": page_count,
+                "completed_pages": list(range(1, page_count + 1)),
+                "reused_pages": list(range(1, page_count + 1)),
+            }
+        )
+        assert "raw_pages" not in state
+        return len(json.dumps(state, sort_keys=True, separators=(",", ":")))
+
+    size_100 = _checkpoint_size(100)
+    size_1000 = _checkpoint_size(1000)
+
+    # Page references are expected to grow linearly. A cumulative OCR payload
+    # would add large per-page response data and exceed this bounded ratio.
+    assert size_1000 < size_100 * 12
+
+
 def test_raw_ocr_content_narrows_sdk_content_without_stringifying_other_values() -> None:
     sdk_payload = {"boxes_2d": [], "non_text_objects": []}
     sdk_response = SimpleNamespace(content=sdk_payload)
