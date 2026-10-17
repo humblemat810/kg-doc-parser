@@ -9,6 +9,7 @@ authored page fixture.
 from __future__ import annotations
 
 import re
+import math
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -32,6 +33,11 @@ class OCRGroundTruthItem(BaseModel):
 
     @model_validator(mode="after")
     def validate_bounds(self) -> OCRGroundTruthItem:
+        if not all(
+            math.isfinite(value)
+            for value in (self.x_min, self.y_min, self.x_max, self.y_max)
+        ):
+            raise ValueError("ground-truth item bounds must be finite")
         if not self.x_min < self.x_max or not self.y_min < self.y_max:
             raise ValueError("ground-truth item bounds must have positive area")
         if self.modality == "text" and not self.text:

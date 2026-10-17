@@ -108,3 +108,12 @@ def test_ground_truth_contract_rejects_invalid_annotations() -> None:
             x_max=1.0,
             y_max=2.0,
         )
+    with pytest.raises(ValueError, match="finite"):
+        OCRGroundTruthItem(
+            item_id="infinite",
+            modality="non_text",
+            x_min=0.0,
+            y_min=0.0,
+            x_max=float("inf"),
+            y_max=1.0,
+        )
