@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from kg_doc_parser.models import OCRClusterResponse, TextCluster
+from kg_doc_parser.models import NonTextCluster, OCRClusterResponse, TextCluster
 from kg_doc_parser.workflow_ingest.ocr_quality import (
     OCRGroundTruth,
     OCRGroundTruthItem,
@@ -96,6 +96,44 @@ def test_ground_truth_report_detects_spatial_and_transcription_errors() -> None:
     assert report.item_recall == pytest.approx(1.0)
     assert report.mean_spatial_iou < 1.0
     assert report.text_mismatch_item_ids == ("beta",)
+
+
+def test_ground_truth_report_matches_non_text_modalities_without_text() -> None:
+    response = _response(include_beta=False).model_copy(
+        update={
+            "non_text_objects": [
+                NonTextCluster(
+                    description="table",
+                    bb_x_min=50.0,
+                    bb_x_max=100.0,
+                    bb_y_min=0.0,
+                    bb_y_max=20.0,
+                    cluster_number=3,
+                )
+            ],
+            "meaningful_ordering": [1, 3],
+            "source_item_count": 2,
+        }
+    )
+    ground_truth = OCRGroundTruth(
+        items=(
+            _ground_truth().items[0],
+            OCRGroundTruthItem(
+                item_id="table",
+                modality="non_text",
+                x_min=50.0,
+                y_min=0.0,
+                x_max=100.0,
+                y_max=20.0,
+            ),
+        )
+    )
+
+    report = evaluate_ocr_ground_truth(response, ground_truth)
+
+    assert report.item_recall == pytest.approx(1.0)
+    assert report.mean_spatial_iou == pytest.approx(1.0)
+    assert report.text_mismatch_item_ids == ()
 
 
 def test_ground_truth_contract_rejects_invalid_annotations() -> None:
