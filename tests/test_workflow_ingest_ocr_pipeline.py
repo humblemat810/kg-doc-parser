@@ -4716,6 +4716,44 @@ def test_pdf_artifact_directories_do_not_collide_for_same_basename() -> None:
 
 
 @pytest.mark.ci
+def test_pdf_artifact_directories_share_content_identity_across_paths() -> None:
+    scratch = _scratch("ocr_same_content_cross_path")
+    first_pdf = scratch / "first" / "report.pdf"
+    second_pdf = scratch / "second" / "report.pdf"
+    first_pdf.parent.mkdir(parents=True)
+    second_pdf.parent.mkdir(parents=True)
+    payload = b"%PDF-1.4\nshared source\n"
+    first_pdf.write_bytes(payload)
+    second_pdf.write_bytes(payload)
+
+    def _rasterizer(_source: Path, rendered_dir: Path) -> list[Path]:
+        rendered_dir.mkdir(parents=True, exist_ok=True)
+        page = rendered_dir / "page_1.png"
+        Image.new("RGB", (11, 7), "green").save(page, format="PNG")
+        return [page]
+
+    output_dir = scratch / "artifacts"
+    first = _resolve_ocr_source_plan(
+        document_id="shared-content-document",
+        output_dir=output_dir,
+        image_payloads=None,
+        pdf_path=first_pdf,
+        pdf_rasterizer=_rasterizer,
+    )
+    second = _resolve_ocr_source_plan(
+        document_id="shared-content-document",
+        output_dir=output_dir,
+        image_payloads=None,
+        pdf_path=second_pdf,
+        pdf_rasterizer=_rasterizer,
+    )
+
+    assert first.rendered_dir == second.rendered_dir
+    assert first.legacy_dir == second.legacy_dir
+    assert first.input_fingerprint == second.input_fingerprint
+
+
+@pytest.mark.ci
 def test_prepare_ocr_workflow_input_keeps_document_fingerprint_stable_in_state_db() -> None:
     scratch = _scratch("ocr_fingerprint_state")
     page_1 = scratch / "images" / "page_1.png"
