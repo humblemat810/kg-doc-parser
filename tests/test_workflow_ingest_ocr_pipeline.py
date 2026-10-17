@@ -2150,6 +2150,47 @@ def test_ocr_quality_diagnostics_are_persisted_and_strict_policy_fails_closed() 
     assert strict_state.status == "failed"
     assert not (scratch / "strict" / "legacy" / "page_1.json").exists()
 
+    def _invalid_coordinates_runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        return _fake_ocr_response(page_number, "invalid coordinates").model_copy(
+            update={
+                "spatial_accuracy": "region",
+                "OCR_text_clusters": [
+                    TextCluster(
+                        text="invalid coordinates",
+                        bb_x_min=10.0,
+                        bb_x_max=10.0,
+                        bb_y_min=10.0,
+                        bb_y_max=30.0,
+                        cluster_number=0,
+                    )
+                ],
+            }
+        )
+
+    with pytest.raises(RuntimeError, match="OCR preparation incomplete"):
+        prepare_ocr_workflow_input(
+            document_id="ocr-quality-coordinate-doc",
+            title="OCR Coordinate Quality",
+            output_dir=scratch / "coordinates",
+            image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+            provider_settings=settings,
+            ocr_runner=_invalid_coordinates_runner,
+        )
+    coordinate_store = OCRWorkflowStateStore(
+        scratch / "coordinates" / "ocr-state.sqlite"
+    )
+    coordinate_state = coordinate_store.get_page_state(
+        document_id="ocr-quality-coordinate-doc", page_number=1, stage="ocr"
+    )
+    assert coordinate_state is not None
+    assert coordinate_state.status == "failed"
+    assert not (scratch / "coordinates" / "legacy" / "page_1.json").exists()
+
 
 @pytest.mark.ci
 def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
