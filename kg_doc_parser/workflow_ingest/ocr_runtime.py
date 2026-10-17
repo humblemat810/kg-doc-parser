@@ -585,8 +585,15 @@ def _validate_root_invocation_lineage(
             f"{root_run_id}|semantic{suffix}",
         ),
     }
+    expected_edge_ids = [
+        f"wf_invoked|{root_run_id}|{child_run_id}"
+        for _workflow_id, _invocation_key, child_run_id in expected
+    ]
     counts: dict[tuple[str, str, str], int] = {}
-    for edge in conversation_engine.read.get_edges(limit=1000):
+    for edge in conversation_engine.read.get_edges(
+        ids=expected_edge_ids,
+        limit=len(expected_edge_ids),
+    ):
         metadata = edge.metadata or {}
         if metadata.get("relation") != "wf_invoked":
             continue
