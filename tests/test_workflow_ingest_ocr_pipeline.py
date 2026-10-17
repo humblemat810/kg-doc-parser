@@ -2131,7 +2131,11 @@ def _fake_ocr_response(page_number: int, text: str) -> OCRClusterResponse:
 
 
 def _write_valid_ocr_artifact(
-    path: Path, *, page_number: int = 1, source_image_sha256: str | None = None
+    path: Path,
+    *,
+    page_number: int = 1,
+    source_image_sha256: str | None = None,
+    ocr_configuration_fingerprint: str | None = None,
 ) -> None:
     split_page = SplitPage(
         pdf_page_num=page_number,
@@ -2145,10 +2149,19 @@ def _write_valid_ocr_artifact(
         ),
     )
     payload = split_page.dump_raw(dump_format="json")
-    if source_image_sha256 is not None:
+    if source_image_sha256 is not None or ocr_configuration_fingerprint is not None:
         payload["metadata"] = {
             **split_page.metadata.model_dump(mode="json"),
-            "source_image_sha256": source_image_sha256,
+            **(
+                {"source_image_sha256": source_image_sha256}
+                if source_image_sha256 is not None
+                else {}
+            ),
+            **(
+                {"ocr_configuration_fingerprint": ocr_configuration_fingerprint}
+                if ocr_configuration_fingerprint is not None
+                else {}
+            ),
         }
     path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -5163,7 +5176,11 @@ def test_rebuild_rejects_legacy_ocr_from_replaced_same_numbered_page() -> None:
 def test_ocr_state_rejects_stale_provider_config_or_tampered_artifact() -> None:
     scratch = _scratch("ocr_config_identity")
     artifact = scratch / "page-1.json"
-    artifact.write_text('{"page": 1}', encoding="utf-8")
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256="image-hash",
+        ocr_configuration_fingerprint="provider-a/model-a",
+    )
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
     store.ensure_document(
         document_id="config-identity-doc",
