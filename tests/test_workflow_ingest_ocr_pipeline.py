@@ -3862,6 +3862,7 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
     assert checkpoint is not None
     assert checkpoint.accepted_page_frontier == (1,)
     assert checkpoint.tree_revision == revision
+    assert checkpoint.merge_revision == 1
     assert checkpoint.last_runtime_step == "grouping_checkpoint"
     accepted_tree = tree.model_copy(update={"tree_revision": 2})
     accepted_revision = store.save_document_tree(
@@ -3870,6 +3871,13 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
         grouping_policy_version="group-v1",
         expected_tree_revision=revision,
     )
+    updated_checkpoint = store.load_grouping_checkpoint_metadata(
+        document_id="grouped-doc",
+        source_fingerprint=accepted_tree.source_fingerprint(),
+        grouping_policy_version="group-v1",
+    )
+    assert updated_checkpoint is not None
+    assert updated_checkpoint.merge_revision == 2
     # A crash after the SQLite commit but before the runtime checkpoint must
     # make an exact replay a no-op, not turn an accepted tree into a conflict.
     assert (
@@ -3881,6 +3889,13 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
         )
         == accepted_revision
     )
+    replayed_checkpoint = store.load_grouping_checkpoint_metadata(
+        document_id="grouped-doc",
+        source_fingerprint=accepted_tree.source_fingerprint(),
+        grouping_policy_version="group-v1",
+    )
+    assert replayed_checkpoint is not None
+    assert replayed_checkpoint.merge_revision == 2
     with pytest.raises(RuntimeError, match="create conflict"):
         store.save_document_tree(
             document_id="grouped-doc",

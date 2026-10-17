@@ -754,8 +754,12 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 - [x] Run grouping inside a persisted runtime node after the accepted page
   frontier is available.
-- [~] Persist grouping input identity: source revision, accepted page set,
-  source-item digest, grouping policy version, and merge revision.
+- [x] Persist grouping input identity: source revision, accepted page set,
+  source-item digest, grouping policy version, and merge revision. The SQLite
+  checkpoint now records a monotonic `merge_revision` with a backward-
+  compatible migration; idempotent replay preserves the generation. The
+  regression `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`
+  asserts generations 1, 2, and stable replay at 2.
 - [x] Restore the latest valid grouping checkpoint before processing new input.
 - [~] Use CAS/expected revision or an equivalent monotonic generation guard;
   last-writer-wins must not overwrite a newer accepted tree. The current

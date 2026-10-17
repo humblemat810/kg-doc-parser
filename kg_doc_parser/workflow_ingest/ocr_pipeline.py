@@ -274,6 +274,7 @@ class GroupingCheckpointMetadata:
     grouping_policy_version: str
     accepted_page_frontier: tuple[int, ...]
     tree_revision: str
+    merge_revision: int
     last_runtime_step: str
 
 
@@ -1538,6 +1539,7 @@ class OCRWorkflowStateStore:
                     grouping_policy_version TEXT NOT NULL,
                     accepted_page_frontier_json TEXT NOT NULL,
                     tree_revision TEXT NOT NULL,
+                    merge_revision INTEGER NOT NULL DEFAULT 0,
                     last_runtime_step TEXT NOT NULL,
                     last_updated_ts REAL NOT NULL
                 );
@@ -1560,6 +1562,17 @@ class OCRWorkflowStateStore:
                 conn.execute("ALTER TABLE page_state ADD COLUMN config_fingerprint TEXT")
             if "artifact_sha256" not in columns:
                 conn.execute("ALTER TABLE page_state ADD COLUMN artifact_sha256 TEXT")
+            checkpoint_columns = {
+                str(row[1])
+                for row in conn.execute(
+                    "PRAGMA table_info(grouping_checkpoint_metadata)"
+                ).fetchall()
+            }
+            if "merge_revision" not in checkpoint_columns:
+                conn.execute(
+                    "ALTER TABLE grouping_checkpoint_metadata "
+                    "ADD COLUMN merge_revision INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _is_empty(self) -> bool:
         with self._session() as conn:
@@ -1661,7 +1674,8 @@ class OCRWorkflowStateStore:
                 (document_id,),
             ).fetchone()
             current_metadata = conn.execute(
-                "SELECT document_id FROM grouping_checkpoint_metadata WHERE document_id = ?",
+                "SELECT document_id, merge_revision "
+                "FROM grouping_checkpoint_metadata WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
             current_revision = None if current is None else str(current["tree_revision"])
@@ -1679,6 +1693,11 @@ class OCRWorkflowStateStore:
                 and str(current["grouping_policy_version"]) == grouping_policy_version
             ):
                 return tree_revision
+            merge_revision = (
+                1
+                if current_metadata is None
+                else int(current_metadata["merge_revision"]) + 1
+            )
             if require_no_existing_tree and (current_revision is not None or has_frontier):
                 raise GroupingCheckpointConflict(
                     f"grouping checkpoint create conflict for {document_id!r}: "
@@ -1771,14 +1790,15 @@ class OCRWorkflowStateStore:
                 """
                 INSERT INTO grouping_checkpoint_metadata (
                     document_id, source_fingerprint, grouping_policy_version,
-                    accepted_page_frontier_json, tree_revision, last_runtime_step,
-                    last_updated_ts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    accepted_page_frontier_json, tree_revision, merge_revision,
+                    last_runtime_step, last_updated_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(document_id) DO UPDATE SET
                     source_fingerprint = excluded.source_fingerprint,
                     grouping_policy_version = excluded.grouping_policy_version,
                     accepted_page_frontier_json = excluded.accepted_page_frontier_json,
                     tree_revision = excluded.tree_revision,
+                    merge_revision = excluded.merge_revision,
                     last_runtime_step = excluded.last_runtime_step,
                     last_updated_ts = excluded.last_updated_ts
                 """,
@@ -1788,6 +1808,7 @@ class OCRWorkflowStateStore:
                     grouping_policy_version,
                     json.dumps(accepted_pages, separators=(",", ":")),
                     tree_revision,
+                    merge_revision,
                     last_runtime_step,
                     time.time(),
                 ),
@@ -1806,7 +1827,8 @@ class OCRWorkflowStateStore:
             row = conn.execute(
                 """
                 SELECT source_fingerprint, grouping_policy_version,
-                       accepted_page_frontier_json, tree_revision, last_runtime_step
+                       accepted_page_frontier_json, tree_revision, merge_revision,
+                       last_runtime_step
                 FROM grouping_checkpoint_metadata
                 WHERE document_id = ?
                 """,
@@ -1833,6 +1855,7 @@ class OCRWorkflowStateStore:
             grouping_policy_version=stored_policy,
             accepted_page_frontier=tuple(payload),
             tree_revision=str(row["tree_revision"]),
+            merge_revision=int(row["merge_revision"]),
             last_runtime_step=str(row["last_runtime_step"]),
         )
 
