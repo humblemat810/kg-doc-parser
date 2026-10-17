@@ -948,8 +948,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   `ordering_status="ambiguous_provider_order"`; declared ordering records
   `ordering_status="declared"`.
 - [~] Test text A, figure, caption, text B and deliberate child permutation.
-  The current test covers text/figure/text; caption permutation and rejection
-  diagnostics remain open.
+  `tests/test_workflow_ingest_ocr_providers.py::test_normalize_ocr_pages_preserves_caption_and_nontext_permutation`
+  now covers figure/caption/table/text traversal and asserts modality order.
+  Grouping/export preservation and rejection diagnostics remain open.
 
 ### S05. Accepted group tree to semantic parser input
 

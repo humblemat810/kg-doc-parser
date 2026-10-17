@@ -13,6 +13,7 @@ from kg_doc_parser.models import NonTextCluster, OCRClusterResponse, TextCluster
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
+    normalize_ocr_pages,
     ocr_provider_smoke,
 )
 from kg_doc_parser.workflow_ingest.ocr_providers import (
@@ -108,6 +109,65 @@ def test_ocr_response_accepts_unified_text_and_nontext_reading_order() -> None:
         contains_table=False,
     )
     assert response.meaningful_ordering == [0, 1]
+
+
+def test_normalize_ocr_pages_preserves_caption_and_nontext_permutation() -> None:
+    """Keep a declared figure/caption/table/text traversal as one sequence."""
+    page = {
+        "pdf_page_num": 1,
+        "OCR_text_clusters": [
+            {
+                "text": "caption",
+                "cluster_number": 1,
+                "bb_x_min": 10,
+                "bb_x_max": 90,
+                "bb_y_min": 20,
+                "bb_y_max": 30,
+            },
+            {
+                "text": "body text",
+                "cluster_number": 3,
+                "bb_x_min": 10,
+                "bb_x_max": 90,
+                "bb_y_min": 80,
+                "bb_y_max": 100,
+            },
+        ],
+        "non_text_objects": [
+            {
+                "description": "figure",
+                "cluster_number": 0,
+                "bb_x_min": 10,
+                "bb_x_max": 90,
+                "bb_y_min": 0,
+                "bb_y_max": 20,
+            },
+            {
+                "description": "table",
+                "cluster_number": 2,
+                "bb_x_min": 10,
+                "bb_x_max": 90,
+                "bb_y_min": 30,
+                "bb_y_max": 80,
+            },
+        ],
+        "meaningful_ordering": [0, 1, 2, 3],
+    }
+
+    normalized = normalize_ocr_pages(
+        document_id="doc",
+        title="doc",
+        pages=[page],
+    )
+
+    units = normalized.collections[0].pages[0].units
+    assert [unit.cluster_number for unit in units] == [0, 1, 2, 3]
+    assert [unit.modality for unit in units] == [
+        "image_region",
+        "ocr_text",
+        "image_region",
+        "ocr_text",
+    ]
 
 
 @pytest.mark.parametrize(
