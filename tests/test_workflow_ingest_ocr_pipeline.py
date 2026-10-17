@@ -1333,11 +1333,14 @@ def test_large_page_checkpoint_stays_artifact_backed_and_linearly_bounded() -> N
         return len(json.dumps(state, sort_keys=True, separators=(",", ":")))
 
     size_100 = _checkpoint_size(100)
+    size_500 = _checkpoint_size(500)
     size_1000 = _checkpoint_size(1000)
 
     # Page references are expected to grow linearly. A cumulative OCR payload
     # would add large per-page response data and exceed this bounded ratio.
+    assert size_500 < size_100 * 6
     assert size_1000 < size_100 * 12
+    assert size_1000 < size_500 * 3
 
 
 def test_raw_ocr_content_narrows_sdk_content_without_stringifying_other_values() -> None:
