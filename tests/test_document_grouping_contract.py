@@ -331,7 +331,11 @@ def test_summary_target_planner_is_bounded_and_skips_low_information_nodes() -> 
     ) == ()
     assert select_summary_targets(
         tree,
-        SummaryPolicy(maximum_input_tokens=10, maximum_targets=1),
+        SummaryPolicy(
+            maximum_input_tokens=2048,
+            maximum_targets=1,
+            eligible_kinds=("document",),
+        ),
     ) == ("root",)
     assert select_summary_targets(tree, SummaryPolicy(enabled=False)) == ()
 

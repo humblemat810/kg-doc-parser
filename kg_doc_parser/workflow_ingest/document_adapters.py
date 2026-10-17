@@ -373,6 +373,16 @@ def _evidence_size(evidence: EvidenceSlice) -> int:
     return len(media.model_dump_json())
 
 
+def _evidence_payload_size(evidence: EvidenceSlice) -> int:
+    """Estimate the serialized provider payload for one evidence slice.
+
+    Summary providers receive the complete typed slice, not only its text.
+    Counting the serialized record keeps source metadata, media references,
+    and grounding bounds inside the same conservative budget check.
+    """
+    return len(evidence.model_dump_json().encode("utf-8"))
+
+
 def select_summary_targets(
     tree: DocumentTree,
     policy: SummaryPolicy | None = None,
@@ -427,7 +437,8 @@ def select_summary_targets(
         information_gain = text_chars - max(child_sizes, default=0)
         if information_gain < policy.minimum_information_gain_chars:
             continue
-        estimated_tokens = max(1, (text_chars + 3) // 4)
+        payload_bytes = sum(_evidence_payload_size(slice_) for slice_ in evidence)
+        estimated_tokens = max(1, (payload_bytes + 3) // 4)
         candidates.append((depth(node.node_id), node.node_id, estimated_tokens))
 
     selected: list[str] = []
