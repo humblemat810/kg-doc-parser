@@ -3426,6 +3426,24 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
     assert checkpoint.accepted_page_frontier == (1,)
     assert checkpoint.tree_revision == revision
     assert checkpoint.last_runtime_step == "grouping_checkpoint"
+    accepted_tree = tree.model_copy(update={"tree_revision": 2})
+    accepted_revision = store.save_document_tree(
+        document_id="grouped-doc",
+        tree=accepted_tree,
+        grouping_policy_version="group-v1",
+        expected_tree_revision=revision,
+    )
+    # A crash after the SQLite commit but before the runtime checkpoint must
+    # make an exact replay a no-op, not turn an accepted tree into a conflict.
+    assert (
+        store.save_document_tree(
+            document_id="grouped-doc",
+            tree=accepted_tree,
+            grouping_policy_version="group-v1",
+            expected_tree_revision=revision,
+        )
+        == accepted_revision
+    )
     with pytest.raises(RuntimeError, match="create conflict"):
         store.save_document_tree(
             document_id="grouped-doc",
@@ -3436,7 +3454,7 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
     with pytest.raises(RuntimeError, match="revision conflict"):
         store.save_document_tree(
             document_id="grouped-doc",
-            tree=tree,
+            tree=tree.model_copy(update={"tree_revision": 3}),
             grouping_policy_version="group-v1",
             expected_tree_revision="stale-revision",
         )
@@ -3458,7 +3476,7 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
     ) is None
     restored = store.load_document_tree(document_id="grouped-doc", source_fingerprint=tree.source_fingerprint())
     assert restored is not None
-    assert restored.model_dump(mode="json") == tree.model_dump(mode="json")
+    assert restored.model_dump(mode="json") == accepted_tree.model_dump(mode="json")
     assert (
         store.load_document_tree(
             document_id="grouped-doc",

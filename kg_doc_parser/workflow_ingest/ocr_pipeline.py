@@ -1579,7 +1579,11 @@ class OCRWorkflowStateStore:
         with self._session() as conn:
             conn.execute("BEGIN IMMEDIATE")
             current = conn.execute(
-                "SELECT tree_revision FROM document_tree_state WHERE document_id = ?",
+                """
+                SELECT tree_revision, source_fingerprint, grouping_policy_version
+                FROM document_tree_state
+                WHERE document_id = ?
+                """,
                 (document_id,),
             ).fetchone()
             current_frontier = conn.execute(
@@ -1588,6 +1592,18 @@ class OCRWorkflowStateStore:
             ).fetchone()
             current_revision = None if current is None else str(current["tree_revision"])
             has_frontier = current_frontier is not None
+            # A process can die after this SQLite commit but before the
+            # surrounding Kogwistar step checkpoint.  A retry with the same
+            # exact tree is safe to acknowledge; a different stale tree must
+            # still fail the revision fence below.
+            if (
+                current_revision == tree_revision
+                and has_frontier
+                and current is not None
+                and str(current["source_fingerprint"]) == tree.source_fingerprint()
+                and str(current["grouping_policy_version"]) == grouping_policy_version
+            ):
+                return tree_revision
             if require_no_existing_tree and (current_revision is not None or has_frontier):
                 raise GroupingCheckpointConflict(
                     f"grouping checkpoint create conflict for {document_id!r}: "
