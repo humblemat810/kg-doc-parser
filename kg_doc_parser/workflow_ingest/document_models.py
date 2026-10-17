@@ -413,14 +413,19 @@ class DocumentTree(FrozenModel):
         if node is None:
             raise KeyError(node_id)
         allowed = set(evidence_item_ids) if evidence_item_ids is not None else None
-        payload: list[JsonObject] = []
+        slices: list[JsonObject] = []
+        payload: dict[str, object] = {
+            "document_id": self.document_id,
+            "source_revision": self.source_revision,
+            "slices": slices,
+        }
 
         def visit(current_id: str) -> None:
             current = nodes[current_id]
             if current.parts:
                 for part_index, part in enumerate(current.parts):
                     if allowed is None or part.item_id in allowed:
-                        payload.append(
+                        slices.append(
                             {
                                 "node_id": current_id,
                                 "part_index": part_index,
@@ -435,9 +440,7 @@ class DocumentTree(FrozenModel):
                 visit(child.node_id)
 
         visit(node_id)
-        return sha256(
-            json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
-        ).hexdigest()
+        return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def evidence_slices(
         self,

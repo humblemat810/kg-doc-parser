@@ -1138,8 +1138,11 @@ an adapter-only test, or a source-checkout-only runtime test.
   parse generation namespaces. The OCR root now persists a dedicated
   `parse_generation`, validates it on resume, and derives the semantic child
   invocation key from it; `test_ocr_root_resume_rejects_a_different_parse_generation`
-  covers the mismatch. Same-stem/cross-path and complete downstream revision
-  acceptance evidence remain open.
+  covers the mismatch. Summary input fingerprints also namespace document ID and
+  source revision with source items, covered by
+  `test_source_fingerprint_includes_document_and_revision_namespaces`. Parser CI
+  run `39038925418` passed the full matrix on `cd43d02`. Same-stem/cross-path
+  and complete downstream revision acceptance evidence remain open.
 - [x] Make default batch document IDs collision-safe for same-stem files. The
   batch runner uses a resolved-path digest when stems collide, and
   `test_ocr_batch_workflow_fences_duplicate_source_stems` verifies distinct IDs

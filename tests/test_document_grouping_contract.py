@@ -540,6 +540,8 @@ def test_source_fingerprint_includes_document_and_revision_namespaces() -> None:
     assert base.source_fingerprint() != same_items_other_revision.source_fingerprint()
     assert base.summary_input_fingerprint("root") != same_items_other_document.summary_input_fingerprint("root")
     assert base.summary_input_fingerprint("root") != same_items_other_revision.summary_input_fingerprint("root")
+    assert base.summary_slice_fingerprint("root") != same_items_other_document.summary_slice_fingerprint("root")
+    assert base.summary_slice_fingerprint("root") != same_items_other_revision.summary_slice_fingerprint("root")
 
 
 def test_explicit_reference_mentions_are_source_grounded_and_outside_partition() -> None:
