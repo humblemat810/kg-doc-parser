@@ -4920,7 +4920,12 @@ def test_legacy_state_upsert_cannot_replace_completed_page() -> None:
 def test_ocr_page_failure_cannot_downgrade_an_accepted_result() -> None:
     scratch = _scratch("ocr_page_failure_cas")
     artifact = scratch / "page-1.json"
-    artifact.write_text('{"page": 1}', encoding="utf-8")
+    _write_valid_ocr_artifact(
+        artifact,
+        page_number=1,
+        source_image_sha256="image-a",
+        ocr_configuration_fingerprint="provider-a/model-a",
+    )
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
     store.ensure_document(
         document_id="page-failure-cas-doc",
