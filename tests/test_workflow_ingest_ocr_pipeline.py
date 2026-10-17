@@ -2356,6 +2356,145 @@ def test_ocr_root_retries_after_grouping_sqlite_commit_before_nested_checkpoint(
 
 
 @pytest.mark.ci
+def test_ocr_root_retries_after_semantic_graph_commit_before_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A graph commit before semantic checkpointing is safely replayable."""
+    scratch = _scratch("ocr_root_semantic_commit_crash")
+    image_path = scratch / "images" / "page-1.png"
+    _draw_test_image(image_path, lines=["semantic graph crash boundary"])
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="semantic-crash-ocr"),
+        parser=ProviderEndpointConfig(provider="fake", model="semantic-crash-parser"),
+        embedding=EmbeddingProviderConfig(
+            provider="fake", model="semantic-crash-embed", dimension=1
+        ),
+    )
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", "in_memory"
+    )
+    calls = {"ocr": 0, "parse": 0}
+
+    def _runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        calls["ocr"] += 1
+        return _fake_ocr_response(page_number, "semantic graph crash boundary").model_copy(
+            update={
+                "OCR_text_clusters": [
+                    TextCluster(
+                        text="semantic graph crash",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=10.0,
+                        bb_y_max=50.0,
+                        cluster_number=0,
+                    ),
+                    TextCluster(
+                        text="boundary",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=60.0,
+                        bb_y_max=100.0,
+                        cluster_number=1,
+                    ),
+                ],
+                "meaningful_ordering": [0, 1],
+            }
+        )
+
+    def _parse_semantic_fn(*, collection, parser_input_dict, parser_source_map):
+        calls["parse"] += 1
+        return _grounded_semantic_tree(
+            collection=collection,
+            parser_input_dict=parser_input_dict,
+            parser_source_map=parser_source_map,
+        )
+
+    from kg_doc_parser.workflow_ingest.clients import DirectRuntimeIngestClient
+
+    original_persist = DirectRuntimeIngestClient.persist_graph_payload
+    committed = False
+    first_graph_node_ids: set[str] = set()
+    first_graph_edge_ids: set[str] = set()
+
+    def _persist_then_crash(client, bundle):
+        nonlocal committed
+        result = original_persist(client, bundle)
+        if not committed:
+            first_graph_node_ids.update(
+                str(record["id"])
+                for record in bundle.graph_payload["nodes"]
+                if isinstance(record, dict) and "id" in record
+            )
+            first_graph_edge_ids.update(
+                str(record["id"])
+                for record in bundle.graph_payload["edges"]
+                if isinstance(record, dict) and "id" in record
+            )
+            committed = True
+            raise RuntimeError("simulated semantic graph commit before checkpoint")
+        return result
+
+    monkeypatch.setattr(DirectRuntimeIngestClient, "persist_graph_payload", _persist_then_crash)
+    run_id = "ocr|root-semantic-commit-crash"
+    with pytest.raises(RuntimeError, match="OCR root workflow"):
+        run_ocr_ingest_workflow(
+            document_id="ocr-root-semantic-crash-doc",
+            title="OCR Root Semantic Crash",
+            output_dir=scratch / "artifacts",
+            image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+            provider_settings=settings,
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            knowledge_engine=knowledge_engine,
+            ocr_runner=_runner,
+            deps={"parse_semantic_fn": _parse_semantic_fn},
+            run_id=run_id,
+        )
+
+    assert first_graph_node_ids
+    monkeypatch.undo()
+
+    resumed, bundle, _artifacts = run_ocr_ingest_workflow(
+        document_id="ocr-root-semantic-crash-doc",
+        title="OCR Root Semantic Crash",
+        output_dir=scratch / "artifacts",
+        image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+        provider_settings=settings,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        ocr_runner=_runner,
+        deps={"parse_semantic_fn": _parse_semantic_fn},
+        run_id=run_id,
+        resume_from_checkpoint=True,
+    )
+
+    assert resumed.status == "succeeded"
+    assert bundle is not None
+    assert calls == {"ocr": 1, "parse": 2}
+    final_node_ids = {
+        node.id
+        for node in knowledge_engine.read.get_nodes(limit=1000)
+        if node.id in first_graph_node_ids
+    }
+    final_edge_ids = {
+        edge.id
+        for edge in knowledge_engine.read.get_edges(limit=1000)
+        if edge.id in first_graph_edge_ids
+    }
+    assert final_node_ids == first_graph_node_ids
+    assert final_edge_ids == first_graph_edge_ids
+    assert bundle.canonical_write_result is not None
+    assert bundle.canonical_write_result.nodes_written == 0
+    assert bundle.canonical_write_result.edges_written == 0
+
+
+@pytest.mark.ci
 def test_raw_ocr_response_rejects_inconsistent_empty_or_ordering_state() -> None:
     payload = {
         "boxes_2d": [{"box_2d": [0, 0, 10, 10], "label": "Alpha", "id": 0}],
