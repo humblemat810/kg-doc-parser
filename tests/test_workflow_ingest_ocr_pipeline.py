@@ -2205,6 +2205,44 @@ def test_legacy_ocr_completion_rejects_malformed_artifact() -> None:
 
 
 @pytest.mark.ci
+def test_legacy_ocr_completion_rejects_wrong_page_artifact() -> None:
+    """A valid artifact for another page cannot satisfy this page's row."""
+    scratch = _scratch("ocr_legacy_wrong_page_completion")
+    artifact = scratch / "page-1.json"
+    _write_valid_ocr_artifact(
+        artifact,
+        page_number=2,
+        source_image_sha256="image-hash",
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="legacy-wrong-page-completion-doc",
+        title="Legacy Wrong Page Completion",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="legacy-wrong-page-completion-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        model_name="model",
+        artifact_path=artifact,
+    )
+
+    assert not store.record_page_completed(
+        document_id="legacy-wrong-page-completion-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+        model_name="model",
+        attempt_index=attempt,
+    )
+
+
+@pytest.mark.ci
 @pytest.mark.parametrize(
     "update",
     [
