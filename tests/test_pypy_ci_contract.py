@@ -113,6 +113,7 @@ def test_pypy_311_parser_profile_excludes_native_optional_dependencies() -> None
     )
 
     assert "diskcache==5.6.3" in requirements
+    assert "pillow==11.3.0" in requirements
     assert "joblib" not in requirements
 
     for forbidden in (

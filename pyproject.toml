@@ -26,6 +26,7 @@ typing-extensions = "^4.8.0"
 joblib = { version = "^1.5.3", markers = "platform_python_implementation == 'CPython'" }
 diskcache = { version = "^5.6", markers = "platform_python_implementation == 'PyPy'" }
 pdf2image = "^1.17.0"
+pillow = "11.3.0"
 pypdf = "^6.5.0"
 pathspec = "^0.12.1"
 pikepdf = { version = "^10.1.0", markers = "platform_python_implementation != 'PyPy'" }

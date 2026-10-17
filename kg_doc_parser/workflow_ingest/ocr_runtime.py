@@ -68,8 +68,8 @@ from .ocr_pipeline import (
     _write_document_tree,
     _write_summary,
 )
-from .serialization import JsonObject, decode_json_object, decode_json_value
 from .runtime_contracts import WorkflowRuntimeDeps
+from .serialization import JsonObject, decode_json_object, decode_json_value
 from .service import workflow_predicates
 
 if TYPE_CHECKING:

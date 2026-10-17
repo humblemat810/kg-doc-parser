@@ -37,9 +37,9 @@ from .models import (
 )
 from .parser_core import ParserPayload, ParserSourceMap, SplitStrategy
 from .providers import (
-    ProviderDiagnosticValue,
     ProviderDiagnostics,
     ProviderDiagnosticsSink,
+    ProviderDiagnosticValue,
     SupportsStructuredOutput,
     WorkflowProviderSettings,
     build_chat_model_for_role,

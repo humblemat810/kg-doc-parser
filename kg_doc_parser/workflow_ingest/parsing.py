@@ -39,8 +39,8 @@ from .page_index import (
 from .page_index import (
     parse_page_index_document as _parse_page_index_document,
 )
-from .probe import WorkflowProbe
 from .parser_core import ParserSourceMap
+from .probe import WorkflowProbe
 from .providers import ProviderDiagnosticsSink, WorkflowProviderSettings
 
 if TYPE_CHECKING:

@@ -18,7 +18,6 @@ from .demo_harness import DemoHarnessConfig
 from .page_index import PageIndexMode
 from .probe import WorkflowProbe
 from .providers import WorkflowProviderSettings
-from .runtime_contracts import WorkflowRuntimeDeps
 from .runners import (
     WorkflowCommandResult,
     _fallback_parse_semantic_fn,
@@ -31,6 +30,7 @@ from .runners import (
     run_page_index_batch_workflow,
     run_page_index_source_workflow,
 )
+from .runtime_contracts import WorkflowRuntimeDeps
 from .smoke_assets import generate_ocr_smoke_assets
 
 TNamespaceValue = TypeVar("TNamespaceValue")

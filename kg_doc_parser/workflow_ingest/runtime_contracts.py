@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from .cache import WorkflowLLMCallCache
     from .clients import CanonicalGraphPersistenceClient
-    from .parser_core import ParseSemanticFn, ProposeLayerFn, ReviewLayerFn, SplitStrategy
+    from .parser_core import (
+        ParseSemanticFn,
+        ProposeLayerFn,
+        ReviewLayerFn,
+        SplitStrategy,
+    )
     from .probe import WorkflowProbe
     from .providers import ProviderDiagnosticsSink, WorkflowProviderSettings
     from .strategy import StrategyTriageFn
