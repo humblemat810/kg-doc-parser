@@ -946,7 +946,12 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [x] Add a mocked Docling fixture with separate text, table, and figure
   provenance, ordering, and coordinate clipping in
   `tests/test_workflow_ingest_ocr_providers.py::test_docling_adapter_preserves_text_table_figure_provenance`.
-- [ ] Add live-provider evidence for at least one multi-object document.
+- [~] Add live-provider evidence for at least one multi-object document. A real
+  Docling/RapidOCR layout fixture was exercised locally; its page-wide Markdown
+  fallback exposed an `<!-- image -->` placeholder without a grounded picture,
+  and the adapter now strips the marker and records
+  `unresolved_item_count=1`. A live provider result with independently verified
+  table/figure recall and spatial ground truth remains open.
 
 ### S04. Cluster order to multimodal reading order
 
@@ -1203,9 +1208,10 @@ an adapter-only test, or a source-checkout-only runtime test.
   exactly-once provider calls.
 - [~] **C06 — OCR quality/completeness:** interval coverage is necessary but not
   sufficient. `OCRQualityPolicy` records typed provider diagnostics and can
-  reject incomplete text, edge-word loss, or excessive data-loss likelihood;
-  provider-side missing-region detection, unsupported-coordinate handling, and
-  persisted strict-policy evidence remain open.
+  reject incomplete text, edge-word loss, excessive data-loss likelihood, and
+  unresolved Docling Markdown placeholders. The live Docling/RapidOCR probe
+  now reports an ungrounded image placeholder instead of silently accepting it;
+  independent table/figure recall and spatial ground truth remain open.
 
 ### Reviewer acceptance matrix
 
