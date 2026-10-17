@@ -799,13 +799,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   grouping, and summary stages.
 - [~] Add a test that kills execution after page 63 of 100, reopens the same
   engines and run ID in a new process, and resumes from the persisted token.
-  `test_ocr_root_fresh_process_resume_after_page_63` now passes in 471.12s
-  with a 900s bounded harness timeout; it proves pages 1-63 are not replayed,
-  page 64 is retried at the interruption boundary, and one grouping result is
-  accepted. The test uses the coordinated parser/core source checkout; an
-  installed Kogwistar `0.6.12` process then reopened the same persisted run in
-  177.01s with zero provider calls and the same run ID, but a fully installed-
-  release initial run and final orphan-free runtime graph assertion remain.
+  `test_ocr_root_fresh_process_resume_after_page_63` now passes in 449.25s
+  with a 900s bounded harness timeout against installed Kogwistar `0.6.12`;
+  it proves pages 1-63 are not replayed, page 64 is retried at the
+  interruption boundary, and one grouping result is accepted. A fully
+  installed-release initial run with final orphan-free runtime graph
+  assertions, Linux SIGKILL, and complete dual-store reconciliation remain.
 - [x] Add a test that kills execution after a grouping checkpoint and proves the
   checkpoint is restored before further pages are accepted. Covered by
   `test_grouping_checkpoint_reopens_after_process_termination`, which stops a

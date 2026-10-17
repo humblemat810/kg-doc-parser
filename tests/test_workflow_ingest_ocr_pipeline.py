@@ -1513,7 +1513,6 @@ def test_ocr_root_reopens_after_real_process_termination() -> None:
         path
         for path in (
             str(repo_root),
-            str(repo_root.parent / "kogwistar"),
             child_env.get("PYTHONPATH", ""),
         )
         if path
