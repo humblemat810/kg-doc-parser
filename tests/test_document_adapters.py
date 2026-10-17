@@ -664,6 +664,21 @@ def test_replaying_an_accepted_grouping_proposal_is_idempotent() -> None:
     assert replayed.model_dump(mode="json") == grouped.model_dump(mode="json")
 
 
+def test_empty_grouping_pass_is_a_true_noop() -> None:
+    inp = WorkflowIngestInput.from_text(document_id="doc", text="alpha")
+    inp.collections[0].pages[0].units = [
+        SourceUnit(modality="text", page_number=1, cluster_number=0, text="alpha"),
+        SourceUnit(modality="text", page_number=1, cluster_number=1, text="beta"),
+    ]
+    tree = build_document_tree(inp)
+    assert tree is not None
+
+    replayed = apply_grouping_proposals(tree, (), grouping_policy_version="v1")
+
+    assert replayed is tree
+    assert replayed.model_dump(mode="json") == tree.model_dump(mode="json")
+
+
 def test_grouping_change_invalidates_root_summary_without_changing_source_items() -> None:
     inp = WorkflowIngestInput.from_text(document_id="doc", text="alpha")
     inp.collections[0].pages[0].units = [

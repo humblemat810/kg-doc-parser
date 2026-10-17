@@ -454,6 +454,11 @@ def apply_grouping_proposals(
     grouping_policy_version: str,
 ) -> DocumentTree:
     """Apply one validated frontier pass without rewriting source evidence."""
+    if not proposals:
+        # An empty provider pass carries no accepted mutation.  Treating it as
+        # a new tree revision would make replay non-idempotent and can trigger
+        # unnecessary summary invalidation.
+        return tree
     root = next(node for node in tree.nodes if node.node_id == tree.root_id)
     if not root.children:
         if proposals:
