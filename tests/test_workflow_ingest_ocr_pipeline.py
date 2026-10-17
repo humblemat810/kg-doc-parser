@@ -2236,6 +2236,126 @@ def test_failed_ocr_child_retries_from_kogwistar_checkpoint_without_replaying_pa
 
 
 @pytest.mark.ci
+def test_ocr_root_retries_after_grouping_sqlite_commit_before_nested_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root resume reconciles a grouping commit made before its child checkpoint."""
+    scratch = _scratch("ocr_root_grouping_commit_crash")
+    image_path = scratch / "images" / "page-1.png"
+    _draw_test_image(image_path, lines=["root grouping crash boundary"])
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="root-crash-ocr"),
+        parser=ProviderEndpointConfig(provider="fake", model="root-crash-parser"),
+        embedding=EmbeddingProviderConfig(
+            provider="fake", model="root-crash-embed", dimension=1
+        ),
+    )
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", "in_memory"
+    )
+    calls = {"ocr": 0, "parse": 0}
+
+    def _runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        calls["ocr"] += 1
+        return _fake_ocr_response(page_number, "root grouping crash boundary").model_copy(
+            update={
+                "OCR_text_clusters": [
+                    TextCluster(
+                        text="root grouping crash",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=10.0,
+                        bb_y_max=50.0,
+                        cluster_number=0,
+                    ),
+                    TextCluster(
+                        text="boundary",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=60.0,
+                        bb_y_max=100.0,
+                        cluster_number=1,
+                    ),
+                ],
+                "meaningful_ordering": [0, 1],
+            }
+        )
+
+    def _parse_semantic_fn(*, collection, parser_input_dict, parser_source_map):
+        calls["parse"] += 1
+        return _grounded_semantic_tree(
+            collection=collection,
+            parser_input_dict=parser_input_dict,
+            parser_source_map=parser_source_map,
+        )
+
+    original_save = OCRWorkflowStateStore.save_document_tree
+    crashed = False
+
+    def _save_then_crash(
+        store: OCRWorkflowStateStore,
+        *args: object,
+        **kwargs: object,
+    ) -> str:
+        nonlocal crashed
+        revision = original_save(store, *args, **kwargs)  # type: ignore[arg-type]
+        if not crashed:
+            crashed = True
+            raise RuntimeError("simulated root crash after grouping SQLite commit")
+        return revision
+
+    monkeypatch.setattr(OCRWorkflowStateStore, "save_document_tree", _save_then_crash)
+    with pytest.raises(RuntimeError, match="OCR root workflow"):
+        run_ocr_ingest_workflow(
+            document_id="ocr-root-grouping-crash-doc",
+            title="OCR Root Grouping Crash",
+            output_dir=scratch / "artifacts",
+            image_payloads=[
+                OCRImagePayload(page_number=1, image_path=str(image_path))
+            ],
+            provider_settings=settings,
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            knowledge_engine=knowledge_engine,
+            ocr_runner=_runner,
+            deps={"parse_semantic_fn": _parse_semantic_fn},
+            run_id="ocr|root-grouping-crash",
+        )
+
+    monkeypatch.undo()
+    resumed, bundle, artifacts = run_ocr_ingest_workflow(
+        document_id="ocr-root-grouping-crash-doc",
+        title="OCR Root Grouping Crash",
+        output_dir=scratch / "artifacts",
+        image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+        provider_settings=settings,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        ocr_runner=_runner,
+        deps={"parse_semantic_fn": _parse_semantic_fn},
+        run_id="ocr|root-grouping-crash",
+        resume_from_checkpoint=True,
+    )
+
+    assert resumed.status == "succeeded"
+    assert bundle is not None
+    assert artifacts.document_tree is not None
+    assert calls == {"ocr": 1, "parse": 1}
+    assert bundle.grouping_tree == artifacts.document_tree.model_dump(mode="json")
+    checkpoint = OCRWorkflowStateStore(artifacts.state_db_path).load_grouping_checkpoint_metadata(
+        document_id="ocr-root-grouping-crash-doc",
+        grouping_policy_version="baseline-v1",
+    )
+    assert checkpoint is not None
+
+
+@pytest.mark.ci
 def test_raw_ocr_response_rejects_inconsistent_empty_or_ordering_state() -> None:
     payload = {
         "boxes_2d": [{"box_2d": [0, 0, 10, 10], "label": "Alpha", "id": 0}],
