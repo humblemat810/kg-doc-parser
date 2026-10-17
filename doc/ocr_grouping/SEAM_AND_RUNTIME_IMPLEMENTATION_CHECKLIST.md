@@ -1225,7 +1225,7 @@ itself as proof:
 | C02 runtime ownership boundary | PASS (focused matrix) | Root/page/grouping/semantic child IDs, resume identity, ownership fencing, and persisted invocation lineage are covered by the fresh-process and concurrent-resume tests. Parser CI run `39011917164` passed all four supported interpreter jobs and the Linux recovery gate on exact commit `e57fd43`. The long-document release fixture remains tracked under C05. |
 | C03 dual-store reconciliation | PASS (parser gate) | The four-boundary recovery matrix passes locally in one run (`4 passed, 113.32s`): `test_ocr_page_artifact_publish_crash_is_recoverable` covers artifact-first page publication, `test_prepare_ocr_workflow_retries_checkpoint_without_artifact` covers checkpoint-first page recovery, `test_ocr_root_retries_after_grouping_sqlite_commit_before_nested_checkpoint` covers grouping SQLite commit before the nested runtime checkpoint, and `test_ocr_root_retries_after_semantic_graph_commit_before_checkpoint` covers graph publication before the semantic checkpoint with stable canonical IDs and zero duplicate writes. The Linux recovery gate in parser CI run `39011917164` also passed. |
 | C04 incremental equivalence | PASS (structural cost gate) | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. `tests/test_document_grouping_contract.py::test_merge_groups_scans_frontier_linearly_without_nested_rebuilds` counts validation, indexing, and emission accesses and rejects nested frontier rebuilds. The implementation stores and restores the accepted frontier and `merge_revision`; this is a structural bound, not a machine-speed benchmark. |
-| C05 true resume | PARTIAL / REMOTE MATRIX VERIFIED | The installed `kogwistar==0.6.12` matrix passes fresh-process root reopen, fresh-process lineage reopen, grouping subprocess recovery, both SQLite/Kogwistar crash orders, the 100-page interruption/resume comparison, and concurrent fresh resumes with exactly one accepted owner/result. Parser CI run `39011917164` passed CPython 3.12-3.14, PyPy 3.11, and the Linux recovery gate, which executes the 100-page process-recovery and both SQLite/checkpoint crash-order tests. The 100-page test asserted canonical equality, no replay of accepted pages, one accepted grouping result, and stable root/child lineage. Remaining release evidence is specifically persistent graph-backend publication across process restart; the parser gate uses an in-memory graph test backend, while backend durability remains a Kogwistar backend responsibility. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
+| C05 true resume | PARTIAL / CI VERIFIED | The installed `kogwistar==0.6.12` local acceptance run passed `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` in 850.22s. It compared uninterrupted and interrupted/resumed canonical graph and grouping payloads, asserted mixed text/non-text evidence, reused completed pages, and accepted one resumed result. Parser CI run `39018451404` completed successfully on commit `18e5505`. This test injects a deterministic provider interruption rather than sending an OS signal, and uses the parser's in-memory knowledge backend; persistent graph-backend publication across process restart remains a Kogwistar backend responsibility. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy now include unresolved provider items, invalid item-level coordinates, warning/error regression coverage, and Docling missing-provenance coverage. `test_ocr_quality_policy_rejects_invalid_coordinates_for_item_precision` rejects non-finite or non-positive boxes when a provider claims region/line/word/character precision. Independent missing-region recall and reopen-after-failure evidence remain. |
 
 ### C05 evidence correction (2026-10-15)
@@ -1324,16 +1324,12 @@ contracts rather than duplicated here.
 ### Current release-blocking regression
 
 `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
-is the release-blocking dependency regression. It passes in 742.02 seconds
-with the real persisted parser/runtime path and core commit `8f09fd7` supplied
-on `PYTHONPATH`; the uninterrupted and resumed canonical graph payloads are
-equal and the accepted page-call counts are asserted. The same test fails with
-released Kogwistar `0.6.8`, because that release returned a durably failed
-`ocr_pages` child as terminal. Core `v0.6.10` contains the corrected public
-version and retryable-child fix, and is now published; the
-parser must verify the installed package and then rerun this test
-against the released artifact. It is not converted into a skip or a
-parser-only child-ID workaround.
+passed locally in 850.22 seconds with the installed Kogwistar `0.6.12` runtime.
+The uninterrupted and interrupted/resumed canonical graph and grouping payloads
+were equal; mixed text/non-text evidence, accepted-page reuse, and the injected
+page-63 retry were asserted. This is strong parser/runtime acceptance evidence,
+but it is not a replacement for a real fresh-process OS termination test or
+durable graph-backend publication across restart.
 
 Status correction: the source-checkout failure described above has been
 resolved by merged Kogwistar `c11efd9`/`v0.6.10`; the current run passed as
