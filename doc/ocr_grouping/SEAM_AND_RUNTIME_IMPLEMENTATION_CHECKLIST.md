@@ -16,7 +16,7 @@ section after a test run.
 | Track A: persisted Kogwistar runtime integration | PARTIAL | Published-core fresh-process recovery, ownership, and root/child lineage are verified. Persistent graph-backend publication across process restart remains a Kogwistar backend-specific gate, not a parser reimplementation task. |
 | Track B: strict seam validation | PARTIAL | Artifact/checkpoint crash ordering and accepted hierarchy consumption are verified. Provider completeness and durable graph-backend evidence remain open. |
 | C01-C02: API and ownership boundary | PASS (focused matrix) | Installed Kogwistar `0.6.12` exposes the required persisted workflow API; stable root/page/grouping/semantic ownership and concurrent resume fencing are covered by the fresh-process tests. |
-| C03-C05: reconciliation, equivalence, and true resume | PARTIAL | C03 crash-order reconciliation is PASS in the parser gate; C04 still needs bounded-cost evidence; C05 process recovery and duplicate-resume are remotely verified, while durable graph-backend publication remains delegated to Kogwistar backend tests. |
+| C03-C05: reconciliation, equivalence, and true resume | PARTIAL | C03 crash-order reconciliation is PASS in the parser gate; C04 bounded-cost frontier evidence is PASS via `test_merge_groups_scans_frontier_linearly_without_nested_rebuilds`; C05 process recovery and duplicate-resume are remotely verified, while durable graph-backend publication remains delegated to Kogwistar backend tests. |
 | C06: OCR quality/completeness | PARTIAL | Prove provider-side non-text coverage and strict recovery behavior. |
 | Typing and interpreter matrix | PASS | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39011917164` passed CPython 3.12-3.14, PyPy 3.11, and the Linux recovery gate on exact commit `e57fd43`. |
 | Release | OPEN | Version bump and downstream pin updates wait for all release-blocking rows. |
@@ -783,9 +783,10 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### A5. Summary execution
 
-- [~] Run summaries after the grouping pass is accepted in runtime state; the
-  final SQLite tree publication currently occurs in the following persistence
-  node, so this is not yet a separate committed-revision gate.
+- [x] Run summaries after the grouping pass is accepted in runtime state; the
+  persisted grouping workflow records `generate_grouping_summaries` before
+  `persist_grouping_result`, and the runtime trace regression asserts both
+  nodes.
 - [x] Recover an accepted summary journal entry when the surrounding runtime
   checkpoint is interrupted. `test_summary_journal_commit_is_recoverable_before_runtime_checkpoint`
   simulates a crash after the generated journal row and tree revision commit;
@@ -813,8 +814,10 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### A6. Runtime verification
 
-- [~] Add a test that inspects persisted Kogwistar runtime step nodes for OCR,
-  grouping, and summary stages.
+- [x] Add a test that inspects persisted Kogwistar runtime step nodes for OCR,
+  grouping, and summary stages. The grouping runtime regression now asserts
+  `generate_grouping_summaries`, `persist_grouping_result`, and `end` in the
+  persisted step trace.
 - [~] Add a test that kills execution after page 63 of 100, reopens the same
   engines and run ID in a new process, and resumes from the persisted token.
   `test_ocr_root_fresh_process_resume_after_page_63` now passes in 449.25s
@@ -1189,9 +1192,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   in both orders, including fresh-process recovery, before marking this gate
   complete. Atomic file replacement and direct order predicates are not
   sufficient evidence by themselves.
-- [~] **C04 — Incremental equivalence:** compare canonical tree content, not
+- [x] **C04 — Incremental equivalence:** compare canonical tree content, not
   timestamps, between uninterrupted batch grouping and interrupted incremental
-  grouping. Completed subtrees must remain stable.
+  grouping. Completed subtrees remain stable, and
+  `test_merge_groups_scans_frontier_linearly_without_nested_rebuilds` adds a
+  bounded-access regression so incremental grouping cannot silently regress to
+  nested frontier rebuilding.
 - [~] **C05 — True resume:** prove completed OCR, grouping, and summaries are
   not rerun after a worker/process stop. Same-process and coordinated
   source-checkout fresh-process tests now cover checkpoint behavior, including

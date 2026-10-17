@@ -595,7 +595,9 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe(
         "start",
         "restore_grouping_checkpoint",
         "apply_grouping_pass",
+        "generate_grouping_summaries",
         "persist_grouping_result",
+        "end",
     }
 
     # Exercise the two-store crash seam directly: the SQLite grouping commit

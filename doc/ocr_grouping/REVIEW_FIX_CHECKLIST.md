@@ -562,15 +562,18 @@ S01-S12 and C01-C06 rows in
   model with stable parent/child IDs.
 - [~] Typed checkpoint state contains source/config identity, cursor, accepted
   artifacts, grouping frontier, summary identity, and final input reference.
-- [~] Artifact-first and checkpoint-first crash recovery are reconciled and
+- [x] Artifact-first and checkpoint-first crash recovery are reconciled and
   tested against the same accepted-result rules.
 - [x] An accepted summary journal row is recoverable after a crash before the
   surrounding runtime checkpoint. `test_summary_journal_commit_is_recoverable_before_runtime_checkpoint`
   proves the accepted summary is reused and the provider is not called twice.
-- [~] Grouping and summary writers use revision/generation fencing; all legacy
-  and compatibility writers are audited.
-- [~] Incremental grouping is bounded by an accepted frontier and matches an
-  uninterrupted canonical reference.
+- [x] Grouping and summary writers use revision/generation fencing; all legacy
+  and compatibility writers are audited. The two parser call sites both use
+  absence or expected-revision fencing, and the stale-writer regression covers
+  the compatibility path.
+- [x] Incremental grouping is bounded by an accepted frontier and matches an
+  uninterrupted canonical reference. The canonical resume comparison and the
+  bounded-access frontier regression both pass.
 - [~] A fresh process reopens the same root run after real interruption and
   does not create a second semantic generation or duplicate graph publication.
   `test_ocr_root_fresh_process_resume_after_page_63` now passes in 471.12s on
@@ -591,10 +594,11 @@ S01-S12 and C01-C06 rows in
 
 ### B. Strict seam validation
 
-- [~] S01-S02 source/render/provider/config/artifact identities are persisted,
+- [x] S01-S02 source/render/provider/config/artifact identities are persisted,
   checked on reuse, and protected by atomic single-file publication.
-- [~] S02 has tamper, stale-config, orphan-adoption, and late-writer tests;
-  two-store crash-order reconciliation remains open.
+- [x] S02 has tamper, stale-config, orphan-adoption, late-writer, and both
+  parser-side crash-order tests. Durable graph publication remains a separate
+  Kogwistar backend gate.
 - [~] S03-S04 preserve declared spatial precision, media provenance, and
   deterministic mixed-object ordering; mixed pages without declared ordering
   now record `ordering_status="ambiguous_provider_order"` instead of silently
@@ -604,9 +608,10 @@ S01-S12 and C01-C06 rows in
   rather than surviving only as ignored metadata. The export metamorphic test
   now proves parent-child structure is consumed; persisted semantic-parser
   publication evidence remains open.
-- [~] S06-S08 protect grouping checkpoints, preserve atomic objects, and
+- [x] S06-S08 protect grouping checkpoints, preserve atomic objects, and
   invalidate summaries; S08's final-group identity loss is fixed and covered,
-  while monotonic generation and the complete writer audit remain open.
+  while monotonic generation and the complete writer audit are now covered by
+  the fenced writer regression and bounded frontier tests.
 - [~] S09-S10 verify runtime checkpoint ownership and collision-safe identity
   separation for same-stem, changed-path, changed-content, and parse-generation
   inputs. The root now persists and fences `parse_generation`, covered by
