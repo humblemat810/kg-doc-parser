@@ -463,6 +463,13 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
         FrontendField(),
         ExcludeMode("llm"),
     ] = None
+    pdf_text_mode: Annotated[
+        Literal["disabled", "prefer_native", "native_only"],
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = "disabled"
     ocr_language: Annotated[
         str,
         DtoField(),
@@ -776,6 +783,10 @@ class WorkflowProviderSettings(ModeSlicingMixin, BaseModel):
                 ocr_engine=cast(
                     Literal["rapidocr", "easyocr", "tesseract", "tesserocr", "ocrmac", "nemotron-ocr"] | None,
                     _env("KG_DOC_OCR_ENGINE"),
+                ),
+                pdf_text_mode=cast(
+                    Literal["disabled", "prefer_native", "native_only"],
+                    str(_env("KG_DOC_OCR_PDF_TEXT_MODE", "disabled") or "disabled"),
                 ),
                 ocr_language=str(_env("KG_DOC_OCR_LANGUAGE", "en") or "en"),
                 max_retries=int(_env("KG_DOC_OCR_MAX_RETRIES", "2") or "2"),

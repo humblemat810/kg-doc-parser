@@ -133,6 +133,7 @@ def _ocr_configuration_fingerprint(
         "api_version": settings.ocr.api_version,
         "project": settings.ocr.project,
         "ocr_engine": settings.ocr.ocr_engine,
+        "pdf_text_mode": settings.ocr.pdf_text_mode,
         "ocr_language": settings.ocr.ocr_language,
         "candidate_models": list(candidate_models),
         "quality_policy": (quality_policy or OCRQualityPolicy()).model_dump(mode="json"),
@@ -153,6 +154,7 @@ def _ocr_page_metadata(
     metadata = {
         "ocr_provider": settings.ocr.provider,
         "ocr_model_name": settings.ocr.model,
+        "ocr_pdf_text_mode": settings.ocr.pdf_text_mode,
         "ocr_configuration_fingerprint": _ocr_configuration_fingerprint(
             settings,
             candidate_models=candidate_models,
@@ -832,6 +834,28 @@ def _build_ocr_page_preparation(
         effective_runner: OCRRunner = _instrumented_ocr_runner
     else:
         effective_runner = ocr_runner
+    native_pdf_path = source_plan.pdf_source
+    if native_pdf_path is not None and provider_settings.ocr.pdf_text_mode != "disabled":
+        configured_runner = effective_runner
+
+        def _pdf_aware_runner(
+            image_path: Path,
+            page_number: int,
+            settings: WorkflowProviderSettings,
+        ) -> OCRClusterResponse:
+            from .pdf_native import extract_native_pdf_page
+
+            native = extract_native_pdf_page(native_pdf_path, page_number)
+            if native is not None:
+                return native
+            if settings.ocr.pdf_text_mode == "native_only":
+                raise ValueError(
+                    f"native PDF text is unavailable for page {page_number}; "
+                    "native_only mode refuses an ungrounded fallback"
+                )
+            return configured_runner(image_path, page_number, settings)
+
+        effective_runner = _pdf_aware_runner
     page_context = OCRPageProcessingContext(
         document_id=document_id,
         title=title,

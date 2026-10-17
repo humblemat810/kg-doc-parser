@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 
 import pytest
+
 from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     ProviderEndpointConfig,
@@ -202,6 +203,16 @@ def test_workflow_provider_settings_from_env_normalizes_azure_openai(monkeypatch
     assert settings.parser.model == "gpt-5-mini"
     assert settings.parser.base_url == "https://example.openai.azure.com/"
     assert settings.parser.api_key_env == "OPENAI_API_KEY_GPT5_MINI"
+
+
+def test_workflow_provider_settings_from_env_reads_pdf_text_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KG_DOC_OCR_PDF_TEXT_MODE", "native_only")
+
+    settings = WorkflowProviderSettings.from_env()
+
+    assert settings.ocr.pdf_text_mode == "native_only"
 
 
 def test_workflow_embedding_settings_include_token_budget(monkeypatch: pytest.MonkeyPatch) -> None:
