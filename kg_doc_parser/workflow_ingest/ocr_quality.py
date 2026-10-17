@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Sequence
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -93,7 +94,9 @@ def _intersection_over_union(
 
 def _assign_matches(
     expected_items: tuple[OCRGroundTruthItem, ...],
-    candidates: list[tuple[str, int, tuple[float, float, float, float], str | None]],
+    candidates: Sequence[
+        tuple[str, int, tuple[float, float, float, float], str | None]
+    ],
     minimum_iou: float,
 ) -> dict[int, tuple[int, float]]:
     """Find a deterministic maximum-cardinality one-to-one assignment."""
@@ -160,15 +163,25 @@ def evaluate_ocr_ground_truth(
         (
             "text",
             cluster.cluster_number,
-            (cluster.bb_x_min, cluster.bb_y_min, cluster.bb_x_max, cluster.bb_y_max),
-            cluster.text,
+            (
+                float(cluster.bb_x_min),
+                float(cluster.bb_y_min),
+                float(cluster.bb_x_max),
+                float(cluster.bb_y_max),
+            ),
+            str(cluster.text),
         )
         for cluster in response.OCR_text_clusters
     ] + [
         (
             "non_text",
             cluster.cluster_number,
-            (cluster.bb_x_min, cluster.bb_y_min, cluster.bb_x_max, cluster.bb_y_max),
+            (
+                float(cluster.bb_x_min),
+                float(cluster.bb_y_min),
+                float(cluster.bb_x_max),
+                float(cluster.bb_y_max),
+            ),
             None,
         )
         for cluster in response.non_text_objects
