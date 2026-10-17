@@ -58,7 +58,10 @@ from pydantic import BaseModel, Field
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError, PdfStreamError
 
-from ..llm_structured_output import build_structured_output_runnable
+from ..llm_structured_output import (
+    StructuredOutputRunnable,
+    build_structured_output_runnable,
+)
 from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
 from .adapters import OCRPageJSON, _validated_ocr_page_json, normalize_ocr_pages
 from .document_adapters import (
@@ -83,6 +86,7 @@ from .probe import WorkflowProbe, emit_probe_event
 from .providers import (
     ProviderDiagnostics,
     ProviderDiagnosticsSink,
+    SupportsStructuredOutput,
     WorkflowProviderSettings,
     build_chat_model_for_role,
     invoke_with_timeout,
@@ -329,6 +333,101 @@ class GroundedSummaryGenerator(Protocol):
     ) -> Summary: ...
 
 
+_GROUNDED_SUMMARY_PROMPT_REVISION = "grounded-summary-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class GroundedChatSummaryGenerator:
+    """Generate grounded summaries with the configured parser provider."""
+
+    provider_settings: WorkflowProviderSettings
+    chat_model: SupportsStructuredOutput
+
+    @property
+    def configuration_fingerprint(self) -> str:
+        configuration = json.dumps(
+            self.provider_settings.parser.model_dump(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(configuration.encode("utf-8")).hexdigest()
+
+    def __call__(
+        self,
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        evidence_slices: tuple[EvidenceSlice, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree
+        node_ids = {slice_.item_id for slice_ in evidence_slices}
+        if not node_ids:
+            raise ValueError("grounded summary generation requires evidence slices")
+        evidence_lines: list[str] = []
+        for slice_ in evidence_slices:
+            location = slice_.location
+            page = location.page_index if location.page_index is not None else "unknown"
+            if slice_.text is not None:
+                evidence_lines.append(
+                    f"{slice_.item_id}|{slice_.kind}|page={page}|"
+                    f"offset={slice_.start}:{slice_.end}|{slice_.text}"
+                )
+            elif slice_.media is not None:
+                evidence_lines.append(
+                    f"{slice_.item_id}|{slice_.kind}|page={page}|"
+                    f"media={slice_.media.sha256_hex}|{slice_.media.mime_type}"
+                )
+        messages = [
+            SystemMessage(
+                "Summarize only the supplied evidence. Return one Summary. "
+                "Every evidence item must be represented by evidence_item_ids."
+            ),
+            HumanMessage("\n".join(evidence_lines)),
+        ]
+        structured = cast(
+            StructuredOutputRunnable,
+            self.chat_model.with_structured_output(Summary, include_raw=True),
+        )
+        response = invoke_with_timeout(
+            lambda: structured.invoke(messages),
+            timeout_seconds=self.provider_settings.parser.timeout_seconds,
+            operation="grounded_summary",
+            call_role="parser",
+            max_in_flight=self.provider_settings.parser.max_in_flight_calls,
+        )
+        if not isinstance(response, dict) or not isinstance(
+            response.get("parsed"), Summary
+        ):
+            raise TypeError("grounded summary provider returned an unreadable Summary")
+        summary = cast(Summary, response["parsed"])
+        if summary.status != "generated":
+            raise ValueError("grounded summary provider did not generate a summary")
+        if set(summary.evidence_item_ids) != node_ids:
+            raise ValueError("grounded summary must account for every supplied evidence item")
+        return summary.model_copy(
+            update={
+                "provider_model": (
+                    f"{self.provider_settings.parser.provider}:"
+                    f"{self.provider_settings.parser.model}"
+                ),
+                "prompt_revision": _GROUNDED_SUMMARY_PROMPT_REVISION,
+                "input_fingerprint": input_fingerprint,
+            }
+        )
+
+
+def build_production_grounded_summary_generator(
+    provider_settings: WorkflowProviderSettings,
+) -> GroundedChatSummaryGenerator:
+    """Build the provider-backed grounded summary boundary."""
+
+    return GroundedChatSummaryGenerator(
+        provider_settings=provider_settings,
+        chat_model=build_chat_model_for_role("parser", provider_settings),
+    )
+
+
 def _summary_generator_identity(
     generator: SummaryGenerator | GroundedSummaryGenerator,
 ) -> str:
@@ -336,7 +435,11 @@ def _summary_generator_identity(
     if isinstance(generator, FunctionType):
         return f"{generator.__module__}.{generator.__qualname__}"
     generator_type = type(generator)
-    return f"{generator_type.__module__}.{generator_type.__qualname__}"
+    identity = f"{generator_type.__module__}.{generator_type.__qualname__}"
+    fingerprint = getattr(generator, "configuration_fingerprint", None)
+    if isinstance(fingerprint, str):
+        return f"{identity}:{fingerprint}"
+    return identity
 
 
 class OCRQualityPolicy(BaseModel):
@@ -3681,6 +3784,14 @@ def run_ocr_ingest_workflow(
     if bool(image_payloads) == bool(pdf_path):
         raise ValueError("provide exactly one of image_payloads or pdf_path")
     effective_settings = provider_settings or WorkflowProviderSettings.from_env()
+    if (
+        summary_policy is not None
+        and summary_generator is None
+        and grounded_summary_generator is None
+    ):
+        grounded_summary_generator = build_production_grounded_summary_generator(
+            effective_settings
+        )
     preparation = _build_ocr_page_preparation(
         document_id=document_id,
         title=title,

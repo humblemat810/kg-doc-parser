@@ -119,6 +119,7 @@ from kg_doc_parser.workflow_ingest.document_models import (
     SummaryPolicy,
 )
 from kg_doc_parser.workflow_ingest.ocr_pipeline import (
+    GroundedChatSummaryGenerator,
     GroupingCheckpointConflict,
     OCRPageProcessingContext,
     OCRQualityPolicy,
@@ -148,6 +149,7 @@ from kg_doc_parser.workflow_ingest.ocr_runtime import (
     run_grouping_workflow,
     run_ocr_page_workflow,
 )
+from kg_doc_parser.workflow_ingest.providers import SupportsStructuredOutput
 from kg_doc_parser.workflow_ingest.sdk_boundary import ContentCarrier, raw_content
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 
@@ -3702,6 +3704,128 @@ def test_grounded_summary_generator_identity_is_not_none_type() -> None:
 
     assert identity.endswith(".grounded_generator")
     assert identity != "builtins.NoneType"
+
+
+class _FakeGroundedSummaryChat:
+    def __init__(self) -> None:
+        self.messages: list[object] | None = None
+
+    def with_structured_output(
+        self,
+        schema: type[Summary],
+        *,
+        include_raw: bool,
+        **kwargs: object,
+    ) -> SupportsStructuredOutput:
+        assert schema is Summary
+        assert include_raw is True
+        del kwargs
+
+        class _Response:
+            def __init__(self, chat: _FakeGroundedSummaryChat) -> None:
+                self.chat = chat
+
+            def invoke(self, messages: list[object]) -> dict[str, object]:
+                self.chat.messages = messages
+                return {
+                    "parsed": Summary(
+                        status="generated",
+                        text="alpha beta",
+                        evidence_item_ids=("page-1",),
+                        provider_model="provider-claimed",
+                        prompt_revision="provider-claimed",
+                        input_fingerprint="provider-claimed",
+                    )
+                }
+
+        return _Response(self)
+
+
+@pytest.mark.ci
+def test_production_grounded_summary_uses_exact_evidence_and_parser_identity() -> None:
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="openai", model="test-model")
+    )
+    chat = _FakeGroundedSummaryChat()
+    generator = GroundedChatSummaryGenerator(provider_settings=settings, chat_model=chat)
+    evidence = (
+        EvidenceSlice(
+            item_id="page-1",
+            kind="text",
+            location=SourceLocation(page_index=0, accuracy="page"),
+            text="alpha",
+            start=0,
+            end=5,
+        ),
+        EvidenceSlice(
+            item_id="page-1",
+            kind="text",
+            location=SourceLocation(page_index=0, accuracy="page"),
+            text="beta",
+            start=5,
+            end=9,
+        ),
+    )
+    tree = DocumentTree(
+        document_id="production-summary-doc",
+        source_revision="ocr-v1:production-summary",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="page-1",
+                kind="text",
+                text="alphabeta",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                parts=(SourceSlice(item_id="page-1", start=0, end=9),),
+            ),
+        ),
+    )
+
+    summary = generator(
+        tree=tree,
+        node_id="root",
+        evidence_slices=evidence,
+        input_fingerprint="evidence-fingerprint",
+    )
+
+    assert chat.messages is not None
+    human_message = chat.messages[1]
+    assert "alpha" in human_message.content
+    assert "beta" in human_message.content
+    assert summary.provider_model == "openai:test-model"
+    assert summary.prompt_revision == "grounded-summary-v1"
+    assert summary.input_fingerprint == "evidence-fingerprint"
+
+
+@pytest.mark.ci
+def test_production_grounded_summary_identity_includes_parser_config() -> None:
+    first = GroundedChatSummaryGenerator(
+        provider_settings=WorkflowProviderSettings(
+            parser=ProviderEndpointConfig(provider="openai", model="model-a")
+        ),
+        chat_model=_FakeGroundedSummaryChat(),
+    )
+    second = GroundedChatSummaryGenerator(
+        provider_settings=WorkflowProviderSettings(
+            parser=ProviderEndpointConfig(provider="openai", model="model-b")
+        ),
+        chat_model=_FakeGroundedSummaryChat(),
+    )
+
+    first_identity = _summary_generator_identity(first)
+    second_identity = _summary_generator_identity(second)
+
+    assert first_identity != second_identity
+    assert first_identity.startswith(
+        "kg_doc_parser.workflow_ingest.ocr_pipeline.GroundedChatSummaryGenerator:"
+    )
 
 
 def test_duplicate_accepted_summary_delivery_is_idempotent() -> None:

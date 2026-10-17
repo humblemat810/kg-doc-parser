@@ -74,6 +74,7 @@ from .models import (
     WorkflowIngestInput,
 )
 from .ocr_pipeline import (
+    GroundedChatSummaryGenerator,
     GroundedSummaryGenerator,
     OCRImagePayload,
     OCRQualityDiagnostic,
@@ -200,6 +201,7 @@ __all__ = [
     "EmbeddingProviderConfig",
     "EvidenceSlice",
     "FakeChatModel",
+    "GroundedChatSummaryGenerator",
     "GroundedSourceRecord",
     "GroundedSummaryGenerator",
     "GroupProposal",

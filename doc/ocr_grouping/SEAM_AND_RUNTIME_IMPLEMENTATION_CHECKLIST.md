@@ -474,7 +474,9 @@ cannot close A-6.
 - [~] **B-4 / S06-S08 durable grouping and summaries:** fence every grouping
   writer, preserve meaningful groups and atomic objects, invalidate summaries
   on grouping changes, and test duplicate/replay behavior. The current CAS
-  containment is not yet monotonic-generation or crash/restart proof.
+  containment is not yet monotonic-generation or crash/restart proof. A
+  production parser-provider grounded-summary generator now uses exact
+  evidence slices and parser-configuration cache identity; CI remains pending.
 - [~] **B-5 / S09-S10 runtime and identity:** verify the persisted root/checkpoint
   boundary and separate document, source revision, OCR configuration, grouping
   revision, and parse-generation identities. Add same-stem/cross-path and
