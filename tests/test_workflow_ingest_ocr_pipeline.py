@@ -2475,6 +2475,101 @@ def test_ocr_quality_diagnostics_are_persisted_and_strict_policy_fails_closed() 
 
 
 @pytest.mark.ci
+def test_ocr_strict_quality_rejection_recovers_with_valid_provider_result() -> None:
+    """A strict rejection must reopen and retry instead of blocking the page."""
+    scratch = _scratch("ocr_strict_quality_recovery")
+    image_path = scratch / "images" / "page_1.png"
+    _draw_test_image(image_path, lines=["strict recovery"])
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+    policy = OCRQualityPolicy(reject_unresolved_items=True)
+    artifact = (
+        scratch
+        / "legacy_split_pages"
+        / "ocr-strict-quality-recovery-doc"
+        / "page_1.json"
+    )
+    calls = 0
+
+    def _recovering_runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        nonlocal calls
+        del image_path, provider_settings
+        calls += 1
+        if calls == 1:
+            return _fake_ocr_response(page_number, "strict recovery").model_copy(
+                update={
+                    "unresolved_item_count": 1,
+                    "source_item_count": 2,
+                }
+            )
+        return _fake_ocr_response(page_number, "strict recovery").model_copy(
+            update={
+                "meaningful_ordering": [0, 1],
+                "contains_table": True,
+                "non_text_objects": [
+                    NonTextCluster(
+                        description="figure: recovered chart",
+                        bb_x_min=520.0,
+                        bb_x_max=900.0,
+                        bb_y_min=100.0,
+                        bb_y_max=420.0,
+                        cluster_number=1,
+                    )
+                ],
+                "source_item_count": 2,
+            }
+        )
+
+    with pytest.raises(RuntimeError, match="OCR preparation incomplete"):
+        prepare_ocr_workflow_input(
+            document_id="ocr-strict-quality-recovery-doc",
+            title="OCR Strict Quality Recovery",
+            output_dir=scratch,
+            image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+            provider_settings=settings,
+            ocr_runner=_recovering_runner,
+            quality_policy=policy,
+        )
+    assert not artifact.exists()
+    failed_store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    failed_state = failed_store.get_page_state(
+        document_id="ocr-strict-quality-recovery-doc", page_number=1, stage="ocr"
+    )
+    assert failed_state is not None
+    assert failed_state.status == "failed"
+
+    recovered = prepare_ocr_workflow_input(
+        document_id="ocr-strict-quality-recovery-doc",
+        title="OCR Strict Quality Recovery",
+        output_dir=scratch,
+        image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+        provider_settings=settings,
+        ocr_runner=_recovering_runner,
+        quality_policy=policy,
+    )
+
+    assert calls == 2
+    assert artifact.is_file()
+    persisted = json.loads(artifact.read_text(encoding="utf-8"))
+    assert len(persisted["non_text_objects"]) == 1
+    assert persisted["non_text_objects"][0]["description"] == "figure: recovered chart"
+    assert persisted["source_item_count"] == 2
+    assert persisted["unresolved_item_count"] == 0
+    recovered_store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    recovered_state = recovered_store.get_page_state(
+        document_id="ocr-strict-quality-recovery-doc", page_number=1, stage="ocr"
+    )
+    assert recovered_state is not None
+    assert recovered_state.status == "completed"
+
+
+@pytest.mark.ci
 def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
     """The public policy override must remain one identity at every seam."""
     scratch = _scratch("ocr_custom_grouping_policy")
