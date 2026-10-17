@@ -2237,6 +2237,31 @@ def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
         scratch / "engines", "in_memory"
     )
     policy_version = "custom-grouping-policy-v42"
+    consumed_group_ids: list[str] = []
+
+    def _group_aware_semantic_fn(*, collection, parser_input_dict, parser_source_map):
+        grouping_tree = parser_input_dict.get("document_tree")
+        assert isinstance(grouping_tree, dict)
+        grouping_nodes = grouping_tree.get("nodes")
+        assert isinstance(grouping_nodes, list)
+        group = next(
+            node
+            for node in grouping_nodes
+            if isinstance(node, dict) and node.get("kind") == "section"
+        )
+        group_id = group.get("node_id")
+        assert isinstance(group_id, str)
+        consumed_group_ids.append(group_id)
+        semantic = _grounded_semantic_tree(
+            collection=collection,
+            parser_input_dict=parser_input_dict,
+            parser_source_map=parser_source_map,
+        )
+        semantic.child_nodes[0] = semantic.child_nodes[0].model_copy(
+            update={"title": f"grouped:{group_id}"}
+        )
+        return semantic
+
     run, bundle, artifacts = run_ocr_ingest_workflow(
         document_id="ocr-custom-policy-doc",
         title="OCR Custom Policy",
@@ -2257,7 +2282,7 @@ def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
                 ),
             ),
         ),
-        deps={"parse_semantic_fn": _grounded_semantic_tree},
+        deps={"parse_semantic_fn": _group_aware_semantic_fn},
     )
 
     assert run.status == "succeeded"
@@ -2278,6 +2303,13 @@ def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
     assert checkpoint.accepted_page_frontier == (1,)
     assert bundle.grouping_tree == artifacts.document_tree.model_dump(mode="json")
     assert bundle.grouping_tree["nodes"]
+    assert len(consumed_group_ids) == 1
+    assert consumed_group_ids[0] == grouped_nodes[0].node_id
+    assert any(
+        record.get("label") == f"grouped:{grouped_nodes[0].node_id}"
+        for record in bundle.graph_payload["nodes"]
+        if isinstance(record, dict)
+    )
 
 
 @pytest.mark.ci
