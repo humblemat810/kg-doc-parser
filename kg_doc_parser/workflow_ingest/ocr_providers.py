@@ -327,9 +327,11 @@ def _direct_response(
 ) -> OCRClusterResponse:
     width, height = _image_size(image_path)
     normalized: list[tuple[float, float, float, float, str]] = []
+    unresolved_item_count = 0
     for box, text in detections:
         value = text.strip()
         if not value:
+            unresolved_item_count += 1
             continue
         x_min, x_max, y_min, y_max = _box_to_bounds(box)
         normalized.append((x_min, y_min, x_max, y_max, value))
@@ -361,6 +363,8 @@ def _direct_response(
         data_loss_likelihood=0.0,
         scan_quality="medium",
         contains_table=False,
+        unresolved_item_count=unresolved_item_count,
+        source_item_count=len(clusters) + unresolved_item_count,
         spatial_accuracy="region",
     )
 

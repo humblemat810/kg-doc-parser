@@ -107,6 +107,8 @@ def test_native_pdf_text_reads_a_real_selectable_pdf(tmp_path: Path) -> None:
     assert result.meaningful_ordering == [0, 1]
     assert result.spatial_accuracy == "line"
     assert result.OCR_text_clusters[0].bb_y_min > result.OCR_text_clusters[1].bb_y_min
+    assert result.unresolved_item_count == 0
+    assert result.source_item_count == 2
 
 
 def test_pdf_text_mode_is_part_of_ocr_cache_identity() -> None:
