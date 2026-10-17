@@ -38,6 +38,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import shutil
 import sqlite3
@@ -345,6 +346,7 @@ class OCRQualityPolicy(BaseModel):
     reject_incomplete_words_on_edge: bool = False
     reject_empty_page: bool = False
     reject_unresolved_items: bool = False
+    reject_invalid_spatial_coordinates: bool = True
 
 
 class OCRQualityDiagnostic(BaseModel):
@@ -407,6 +409,38 @@ def _evaluate_ocr_quality(
                 ),
             )
         )
+    if response.spatial_accuracy != "page":
+        invalid_coordinates = [
+            cluster.cluster_number
+            for cluster in (*response.OCR_text_clusters, *response.non_text_objects)
+            if not all(
+                math.isfinite(value)
+                for value in (
+                    cluster.bb_x_min,
+                    cluster.bb_y_min,
+                    cluster.bb_x_max,
+                    cluster.bb_y_max,
+                )
+            )
+            or cluster.bb_x_min >= cluster.bb_x_max
+            or cluster.bb_y_min >= cluster.bb_y_max
+        ]
+        if invalid_coordinates:
+            diagnostics.append(
+                OCRQualityDiagnostic(
+                    code="invalid_spatial_coordinates",
+                    severity=(
+                        "error"
+                        if policy.reject_invalid_spatial_coordinates
+                        else "warning"
+                    ),
+                    message=(
+                        "provider declared item-level spatial precision but emitted "
+                        "invalid bounding boxes for clusters "
+                        + ", ".join(str(number) for number in invalid_coordinates)
+                    ),
+                )
+            )
     return tuple(diagnostics)
 
 _OCR_STATE_SCHEMA_VERSION = 2

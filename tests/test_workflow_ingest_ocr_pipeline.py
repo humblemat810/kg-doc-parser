@@ -2064,6 +2064,37 @@ def test_ocr_quality_policy_records_unresolved_provider_items() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_quality_policy_rejects_invalid_coordinates_for_item_precision() -> None:
+    response = _fake_ocr_response(1, "quality signal").model_copy(
+        update={
+            "spatial_accuracy": "region",
+            "OCR_text_clusters": [
+                TextCluster(
+                    text="quality signal",
+                    bb_x_min=20.0,
+                    bb_x_max=20.0,
+                    bb_y_min=10.0,
+                    bb_y_max=30.0,
+                    cluster_number=0,
+                )
+            ],
+        }
+    )
+
+    rejected = _evaluate_ocr_quality(response, OCRQualityPolicy())
+    assert [(item.code, item.severity) for item in rejected] == [
+        ("invalid_spatial_coordinates", "error")
+    ]
+
+    warned = _evaluate_ocr_quality(
+        response, OCRQualityPolicy(reject_invalid_spatial_coordinates=False)
+    )
+    assert [(item.code, item.severity) for item in warned] == [
+        ("invalid_spatial_coordinates", "warning")
+    ]
+
+
+@pytest.mark.ci
 def test_ocr_quality_diagnostics_are_persisted_and_strict_policy_fails_closed() -> None:
     scratch = _scratch("ocr_quality_persistence")
     image_path = scratch / "images" / "page_1.png"
