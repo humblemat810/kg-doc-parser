@@ -47,6 +47,7 @@ class OCRPageJSON(TypedDict):
     pdf_page_num: int | str
     printed_page_number: NotRequired[str]
     contains_table: NotRequired[bool]
+    unresolved_item_count: NotRequired[int]
     is_blank_page: NotRequired[bool]
     meaningful_ordering: NotRequired[list[int]]
     metadata: NotRequired[dict[str, JsonValue]]
@@ -87,6 +88,11 @@ def _validated_ocr_page_json(
         field = value.get(key)
         if field is not None and not isinstance(field, expected_type):
             raise TypeError(f"OCR page field {key!r} has an invalid type")
+    unresolved_item_count = value.get("unresolved_item_count")
+    if unresolved_item_count is not None and (
+        type(unresolved_item_count) is not int or unresolved_item_count < 0
+    ):
+        raise TypeError("OCR page field 'unresolved_item_count' must be a non-negative integer")
     for key in ("meaningful_ordering",):
         field = value.get(key)
         if field is not None and (
