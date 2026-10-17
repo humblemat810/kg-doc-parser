@@ -9,6 +9,8 @@ from _kogwistar_test_helpers import (
     drain_phase1_indexes_until_idle,
     load_kogwistar_fake_backend,
 )
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
 from kg_doc_parser.workflow_ingest.models import WorkflowIngestInput
 from kg_doc_parser.workflow_ingest.providers import (
     WorkflowProviderSettings,
@@ -19,7 +21,6 @@ from kg_doc_parser.workflow_ingest.service import (
     _TinyEmbeddingFunction,
     run_ingest_workflow,
 )
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 
 def _scratch(name: str) -> Path:
@@ -181,6 +182,61 @@ def test_workflow_ingest_runs_on_ci_full_backends(backend_kind: str):
     assert run.status == "succeeded"
     assert bundle is not None
     assert knowledge_engine.persist.exists_node(bundle.graph_payload["nodes"][0]["id"])
+
+
+@pytest.mark.workflow
+@pytest.mark.ci_full
+def test_workflow_ingest_chroma_canonical_graph_survives_restart():
+    """The parser publication path remains readable after a graph-engine reopen."""
+    scratch = _scratch("ci_full_chroma_graph_restart")
+    workflow_engine, conversation_engine, knowledge_engine = _build_engine_triplet(
+        scratch / "engines", "chroma"
+    )
+    inp = WorkflowIngestInput.from_text(
+        document_id="ci-full-chroma-restart",
+        text="Alpha clause\nBeta clause",
+        title="Workflow chroma restart",
+    )
+
+    try:
+        run, bundle = run_ingest_workflow(
+            inp=inp,
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            knowledge_engine=knowledge_engine,
+            deps={"parse_semantic_fn": _fake_semantic_tree},
+        )
+        drain_phase1_indexes_until_idle(
+            workflow_engine, conversation_engine, knowledge_engine
+        )
+        assert run.status == "succeeded"
+        assert bundle is not None
+        expected_node_ids = {
+            node.id for node in knowledge_engine.read.get_nodes(limit=1000)
+        }
+        expected_edge_ids = {
+            edge.id for edge in knowledge_engine.read.get_edges(limit=1000)
+        }
+        assert expected_node_ids
+    finally:
+        workflow_engine.close()
+        conversation_engine.close()
+        knowledge_engine.close()
+
+    reopened_workflow, reopened_conversation, reopened_knowledge = _build_engine_triplet(
+        scratch / "engines", "chroma"
+    )
+    try:
+        assert {
+            node.id for node in reopened_knowledge.read.get_nodes(limit=1000)
+        } == expected_node_ids
+        assert {
+            edge.id for edge in reopened_knowledge.read.get_edges(limit=1000)
+        } == expected_edge_ids
+    finally:
+        reopened_workflow.close()
+        reopened_conversation.close()
+        reopened_knowledge.close()
 
 
 @pytest.mark.workflow
