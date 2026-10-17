@@ -5186,6 +5186,10 @@ def test_rebuild_rejects_legacy_ocr_from_replaced_same_numbered_page() -> None:
     _write_valid_ocr_artifact(
         legacy_dir / "page_1.json", source_image_sha256=old_digest
     )
+    (scratch / "progress.json").write_text(
+        json.dumps({"pages": {"1": {"image_sha256": old_digest}}}),
+        encoding="utf-8",
+    )
 
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
     assert store.rebuild_from_artifacts(
@@ -5196,7 +5200,7 @@ def test_rebuild_rejects_legacy_ocr_from_replaced_same_numbered_page() -> None:
         input_fingerprint="new-source-fingerprint",
         rendered_dir=rendered_dir,
         legacy_dir=legacy_dir,
-        progress_path=scratch / "missing-progress.json",
+        progress_path=scratch / "progress.json",
     )
 
     state = store.get_page_state(

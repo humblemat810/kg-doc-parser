@@ -1948,18 +1948,6 @@ class OCRWorkflowStateStore:
             input_fingerprint=input_fingerprint,
         )
         rebuilt_any = False
-        progress_payload: OCRWorkflowProgress | None = None
-        if progress_path.exists():
-            raw_progress = _read_json_object(progress_path)
-            try:
-                progress_payload = OCRWorkflowProgress.model_validate(raw_progress)
-            except ValueError:
-                # A damaged progress report is advisory only. The SQLite
-                # rebuild must continue without trusting unvalidated fields.
-                progress_payload = None
-        progress_pages: dict[str, OCRPageProgress] = (
-            progress_payload.pages if progress_payload is not None else {}
-        )
         expected_page_numbers = set(range(1, total_pages + 1))
         for page_number, path in _scan_rendered_pages(rendered_dir):
             # A rebuilt state store may share an artifact directory with an
@@ -1982,12 +1970,12 @@ class OCRWorkflowStateStore:
         for page_number, json_path in _scan_legacy_json_pages(legacy_dir):
             if page_number not in expected_page_numbers:
                 continue
-            content_hash = None
-            record = progress_pages.get(str(page_number))
-            if record is not None and _is_sha256_digest(record.image_sha256):
-                content_hash = record.image_sha256
-            if content_hash is None:
-                content_hash = _find_matching_render_hash(rendered_dir, legacy_dir, page_number)
+            # The rendered artifact is the only authoritative source for the
+            # current page identity. Progress JSON is advisory and must never
+            # resurrect an OCR result after a same-path image replacement.
+            content_hash = _find_matching_render_hash(
+                rendered_dir, legacy_dir, page_number
+            )
             config_fingerprint: str | None = None
             artifact_valid = False
             artifact_error: str | None = None
