@@ -465,30 +465,33 @@ def apply_grouping_proposals(
             raise ValueError("grouping proposals require an internal document frontier")
         return tree
     by_id = {node.node_id: node for node in tree.nodes}
-    if proposals and all(
-        (
-            (existing := by_id.get(
-                group_node_id(
-                    document_id=tree.document_id,
-                    grouping_policy_version=grouping_policy_version,
-                    proposal=proposal,
-                )
-            ))
-            is not None
-            and existing.kind == proposal.kind
-            and tuple(child.node_id for child in existing.children) == proposal.members
+    pending_proposals: list[GroupProposal] = []
+    for proposal in proposals:
+        existing = by_id.get(
+            group_node_id(
+                document_id=tree.document_id,
+                grouping_policy_version=grouping_policy_version,
+                proposal=proposal,
+            )
         )
-        for proposal in proposals
-    ):
-        # A duplicate delivery of an accepted proposal is a safe no-op. The
-        # identity and exact child sequence prevent altered proposals from
-        # being silently accepted.
+        if existing is None:
+            pending_proposals.append(proposal)
+            continue
+        if (
+            existing.kind != proposal.kind
+            or tuple(child.node_id for child in existing.children) != proposal.members
+        ):
+            raise ValueError("existing grouping node conflicts with replayed proposal")
+        # A duplicate delivery of an accepted proposal is already committed.
+        # Filter it before merging so a retry can safely contain both old and
+        # new proposals even though the old members are no longer frontier IDs.
+    if not pending_proposals:
         return tree
     frontier = tuple(child.node_id for child in root.children)
     new_frontier, created = merge_groups(
         document_id=tree.document_id,
         frontier=frontier,
-        proposals=proposals,
+        proposals=tuple(pending_proposals),
         grouping_policy_version=grouping_policy_version,
     )
     for node in created:

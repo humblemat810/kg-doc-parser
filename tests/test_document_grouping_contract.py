@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from kg_doc_parser.workflow_ingest.document_adapters import (
+    apply_grouping_proposals,
     apply_summary_updates,
     extract_reference_mentions,
     select_summary_targets,
@@ -94,6 +95,49 @@ def test_merge_groups_only_reifies_the_affected_frontier_window() -> None:
     assert frontier[1].startswith("merge:")
     assert len(created) == 1
     assert tuple(child.node_id for child in created[0].children) == ("b", "c")
+
+
+def test_grouping_replay_can_include_accepted_and_new_proposals() -> None:
+    tree = DocumentTree(
+        document_id="mixed-replay",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=tuple(_item(f"item-{index}", str(index)) for index in range(4)),
+        nodes=tuple(
+            [
+                _leaf(f"leaf-{index}", f"item-{index}", str(index))
+                for index in range(4)
+            ]
+            + [
+                DocumentNode(
+                    node_id="root",
+                    kind="document",
+                    children=tuple(
+                        {"node_id": f"leaf-{index}"} for index in range(4)
+                    ),
+                )
+            ]
+        ),
+    )
+    first = apply_grouping_proposals(
+        tree,
+        (GroupProposal(kind="section", members=("leaf-0", "leaf-1")),),
+        grouping_policy_version="v1",
+    )
+    second = apply_grouping_proposals(
+        first,
+        (
+            GroupProposal(kind="section", members=("leaf-0", "leaf-1")),
+            GroupProposal(kind="section", members=("leaf-2", "leaf-3")),
+        ),
+        grouping_policy_version="v1",
+    )
+
+    root = next(node for node in second.nodes if node.node_id == "root")
+    assert len(root.children) == 2
+    assert all(child.node_id.startswith("merge:") for child in root.children)
+    assert second.tree_revision == first.tree_revision + 1
 
 
 def test_merge_groups_rejects_nonadjacent_or_overlapping_members() -> None:
