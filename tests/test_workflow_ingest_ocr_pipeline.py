@@ -410,6 +410,41 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
 
 
 @pytest.mark.ci
+def test_ocr_root_lineage_rejects_missing_or_duplicate_child_edges() -> None:
+    root_run_id = "ocr|lineage-contract"
+    edges = [
+        SimpleNamespace(
+            metadata={
+                "relation": "wf_invoked",
+                "parent_run_id": root_run_id,
+                "workflow_id": "kg_doc_parser.ocr_pages.v1",
+                "invocation_key": "ocr-pages-v1",
+                "child_run_id": f"{root_run_id}|ocr-pages",
+            }
+        ),
+        SimpleNamespace(
+            metadata={
+                "relation": "wf_invoked",
+                "parent_run_id": root_run_id,
+                "workflow_id": "kg_doc_parser.ocr_pages.v1",
+                "invocation_key": "ocr-pages-v1",
+                "child_run_id": f"{root_run_id}|ocr-pages",
+            }
+        ),
+    ]
+    engine = SimpleNamespace(
+        read=SimpleNamespace(get_edges=lambda **_: edges),
+    )
+
+    with pytest.raises(RuntimeError, match="persisted invocation lineage is invalid"):
+        ocr_runtime_module._validate_root_invocation_lineage(
+            engine,
+            root_run_id=root_run_id,
+            recovery_generation=0,
+        )
+
+
+@pytest.mark.ci
 def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
     scratch = _scratch("ocr_grouping_runtime")
     workflow_engine, conversation_engine, _knowledge_engine = build_workflow_engine_triplet(

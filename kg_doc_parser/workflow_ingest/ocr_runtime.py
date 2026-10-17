@@ -554,6 +554,64 @@ def _validate_root_resume_identity(
         )
 
 
+def _validate_root_invocation_lineage(
+    conversation_engine: GraphKnowledgeEngine,
+    *,
+    root_run_id: str,
+    recovery_generation: int,
+) -> None:
+    """Require one persisted edge for each accepted root child workflow.
+
+    The workflow result and artifact bundle prove that outputs exist, but not
+    that page, grouping, and semantic execution belonged to this persisted
+    root.  The runtime's ``wf_invoked`` edges are the durable lineage record;
+    duplicate or missing edges must fail closed before graph publication.
+    """
+    suffix = f"|recovery-{recovery_generation}" if recovery_generation else ""
+    expected = {
+        (
+            "kg_doc_parser.ocr_pages.v1",
+            "ocr-pages-v1" if not recovery_generation else f"ocr-pages-recovery-v{recovery_generation}",
+            f"{root_run_id}|ocr-pages{suffix}",
+        ),
+        (
+            "kg_doc_parser.ocr_grouping.v1",
+            "grouping-v1" if not recovery_generation else f"grouping-recovery-v{recovery_generation}",
+            f"{root_run_id}|grouping{suffix}",
+        ),
+        (
+            "kg_doc_parser.ingest.v1",
+            "semantic-v1" if not recovery_generation else f"semantic-recovery-v{recovery_generation}",
+            f"{root_run_id}|semantic{suffix}",
+        ),
+    }
+    counts: dict[tuple[str, str, str], int] = {}
+    for edge in conversation_engine.read.get_edges(limit=1000):
+        metadata = edge.metadata or {}
+        if metadata.get("relation") != "wf_invoked":
+            continue
+        if metadata.get("parent_run_id") != root_run_id:
+            continue
+        key = (
+            str(metadata.get("workflow_id")),
+            str(metadata.get("invocation_key")),
+            str(metadata.get("child_run_id")),
+        )
+        counts[key] = counts.get(key, 0) + 1
+    missing = expected - counts.keys()
+    duplicate = sorted(key for key, count in counts.items() if key in expected and count != 1)
+    if missing or duplicate:
+        details: list[str] = []
+        if missing:
+            details.append(f"missing={sorted(missing)!r}")
+        if duplicate:
+            details.append(f"duplicate={duplicate!r}")
+        raise RuntimeError(
+            f"OCR root persisted invocation lineage is invalid for {root_run_id!r}: "
+            + "; ".join(details)
+        )
+
+
 def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> _OCRWorkflowState:
     return {
         "ocr_page_state_version": _OCR_PAGE_STATE_VERSION,
@@ -1670,6 +1728,11 @@ def run_ocr_root_workflow(
         configuration_fingerprints=preparation.page_context.configuration_fingerprints,
         grouping_policy_version=grouping_policy_version,
         require_match=root_resume,
+    )
+    _validate_root_invocation_lineage(
+        conversation_engine,
+        root_run_id=effective_run_id,
+        recovery_generation=_recovery_generation(final_state),
     )
     page_result = _typed_child_state(
         final_state.get("ocr_page_result"),
