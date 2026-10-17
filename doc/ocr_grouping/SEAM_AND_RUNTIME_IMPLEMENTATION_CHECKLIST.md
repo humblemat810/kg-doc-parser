@@ -740,8 +740,10 @@ an adapter-only test, or a source-checkout-only runtime test.
   page without repeating accepted OCR or deleting a complete grouping result.
   `test_ocr_root_reopens_after_real_process_termination` proves this with a
   fresh worker; installed-package and Linux SIGKILL evidence remain open.
-- [ ] On process interruption before page commit, detect the incomplete step and
-  retry it safely.
+- [x] On process interruption before page commit, detect the incomplete step and
+  retry it safely. Covered by
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_replays_checkpointed_page_when_artifact_is_missing`
+  and `::test_prepare_ocr_workflow_retries_checkpoint_without_artifact`.
 - [x] Support concurrent duplicate resume attempts with one accepted commit and
   an explicit stale-token/claim failure for the loser. The reusable
   `test_ocr_root_concurrent_resume_has_one_owner_and_one_result` starts two
@@ -780,7 +782,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   schema revision. The new `EvidenceSlice`/`GroundedSummaryGenerator` boundary
   exposes exact ordered ownership to opted-in providers; persisted identity and
   full provider migration remain release gates.
-- [ ] Reuse a summary only when all those identities match.
+- [x] Reuse a summary only when all those identities match. Covered by
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_cache_reuses_exact_generation_and_slice_identity`
+  and `::test_summary_generation_fingerprint_invalidates_persisted_cache`.
 - [x] Make summary failure retryable without invalidating OCR or grouping.
   `tests/test_workflow_ingest_ocr_pipeline.py::test_failed_summary_is_retryable_without_replaying_ocr`
   proves a failed summary is retried and accepted while the two OCR pages are

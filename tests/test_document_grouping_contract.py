@@ -78,6 +78,24 @@ def test_merge_groups_is_deterministic_and_preserves_unmerged_members() -> None:
     assert len(first[1][0].children) == 2
 
 
+def test_merge_groups_only_reifies_the_affected_frontier_window() -> None:
+    proposal = GroupProposal(kind="section", members=("b", "c"))
+
+    frontier, created = merge_groups(
+        document_id="doc",
+        frontier=("a", "b", "c", "d", "e"),
+        proposals=(proposal,),
+        grouping_policy_version="v1",
+    )
+
+    assert len(frontier) == 4
+    assert frontier[0] == "a"
+    assert frontier[2:] == ("d", "e")
+    assert frontier[1].startswith("merge:")
+    assert len(created) == 1
+    assert tuple(child.node_id for child in created[0].children) == ("b", "c")
+
+
 def test_merge_groups_rejects_nonadjacent_or_overlapping_members() -> None:
     with pytest.raises(ValueError):
         merge_groups(
