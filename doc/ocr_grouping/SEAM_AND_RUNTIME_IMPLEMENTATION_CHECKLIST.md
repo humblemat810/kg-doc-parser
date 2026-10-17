@@ -996,7 +996,11 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### S07. Grouping to summary generation
 
-- [ ] Run summaries after grouping passes, not before caller-provided grouping.
+- [x] Run summaries after grouping passes, not before caller-provided grouping.
+  `test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe` asserts
+  that the summary callback receives the grouped tree, and the persisted
+  runtime routes `apply_grouping_pass` before
+  `generate_grouping_summaries`.
 - [~] Include exact subtree slice membership, tree revision, policy revision,
   model revision, and prompt schema in the summary fingerprint. Exact slice
   membership and `SummaryPolicy.generation_fingerprint` are now included;

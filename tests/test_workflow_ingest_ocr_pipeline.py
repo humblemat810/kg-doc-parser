@@ -463,6 +463,8 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe() -> None:
         source_items: tuple[SourceItem, ...],
         input_fingerprint: str,
     ) -> Summary:
+        assert node_id == tree.root_id
+        assert any(node.kind == "section" for node in tree.nodes)
         return Summary(
             status="generated",
             text=f"summary:{node_id}",
