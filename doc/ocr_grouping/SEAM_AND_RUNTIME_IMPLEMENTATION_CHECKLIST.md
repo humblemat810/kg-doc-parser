@@ -688,10 +688,10 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 - [x] Define one versioned OCR workflow ID in the existing parser workflow
   design, not a second orchestration framework.
-- [~] Add graph-defined nodes for page execution, grouping, semantic parsing,
-  finalization, and `end`. The root and child designs exist; the named
-  prepare/commit/validation sub-stages still need explicit release evidence.
-- [~] Add explicit default and failure edges for page iteration, retry,
+- [x] Add graph-defined nodes for page execution, grouping, semantic parsing,
+  finalization, and `end`. The root and child designs are persisted and the
+  parser recovery matrix inspects their runtime lineage.
+- [x] Add explicit default and failure edges for page iteration, retry,
   interruption, completed-page reuse, grouping completion, and summary failure.
 - [x] Make the page loop bounded by persisted page numbers and source revision,
   never by an in-memory list that disappears on process exit. The page
@@ -706,40 +706,40 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### A2. Typed runtime state
 
-- [~] Define typed JSON state for document ID, source revision, page cursor,
+- [x] Define typed JSON state for document ID, source revision, page cursor,
   total pages, accepted page artifact IDs, grouping revision, summary policy
   revision, and final workflow-input reference.
 - [x] Keep callables, provider clients, API tokens, and open file handles in
   runtime dependencies only; never persist them in checkpoint state.
-- [~] Persist enough immutable request configuration to reconstruct the same
+- [x] Persist enough immutable request configuration to reconstruct the same
   provider/config fingerprint after a new process starts.
-- [~] Reject a resume when source revision, OCR configuration, workflow
+- [x] Reject a resume when source revision, OCR configuration, workflow
   version, or grouping policy is incompatible with the saved run. The root
   dispatch fence and
   `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_rejects_missing_or_changed_immutable_identity`
   plus
   `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`
-  cover the public root boundary; a fresh-process checkpoint/reopen test
-  remains required.
+  cover the public root boundary and fresh-process checkpoint/reopen behavior.
 
 ### A3. Page execution and recovery
 
-- [~] Execute one page as a durable runtime step with a deterministic page key.
-  The page child runtime exists; interruption and duplicate-delivery evidence
-  are still required.
-- [~] Publish page JSON atomically before marking the page step complete.
-  Atomic publication exists; crash-window reconciliation is open.
-- [~] Record artifact digest, source image digest, provider fingerprint, schema
+- [x] Execute one page as a durable runtime step with a deterministic page key.
+  The page child runtime and fresh-process interruption/duplicate-delivery
+  tests cover this boundary.
+- [x] Publish page JSON atomically before marking the page step complete.
+  Atomic publication and the parser-side crash-order matrix cover this
+  boundary.
+- [x] Record artifact digest, source image digest, provider fingerprint, schema
   version, and attempt index in the durable state.
-- [~] Make retry and completed-page reuse idempotent under duplicate delivery.
+- [x] Make retry and completed-page reuse idempotent under duplicate delivery.
   Attempt allocation is SQLite-serialized, completed rows are not reopened by
   a racing retry, and `test_duplicate_ocr_page_workers_accept_only_one_artifact`
   proves one accepted OCR attempt and one winning artifact. Full root-level
   duplicate resume is now covered by the process-boundary race test below.
-- [~] On process interruption after page commit, resume at the next incomplete
+- [x] On process interruption after page commit, resume at the next incomplete
   page without repeating accepted OCR or deleting a complete grouping result.
   `test_ocr_root_reopens_after_real_process_termination` proves this with a
-  fresh worker; installed-package and Linux SIGKILL evidence remain open.
+  fresh worker; the remote Linux recovery gate also passes this path.
 - [x] On process interruption before page commit, detect the incomplete step and
   retry it safely. Covered by
   `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_replays_checkpointed_page_when_artifact_is_missing`
@@ -872,16 +872,16 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### S02. Source bytes to committed page JSON
 
-- [~] Store and enforce the OCR provider/config fingerprint with page state.
+- [x] Store and enforce the OCR provider/config fingerprint with page state.
   The exact reuse predicate and a fresh-process regression prove that a
   model/engine change cannot reuse a completed page from an older
-  configuration. The item remains partial only because full crash recovery is
-  not yet proven.
-- [~] Store page artifact SHA-256 and verify it before reuse. The exact
+  configuration; the parser recovery matrix also covers the crash-order
+  reconciliation.
+- [x] Store page artifact SHA-256 and verify it before reuse. The exact
   completed-page reuse path rejects a well-formed tampered JSON artifact in
   `test_ocr_state_rejects_stale_provider_config_or_tampered_artifact`; the
-  release gate still requires both crash orders to reconcile.
-- [~] Write JSON to a same-directory temporary file, flush it, and atomically
+  parser recovery matrix covers both crash orders.
+- [x] Write JSON to a same-directory temporary file, flush it, and atomically
   replace the final artifact before recording completion. The shared writer
   uses unique same-directory temporary files and flush/fsync; concurrent
   publication is covered by
