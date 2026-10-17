@@ -4898,6 +4898,7 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
 
     settings = WorkflowProviderSettings(
         ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        parser=ProviderEndpointConfig(provider="fake", model="fake-parser"),
         embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
     )
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
@@ -4994,3 +4995,52 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
         )
     )
     assert recovery_trace
+
+    # The final artifact is not sufficient evidence that the stages belonged
+    # to the same persisted execution.  Kogwistar's invocation edges are the
+    # authoritative parent/child lineage record, so assert the complete
+    # initial and recovery stage chains and reject duplicate accepted edges.
+    lineage_edges = [
+        edge
+        for edge in conversation_engine.read.get_edges(limit=1000)
+        if (edge.metadata or {}).get("relation") == "wf_invoked"
+        and (edge.metadata or {}).get("parent_run_id", "").startswith(first_run.run_id)
+    ]
+    assert len({edge.id for edge in lineage_edges}) == len(lineage_edges)
+    lineage = {
+        (
+            str((edge.metadata or {}).get("parent_run_id")),
+            str((edge.metadata or {}).get("workflow_id")),
+            str((edge.metadata or {}).get("invocation_key")),
+            str((edge.metadata or {}).get("child_run_id")),
+        )
+        for edge in lineage_edges
+    }
+    assert {
+        (
+            first_run.run_id,
+            "kg_doc_parser.ocr_pages.v1",
+            "ocr-pages-v1",
+            f"{first_run.run_id}|ocr-pages",
+        ),
+        (
+            first_run.run_id,
+            "kg_doc_parser.ocr_grouping.v1",
+            "grouping-v1",
+            f"{first_run.run_id}|grouping",
+        ),
+        (
+            first_run.run_id,
+            "kg_doc_parser.ingest.v1",
+            "semantic-v1",
+            f"{first_run.run_id}|semantic",
+        ),
+    }.issubset(lineage)
+    assert {
+        (
+            f"{first_run.run_id}|recovery-1",
+            "kg_doc_parser.ocr_pages.v1",
+            "ocr-pages-recovery-v1",
+            f"{first_run.run_id}|recovery-1|ocr-pages|recovery-1",
+        ),
+    }.issubset(lineage)
