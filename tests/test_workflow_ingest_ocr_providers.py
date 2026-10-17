@@ -249,6 +249,8 @@ def test_direct_rapidocr_adapter_normalizes_boxes_without_docling(
     assert response.OCR_text_clusters[0].text == "hello"
     assert response.OCR_text_clusters[0].bb_x_min == 10
     assert response.OCR_text_clusters[0].bb_y_max == 30
+    assert response.unresolved_item_count == 0
+    assert response.source_item_count == 1
 
 
 def test_direct_rapidocr_adapter_rejects_boolean_polygon_coordinates(
@@ -301,6 +303,40 @@ def test_direct_easyocr_adapter_normalizes_boxes_without_docling(
     response = run_easyocr_page(image_path, 1, ProviderEndpointConfig(provider="easyocr"))
     assert response.OCR_text_clusters[0].text == "hello"
     assert response.OCR_text_clusters[0].bb_x_max == 50
+    assert response.unresolved_item_count == 0
+    assert response.source_item_count == 1
+
+
+@pytest.mark.ci
+def test_direct_rapidocr_adapter_accounts_for_empty_detections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from PIL import Image
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+
+    class Output:
+        boxes: ClassVar[list[list[tuple[int, int]]]] = [
+            [(10, 20), (50, 20), (50, 30), (10, 30)],
+            [(10, 40), (50, 40), (50, 50), (10, 50)],
+        ]
+        txts: ClassVar[list[str]] = ["hello", " "]
+
+    class FakeRapidOCR:
+        def __call__(self, path: str) -> Output:
+            assert path == str(image_path)
+            return Output()
+
+    module = ModuleType("rapidocr")
+    module.RapidOCR = FakeRapidOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidocr", module)
+
+    response = run_rapidocr_page(image_path, 1, ProviderEndpointConfig(provider="rapidocr"))
+
+    assert [cluster.text for cluster in response.OCR_text_clusters] == ["hello"]
+    assert response.unresolved_item_count == 1
+    assert response.source_item_count == 2
 
 
 def test_docling_missing_runtime_fails_at_selection_boundary() -> None:
@@ -405,6 +441,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     assert response.meaningful_ordering == [0, 1, 2]
     assert response.contains_table is True
     assert response.unresolved_item_count == 1
+    assert response.source_item_count == 4
 
     class PlaceholderDocument:
         def iterate_items(self) -> list[Item]:
@@ -420,6 +457,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     assert [cluster.text for cluster in placeholder_response.OCR_text_clusters] == ["heading"]
     assert placeholder_response.non_text_objects == []
     assert placeholder_response.unresolved_item_count == 1
+    assert placeholder_response.source_item_count == 2
 
     class FallbackDocument:
         def iterate_items(self) -> list[Item]:
@@ -437,6 +475,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     )
     assert [cluster.text for cluster in fallback_response.OCR_text_clusters] == ["heading"]
     assert fallback_response.unresolved_item_count == 1
+    assert fallback_response.source_item_count == 2
 
 
 def test_registered_provider_is_explicit_and_process_local(tmp_path: Path) -> None:

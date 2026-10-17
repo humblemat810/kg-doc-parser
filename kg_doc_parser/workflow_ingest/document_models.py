@@ -351,8 +351,7 @@ class DocumentTree(FrozenModel):
             if node.summary is None or node.summary.status not in {"generated", "verified"}:
                 continue
             evidence = node.summary.evidence_item_ids
-            payload = [_model_json_object(items[item_id]) for item_id in sorted(evidence)]
-            expected = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            expected = self.summary_input_fingerprint(node_id, tuple(sorted(evidence)))
             if node.summary.input_fingerprint != expected:
                 raise ValueError(f"summary fingerprint is stale for node {node_id}")
             if node.summary.evidence_slice_fingerprint is not None:
@@ -362,7 +361,11 @@ class DocumentTree(FrozenModel):
         return self
 
     def source_fingerprint(self) -> str:
-        payload = [_model_json_object(item) for item in self.source_items]
+        payload = {
+            "document_id": self.document_id,
+            "source_revision": self.source_revision,
+            "source_items": [_model_json_object(item) for item in self.source_items],
+        }
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def summary_input_fingerprint(self, node_id: str, evidence_item_ids: tuple[str, ...] | None = None) -> str:
@@ -386,7 +389,11 @@ class DocumentTree(FrozenModel):
         selected = tuple(sorted(evidence_item_ids if evidence_item_ids is not None else covered))
         if set(selected) - covered:
             raise ValueError("summary evidence must be within the node subtree")
-        payload = [_model_json_object(items[item_id]) for item_id in selected]
+        payload = {
+            "document_id": self.document_id,
+            "source_revision": self.source_revision,
+            "source_items": [_model_json_object(items[item_id]) for item_id in selected],
+        }
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def summary_slice_fingerprint(
@@ -406,14 +413,19 @@ class DocumentTree(FrozenModel):
         if node is None:
             raise KeyError(node_id)
         allowed = set(evidence_item_ids) if evidence_item_ids is not None else None
-        payload: list[JsonObject] = []
+        slices: list[JsonObject] = []
+        payload: dict[str, object] = {
+            "document_id": self.document_id,
+            "source_revision": self.source_revision,
+            "slices": slices,
+        }
 
         def visit(current_id: str) -> None:
             current = nodes[current_id]
             if current.parts:
                 for part_index, part in enumerate(current.parts):
                     if allowed is None or part.item_id in allowed:
-                        payload.append(
+                        slices.append(
                             {
                                 "node_id": current_id,
                                 "part_index": part_index,
@@ -428,9 +440,7 @@ class DocumentTree(FrozenModel):
                 visit(child.node_id)
 
         visit(node_id)
-        return sha256(
-            json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
-        ).hexdigest()
+        return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def evidence_slices(
         self,

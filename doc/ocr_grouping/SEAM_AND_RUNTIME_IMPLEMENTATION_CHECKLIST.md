@@ -1125,15 +1125,28 @@ an adapter-only test, or a source-checkout-only runtime test.
 ### S10. Source revision to downstream graph identity
 
 - [~] Replace static `ocr-v1` source revision with content-addressed or
-  authoritative revision identity. The current document revision includes the
-  input fingerprint, but same-stem/cross-path identity and immutable revision
-  separation still lack acceptance tests.
+  authoritative revision identity. The document revision includes the input
+  fingerprint, and the document source fingerprint now namespaces document ID
+  and source revision alongside source items. Regressions:
+  `test_source_fingerprint_includes_authoritative_reading_order` and
+  `test_source_fingerprint_includes_document_and_revision_namespaces`; Parser
+  CI run `39037176708` passed the full matrix on `7bfedf7`. Same-stem/cross-path
+  identity is covered by `test_pdf_artifact_directories_do_not_collide_for_same_basename`
+  and `test_pdf_artifact_directories_share_content_identity_across_paths`.
+  Graph export now carries the authoritative source revision from the accepted
+  grouping tree in both top-level graph payload and root-node metadata; coverage
+  is provided by `test_export_carries_authoritative_source_revision`.
+  Parser CI run `39045083192` passed the full matrix on `4cbb8cb`.
+  Complete downstream revision evidence remains open.
 - [~] Separate document ID, source revision, OCR config, grouping revision, and
   parse generation namespaces. The OCR root now persists a dedicated
   `parse_generation`, validates it on resume, and derives the semantic child
   invocation key from it; `test_ocr_root_resume_rejects_a_different_parse_generation`
-  covers the mismatch. Same-stem/cross-path and complete downstream revision
-  acceptance evidence remain open.
+  covers the mismatch. Summary input fingerprints also namespace document ID and
+  source revision with source items, covered by
+  `test_source_fingerprint_includes_document_and_revision_namespaces`. Parser CI
+  run `39039809496` passed the full matrix on `3800e7b`. Same-stem/cross-path
+  and complete downstream revision acceptance evidence remain open.
 - [x] Make default batch document IDs collision-safe for same-stem files. The
   batch runner uses a resolved-path digest when stems collide, and
   `test_ocr_batch_workflow_fences_duplicate_source_stems` verifies distinct IDs

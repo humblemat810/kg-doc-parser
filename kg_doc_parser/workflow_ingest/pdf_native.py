@@ -92,6 +92,8 @@ def extract_native_pdf_page(
         data_loss_likelihood=0.0,
         scan_quality="high",
         contains_table=False,
+        unresolved_item_count=0,
+        source_item_count=len(clusters),
         spatial_accuracy="line",
     )
 

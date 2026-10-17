@@ -519,6 +519,31 @@ def test_source_fingerprint_includes_authoritative_reading_order() -> None:
     assert first.source_fingerprint() != second.source_fingerprint()
 
 
+@pytest.mark.ci
+def test_source_fingerprint_includes_document_and_revision_namespaces() -> None:
+    base = DocumentTree(
+        document_id="namespace-doc",
+        source_revision="source-rev-1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(_item("source", "stable text"),),
+        nodes=(
+            _leaf("source-leaf", "source", "stable text"),
+            DocumentNode(node_id="root", kind="document", children=({"node_id": "source-leaf"},)),
+        ),
+    )
+
+    same_items_other_document = base.model_copy(update={"document_id": "other-document"})
+    same_items_other_revision = base.model_copy(update={"source_revision": "source-rev-2"})
+
+    assert base.source_fingerprint() != same_items_other_document.source_fingerprint()
+    assert base.source_fingerprint() != same_items_other_revision.source_fingerprint()
+    assert base.summary_input_fingerprint("root") != same_items_other_document.summary_input_fingerprint("root")
+    assert base.summary_input_fingerprint("root") != same_items_other_revision.summary_input_fingerprint("root")
+    assert base.summary_slice_fingerprint("root") != same_items_other_document.summary_slice_fingerprint("root")
+    assert base.summary_slice_fingerprint("root") != same_items_other_revision.summary_slice_fingerprint("root")
+
+
 def test_explicit_reference_mentions_are_source_grounded_and_outside_partition() -> None:
     text = "Intro; see page 5 and refer to section 4.2 for details."
     item = _item("source", text)

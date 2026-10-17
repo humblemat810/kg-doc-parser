@@ -865,6 +865,40 @@ def test_export_rejects_opaque_nested_grouping_metadata() -> None:
 
 
 @pytest.mark.ci
+def test_export_carries_authoritative_source_revision() -> None:
+    base = WorkflowIngestInput.from_text(
+        document_id="source-revision-doc",
+        text="A small document",
+        title="Source revision",
+    )
+    grouping_tree = {
+        "source_revision": "ocr-v1:source-digest",
+    }
+    collection = base.collections[0].model_copy(
+        update={"metadata": {"document_tree": grouping_tree}}
+    )
+    inp = base.model_copy(update={"collections": [collection]})
+    ctx = SimpleNamespace(
+        state_view={
+            "normalized_input": inp,
+            "semantic_tree": SemanticNode(
+                title="Source revision",
+                node_type="DOCUMENT_ROOT",
+                total_content_pointers=[],
+                child_nodes=[],
+                level_from_root=0,
+            ),
+            "parser_source_map": {},
+            "authoritative_source_map": {},
+        }
+    )
+
+    bundle = _build_export_bundle(ctx=ctx)
+
+    assert bundle.graph_payload["source_revision"] == "ocr-v1:source-digest"
+
+
+@pytest.mark.ci
 def test_source_map_preserves_explicit_unit_ids_and_cluster_identity():
     inp = WorkflowIngestInput(
         request_id="stable-doc",

@@ -50,6 +50,7 @@ class OCRPageJSON(TypedDict):
     unresolved_item_count: NotRequired[int]
     is_blank_page: NotRequired[bool]
     meaningful_ordering: NotRequired[list[int]]
+    source_item_count: NotRequired[int]
     metadata: NotRequired[dict[str, JsonValue]]
     OCR_text_clusters: NotRequired[list[OCRTextClusterJSON]]
     non_text_objects: NotRequired[list[OCRNonTextObjectJSON]]
@@ -93,6 +94,11 @@ def _validated_ocr_page_json(
         type(unresolved_item_count) is not int or unresolved_item_count < 0
     ):
         raise TypeError("OCR page field 'unresolved_item_count' must be a non-negative integer")
+    source_item_count = value.get("source_item_count")
+    if source_item_count is not None and (
+        type(source_item_count) is not int or source_item_count < 0
+    ):
+        raise TypeError("OCR page field 'source_item_count' must be a non-negative integer")
     for key in ("meaningful_ordering",):
         field = value.get(key)
         if field is not None and (
@@ -231,6 +237,17 @@ def normalize_ocr_pages(
         non_text_objects = raw_page.get("non_text_objects", [])
         if not isinstance(text_clusters, list) or not isinstance(non_text_objects, list):
             raise TypeError("OCR cluster collections must be lists")
+        source_item_count = raw_page.get("source_item_count")
+        unresolved_item_count = raw_page.get("unresolved_item_count", 0)
+        if source_item_count is not None:
+            represented_item_count = len(text_clusters) + len(non_text_objects)
+            accounted_item_count = represented_item_count + unresolved_item_count
+            if source_item_count != accounted_item_count:
+                raise ValueError(
+                    "OCR source item accounting does not reconcile "
+                    f"({source_item_count} observed versus "
+                    f"{accounted_item_count} represented or unresolved)"
+                )
         page_metadata = raw_page.get("metadata", {})
         if not isinstance(page_metadata, dict):
             raise TypeError("OCR page metadata must be an object")
@@ -245,6 +262,7 @@ def normalize_ocr_pages(
             "data_loss_likelihood",
             "scan_quality",
             "unresolved_item_count",
+            "source_item_count",
         ):
             value = raw_page.get(key)
             if value is not None:

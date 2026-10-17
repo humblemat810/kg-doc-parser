@@ -23,7 +23,7 @@ from kg_doc_parser.workflow_ingest import (
 )
 from kg_doc_parser.workflow_ingest.document_grouping import group_node_id
 from kg_doc_parser.workflow_ingest.document_models import Summary
-from kg_doc_parser.workflow_ingest.models import SourceUnit, WorkflowIngestInput
+from kg_doc_parser.workflow_ingest.models import BoundingBox, SourceUnit, WorkflowIngestInput
 
 
 def test_build_document_tree_preserves_two_pages_and_exact_text() -> None:
@@ -245,6 +245,32 @@ def test_normalize_ocr_pages_marks_mixed_provider_order_as_ambiguous() -> None:
     assert inp.collections[0].pages[0].metadata["ordering_status"] == (
         "ambiguous_provider_order"
     )
+
+
+@pytest.mark.ci
+def test_normalize_ocr_pages_rejects_unaccounted_source_items() -> None:
+    with pytest.raises(ValueError, match="source item accounting does not reconcile"):
+        normalize_ocr_pages(
+            document_id="unaccounted-source-items",
+            title="Unaccounted source items",
+            pages=[
+                {
+                    "pdf_page_num": 1,
+                    "source_item_count": 2,
+                    "unresolved_item_count": 0,
+                    "OCR_text_clusters": [
+                        {
+                            "cluster_number": 0,
+                            "text": "heading",
+                            "bb_x_max": 10,
+                            "bb_y_max": 10,
+                        }
+                    ],
+                    "non_text_objects": [],
+                    "meaningful_ordering": [0],
+                }
+            ],
+        )
 
 
 def test_unknown_ocr_coordinate_system_downgrades_to_page_accuracy() -> None:
@@ -521,6 +547,46 @@ def test_build_document_tree_reports_all_unrepresented_nontext_units() -> None:
 
     assert [item.page_number for item in raised.value.diagnostics] == [1, 1]
     assert [item.modality for item in raised.value.diagnostics] == ["image_region", "pure_image"]
+
+
+@pytest.mark.ci
+def test_build_document_tree_rejects_duplicate_input_unit_ids() -> None:
+    inp = WorkflowIngestInput(
+        request_id="duplicate-unit-id",
+        collections=[
+            {
+                "collection_id": "duplicate-unit-id",
+                "title": "Duplicate unit ID",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "units": [
+                            SourceUnit(
+                                unit_id="same-unit",
+                                modality="ocr_text",
+                                page_number=1,
+                                cluster_number=0,
+                                text="first",
+                                bbox=BoundingBox(y_min=1, x_min=1, y_max=5, x_max=5),
+                            ),
+                            SourceUnit(
+                                unit_id="same-unit",
+                                modality="ocr_text",
+                                page_number=1,
+                                cluster_number=1,
+                                text="second",
+                                bbox=BoundingBox(y_min=1, x_min=10, y_max=5, x_max=20),
+                            ),
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="duplicate OCR source unit id: same-unit"):
+        build_document_tree(inp)
 
 
 def test_apply_grouping_proposals_keeps_source_coverage_and_rejects_bad_members() -> None:

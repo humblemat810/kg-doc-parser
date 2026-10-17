@@ -347,6 +347,7 @@ class OCRQualityPolicy(BaseModel):
     reject_incomplete_words_on_edge: bool = False
     reject_empty_page: bool = False
     reject_unresolved_items: bool = False
+    reject_source_item_loss: bool = False
     reject_invalid_spatial_coordinates: bool = True
 
 
@@ -410,6 +411,23 @@ def _evaluate_ocr_quality(
                 ),
             )
         )
+    if response.source_item_count is not None:
+        represented_item_count = len(response.OCR_text_clusters) + len(
+            response.non_text_objects
+        )
+        accounted_item_count = represented_item_count + response.unresolved_item_count
+        if response.source_item_count != accounted_item_count:
+            diagnostics.append(
+                OCRQualityDiagnostic(
+                    code="source_item_loss",
+                    severity="error" if policy.reject_source_item_loss else "warning",
+                    message=(
+                        "provider source item accounting does not reconcile "
+                        f"({response.source_item_count} observed versus "
+                        f"{accounted_item_count} represented or unresolved)"
+                    ),
+                )
+            )
     if response.spatial_accuracy != "page":
         invalid_coordinates = [
             cluster.cluster_number

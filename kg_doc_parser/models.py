@@ -130,6 +130,15 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
             'with a usable bounding box or modality record.'
         ),
     )
+    source_item_count: DtoType[int | None] = Field(
+        default=None,
+        ge=0,
+        description=(
+            'Total number of source items observed by the provider. When set, '
+            'the sum of represented text/non-text clusters and unresolved items '
+            'must equal this count.'
+        ),
+    )
     spatial_accuracy: DtoType[Literal['page', 'region', 'line', 'word', 'character']] = Field(
         default='page',
         description=(
@@ -154,6 +163,14 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
         all_ids_set = set(all_ids)
         if len(self.meaningful_ordering) != len(all_ids_set) or set(self.meaningful_ordering) != all_ids_set:
             raise ValueError("meaningful_ordering must cover each text and non-text cluster exactly once")
+        if self.source_item_count is not None:
+            accounted_item_count = len(all_clusters) + self.unresolved_item_count
+            if self.source_item_count != accounted_item_count:
+                raise ValueError(
+                    "OCR source item accounting does not reconcile "
+                    f"({self.source_item_count} observed versus "
+                    f"{accounted_item_count} represented or unresolved)"
+                )
         return self
 
     

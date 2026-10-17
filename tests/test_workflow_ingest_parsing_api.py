@@ -134,6 +134,31 @@ def test_parse_ocr_document_uses_env_defaults_when_overrides_are_omitted(
     assert settings.ocr.model == "gemini-2.5-flash"
 
 
+@pytest.mark.ci
+def test_parse_ocr_document_forwards_grounded_summary_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def _fake_prepare_ocr_workflow_input(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(parsing_api, "prepare_ocr_workflow_input", _fake_prepare_ocr_workflow_input)
+
+    result = parse_ocr_document(
+        document_id="grounded-summary-facade",
+        title="Grounded Summary Facade",
+        output_dir=_scratch("grounded_summary_facade"),
+        image_payloads=[OCRImagePayload(page_number=1, image_path="page.png")],
+        grounded_summary_generator=sentinel,
+    )
+
+    assert result is sentinel
+    assert captured["grounded_summary_generator"] is sentinel
+
+
 def test_parse_page_index_document_resolves_explicit_provider_and_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

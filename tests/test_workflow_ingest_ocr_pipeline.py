@@ -2325,6 +2325,25 @@ def test_ocr_quality_policy_records_unresolved_provider_items() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_quality_policy_can_reject_unaccounted_source_items() -> None:
+    response = _fake_ocr_response(1, "source accounting").model_copy(
+        update={"source_item_count": 2}
+    )
+
+    flagged = _evaluate_ocr_quality(response, OCRQualityPolicy())
+    assert [(item.code, item.severity) for item in flagged] == [
+        ("source_item_loss", "warning")
+    ]
+
+    rejected = _evaluate_ocr_quality(
+        response, OCRQualityPolicy(reject_source_item_loss=True)
+    )
+    assert [(item.code, item.severity) for item in rejected] == [
+        ("source_item_loss", "error")
+    ]
+
+
+@pytest.mark.ci
 def test_ocr_quality_policy_rejects_invalid_coordinates_for_item_precision() -> None:
     response = _fake_ocr_response(1, "quality signal").model_copy(
         update={
@@ -4694,6 +4713,44 @@ def test_pdf_artifact_directories_do_not_collide_for_same_basename() -> None:
     assert first.rendered_dir.name.startswith("same-document-report-")
     assert second.rendered_dir.name.startswith("same-document-report-")
     assert first.page_sources[0][1].read_bytes() != second.page_sources[0][1].read_bytes()
+
+
+@pytest.mark.ci
+def test_pdf_artifact_directories_share_content_identity_across_paths() -> None:
+    scratch = _scratch("ocr_same_content_cross_path")
+    first_pdf = scratch / "first" / "report.pdf"
+    second_pdf = scratch / "second" / "report.pdf"
+    first_pdf.parent.mkdir(parents=True)
+    second_pdf.parent.mkdir(parents=True)
+    payload = b"%PDF-1.4\nshared source\n"
+    first_pdf.write_bytes(payload)
+    second_pdf.write_bytes(payload)
+
+    def _rasterizer(_source: Path, rendered_dir: Path) -> list[Path]:
+        rendered_dir.mkdir(parents=True, exist_ok=True)
+        page = rendered_dir / "page_1.png"
+        Image.new("RGB", (11, 7), "green").save(page, format="PNG")
+        return [page]
+
+    output_dir = scratch / "artifacts"
+    first = _resolve_ocr_source_plan(
+        document_id="shared-content-document",
+        output_dir=output_dir,
+        image_payloads=None,
+        pdf_path=first_pdf,
+        pdf_rasterizer=_rasterizer,
+    )
+    second = _resolve_ocr_source_plan(
+        document_id="shared-content-document",
+        output_dir=output_dir,
+        image_payloads=None,
+        pdf_path=second_pdf,
+        pdf_rasterizer=_rasterizer,
+    )
+
+    assert first.rendered_dir == second.rendered_dir
+    assert first.legacy_dir == second.legacy_dir
+    assert first.input_fingerprint == second.input_fingerprint
 
 
 @pytest.mark.ci

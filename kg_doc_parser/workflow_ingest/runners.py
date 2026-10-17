@@ -21,6 +21,7 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from .demo_harness import DemoHarnessArtifacts, DemoHarnessConfig, run_demo_harness
 from .document_grouping import GroupProposal
 from .ocr_pipeline import (
+    GroundedSummaryGenerator,
     OCRImagePayload,
     OCRRunner,
     OCRWorkflowArtifacts,
@@ -269,6 +270,7 @@ def run_ocr_source_workflow(
     grouping_policy_version: str = "baseline-v1",
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
+    grounded_summary_generator: GroundedSummaryGenerator | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
 ) -> OcrWorkflowCommandResult:
@@ -323,6 +325,7 @@ def run_ocr_source_workflow(
         grouping_policy_version=grouping_policy_version,
         summary_policy=summary_policy,
         summary_generator=summary_generator,
+        grounded_summary_generator=grounded_summary_generator,
         run_id=run_id,
         resume_from_checkpoint=resume_from_checkpoint,
     )
@@ -370,6 +373,7 @@ def run_ocr_batch_workflow(
     deps: WorkflowRuntimeDeps | None = None,
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
+    grounded_summary_generator: GroundedSummaryGenerator | None = None,
 ) -> list[OcrWorkflowCommandResult]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -397,6 +401,7 @@ def run_ocr_batch_workflow(
             deps=deps,
             summary_policy=summary_policy,
             summary_generator=summary_generator,
+            grounded_summary_generator=grounded_summary_generator,
             document_id=batch_identity,
             title=source_path.stem,
         )
