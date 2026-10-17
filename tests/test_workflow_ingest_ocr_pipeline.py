@@ -5076,7 +5076,11 @@ def test_ocr_page_completion_cannot_replace_a_newer_pending_attempt() -> None:
 def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
     scratch = _scratch("ocr_missing_artifact")
     artifact = scratch / "page-1.json"
-    _write_valid_ocr_artifact(artifact)
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256="image-hash",
+        ocr_configuration_fingerprint="provider-a/model-a",
+    )
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
     store.ensure_document(
         document_id="missing-artifact-doc",
@@ -5092,6 +5096,7 @@ def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
         content_hash="image-hash",
         model_name="model",
         artifact_path=artifact,
+        config_fingerprint="provider-a/model-a",
     )
     store.record_page_completed(
         document_id="missing-artifact-doc",
@@ -5101,6 +5106,7 @@ def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
         artifact_path=artifact,
         model_name="model",
         attempt_index=attempt,
+        config_fingerprint="provider-a/model-a",
     )
     assert store.should_skip_page(
         document_id="missing-artifact-doc",
@@ -5108,6 +5114,7 @@ def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
         stage="ocr",
         content_hash="image-hash",
         artifact_path=artifact,
+        config_fingerprint="provider-a/model-a",
     )
 
     artifact.unlink()
@@ -5118,6 +5125,7 @@ def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
         stage="ocr",
         content_hash="image-hash",
         artifact_path=artifact,
+        config_fingerprint="provider-a/model-a",
     )
 
 
