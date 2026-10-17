@@ -92,12 +92,15 @@ def main() -> int:
     os.environ.setdefault("KOGWISTAR_IMPL_META_STORE", "python")
     scratch = Path(sys.argv[1])
     mode = sys.argv[2]
+    page_count_path = scratch / "page-count.txt"
+    page_count = int(page_count_path.read_text(encoding="utf-8")) if page_count_path.exists() else 2
+    page_numbers = tuple(range(1, page_count + 1))
     image_payloads = [
         OCRImagePayload(
             page_number=page,
             image_path=str(scratch / "source" / f"page-{page}.png"),
         )
-        for page in (1, 2)
+        for page in page_numbers
     ]
     settings = WorkflowProviderSettings(
         ocr=ProviderEndpointConfig(provider="fake", model="fresh-root-ocr"),
@@ -118,8 +121,9 @@ def main() -> int:
         calls.append(page_number)
         if mode == "interrupt" and page_number == 2:
             raise RuntimeError("fresh root interruption")
-        if mode == "hold" and page_number == 2:
-            (scratch / "page-2-started").write_text("ready", encoding="utf-8")
+        hold_page = 64 if mode == "long-hold" else 2
+        if mode in {"hold", "long-hold"} and page_number == hold_page:
+            (scratch / f"page-{hold_page}-started").write_text("ready", encoding="utf-8")
             time.sleep(120.0)
         if mode.startswith("race-") and page_number == 2:
             (scratch / f"{mode}-page-2-started").write_text(
@@ -128,6 +132,8 @@ def main() -> int:
             time.sleep(3.0)
         if mode in {"resume", "race-a", "race-b"} and page_number == 1:
             raise AssertionError("accepted page was replayed")
+        if mode == "long-resume" and page_number <= 63:
+            raise AssertionError("page before the termination boundary was replayed")
         return _response(page_number)
 
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
@@ -143,7 +149,7 @@ def main() -> int:
         engine.metadata = metadata
         engine._phase1_enable_index_jobs = False
     try:
-        if mode in {"resume", "race-a", "race-b"}:
+        if mode in {"resume", "long-resume", "race-a", "race-b"}:
             # Simulate a fresh process after the crash-recovery lease expires.
             # The production default remains long-lived; this test-only lease
             # keeps the subprocess test bounded without bypassing ownership.
@@ -160,7 +166,7 @@ def main() -> int:
             ocr_runner=runner,
             deps={"parse_semantic_fn": _semantic_tree},
             run_id="ocr|fresh-root-document",
-            resume_from_checkpoint=mode in {"resume", "race-a", "race-b"},
+            resume_from_checkpoint=mode in {"resume", "long-resume", "race-a", "race-b"},
             run_ownership_lease_ms=30_000,
         )
     except Exception as error:
@@ -177,7 +183,7 @@ def main() -> int:
         )
         return 17
 
-    if mode not in {"resume", "resume-missing-artifact", "race-a", "race-b"} or result.status != "succeeded" or bundle is None:
+    if mode not in {"resume", "long-resume", "resume-missing-artifact", "race-a", "race-b"} or result.status != "succeeded" or bundle is None:
         raise AssertionError("fresh root resume did not produce one accepted result")
     result_name = (
         f"{mode}-result.json"

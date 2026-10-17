@@ -1437,6 +1437,70 @@ def test_ocr_root_reopens_after_real_process_termination() -> None:
 
 
 @pytest.mark.ci
+@pytest.mark.slow
+def test_ocr_root_fresh_process_resume_after_page_63() -> None:
+    """A 100-page root resumes after a real termination at the page-64 boundary."""
+    scratch = _scratch("ocr_root_100_page_process_termination")
+    page_count = 100
+    (scratch / "page-count.txt").write_text(str(page_count), encoding="utf-8")
+    for page_number in range(1, page_count + 1):
+        _draw_test_image(
+            scratch / "source" / f"page-{page_number}.png",
+            lines=[f"long document page {page_number}"],
+        )
+    worker = Path(__file__).with_name("_ocr_root_fresh_process_worker.py")
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        path
+        for path in (
+            str(repo_root),
+            str(repo_root.parent / "kogwistar"),
+            child_env.get("PYTHONPATH", ""),
+        )
+        if path
+    )
+
+    interrupted = subprocess.Popen(
+        [sys.executable, str(worker), str(scratch), "long-hold"],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    marker = scratch / "page-64-started"
+    deadline = time.monotonic() + 180.0
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert marker.exists(), "worker did not reach page 64 before termination"
+    _terminate_interrupted_worker(interrupted)
+    interrupted.wait(timeout=30)
+    assert interrupted.returncode != 0
+
+    resumed = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "long-resume"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        # The hosted PyPy/CPython lanes persist a 100-page runtime trace and
+        # grouping checkpoint. Keep a bounded release-gate timeout while
+        # allowing the observed worst-case recovery run to finish.
+        timeout=900,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    result = json.loads(
+        (scratch / "resume-result.json").read_text(encoding="utf-8")
+    )
+    assert result == {
+        "status": "succeeded",
+        "run_id": "ocr|fresh-root-document",
+        "calls": list(range(64, page_count + 1)),
+        "has_grouping_tree": True,
+    }
+
+
+@pytest.mark.ci
 def test_ocr_root_concurrent_resume_has_one_owner_and_one_result() -> None:
     """Concurrent fresh resumes cannot both accept the same root run."""
     scratch = _scratch("ocr_root_concurrent_resume")
