@@ -247,6 +247,32 @@ def test_normalize_ocr_pages_marks_mixed_provider_order_as_ambiguous() -> None:
     )
 
 
+@pytest.mark.ci
+def test_normalize_ocr_pages_rejects_unaccounted_source_items() -> None:
+    with pytest.raises(ValueError, match="source item accounting does not reconcile"):
+        normalize_ocr_pages(
+            document_id="unaccounted-source-items",
+            title="Unaccounted source items",
+            pages=[
+                {
+                    "pdf_page_num": 1,
+                    "source_item_count": 2,
+                    "unresolved_item_count": 0,
+                    "OCR_text_clusters": [
+                        {
+                            "cluster_number": 0,
+                            "text": "heading",
+                            "bb_x_max": 10,
+                            "bb_y_max": 10,
+                        }
+                    ],
+                    "non_text_objects": [],
+                    "meaningful_ordering": [0],
+                }
+            ],
+        )
+
+
 def test_unknown_ocr_coordinate_system_downgrades_to_page_accuracy() -> None:
     inp = normalize_ocr_pages(
         document_id="unknown-coordinates",

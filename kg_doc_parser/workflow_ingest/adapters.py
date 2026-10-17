@@ -237,6 +237,17 @@ def normalize_ocr_pages(
         non_text_objects = raw_page.get("non_text_objects", [])
         if not isinstance(text_clusters, list) or not isinstance(non_text_objects, list):
             raise TypeError("OCR cluster collections must be lists")
+        source_item_count = raw_page.get("source_item_count")
+        unresolved_item_count = raw_page.get("unresolved_item_count", 0)
+        if source_item_count is not None:
+            represented_item_count = len(text_clusters) + len(non_text_objects)
+            accounted_item_count = represented_item_count + unresolved_item_count
+            if source_item_count != accounted_item_count:
+                raise ValueError(
+                    "OCR source item accounting does not reconcile "
+                    f"({source_item_count} observed versus "
+                    f"{accounted_item_count} represented or unresolved)"
+                )
         page_metadata = raw_page.get("metadata", {})
         if not isinstance(page_metadata, dict):
             raise TypeError("OCR page metadata must be an object")
