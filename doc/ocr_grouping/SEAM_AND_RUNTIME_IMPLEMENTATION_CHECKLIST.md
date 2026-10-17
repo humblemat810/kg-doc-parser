@@ -977,7 +977,10 @@ an adapter-only test, or a source-checkout-only runtime test.
   derived label reaches the graph payload. The recovery test also verifies the
   persisted `wf_invoked` edges for the initial and recovery
   page/grouping/semantic child chains; fresh-process durable-backend evidence
-  and fail-closed compatibility behavior remain required before this is green.
+  remains required before this is green. The required-contract regression
+  `test_export_bundle_required_grouping_contract_fails_closed_without_tree`
+  covers consumers that require hierarchy, while the default optional contract
+  preserves legacy callers explicitly.
 - [~] Prove that final graph export preserves intended group relationships,
   ordered slices, and source grounding. The graph exporter emits validated
   parent-child edges; full persisted semantic-parser evidence remains open.
