@@ -2365,8 +2365,16 @@ class OCRWorkflowStateStore:
         # artifact. Keep this legacy completion seam from creating a
         # database-first false positive; the canonical publisher already
         # writes the artifact before accepting the SQLite row.
-        if stage == "ocr" and (artifact_path is None or not artifact_path.is_file()):
-            return False
+        if stage == "ocr":
+            if artifact_path is None or not artifact_path.is_file():
+                return False
+            try:
+                SplitPage.model_validate(_read_json_object(artifact_path))
+            except (TypeError, ValueError):
+                # Compatibility callers must not turn malformed JSON into an
+                # accepted page; the canonical publisher applies the same
+                # schema gate before recording completion.
+                return False
         now = time.time()
         with self._session() as conn:
             conn.execute("BEGIN IMMEDIATE")

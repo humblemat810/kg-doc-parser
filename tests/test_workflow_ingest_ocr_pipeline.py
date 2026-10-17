@@ -2130,6 +2130,62 @@ def _fake_ocr_response(page_number: int, text: str) -> OCRClusterResponse:
     )
 
 
+def _write_valid_ocr_artifact(path: Path, *, page_number: int = 1) -> None:
+    split_page = SplitPage(
+        pdf_page_num=page_number,
+        metadata=SplitPageMeta(
+            ocr_model_name="test-model",
+            ocr_datetime=0.0,
+            ocr_json_version="workflow_ingest_v1",
+        ),
+        **_fake_ocr_response(page_number, f"page {page_number}").model_dump(
+            dump_format="python"
+        ),
+    )
+    path.write_text(
+        json.dumps(split_page.dump_raw(dump_format="json")),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.ci
+def test_legacy_ocr_completion_rejects_malformed_artifact() -> None:
+    """The compatibility writer must enforce the canonical OCR schema."""
+    scratch = _scratch("ocr_legacy_malformed_completion")
+    artifact = scratch / "page-1.json"
+    artifact.write_text("{}", encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="legacy-malformed-completion-doc",
+        title="Legacy Malformed Completion",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="legacy-malformed-completion-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        model_name="model",
+        artifact_path=artifact,
+    )
+
+    assert not store.record_page_completed(
+        document_id="legacy-malformed-completion-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash="image-hash",
+        artifact_path=artifact,
+        model_name="model",
+        attempt_index=attempt,
+    )
+    state = store.get_page_state(
+        document_id="legacy-malformed-completion-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None and state.status == "pending"
+
+
 @pytest.mark.ci
 @pytest.mark.parametrize(
     "update",
@@ -4654,7 +4710,7 @@ def test_prepare_ocr_workflow_input_keeps_document_fingerprint_stable_in_state_d
 def test_ocr_state_fingerprint_change_discards_stale_page_and_model_state() -> None:
     scratch = _scratch("ocr_fingerprint_invalidation")
     artifact = scratch / "page-1.json"
-    artifact.write_text("{}", encoding="utf-8")
+    _write_valid_ocr_artifact(artifact)
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
     store.ensure_document(
         document_id="fingerprint-invalidation-doc",
@@ -4959,7 +5015,7 @@ def test_ocr_page_completion_cannot_replace_a_newer_pending_attempt() -> None:
 def test_ocr_state_does_not_skip_when_matching_artifact_was_removed() -> None:
     scratch = _scratch("ocr_missing_artifact")
     artifact = scratch / "page-1.json"
-    artifact.write_text("{}", encoding="utf-8")
+    _write_valid_ocr_artifact(artifact)
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
     store.ensure_document(
         document_id="missing-artifact-doc",
