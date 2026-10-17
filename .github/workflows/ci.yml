@@ -72,6 +72,8 @@ jobs:
           KOGWISTAR_IMPL_MODE: python
         run: |
           python -c 'import sys; assert sys.implementation.name == "pypy"; assert sys.version_info[:2] == (3, 11); print(sys.implementation); print(sys.version)'
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libjpeg-dev zlib1g-dev
           python -m pip install --upgrade pip
           python -m pip install -r requirements-pypy-3.11-experimental.txt
 
