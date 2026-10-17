@@ -21,6 +21,7 @@ from kg_doc_parser.workflow_ingest import (
     prepare_ocr_workflow_input,
     suggest_cross_page_continuations,
 )
+from kg_doc_parser.workflow_ingest.document_grouping import group_node_id
 from kg_doc_parser.workflow_ingest.document_models import Summary
 from kg_doc_parser.workflow_ingest.models import SourceUnit, WorkflowIngestInput
 
@@ -587,6 +588,63 @@ def test_final_group_keeps_identity_and_kind_under_document_root() -> None:
         "leaf:doc|p1_t0",
         "leaf:doc|p1_t1",
     )
+
+
+def test_grouping_preserves_title_and_atomic_table_with_versioned_provenance() -> None:
+    inp = WorkflowIngestInput(
+        request_id="title-table",
+        collections=[
+            {
+                "collection_id": "title-table",
+                "title": "Title and table",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "units": [
+                            SourceUnit(
+                                modality="text",
+                                page_number=1,
+                                cluster_number=0,
+                                text="Quarterly results",
+                            ),
+                            SourceUnit(
+                                modality="non_text",
+                                page_number=1,
+                                cluster_number=1,
+                                description="Revenue | Q1\n100 | 120",
+                            ),
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+    tree = build_document_tree(inp)
+    assert tree is not None
+    proposal = GroupProposal(
+        kind="section:table",
+        members=("leaf:title-table|p1_t0", "leaf:title-table|p1_i1"),
+    )
+
+    grouped = apply_grouping_proposals(
+        tree, (proposal,), grouping_policy_version="layout-v1:1"
+    )
+    group_id = group_node_id(
+        document_id=tree.document_id,
+        grouping_policy_version="layout-v1:1",
+        proposal=proposal,
+    )
+    group = next(node for node in grouped.nodes if node.node_id == group_id)
+
+    assert group.kind == "section:table"
+    assert tuple(child.node_id for child in group.children) == proposal.members
+    assert group.annotations == {
+        "grouping:format": "grouping-v1",
+        "grouping:policy_version": "layout-v1:1",
+        "grouping:members": '["leaf:title-table|p1_t0","leaf:title-table|p1_i1"]',
+        "grouping:summary_state": "invalidated",
+    }
 
 
 def test_replaying_an_accepted_grouping_proposal_is_idempotent() -> None:

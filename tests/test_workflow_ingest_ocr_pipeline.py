@@ -4221,7 +4221,7 @@ def test_ocr_state_does_not_reuse_completion_without_published_artifact() -> Non
         artifact_path=artifact,
         config_fingerprint="provider-a/model-a",
     )
-    store.record_page_completed(
+    assert not store.record_page_completed(
         document_id="db-before-artifact-doc",
         page_number=1,
         stage="ocr",
@@ -4241,6 +4241,10 @@ def test_ocr_state_does_not_reuse_completion_without_published_artifact() -> Non
         artifact_path=artifact,
         config_fingerprint="provider-a/model-a",
     )
+    state = store.get_page_state(
+        document_id="db-before-artifact-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None and state.status == "pending"
 
 
 @pytest.mark.ci

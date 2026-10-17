@@ -1024,10 +1024,13 @@ an adapter-only test, or a source-checkout-only runtime test.
   document root remains a structural wrapper and the accepted group identity
   is retained below it. Covered by
   `tests/test_document_adapters.py::test_final_group_keeps_identity_and_kind_under_document_root`.
-- [ ] Make group ID, kind, provenance, and summary transformations explicit and
-  versioned.
-- [ ] Test a title plus atomic long table retaining its custom group and both
-  children.
+- [x] Make group ID, kind, provenance, and summary transformations explicit and
+  versioned. `merge_groups` uses the stable proposal-derived `group_node_id` and
+  records the versioned `grouping-v1` policy, ordered members, and explicit
+  summary invalidation in `DocumentNode.annotations`.
+- [x] Test a title plus atomic long table retaining its custom group and both
+  children in
+  `tests/test_document_adapters.py::test_grouping_preserves_title_and_atomic_table_with_versioned_provenance`.
 - [x] Test replay/idempotence of the same grouping proposal. The stable
   proposal identity makes duplicate delivery a no-op in
   `test_replaying_an_accepted_grouping_proposal_is_idempotent`.

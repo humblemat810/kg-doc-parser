@@ -2234,6 +2234,12 @@ class OCRWorkflowStateStore:
         attempt_index: int | None = None,
         config_fingerprint: str | None = None,
     ) -> bool:
+        # An OCR completion is not authoritative without its serialized page
+        # artifact. Keep this legacy completion seam from creating a
+        # database-first false positive; the canonical publisher already
+        # writes the artifact before accepting the SQLite row.
+        if stage == "ocr" and (artifact_path is None or not artifact_path.is_file()):
+            return False
         now = time.time()
         with self._session() as conn:
             conn.execute("BEGIN IMMEDIATE")

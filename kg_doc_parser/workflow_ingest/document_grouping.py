@@ -38,6 +38,25 @@ def group_node_id(
     return "merge:" + sha256(identity.encode()).hexdigest()[:24]
 
 
+def group_node_annotations(
+    *, grouping_policy_version: str, proposal: GroupProposal
+) -> dict[str, str]:
+    """Return stable provenance for a derived grouping node.
+
+    Group identity is already content-addressed by the proposal. These
+    annotations make the transformation and summary invalidation explicit in
+    exported trees without copying mutable provider metadata into the group.
+    """
+    return {
+        "grouping:format": "grouping-v1",
+        "grouping:policy_version": grouping_policy_version,
+        "grouping:members": json.dumps(
+            list(proposal.members), separators=(",", ":"), ensure_ascii=False
+        ),
+        "grouping:summary_state": "invalidated",
+    }
+
+
 def merge_groups(*, document_id: str, frontier: Sequence[str], proposals: Sequence[GroupProposal], grouping_policy_version: str) -> tuple[tuple[str, ...], tuple[DocumentNode, ...]]:
     if len(frontier) != len(set(frontier)) or not document_id or not grouping_policy_version:
         raise ValueError("frontier and grouping identifiers must be unique and nonempty")
@@ -70,9 +89,19 @@ def merge_groups(*, document_id: str, frontier: Sequence[str], proposals: Sequen
             continue
         last, proposal, node_id = group
         result.append(node_id)
-        created.append(DocumentNode(node_id=node_id, kind=proposal.kind, children=tuple(ChildRef(node_id=member) for member in proposal.members)))
+        created.append(
+            DocumentNode(
+                node_id=node_id,
+                kind=proposal.kind,
+                children=tuple(ChildRef(node_id=member) for member in proposal.members),
+                annotations=group_node_annotations(
+                    grouping_policy_version=grouping_policy_version,
+                    proposal=proposal,
+                ),
+            )
+        )
         index = last + 1
     return tuple(result), tuple(created)
 
 
-__all__ = ["GroupProposal", "group_node_id", "merge_groups"]
+__all__ = ["GroupProposal", "group_node_annotations", "group_node_id", "merge_groups"]
