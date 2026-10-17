@@ -421,6 +421,23 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     assert placeholder_response.non_text_objects == []
     assert placeholder_response.unresolved_item_count == 1
 
+    class FallbackDocument:
+        def iterate_items(self) -> list[Item]:
+            return []
+
+        def export_to_markdown(self) -> str:
+            return "heading\n\n<!-- image -->"
+
+    Conversion.document = FallbackDocument()
+    fallback_response = run_docling_ocr_page(
+        image_path,
+        1,
+        WorkflowProviderSettings(ocr=ProviderEndpointConfig(provider="docling", model="docling")),
+        engine="rapidocr",
+    )
+    assert [cluster.text for cluster in fallback_response.OCR_text_clusters] == ["heading"]
+    assert fallback_response.unresolved_item_count == 1
+
 
 def test_registered_provider_is_explicit_and_process_local(tmp_path: Path) -> None:
     image_path = tmp_path / "page.png"

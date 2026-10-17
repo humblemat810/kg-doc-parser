@@ -583,6 +583,10 @@ def run_docling_ocr_page(
     if not ordering:
         export = _external_callable(document, "export_to_markdown")
         text = str(export() if export is not None else _external_text(document, "text")).strip()
+        for marker in ("<!-- image -->", "<!-- table -->"):
+            marker_count = text.count(marker)
+            unresolved_item_count += marker_count
+            text = text.replace(marker, "").strip()
         if text:
             clusters.append(
                 TextCluster(
