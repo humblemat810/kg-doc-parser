@@ -18,7 +18,7 @@ section after a test run.
 | C01-C02: API and ownership boundary | PASS (focused matrix) | Installed Kogwistar `0.6.12` exposes the required persisted workflow API; stable root/page/grouping/semantic ownership and concurrent resume fencing are covered by the fresh-process tests. |
 | C03-C05: reconciliation, equivalence, and true resume | PARTIAL | C03 crash-order reconciliation is PASS in the parser gate; C04 still needs bounded-cost evidence; C05 process recovery and duplicate-resume are remotely verified, while durable graph-backend publication remains delegated to Kogwistar backend tests. |
 | C06: OCR quality/completeness | PARTIAL | Prove provider-side non-text coverage and strict recovery behavior. |
-| Typing and interpreter matrix | PASS (last remote matrix) | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39001460547` passed CPython 3.12-3.14 and PyPy 3.11. The latest substantive commit still requires its own CI result before release. |
+| Typing and interpreter matrix | PASS | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39011917164` passed CPython 3.12-3.14, PyPy 3.11, and the Linux recovery gate on exact commit `e57fd43`. |
 | Release | OPEN | Version bump and downstream pin updates wait for all release-blocking rows. |
 
 The status history is already represented by Git commits and diffs:

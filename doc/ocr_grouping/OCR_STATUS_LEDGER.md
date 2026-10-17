@@ -20,7 +20,7 @@ git show <commit> -- doc/ocr_grouping/OCR_STATUS_LEDGER.md
 | Grouping and summary durability | PARTIAL | Monotonic frontier fencing and large-frontier identity stability are covered. Bounded long-document cost and a complete writer audit remain open. |
 | Semantic hierarchy publication | PARTIAL | Accepted grouping is consumed by the semantic callback and preserved in graph export. Fresh-process publication against a durable graph backend remains open and is Kogwistar-owned. |
 | OCR completeness and positional fidelity | PARTIAL | Coordinate precision and provider loss diagnostics are enforced; `unresolved_item_count` now records Docling items without usable provenance and `OCRQualityPolicy(reject_unresolved_items=True)` fails closed. Independent completeness for non-text regions, tables, and figures remains open. |
-| Typing and supported interpreters | PASS (last remote matrix) | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39000683517` passed CPython 3.12-3.14 and PyPy 3.11. The latest substantive commit still requires its own CI result before release. |
+| Typing and supported interpreters | PASS | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39011917164` passed CPython 3.12-3.14, PyPy 3.11, and the Linux recovery gate on exact commit `e57fd43`. |
 | Release | OPEN | Do not bump or publish until the release-blocking rows have evidence. |
 
 ## Evidence Standard
