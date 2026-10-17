@@ -1615,6 +1615,18 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
         "calls": list(range(64, page_count + 1)),
         "has_grouping_tree": True,
     }
+    lineage = json.loads(
+        (scratch / "long-resume-lineage.json").read_text(encoding="utf-8")
+    )
+    lineage_rows = lineage["lineage"]
+    assert len({row["id"] for row in lineage_rows}) == len(lineage_rows)
+    assert {
+        "kg_doc_parser.ocr_pages.v1",
+        "kg_doc_parser.ocr_grouping.v1",
+        "kg_doc_parser.ingest.v1",
+    }.issubset({row["workflow_id"] for row in lineage_rows})
+    assert lineage["graph_node_ids"]
+    assert set(lineage["graph_node_ids"]) == set(lineage["persisted_graph_node_ids"])
 
 
 @pytest.mark.ci

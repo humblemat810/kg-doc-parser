@@ -802,9 +802,10 @@ an adapter-only test, or a source-checkout-only runtime test.
   `test_ocr_root_fresh_process_resume_after_page_63` now passes in 449.25s
   with a 900s bounded harness timeout against installed Kogwistar `0.6.12`;
   it proves pages 1-63 are not replayed, page 64 is retried at the
-  interruption boundary, and one grouping result is accepted. A fully
-  installed-release initial run with final orphan-free runtime graph
-  assertions, Linux SIGKILL, and complete dual-store reconciliation remain.
+  interruption boundary, and one grouping result is accepted. The same test
+  now records unique persisted `wf_invoked` IDs and verifies every accepted
+  graph-payload node exists in the knowledge backend after recovery. Linux
+  SIGKILL and complete dual-store reconciliation remain.
 - [x] Add a test that kills execution after a grouping checkpoint and proves the
   checkpoint is restored before further pages are accepted. Covered by
   `test_grouping_checkpoint_reopens_after_process_termination`, which stops a

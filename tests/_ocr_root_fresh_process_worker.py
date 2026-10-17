@@ -201,6 +201,37 @@ def main() -> int:
         ),
         encoding="utf-8",
     )
+    lineage = [
+        {
+            "id": str(edge.id),
+            "parent_run_id": str((edge.metadata or {}).get("parent_run_id")),
+            "workflow_id": str((edge.metadata or {}).get("workflow_id")),
+            "child_run_id": str((edge.metadata or {}).get("child_run_id")),
+        }
+        for edge in conversation_engine.read.get_edges(limit=10_000)
+        if (edge.metadata or {}).get("relation") == "wf_invoked"
+    ]
+    graph_node_ids = [
+        str(node["id"])
+        for node in bundle.graph_payload.get("nodes", [])
+        if isinstance(node, dict) and isinstance(node.get("id"), str)
+    ]
+    persisted_graph_node_ids = [
+        node_id
+        for node_id in graph_node_ids
+        if knowledge_engine.persist.exists_node(node_id)
+    ]
+    (scratch / f"{mode}-lineage.json").write_text(
+        json.dumps(
+            {
+                "lineage": lineage,
+                "graph_node_ids": graph_node_ids,
+                "persisted_graph_node_ids": persisted_graph_node_ids,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     return 0
 
 
