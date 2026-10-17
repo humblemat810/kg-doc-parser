@@ -799,7 +799,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   with a 900s bounded harness timeout; it proves pages 1-63 are not replayed,
   page 64 is retried at the interruption boundary, and one grouping result is
   accepted. The test uses the coordinated parser/core source checkout; an
-  installed-release run and final orphan-free runtime graph assertion remain.
+  installed Kogwistar `0.6.12` process then reopened the same persisted run in
+  177.01s with zero provider calls and the same run ID, but a fully installed-
+  release initial run and final orphan-free runtime graph assertion remain.
 - [x] Add a test that kills execution after a grouping checkpoint and proves the
   checkpoint is restored before further pages are accepted. Covered by
   `test_grouping_checkpoint_reopens_after_process_termination`, which stops a
@@ -1051,8 +1053,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   identities. Coordinated source-checkout tests cover fresh-process lineage,
   100-page process termination/resume, and duplicate-resume ownership;
   `test_ocr_root_fresh_process_resume_after_page_63` passes in 471.12s.
-  Installed-package, Linux SIGKILL, and complete dual-store evidence remain
-  open.
+  An installed Kogwistar `0.6.12` reopen of the persisted 100-page state
+  succeeds with zero provider calls; a fully installed-release initial run,
+  Linux SIGKILL, and complete dual-store evidence remain open.
 - [~] Keep SQLite as an idempotent artifact cache, not the authoritative cursor.
   The root cursor is runtime-owned; dual-store reconciliation is still open.
 - [~] Persist step tokens and stage results in the existing conversation/runtime
@@ -1062,7 +1065,8 @@ an adapter-only test, or a source-checkout-only runtime test.
   `test_grouping_checkpoint_reopens_after_process_termination` and
   `test_ocr_root_fresh_process_resume_after_page_63`; the latter resumes a
   100-page document after page 64 starts and passes in 471.12s. Linux SIGKILL,
-  installed-package, and complete dual-store recovery evidence remain open.
+  installed-release initial-run, Linux SIGKILL, and complete dual-store
+  recovery evidence remain open.
 - [~] Test duplicate resume, late writers, and no double publication. The
   duplicate-root race and page-level late-writer tests pass; full runtime
   publication and cross-store reconciliation remain open.
@@ -1163,7 +1167,7 @@ itself as proof:
 | C02 runtime ownership boundary | PARTIAL | Root/page/grouping/semantic child IDs and the root resume-identity fence are covered by `test_ocr_root_resume_rejects_changed_provider_before_replaying_pages`. Released Kogwistar `v0.6.10` does not expose the ownership lease API used by the fresh-process tests; the compatible implementation is on the separately pushed, unmerged `fix/workflow-run-ownership` branch. Parser fresh-process recovery must still prove one parent lineage and no second semantic generation against a published compatible core package. |
 | C03 dual-store reconciliation | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_two_store_recovery_predicates_hold_in_a_fresh_process` proves the direct predicates, `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable` injects a crash in the real page path after atomic publication and verifies fresh-process orphan adoption, `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact` proves the public preparation path reruns a database-first incomplete page, and `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_replays_checkpointed_page_when_artifact_is_missing` proves a fresh root resume does not trust a runtime checkpoint without its page artifact. Full root/runtime checkpoint reconciliation remains open. |
 | C04 incremental equivalence | PARTIAL | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. The checkpoint seam also rejects a tree/frontier mismatch; 100-page bounded-frontier work and performance evidence remain. |
-| C05 true resume | PARTIAL / REMOTE MATRIX VERIFIED | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The fresh-process 100-page regression `test_ocr_root_fresh_process_resume_after_page_63` passes locally in 471.12s with the coordinated core source checkout on `PYTHONPATH`: the resumed result has one accepted grouping tree, pages 1-63 are not replayed, and the page-64 interruption boundary is retried. The reference/resume canonical comparison remains covered by `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`. Installed-release evidence, cross-store reconciliation, Linux SIGKILL evidence, orphan-free runtime graph verification, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
+| C05 true resume | PARTIAL / REMOTE MATRIX VERIFIED | Existing same-process tests cover checkpoint behavior and `test_duplicate_ocr_page_workers_accept_only_one_artifact` proves one accepted page artifact under concurrent duplicate page delivery. The fresh-process 100-page regression `test_ocr_root_fresh_process_resume_after_page_63` passes locally in 471.12s with the coordinated core source checkout on `PYTHONPATH`: the resumed result has one accepted grouping tree, pages 1-63 are not replayed, and the page-64 interruption boundary is retried. A separate reopen of that persisted state through installed Kogwistar `0.6.12` succeeds in 177.01s with zero provider calls, the same run ID, and a grouping tree. The reference/resume canonical comparison remains covered by `test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`. Installed-release initial-run evidence, cross-store reconciliation, Linux SIGKILL evidence, orphan-free runtime graph verification, and no redundant accepted OCR work remain open. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
 | C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy exist; provider-side missing-region/coordinate evidence and reopen-after-failure proof remain. |
 
 ### C05 evidence correction (2026-10-15)
