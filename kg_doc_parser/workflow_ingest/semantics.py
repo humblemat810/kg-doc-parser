@@ -554,6 +554,7 @@ def semantic_tree_to_kge_payload(
     *,
     doc_id: str,
     parser_source_map: Mapping[str, Mapping[str, object]] | None = None,
+    source_revision: str | None = None,
 ) -> dict[str, JsonValue]:
     # Graph export is a persistence boundary.  Validate before serializing so
     # callers cannot bypass the workflow commit gate with a hand-built tree.
@@ -615,6 +616,7 @@ def semantic_tree_to_kge_payload(
     pending = [root]
     while pending:
         node = pending.pop()
+        is_root = node.node_id == root.node_id
         aggregate_spans = spans(node.aggregate_content_pointers)
         # A structural page-index container is grounded by its aggregate span;
         # ordinary legacy structural nodes retain the existing synthetic fallback.
@@ -630,6 +632,8 @@ def semantic_tree_to_kge_payload(
         if not isinstance(node_metadata_value, dict):
             raise TypeError("semantic node metadata must serialize to a JSON object")
         node_metadata: JsonObject = node_metadata_value
+        if is_root and source_revision is not None:
+            node_metadata["source_revision"] = source_revision
         if not node.summary and "summary_unavailable" not in node_metadata:
             # Do not silently turn a title into an LLM summary.  Consumers can
             # decide whether to request a summary or display the title only.
@@ -683,5 +687,11 @@ def semantic_tree_to_kge_payload(
         pending.extend(reversed(node.child_nodes))
     return cast(
         dict[str, JsonValue],
-        {"doc_id": doc_id, "insertion_method": "workflow_ingest", "nodes": nodes, "edges": edges},
+        {
+            "doc_id": doc_id,
+            "insertion_method": "workflow_ingest",
+            "source_revision": source_revision,
+            "nodes": nodes,
+            "edges": edges,
+        },
     )

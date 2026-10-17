@@ -261,10 +261,21 @@ def _build_export_bundle(
     )
     raw_grouping_tree = collection.metadata.get("document_tree")
     grouping_tree: dict[str, JsonValue] | None = None
+    source_revision: str | None = None
     if raw_grouping_tree is not None:
         grouping_tree = decode_json_object(
             raw_grouping_tree,
             label="document_tree metadata",
+        )
+        revision_value = grouping_tree.get("source_revision")
+        if isinstance(revision_value, str) and revision_value:
+            source_revision = revision_value
+    if source_revision is not None:
+        graph_payload = semantic_tree_to_kge_payload(
+            tree,
+            doc_id=collection.collection_id,
+            parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
+            source_revision=source_revision,
         )
     deps = runtime_deps or {}
     grouping_contract: Literal["optional", "required"] = (

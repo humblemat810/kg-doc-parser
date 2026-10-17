@@ -1629,6 +1629,16 @@ def test_modern_export_and_coverage_handle_deep_valid_branching_tree():
     coverage = compute_terminal_content_coverage(root, {})
     assert coverage["valid"] is True
     payload = semantic_tree_to_kge_payload(root, doc_id="deep", parser_source_map={})
+    assert payload["source_revision"] is None
+    revision_payload = semantic_tree_to_kge_payload(
+        root,
+        doc_id="deep",
+        parser_source_map={},
+        source_revision="source-revision-1",
+    )
+    assert revision_payload["source_revision"] == "source-revision-1"
+    root_node = next(node for node in revision_payload["nodes"] if node["id"] == root.node_id)
+    assert root_node["metadata"]["source_revision"] == "source-revision-1"
     assert len(payload["nodes"]) == 2201
 
 
