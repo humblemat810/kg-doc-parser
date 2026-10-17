@@ -2376,7 +2376,13 @@ class OCRWorkflowStateStore:
             if artifact_path is None or not artifact_path.is_file():
                 return False
             try:
-                SplitPage.model_validate(_read_json_object(artifact_path))
+                persisted = _read_json_object(artifact_path)
+                split_page = SplitPage.model_validate(persisted)
+                metadata = _ocr_artifact_metadata(persisted)
+                if split_page.pdf_page_num != page_number:
+                    return False
+                if metadata.get("source_image_sha256") != content_hash:
+                    return False
             except (TypeError, ValueError):
                 # Compatibility callers must not turn malformed JSON into an
                 # accepted page; the canonical publisher applies the same
