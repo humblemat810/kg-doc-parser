@@ -972,11 +972,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   hierarchy rather than only receiving it as an ignored metadata sidecar.
   The semantic callback receives `parser_input_dict["document_tree"]`, export
   carries the same canonical tree, and the root rejects missing or changed
-  trees. `test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`
-  now also verifies the persisted `wf_invoked` edges for the initial and
-  recovery page/grouping/semantic child chains; a provider-specific semantic
-  interpretation test and fail-closed compatibility mode are still required
-  before this is green.
+  trees. `test_custom_grouping_policy_reaches_checkpoint_cache_and_export`
+  now consumes the accepted group ID in the semantic callback and asserts the
+  derived label reaches the graph payload. The recovery test also verifies the
+  persisted `wf_invoked` edges for the initial and recovery
+  page/grouping/semantic child chains; fresh-process durable-backend evidence
+  and fail-closed compatibility behavior remain required before this is green.
 - [~] Prove that final graph export preserves intended group relationships,
   ordered slices, and source grounding. The graph exporter emits validated
   parent-child edges; full persisted semantic-parser evidence remains open.
