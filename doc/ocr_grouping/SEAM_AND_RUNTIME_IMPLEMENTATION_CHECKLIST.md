@@ -781,6 +781,11 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [~] Run summaries after the grouping pass is accepted in runtime state; the
   final SQLite tree publication currently occurs in the following persistence
   node, so this is not yet a separate committed-revision gate.
+- [x] Recover an accepted summary journal entry when the surrounding runtime
+  checkpoint is interrupted. `test_summary_journal_commit_is_recoverable_before_runtime_checkpoint`
+  simulates a crash after the generated journal row and tree revision commit;
+  resume restores the summary without invoking the provider again. The
+  separate runtime-node publication gate remains partial.
 - [~] Persist summary input identity including exact subtree slices, tree
   revision, grouping policy, summary policy, provider/model revision, and prompt
   schema revision. The new `EvidenceSlice`/`GroundedSummaryGenerator` boundary

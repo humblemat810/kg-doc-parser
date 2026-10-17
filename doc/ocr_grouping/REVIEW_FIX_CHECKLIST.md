@@ -564,6 +564,9 @@ S01-S12 and C01-C06 rows in
   artifacts, grouping frontier, summary identity, and final input reference.
 - [~] Artifact-first and checkpoint-first crash recovery are reconciled and
   tested against the same accepted-result rules.
+- [x] An accepted summary journal row is recoverable after a crash before the
+  surrounding runtime checkpoint. `test_summary_journal_commit_is_recoverable_before_runtime_checkpoint`
+  proves the accepted summary is reused and the provider is not called twice.
 - [~] Grouping and summary writers use revision/generation fencing; all legacy
   and compatibility writers are audited.
 - [~] Incremental grouping is bounded by an accepted frontier and matches an

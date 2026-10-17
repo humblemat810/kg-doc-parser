@@ -3426,6 +3426,129 @@ def test_duplicate_accepted_summary_delivery_is_idempotent() -> None:
 
 
 @pytest.mark.ci
+def test_summary_journal_commit_is_recoverable_before_runtime_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A committed summary is reused if the surrounding step crashes."""
+    scratch = _scratch("ocr_summary_journal_commit_crash")
+    tree = DocumentTree(
+        document_id="summary-journal-commit-crash-doc",
+        source_revision="ocr-v1:summary-journal-commit-crash",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="item-a",
+                kind="text",
+                text="summary source",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="leaf:item-a",
+                kind="text",
+                parts=(SourceSlice(item_id="item-a", start=0, end=14),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(ChildRef(node_id="leaf:item-a"),),
+            ),
+        ),
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    initial_revision = store.save_document_tree(
+        document_id=tree.document_id,
+        tree=tree,
+        grouping_policy_version="summary-journal-v1",
+        require_no_existing_tree=True,
+    )
+    calls = {"count": 0}
+
+    def _generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree, node_id, source_items
+        calls["count"] += 1
+        return Summary(
+            status="generated",
+            text="durable summary",
+            evidence_item_ids=("item-a",),
+            provider_model="fake-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    original_record = store.record_summary_attempt
+    crashed = False
+
+    def _record_then_crash(*args: object, **kwargs: object) -> int:
+        nonlocal crashed
+        result = original_record(*args, **kwargs)  # type: ignore[arg-type]
+        if kwargs.get("status") == "generated" and not crashed:
+            crashed = True
+            raise RuntimeError("simulated crash after summary journal commit")
+        return result
+
+    monkeypatch.setattr(store, "record_summary_attempt", _record_then_crash)
+    first = _generate_tree_summaries(
+        tree,
+        document_id=tree.document_id,
+        state_store=store,
+        policy=SummaryPolicy(
+            eligible_kinds=("document",),
+            minimum_source_items=1,
+            minimum_source_chars=1,
+            minimum_information_gain_chars=0,
+        ),
+        generator=_generator,
+        grouping_policy_version="summary-journal-v1",
+        expected_tree_revision=initial_revision,
+    )
+
+    assert first.nodes[-1].summary is None
+    assert calls["count"] == 1
+    accepted_attempt = next(
+        attempt
+        for attempt in store.list_summary_attempts(document_id=tree.document_id)
+        if attempt["status"] == "generated"
+    )
+    accepted = store.load_completed_summary(
+        document_id=tree.document_id,
+        node_id="root",
+        input_fingerprint=str(accepted_attempt["input_fingerprint"]),
+    )
+    assert accepted is not None
+
+    monkeypatch.setattr(store, "record_summary_attempt", original_record)
+    persisted = store.document_tree_revision(document_id=tree.document_id)
+    assert persisted is not None
+    resumed = _generate_tree_summaries(
+        tree,
+        document_id=tree.document_id,
+        state_store=store,
+        policy=SummaryPolicy(
+            eligible_kinds=("document",),
+            minimum_source_items=1,
+            minimum_source_chars=1,
+            minimum_information_gain_chars=0,
+        ),
+        generator=_generator,
+        grouping_policy_version="summary-journal-v1",
+        expected_tree_revision=persisted,
+    )
+
+    root = next(node for node in resumed.nodes if node.node_id == resumed.root_id)
+    assert root.summary == accepted
+    assert calls["count"] == 1
+
+
+@pytest.mark.ci
 def test_summary_generation_fingerprint_invalidates_persisted_cache() -> None:
     scratch = _scratch("ocr_summary_generation_fingerprint")
     tree = DocumentTree(
