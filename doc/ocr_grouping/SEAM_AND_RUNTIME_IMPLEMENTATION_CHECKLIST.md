@@ -1176,35 +1176,27 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ## C. Release gates added by the implementation review
 
-- [~] **C01 — Installed API compatibility:** record the installed Kogwistar
-  version and verify the exact persisted invocation/checkpoint APIs used by the
-  parser on CPython 3.12-3.14 and PyPy 3.11. Parser CI run `38720363271`
-  detected that published Kogwistar `0.6.9` reports package metadata `0.6.9`
-  but `kogwistar.__version__ == "0.6.8"`; the correction is merged and tagged
-  as Kogwistar `0.6.10` and must be visible on PyPI and re-tested before this
-  gate can return to PASS.
-- [~] **C02 — Runtime ownership boundary:** the root run owns page, grouping,
-  and semantic child invocations with stable child IDs. Prove recovery of the
-  complete parent/child lineage before release.
-- [~] **C03 — Dual-store reconciliation:** a completion row without a published
-  artifact is now rejected by the reuse predicate and can be safely redone;
-  test crashes after artifact rename and after SQLite/runtime checkpoint writes
-  in both orders, including fresh-process recovery, before marking this gate
-  complete. Atomic file replacement and direct order predicates are not
-  sufficient evidence by themselves.
+- [x] **C01 — Installed API compatibility:** installed Kogwistar `0.6.12`
+  metadata and module version agree, and parser CI run `39011917164` passed
+  the CPython 3.12-3.14 and PyPy 3.11 matrix.
+- [x] **C02 — Runtime ownership boundary:** stable root/page/grouping/semantic
+  child IDs, fresh-process lineage, lease ownership, duplicate-resume, and
+  no-double-publication are covered by the focused recovery matrix.
+- [x] **C03 — Dual-store reconciliation:** artifact-first and checkpoint-first
+  publication orders are covered by fresh-process recovery tests for page,
+  grouping, and semantic graph publication boundaries.
 - [x] **C04 — Incremental equivalence:** compare canonical tree content, not
   timestamps, between uninterrupted batch grouping and interrupted incremental
   grouping. Completed subtrees remain stable, and
   `test_merge_groups_scans_frontier_linearly_without_nested_rebuilds` adds a
   bounded-access regression so incremental grouping cannot silently regress to
   nested frontier rebuilding.
-- [~] **C05 — True resume:** prove completed OCR, grouping, and summaries are
-  not rerun after a worker/process stop. Same-process and coordinated
-  source-checkout fresh-process tests now cover checkpoint behavior, including
-  actual process termination after page one has committed. Installed-package
-  verification, duplicate-resume race, and artifact/database reconciliation
-  remain open. The acceptance target is at-least-once execution with exactly
-  one accepted canonical result, not exactly-once provider calls.
+- [~] **C05 — True resume:** completed OCR, grouping, and summaries are not
+  rerun after the covered worker/process stops, and duplicate resume accepts
+  one result. The remaining release evidence is the rich 100-page fixture and
+  durable graph-backend publication across process restart. The acceptance
+  target is at-least-once execution with exactly one accepted canonical result,
+  not exactly-once provider calls.
 - [~] **C06 — OCR quality/completeness:** interval coverage is necessary but not
   sufficient. `OCRQualityPolicy` records typed provider diagnostics and can
   reject incomplete text, edge-word loss, or excessive data-loss likelihood;

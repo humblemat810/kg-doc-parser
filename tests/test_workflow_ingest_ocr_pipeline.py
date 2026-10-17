@@ -82,6 +82,7 @@ from PIL import Image, ImageDraw
 import kg_doc_parser.workflow_ingest.ocr_pipeline as ocr_pipeline_module
 import kg_doc_parser.workflow_ingest.ocr_runtime as ocr_runtime_module
 from kg_doc_parser.models import (
+    NonTextCluster,
     OCRClusterResponse,
     SplitPage,
     SplitPageMeta,
@@ -1790,6 +1791,75 @@ def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() ->
             payloads.append(OCRImagePayload(page_number=page_number, image_path=str(image_path)))
         return scratch, payloads
 
+    def _acceptance_response(page_number: int) -> OCRClusterResponse:
+        """Return deterministic mixed-modality evidence for the release fixture."""
+        if page_number not in {1, 40, 62, 63, 100}:
+            return _fake_ocr_response(page_number, f"Acceptance page {page_number}")
+        return OCRClusterResponse(
+            OCR_text_clusters=[
+                TextCluster(
+                    text=f"Front matter page {page_number}",
+                    bb_x_min=10.0,
+                    bb_x_max=500.0,
+                    bb_y_min=10.0,
+                    bb_y_max=40.0,
+                    cluster_number=0,
+                ),
+                TextCluster(
+                    text="duplicate paragraph retained at a distinct source position",
+                    bb_x_min=10.0,
+                    bb_x_max=700.0,
+                    bb_y_min=60.0,
+                    bb_y_max=100.0,
+                    cluster_number=1,
+                ),
+                TextCluster(
+                    text=(
+                        "cross-page reference continues from page 62 to page 63"
+                        if page_number in {62, 63}
+                        else "caption follows the figure and table"
+                    ),
+                    bb_x_min=10.0,
+                    bb_x_max=700.0,
+                    bb_y_min=120.0,
+                    bb_y_max=160.0,
+                    cluster_number=2,
+                ),
+            ],
+            non_text_objects=[
+                NonTextCluster(
+                    description="figure: deterministic acceptance fixture",
+                    bb_x_min=20.0,
+                    bb_x_max=300.0,
+                    bb_y_min=180.0,
+                    bb_y_max=360.0,
+                    cluster_number=3,
+                ),
+                NonTextCluster(
+                    description="table: long atomic table with repeated rows",
+                    bb_x_min=320.0,
+                    bb_x_max=1100.0,
+                    bb_y_min=180.0,
+                    bb_y_max=500.0,
+                    cluster_number=4,
+                ),
+            ],
+            is_empty_page=False,
+            printed_page_number=str(page_number),
+            meaningful_ordering=[0, 3, 2, 4, 1],
+            page_x_min=0.0,
+            page_x_max=1200.0,
+            page_y_min=0.0,
+            page_y_max=800.0,
+            estimated_rotation_degrees=0.0,
+            incomplete_words_on_edge=False,
+            incomplete_text=False,
+            data_loss_likelihood=0.0,
+            scan_quality="high",
+            contains_table=True,
+            spatial_accuracy="region",
+        )
+
     settings = WorkflowProviderSettings(
         ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
         parser=ProviderEndpointConfig(provider="fake", model="fake-parser"),
@@ -1814,7 +1884,7 @@ def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() ->
         interrupted_calls.append(page_number)
         if page_number == 63 and interrupted_calls.count(63) == 1:
             raise RuntimeError("simulated process interruption after page 62")
-        return _fake_ocr_response(page_number, f"Acceptance page {page_number}")
+        return _acceptance_response(page_number)
 
     def _reference_runner(
         image_path: Path,
@@ -1823,7 +1893,7 @@ def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() ->
     ) -> OCRClusterResponse:
         del image_path, provider_settings
         reference_calls.append(page_number)
-        return _fake_ocr_response(page_number, f"Acceptance page {page_number}")
+        return _acceptance_response(page_number)
 
     def _parse_semantic_fn(*, collection, parser_input_dict, parser_source_map):
         return _grounded_semantic_tree(
@@ -1880,6 +1950,24 @@ def test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference() ->
     assert reference_bundle is not None
     assert resumed_bundle is not None
     assert resumed_bundle.graph_payload == reference_bundle.graph_payload
+    assert resumed_bundle.grouping_tree == reference_bundle.grouping_tree
+    source_items = resumed_bundle.grouping_tree["source_items"]
+    assert isinstance(source_items, list)
+    assert {item["kind"] for item in source_items if isinstance(item, dict)} >= {
+        "text",
+        "non_text:description",
+    }
+    assert any(
+        item.get("text") == "duplicate paragraph retained at a distinct source position"
+        for item in source_items
+        if isinstance(item, dict)
+    )
+    assert any(
+        item.get("location", {}).get("page_index") == 61
+        and item.get("text") == "cross-page reference continues from page 62 to page 63"
+        for item in source_items
+        if isinstance(item, dict)
+    )
     assert interrupted_calls.count(63) == 2
     assert all(interrupted_calls.count(page_number) == 1 for page_number in range(1, 63))
     assert len(reference_calls) == 100

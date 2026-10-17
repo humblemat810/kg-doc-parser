@@ -558,7 +558,7 @@ S01-S12 and C01-C06 rows in
 
 ### A. Kogwistar runtime integration
 
-- [~] Root/page/grouping/semantic/summary stages use one persisted ownership
+- [x] Root/page/grouping/semantic/summary stages use one persisted ownership
   model with stable parent/child IDs.
 - [x] Typed checkpoint state contains source/config identity, cursor, accepted
   artifacts, grouping frontier, summary identity, and final input reference.
