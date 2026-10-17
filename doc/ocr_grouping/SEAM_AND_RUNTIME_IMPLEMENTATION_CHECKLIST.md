@@ -1110,8 +1110,11 @@ an adapter-only test, or a source-checkout-only runtime test.
   `DocumentReferenceMention.additional_sources`, validated against every
   authoritative text item and covered by
   `tests/test_document_grouping_contract.py::test_reference_mention_round_trips_multiple_cross_page_source_slices`.
-- [ ] Keep references outside the primary coverage partition unless explicitly
-  promoted by a later workflow.
+- [x] Keep references outside the primary coverage partition unless explicitly
+  promoted by a later workflow. `DocumentTree.validate_tree()` excludes
+  `references` from child coverage, and
+  `tests/test_document_grouping_contract.py::test_reference_mentions_round_trip_and_validate_targets_without_becoming_children`
+  verifies that a resolved reference does not become a root child.
 - [x] Test a reference split across OCR clusters and across pages in
   `tests/test_document_grouping_contract.py::test_reference_mentions_cross_ocr_units_preserve_exact_source_slices`.
 
@@ -1128,8 +1131,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   `split_strategy` values; matching values are accepted. Regression coverage:
   `tests/test_workflow_ingest_contracts.py::test_public_and_runtime_parse_strategy_conflict_fails_closed`
   and `::test_matching_public_and_runtime_parse_strategy_is_accepted`.
-- [ ] Test explicit custom policy through the public API and inspect persisted
-  metadata, cache keys, and final output.
+- [x] Test explicit custom policy through the public API and inspect persisted
+  metadata, cache keys, and final output. The CI regression
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_custom_grouping_policy_reaches_checkpoint_cache_and_export`
+  runs the public OCR root, verifies the policy in SQLite checkpoint metadata,
+  verifies the policy-bearing stable group provenance, and verifies that the
+  accepted grouping tree is the exported hierarchy.
 
 ## C. Release gates added by the implementation review
 

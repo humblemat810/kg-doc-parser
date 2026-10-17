@@ -1985,6 +1985,94 @@ def test_ocr_quality_diagnostics_are_persisted_and_strict_policy_fails_closed() 
 
 
 @pytest.mark.ci
+def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
+    """The public policy override must remain one identity at every seam."""
+    scratch = _scratch("ocr_custom_grouping_policy")
+    image_path = scratch / "images" / "page_1.png"
+    _draw_test_image(image_path, lines=["custom policy alpha", "custom policy beta"])
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+
+    def _two_cluster_runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        return _fake_ocr_response(page_number, "custom policy alpha").model_copy(
+            update={
+                "OCR_text_clusters": [
+                    TextCluster(
+                        text="custom policy alpha",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=10.0,
+                        bb_y_max=50.0,
+                        cluster_number=0,
+                    ),
+                    TextCluster(
+                        text="custom policy beta",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=60.0,
+                        bb_y_max=100.0,
+                        cluster_number=1,
+                    ),
+                ],
+                "meaningful_ordering": [0, 1],
+            }
+        )
+
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", "in_memory"
+    )
+    policy_version = "custom-grouping-policy-v42"
+    run, bundle, artifacts = run_ocr_ingest_workflow(
+        document_id="ocr-custom-policy-doc",
+        title="OCR Custom Policy",
+        output_dir=scratch / "artifacts",
+        image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+        provider_settings=settings,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        ocr_runner=_two_cluster_runner,
+        grouping_policy_version=policy_version,
+        grouping_proposals=(
+            GroupProposal(
+                kind="section",
+                members=(
+                    "leaf:ocr-custom-policy-doc|p1_t0",
+                    "leaf:ocr-custom-policy-doc|p1_t1",
+                ),
+            ),
+        ),
+        deps={"parse_semantic_fn": _grounded_semantic_tree},
+    )
+
+    assert run.status == "succeeded"
+    assert bundle is not None
+    assert artifacts.document_tree is not None
+    grouped_nodes = [
+        node
+        for node in artifacts.document_tree.nodes
+        if node.kind == "section"
+    ]
+    assert len(grouped_nodes) == 1
+    assert grouped_nodes[0].annotations["grouping:policy_version"] == f"{policy_version}:1"
+    checkpoint = OCRWorkflowStateStore(artifacts.state_db_path).load_grouping_checkpoint_metadata(
+        document_id="ocr-custom-policy-doc",
+        grouping_policy_version=policy_version,
+    )
+    assert checkpoint is not None
+    assert checkpoint.accepted_page_frontier == (1,)
+    assert bundle.grouping_tree == artifacts.document_tree.model_dump(mode="json")
+    assert bundle.grouping_tree["nodes"]
+
+
+@pytest.mark.ci
 def test_raw_ocr_response_rejects_inconsistent_empty_or_ordering_state() -> None:
     payload = {
         "boxes_2d": [{"box_2d": [0, 0, 10, 10], "label": "Alpha", "id": 0}],
