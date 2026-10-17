@@ -578,8 +578,13 @@ S01-S12 and C01-C06 rows in
   `0.6.12` reopen of the persisted 100-page state succeeds with zero provider
   calls and the same run ID; the initial run still used the coordinated core
   source checkout.
-- [ ] The installed released Kogwistar version supports retrying a durably
+- [~] The installed released Kogwistar version supports retrying a durably
   failed child; the parser does not substitute a private child-ID workaround.
+  Installed Kogwistar `0.6.12` passes
+  `test_failed_ocr_child_retries_from_kogwistar_checkpoint_without_replaying_pages`:
+  page one is not replayed, page two is retried from its checkpoint, and the
+  parent retains one child lineage edge. Supported-interpreter remote evidence
+  remains pending.
 
 ### B. Strict seam validation
 

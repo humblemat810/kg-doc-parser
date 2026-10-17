@@ -2073,6 +2073,84 @@ def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
 
 
 @pytest.mark.ci
+def test_failed_ocr_child_retries_from_kogwistar_checkpoint_without_replaying_pages() -> None:
+    """A failed nested child is retried by Kogwistar, not by a parser fork."""
+    scratch = _scratch("ocr_failed_child_retry")
+    payloads: list[OCRImagePayload] = []
+    for page_number in (1, 2):
+        image_path = scratch / "images" / f"page-{page_number}.png"
+        _draw_test_image(image_path, lines=[f"retry page {page_number}"])
+        payloads.append(OCRImagePayload(page_number=page_number, image_path=str(image_path)))
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="retry-ocr"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="retry-embed", dimension=1),
+    )
+    calls: dict[int, int] = {}
+
+    def _fail_once_on_page_two(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        calls[page_number] = calls.get(page_number, 0) + 1
+        if page_number == 2 and calls[page_number] == 1:
+            raise RuntimeError("simulated OCR child failure")
+        return _fake_ocr_response(page_number, f"retry page {page_number}")
+
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", "in_memory"
+    )
+    run_id = "ocr|failed-child-retry"
+    with pytest.raises(RuntimeError, match="OCR root workflow"):
+        run_ocr_ingest_workflow(
+            document_id="ocr-failed-child-retry-doc",
+            title="OCR Failed Child Retry",
+            output_dir=scratch / "artifacts",
+            image_payloads=payloads,
+            provider_settings=settings,
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            knowledge_engine=knowledge_engine,
+            ocr_runner=_fail_once_on_page_two,
+            deps={"parse_semantic_fn": _grounded_semantic_tree},
+            run_id=run_id,
+        )
+
+    resumed, bundle, _artifacts = run_ocr_ingest_workflow(
+        document_id="ocr-failed-child-retry-doc",
+        title="OCR Failed Child Retry",
+        output_dir=scratch / "artifacts",
+        image_payloads=payloads,
+        provider_settings=settings,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        ocr_runner=_fail_once_on_page_two,
+        deps={"parse_semantic_fn": _grounded_semantic_tree},
+        run_id=run_id,
+        resume_from_checkpoint=True,
+    )
+
+    assert resumed.status == "succeeded"
+    assert bundle is not None
+    assert calls == {1: 1, 2: 2}
+    lineage_edges = [
+        edge
+        for edge in conversation_engine.read.get_edges(limit=1000)
+        if (edge.metadata or {}).get("relation") == "wf_invoked"
+        and (edge.metadata or {}).get("parent_run_id") == run_id
+    ]
+    page_edges = [
+        edge
+        for edge in lineage_edges
+        if (edge.metadata or {}).get("workflow_id") == "kg_doc_parser.ocr_pages.v1"
+    ]
+    assert len(page_edges) == 1
+    assert (page_edges[0].metadata or {}).get("child_run_id") == f"{run_id}|ocr-pages"
+
+
+@pytest.mark.ci
 def test_raw_ocr_response_rejects_inconsistent_empty_or_ordering_state() -> None:
     payload = {
         "boxes_2d": [{"box_2d": [0, 0, 10, 10], "label": "Alpha", "id": 0}],
