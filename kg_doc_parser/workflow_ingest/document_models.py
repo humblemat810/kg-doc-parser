@@ -351,8 +351,7 @@ class DocumentTree(FrozenModel):
             if node.summary is None or node.summary.status not in {"generated", "verified"}:
                 continue
             evidence = node.summary.evidence_item_ids
-            payload = [_model_json_object(items[item_id]) for item_id in sorted(evidence)]
-            expected = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            expected = self.summary_input_fingerprint(node_id, tuple(sorted(evidence)))
             if node.summary.input_fingerprint != expected:
                 raise ValueError(f"summary fingerprint is stale for node {node_id}")
             if node.summary.evidence_slice_fingerprint is not None:
@@ -390,7 +389,11 @@ class DocumentTree(FrozenModel):
         selected = tuple(sorted(evidence_item_ids if evidence_item_ids is not None else covered))
         if set(selected) - covered:
             raise ValueError("summary evidence must be within the node subtree")
-        payload = [_model_json_object(items[item_id]) for item_id in selected]
+        payload = {
+            "document_id": self.document_id,
+            "source_revision": self.source_revision,
+            "source_items": [_model_json_object(items[item_id]) for item_id in selected],
+        }
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def summary_slice_fingerprint(
