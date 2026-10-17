@@ -1322,6 +1322,61 @@ def test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_root_resume_replays_checkpointed_page_when_artifact_is_missing() -> None:
+    """A runtime checkpoint cannot make a missing page artifact authoritative."""
+    scratch = _scratch("ocr_root_checkpoint_without_artifact")
+    for page_number in (1, 2):
+        _draw_test_image(
+            scratch / "source" / f"page-{page_number}.png",
+            lines=[f"checkpoint page {page_number}"],
+        )
+    worker = Path(__file__).with_name("_ocr_root_fresh_process_worker.py")
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        path
+        for path in (
+            str(repo_root),
+            str(repo_root.parent / "kogwistar"),
+            child_env.get("PYTHONPATH", ""),
+        )
+        if path
+    )
+
+    interrupted = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "interrupt"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=120,
+    )
+    assert interrupted.returncode == 17, interrupted.stderr
+    accepted_page = scratch / "artifacts" / "legacy_split_pages" / "fresh-root-document" / "page_1.json"
+    assert accepted_page.is_file()
+    accepted_page.unlink()
+
+    resumed = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "resume-missing-artifact"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=120,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    result = json.loads(
+        (scratch / "resume-missing-artifact-result.json").read_text(encoding="utf-8")
+    )
+    assert result == {
+        "status": "succeeded",
+        "run_id": "ocr|fresh-root-document",
+        "calls": [1, 2],
+        "has_grouping_tree": True,
+    }
+
+
+@pytest.mark.ci
 def test_ocr_root_reopens_after_real_process_termination() -> None:
     """A terminated worker resumes the same root without replaying page one."""
     scratch = _scratch("ocr_root_process_termination")

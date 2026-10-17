@@ -177,9 +177,13 @@ def main() -> int:
         )
         return 17
 
-    if mode not in {"resume", "race-a", "race-b"} or result.status != "succeeded" or bundle is None:
+    if mode not in {"resume", "resume-missing-artifact", "race-a", "race-b"} or result.status != "succeeded" or bundle is None:
         raise AssertionError("fresh root resume did not produce one accepted result")
-    result_name = f"{mode}-result.json" if mode.startswith("race-") else "resume-result.json"
+    result_name = (
+        f"{mode}-result.json"
+        if mode.startswith("race-") or mode == "resume-missing-artifact"
+        else "resume-result.json"
+    )
     (scratch / result_name).write_text(
         json.dumps(
             {
