@@ -233,7 +233,13 @@ def normalize_ocr_pages(
             if not isinstance(declared_page_accuracy, str):
                 raise TypeError("OCR spatial_accuracy must be a string")
             page_metadata = {**page_metadata, "spatial_accuracy": declared_page_accuracy}
-        for key in ("incomplete_text", "incomplete_words_on_edge", "data_loss_likelihood", "scan_quality"):
+        for key in (
+            "incomplete_text",
+            "incomplete_words_on_edge",
+            "data_loss_likelihood",
+            "scan_quality",
+            "unresolved_item_count",
+        ):
             value = raw_page.get(key)
             if value is not None:
                 page_metadata = {**page_metadata, key: value}

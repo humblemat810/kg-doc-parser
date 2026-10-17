@@ -364,6 +364,7 @@ def test_normalize_ocr_and_source_map_contract():
                 "pdf_page_num": 1,
                 "printed_page_number": "1",
                 "contains_table": False,
+                "unresolved_item_count": 2,
                 "OCR_text_clusters": [
                     {
                         "text": "Alpha clause",
@@ -395,6 +396,7 @@ def test_normalize_ocr_and_source_map_contract():
     assert any(record.modality == "image_region" for record in source_map.values())
     assert any(unit_id.endswith("_t0") for unit_id in source_map)
     assert any(unit_id.endswith("_i1") for unit_id in source_map)
+    assert inp.collections[0].pages[0].metadata["unresolved_item_count"] == 2
 
 
 @pytest.mark.ci
