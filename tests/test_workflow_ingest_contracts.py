@@ -11,12 +11,19 @@ from _kogwistar_test_helpers import (
     drain_phase1_indexes_with_workers_until_idle,
 )
 
+from kg_doc_parser.ocr import _structured_output_payload, get_page_json
+from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
+    _legacy_mapping,
+    _legacy_node_type,
+    _legacy_object_list,
+)
 from kg_doc_parser.workflow_ingest.adapters import (
     build_authoritative_source_map,
     build_parser_input_dict,
     normalize_ocr_pages,
 )
 from kg_doc_parser.workflow_ingest.clients import (
+    DirectRuntimeIngestClient,
     ServerCanonicalKgClient,
     UnsupportedClientOperation,
     _jsonable_payload,
@@ -26,17 +33,11 @@ from kg_doc_parser.workflow_ingest.handlers import (
     _build_export_bundle,
     _parser_payload,
     _parser_source_map,
-    _state_object_map,
-    _state_object_list,
     _state_mapping,
+    _state_object_list,
+    _state_object_map,
     _state_string_list,
     _validate_public_runtime_policy_conflicts,
-)
-from kg_doc_parser.ocr import _structured_output_payload, get_page_json
-from kg_doc_parser.semantic_document_splitting_layerwise_edits import (
-    _legacy_mapping,
-    _legacy_node_type,
-    _legacy_object_list,
 )
 from kg_doc_parser.workflow_ingest.models import (
     BoundingBox,
@@ -698,6 +699,39 @@ def test_fake_workflow_run_text_success_and_knowledge_persist(
     history = run.final_state["strategy_execution_history"]
     assert any(event["event"] == "selected" for event in history)
     assert any(event["event"] == "succeeded" for event in history)
+
+
+@pytest.mark.ci
+def test_direct_graph_publication_is_idempotent_for_replayed_bundle() -> None:
+    """A replayed accepted bundle must not create a second graph publication."""
+    scratch_dir = _local_scratch_dir("direct_graph_publication_idempotence")
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch_dir / "engines", "in_memory"
+    )
+    result, bundle = run_ingest_workflow(
+        inp=WorkflowIngestInput.from_text(
+            document_id="replayed-publication-doc",
+            text="Alpha clause\nBeta clause",
+            title="Replayed Publication",
+        ),
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        deps={"parse_semantic_fn": _fake_semantic_tree},
+    )
+    assert result.status == "succeeded"
+    assert bundle is not None
+
+    client = DirectRuntimeIngestClient(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+    )
+    replay = client.persist_graph_payload(bundle)
+
+    assert replay.nodes_written == 0
+    assert replay.edges_written == 0
+    assert bundle.graph_payload["nodes"]
 
 
 def test_fake_workflow_run_ocr_success(workflow_backend_kind):

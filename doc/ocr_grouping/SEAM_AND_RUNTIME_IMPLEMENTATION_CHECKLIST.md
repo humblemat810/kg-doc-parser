@@ -415,8 +415,10 @@ runtime classification to the evidence ledger below.
 - [~] **A-1. Root ownership:** one versioned root invocation owns page OCR,
   grouping, semantic parsing, summary generation, and final publication. Keep
   stable parent/child invocation IDs and record the semantic checkpoint and
-  graph publication identity. The current design has stable IDs; fresh-process
-  lineage and duplicate-publication proof remain open.
+  graph publication identity. Stable IDs and persisted lineage are enforced;
+  `test_direct_graph_publication_is_idempotent_for_replayed_bundle` proves a
+  replayed accepted bundle adds no second canonical node or edge set. Fresh-
+  process no-double-publication and orphan-free graph proof remain open.
 - [~] **A-2. Durable state:** persist only typed JSON state: source revision,
   immutable configuration fingerprint, page cursor, accepted artifact IDs,
   grouping revision/frontier, summary policy revision, and final input
@@ -814,8 +816,10 @@ an adapter-only test, or a source-checkout-only runtime test.
   by `test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run`, which
   completes two pages, resumes the same root, and asserts the OCR call count
   remains `2` while both pages are reported as reused.
-- [ ] Assert the final runtime graph contains no orphaned stage executions,
-  duplicate accepted commits, or skipped page cursor transitions.
+- [~] Assert the final runtime graph contains no orphaned stage executions,
+  duplicate accepted commits, or skipped page cursor transitions. Persisted
+  root-child lineage and direct replay idempotence are covered, but a complete
+  fresh-process orphan/transition audit remains open.
 
 ## B. Strict Seam Closure S01-S12
 
