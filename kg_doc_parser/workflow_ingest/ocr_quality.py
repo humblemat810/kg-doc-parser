@@ -8,14 +8,13 @@ authored page fixture.
 
 from __future__ import annotations
 
-import re
 import math
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from kg_doc_parser.models import OCRClusterResponse
-
 
 OCRGroundTruthModality = Literal["text", "non_text"]
 
@@ -92,6 +91,54 @@ def _intersection_over_union(
     return intersection / union if union > 0.0 else 0.0
 
 
+def _assign_matches(
+    expected_items: tuple[OCRGroundTruthItem, ...],
+    candidates: list[tuple[str, int, tuple[float, float, float, float], str | None]],
+    minimum_iou: float,
+) -> dict[int, tuple[int, float]]:
+    """Find a deterministic maximum-cardinality one-to-one assignment."""
+
+    eligible: dict[int, list[tuple[int, float]]] = {}
+    for expected_index, expected in enumerate(expected_items):
+        options = [
+            (candidate_index, iou)
+            for candidate_index, candidate in enumerate(candidates)
+            if candidate[0] == expected.modality
+            for iou in (_intersection_over_union(expected, candidate[2]),)
+            if iou >= minimum_iou
+        ]
+        eligible[expected_index] = sorted(options, key=lambda value: (-value[1], value[0]))
+
+    candidate_owner: dict[int, int] = {}
+
+    def visit(expected_index: int, seen: set[int]) -> bool:
+        for candidate_index, _iou in eligible[expected_index]:
+            if candidate_index in seen:
+                continue
+            seen.add(candidate_index)
+            owner = candidate_owner.get(candidate_index)
+            if owner is None or visit(owner, seen):
+                candidate_owner[candidate_index] = expected_index
+                return True
+        return False
+
+    for expected_index in range(len(expected_items)):
+        visit(expected_index, set())
+
+    assignments: dict[int, tuple[int, float]] = {
+        expected_index: next(
+            (candidate_index, iou)
+            for candidate_index, owner in candidate_owner.items()
+            if owner == expected_index
+            for candidate, iou in eligible[expected_index]
+            if candidate == candidate_index
+        )
+        for expected_index in range(len(expected_items))
+        if any(owner == expected_index for owner in candidate_owner.values())
+    }
+    return assignments
+
+
 def evaluate_ocr_ground_truth(
     response: OCRClusterResponse,
     ground_truth: OCRGroundTruth,
@@ -126,38 +173,35 @@ def evaluate_ocr_ground_truth(
         )
         for cluster in response.non_text_objects
     ]
-    available = set(range(len(candidates)))
+    assignments = _assign_matches(ground_truth.items, candidates, minimum_iou)
     missing: list[str] = []
     mismatches: list[str] = []
     spatial_ious: list[float] = []
     matched = 0
-    for expected in ground_truth.items:
-        matches = [
-            (index, _intersection_over_union(expected, candidate[2]))
-            for index, candidate in enumerate(candidates)
-            if index in available and candidate[0] == expected.modality
-        ]
-        if not matches:
+    for expected_index, expected in enumerate(ground_truth.items):
+        assignment = assignments.get(expected_index)
+        if assignment is None:
             missing.append(expected.item_id)
             continue
-        index, iou = max(matches, key=lambda value: value[1])
-        if iou < minimum_iou:
-            missing.append(expected.item_id)
-            continue
-        available.remove(index)
+        index, iou = assignment
         matched += 1
         spatial_ious.append(iou)
         candidate_text = candidates[index][3]
         if expected.text is not None and _normalise_text(candidate_text or "") != _normalise_text(expected.text):
             mismatches.append(expected.item_id)
 
+    assigned_candidates = {assignment[0] for assignment in assignments.values()}
     return OCRGroundTruthReport(
         expected_item_count=len(ground_truth.items),
         matched_item_count=matched,
         item_recall=(matched / len(ground_truth.items)) if ground_truth.items else 1.0,
         mean_spatial_iou=(sum(spatial_ious) / len(spatial_ious)) if spatial_ious else 0.0,
         missing_item_ids=tuple(missing),
-        extra_cluster_numbers=tuple(candidates[index][1] for index in sorted(available)),
+        extra_cluster_numbers=tuple(
+            candidate[1]
+            for index, candidate in enumerate(candidates)
+            if index not in assigned_candidates
+        ),
         text_mismatch_item_ids=tuple(mismatches),
         minimum_iou=minimum_iou,
     )

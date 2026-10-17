@@ -100,6 +100,37 @@ def test_ground_truth_report_detects_spatial_and_transcription_errors() -> None:
     assert report.text_mismatch_item_ids == ("beta",)
 
 
+def test_ground_truth_matching_can_reassign_an_overlapping_candidate() -> None:
+    """A valid one-to-one assignment must not depend on greedy item order."""
+    ground_truth = OCRGroundTruth(
+        items=(
+            OCRGroundTruthItem(
+                item_id="whole-line",
+                modality="text",
+                x_min=0.0,
+                y_min=0.0,
+                x_max=100.0,
+                y_max=20.0,
+                text="beta",
+            ),
+            OCRGroundTruthItem(
+                item_id="alpha-line",
+                modality="text",
+                x_min=0.0,
+                y_min=0.0,
+                x_max=50.0,
+                y_max=20.0,
+                text="alpha",
+            ),
+        ),
+    )
+
+    report = evaluate_ocr_ground_truth(_response(), ground_truth)
+
+    assert report.item_recall == pytest.approx(1.0)
+    assert report.missing_item_ids == ()
+
+
 def test_ground_truth_report_matches_non_text_modalities_without_text() -> None:
     response = _response(include_beta=False).model_copy(
         update={
