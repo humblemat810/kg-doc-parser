@@ -5167,6 +5167,11 @@ def test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run() -> None:
     assert second_run.status == "succeeded"
     assert first_bundle is not None
     assert second_bundle is not None
+    assert first_bundle.graph_payload["nodes"]
+    assert all(
+        knowledge_engine.persist.exists_node(str(node["id"]))
+        for node in first_bundle.graph_payload["nodes"]
+    )
     assert calls["ocr"] == 2
     assert calls["parse"] == 1
     assert _first_artifacts.document_tree is not None

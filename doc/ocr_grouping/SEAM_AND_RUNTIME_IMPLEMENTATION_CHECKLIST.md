@@ -467,8 +467,10 @@ cannot close A-6.
   unknown declarations to page accuracy. Full provider-matrix and downstream
   graph evidence remain open.
 - [~] **B-3 / S05 hierarchy consumption:** the graph exporter now has a
-  metamorphic test with two valid trees over identical source items; persisted
-  semantic-parser publication evidence remains open.
+  metamorphic test with two valid trees over identical source items. The OCR
+  end-to-end recovery test now also asserts every accepted graph-payload node
+  exists in the knowledge backend after semantic publication. Explicit
+  compatibility behavior for consumers that ignore hierarchy remains open.
 - [~] **B-4 / S06-S08 durable grouping and summaries:** fence every grouping
   writer, preserve meaningful groups and atomic objects, invalidate summaries
   on grouping changes, and test duplicate/replay behavior. The current CAS
