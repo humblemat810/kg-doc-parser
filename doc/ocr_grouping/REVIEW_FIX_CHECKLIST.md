@@ -13,10 +13,10 @@ individual acceptance criteria.
 
 | Track | Status | Release-blocking remainder |
 | --- | --- | --- |
-| Runtime ownership and persisted stage graph | PARTIAL | Published-core fresh-process lineage, duplicate-resume, and no-double-publication evidence are exercised locally, and parser CI run `38993433709` passed the supported matrix for commit `efccca0`. Linux SIGKILL, orphan-free graph, and no-double-publication evidence across the full release fixture remain open. |
-| Artifact and checkpoint crash consistency | PASS (focused matrix) | The four-boundary recovery matrix passes locally in one run (`4 passed, 113.32s`), covering artifact-first and checkpoint-first page publication plus grouping-checkpoint and semantic-graph publication orderings. |
-| Grouping and summary durability | PARTIAL | Audit every writer, prove monotonic generation/frontier behavior, and prove bounded long-document work. |
-| Semantic hierarchy publication | PARTIAL | Prove the accepted grouping hierarchy is preserved through the persisted semantic graph/export path. |
+| Runtime ownership and persisted stage graph | PASS (parser runtime gate) | Published-core fresh-process lineage, duplicate-resume, and no-double-publication evidence are exercised locally; parser CI run `39011917164` passed CPython 3.12-3.14, PyPy 3.11, and the Linux recovery gate on exact commit `e57fd43`. Durable graph-backend publication across process restart remains Kogwistar backend responsibility. |
+| Artifact and checkpoint crash consistency | PASS (parser gate) | The four-boundary recovery matrix passes locally in one run (`4 passed, 113.32s`), covering artifact-first and checkpoint-first page publication plus grouping-checkpoint and semantic-graph publication orderings; parser CI run `39011917164` also passed the Linux recovery gate. |
+| Grouping and summary durability | PARTIAL | All current `save_document_tree` writers use absence or expected-revision fencing, and monotonic `merge_revision` is persisted. Bounded long-document cost remains the open parser-owned proof. |
+| Semantic hierarchy publication | PARTIAL | Accepted grouping is consumed by the semantic callback and preserved in graph export. Fresh-process publication against a durable graph backend remains open and is Kogwistar-owned. |
 | OCR completeness and positional fidelity | PARTIAL | Provider precision and unresolved-item diagnostics are enforced, including strict rejection coverage; independent live completeness for non-text regions and table/figure recall remains open. |
 | Typing and interpreter matrix | PASS | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39001460547` passed CPython 3.12-3.14 and PyPy 3.11 on commit `4ce3cc5`. |
 | Release | OPEN | Do not bump the parser version or downstream pins until the release-blocking rows are green with evidence. |
@@ -668,9 +668,11 @@ interpretation of existing evidence:
 | OCR completeness | PARTIAL | Typed provider diagnostics and strict policy can reject provider loss signals. `test_ocr_quality_policy_records_unresolved_provider_items` covers warning/error behavior for unresolved provider items, and `test_docling_adapter_preserves_text_table_figure_provenance` covers an item without provenance. | Interval coverage alone does not establish recall of all figures/tables/coordinates; independent provider completeness and recovery evidence remain open. |
 | Same-basename PDF artifact isolation | FIXED (focused boundary) | `_resolve_ocr_source_plan` now derives both PDF artifact directories from document identity, PDF content fingerprint, and a safe source stem. `tests/test_workflow_ingest_ocr_pipeline.py::test_pdf_artifact_directories_do_not_collide_for_same_basename` proves two different `report.pdf` inputs cannot share rendered or legacy artifact paths. | Existing artifact directories using the old basename-only layout are intentionally not adopted as new-source identities; migration/cleanup policy remains operational work. |
 
-The checklist therefore intentionally contains no green S02, S06, C02, C03,
-C04, C05, or C06 release mark. A passing unit test for a sub-property is
-recorded as evidence for that sub-property only.
+The checklist keeps S02, S06, C04, C05, and C06 partial because their
+remaining evidence is broader than the passing sub-properties. C02 and C03
+are green parser gates; durable graph-backend restart remains delegated to
+Kogwistar rather than duplicated here. A passing unit test for a sub-property
+is recorded as evidence for that sub-property only.
 
 ## Required reviewer acceptance fields
 
