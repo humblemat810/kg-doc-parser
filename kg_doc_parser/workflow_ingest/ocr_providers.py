@@ -492,6 +492,7 @@ def run_docling_ocr_page(
     clusters: list[TextCluster] = []
     non_text_objects: list[NonTextCluster] = []
     ordering: list[int] = []
+    unresolved_item_count = 0
 
     def _box(item: object) -> tuple[float, float, float, float] | None:
         provenance = _external_attribute(item, "prov")
@@ -532,6 +533,7 @@ def run_docling_ocr_page(
         item = item_record[0] if isinstance(item_record, tuple) and item_record else item_record
         box = _box(item)
         if box is None:
+            unresolved_item_count += 1
             continue
         text_value = _external_text(item, "text")
         if not text_value:
@@ -596,6 +598,7 @@ def run_docling_ocr_page(
         data_loss_likelihood=0.0,
         scan_quality="medium",
         contains_table=any("table" in _external_text(item, "label").lower() for item in items),
+        unresolved_item_count=unresolved_item_count,
         spatial_accuracy="region" if ordering else "page",
     )
 

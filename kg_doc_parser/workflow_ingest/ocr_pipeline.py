@@ -342,6 +342,7 @@ class OCRQualityPolicy(BaseModel):
     reject_incomplete_text: bool = False
     reject_incomplete_words_on_edge: bool = False
     reject_empty_page: bool = False
+    reject_unresolved_items: bool = False
 
 
 class OCRQualityDiagnostic(BaseModel):
@@ -390,6 +391,17 @@ def _evaluate_ocr_quality(
                     "provider data-loss likelihood exceeds the configured "
                     f"limit ({response.data_loss_likelihood:.3f} > "
                     f"{policy.max_data_loss_likelihood:.3f})"
+                ),
+            )
+        )
+    if response.unresolved_item_count:
+        diagnostics.append(
+            OCRQualityDiagnostic(
+                code="unresolved_items",
+                severity="error" if policy.reject_unresolved_items else "warning",
+                message=(
+                    "provider reported items that could not be represented with "
+                    f"grounded records ({response.unresolved_item_count})"
                 ),
             )
         )

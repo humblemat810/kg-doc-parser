@@ -2013,6 +2013,25 @@ def test_ocr_quality_policy_can_reject_empty_provider_output() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_quality_policy_records_unresolved_provider_items() -> None:
+    response = _fake_ocr_response(1, "quality signal").model_copy(
+        update={"unresolved_item_count": 2}
+    )
+
+    flagged = _evaluate_ocr_quality(response, OCRQualityPolicy())
+    assert [(item.code, item.severity) for item in flagged] == [
+        ("unresolved_items", "warning")
+    ]
+
+    rejected = _evaluate_ocr_quality(
+        response, OCRQualityPolicy(reject_unresolved_items=True)
+    )
+    assert [(item.code, item.severity) for item in rejected] == [
+        ("unresolved_items", "error")
+    ]
+
+
+@pytest.mark.ci
 def test_ocr_quality_diagnostics_are_persisted_and_strict_policy_fails_closed() -> None:
     scratch = _scratch("ocr_quality_persistence")
     image_path = scratch / "images" / "page_1.png"

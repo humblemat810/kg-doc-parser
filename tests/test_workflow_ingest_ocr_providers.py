@@ -274,10 +274,10 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
             self.bbox = bbox
 
     class Item:
-        def __init__(self, label: str, text: str, bbox: BBox) -> None:
+        def __init__(self, label: str, text: str, bbox: BBox | None) -> None:
             self.label = label
             self.text = text
-            self.prov = [Provenance(bbox)]
+            self.prov = [Provenance(bbox)] if bbox is not None else []
 
     class Document:
         def iterate_items(self) -> list[Item]:
@@ -285,6 +285,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
                 Item("text", "heading", BBox(-10, 40, 5, 20)),
                 Item("table", "| a | b |", BBox(20, 120, 25, 90)),
                 Item("picture", "", BBox(45, 70, 30, 60)),
+                Item("figure", "missing provenance", None),
             ]
 
     class Conversion:
@@ -343,6 +344,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     assert response.non_text_objects[0].bb_y_max == 80
     assert response.meaningful_ordering == [0, 1, 2]
     assert response.contains_table is True
+    assert response.unresolved_item_count == 1
 
 
 def test_registered_provider_is_explicit_and_process_local(tmp_path: Path) -> None:

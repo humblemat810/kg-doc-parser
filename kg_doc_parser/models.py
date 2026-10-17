@@ -122,6 +122,14 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
                                                                                       '"low", "medium" or "high". '
                                 'low: text barely legible. medium: Legible with non smooth due to pixelation. high: texts are easily and highly identifiable. ' )
     contains_table: DtoType[bool] = Field(description='Whether this page contains table. ')
+    unresolved_item_count: DtoType[int] = Field(
+        default=0,
+        ge=0,
+        description=(
+            'Number of provider-recognised items that could not be represented '
+            'with a usable bounding box or modality record.'
+        ),
+    )
     spatial_accuracy: DtoType[Literal['page', 'region', 'line', 'word', 'character']] = Field(
         default='page',
         description=(
