@@ -560,19 +560,30 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe(
     )
     assert run_id == "ocr-grouping-test-run"
     assert any(node.kind == "section" for node in grouped.nodes)
-    resumed, resumed_run_id = run_grouping_workflow(
-        workflow_engine=workflow_engine,
-        conversation_engine=conversation_engine,
-        state_store=OCRWorkflowStateStore(scratch / "ocr-state.sqlite"),
-        tree=tree,
-        document_id=tree.document_id,
-        grouping_policy_version="test-v1",
-        grouping_proposals=(GroupProposal(kind="section", members=("leaf:item-a", "leaf:item-b")),),
-        summary_policy=summary_policy,
-        summary_generator=_summary_generator,
-        run_id=run_id,
-        resume_from_checkpoint=True,
-    )
+
+    def _unexpected_grouping_replay(*args: object, **kwargs: object) -> DocumentTree:
+        del args, kwargs
+        raise AssertionError("terminal grouping checkpoint was replayed")
+
+    with monkeypatch.context() as resumed_patch:
+        resumed_patch.setattr(
+            ocr_runtime_module,
+            "apply_grouping_proposals",
+            _unexpected_grouping_replay,
+        )
+        resumed, resumed_run_id = run_grouping_workflow(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            state_store=OCRWorkflowStateStore(scratch / "ocr-state.sqlite"),
+            tree=tree,
+            document_id=tree.document_id,
+            grouping_policy_version="test-v1",
+            grouping_proposals=(GroupProposal(kind="section", members=("leaf:item-a", "leaf:item-b")),),
+            summary_policy=summary_policy,
+            summary_generator=_summary_generator,
+            run_id=run_id,
+            resume_from_checkpoint=True,
+        )
     assert resumed_run_id == run_id
     assert resumed == grouped
     trace = list(
