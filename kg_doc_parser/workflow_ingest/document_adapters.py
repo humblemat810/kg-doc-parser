@@ -88,9 +88,14 @@ def build_document_tree(
     items: list[SourceItem] = []
     leaves: list[DocumentNode] = []
     rejected: list[UnrepresentedSourceDiagnostic] = []
+    seen_unit_ids: set[str] = set()
     for page in collection.pages:
         allocated = _allocated_cluster_numbers(page.units)
         for unit, cluster_number in zip(page.units, allocated, strict=True):
+            if unit.unit_id is not None:
+                if unit.unit_id in seen_unit_ids:
+                    raise ValueError(f"duplicate OCR source unit id: {unit.unit_id}")
+                seen_unit_ids.add(unit.unit_id)
             if unit.unit_id:
                 item_id = unit.unit_id
             else:
