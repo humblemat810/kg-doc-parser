@@ -867,7 +867,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   `tests/test_workflow_ingest_ocr_pipeline.py::test_pdf_render_manifest_rejects_tampered_page_and_records_identity`.
 - [~] Test changed page count and removed pages; valid-PDF page-count and ordered
   page-set validation are implemented and covered by
-  `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf`. Same-path
+  `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf`. The state
+  rebuild regression `test_rebuild_ignores_artifacts_removed_by_a_shorter_source_revision`
+  now also prevents trailing legacy OCR pages from being resurrected. Same-path
   replacement and full crash-window evidence remain open.
 
 ### S02. Source bytes to committed page JSON
