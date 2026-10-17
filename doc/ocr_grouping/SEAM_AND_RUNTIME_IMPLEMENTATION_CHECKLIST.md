@@ -13,12 +13,12 @@ section after a test run.
 
 | Track | Status | Release-blocking remainder |
 | --- | --- | --- |
-| Track A: persisted Kogwistar runtime integration | PARTIAL | Verify published-core fresh-process recovery, ownership, and final runtime graph lineage. |
-| Track B: strict seam validation | PARTIAL | Close artifact/checkpoint crash ordering, hierarchy publication, and provider completeness gaps. |
-| C01-C02: API and ownership boundary | PARTIAL | Verify against the published compatible Kogwistar package and one root/child ownership model. |
-| C03-C05: reconciliation, equivalence, and true resume | PARTIAL | Complete both-store recovery, bounded incremental equivalence, and duplicate-resume evidence. |
+| Track A: persisted Kogwistar runtime integration | PARTIAL | Published-core fresh-process recovery, ownership, and root/child lineage are verified. Persistent graph-backend publication across process restart remains a Kogwistar backend-specific gate, not a parser reimplementation task. |
+| Track B: strict seam validation | PARTIAL | Artifact/checkpoint crash ordering and accepted hierarchy consumption are verified. Provider completeness and durable graph-backend evidence remain open. |
+| C01-C02: API and ownership boundary | PASS (focused matrix) | Installed Kogwistar `0.6.12` exposes the required persisted workflow API; stable root/page/grouping/semantic ownership and concurrent resume fencing are covered by the fresh-process tests. |
+| C03-C05: reconciliation, equivalence, and true resume | PARTIAL | C03 crash-order reconciliation is PASS in the parser gate; C04 still needs bounded-cost evidence; C05 process recovery and duplicate-resume are remotely verified, while durable graph-backend publication remains delegated to Kogwistar backend tests. |
 | C06: OCR quality/completeness | PARTIAL | Prove provider-side non-text coverage and strict recovery behavior. |
-| Typing and interpreter matrix | PASS | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39001460547` passed CPython 3.12-3.14 and PyPy 3.11 on commit `4ce3cc5`. |
+| Typing and interpreter matrix | PASS (last remote matrix) | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39001460547` passed CPython 3.12-3.14 and PyPy 3.11. The latest substantive commit still requires its own CI result before release. |
 | Release | OPEN | Version bump and downstream pin updates wait for all release-blocking rows. |
 
 The status history is already represented by Git commits and diffs:
