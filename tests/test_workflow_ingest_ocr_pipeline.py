@@ -2325,6 +2325,25 @@ def test_ocr_quality_policy_records_unresolved_provider_items() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_quality_policy_can_reject_unaccounted_source_items() -> None:
+    response = _fake_ocr_response(1, "source accounting").model_copy(
+        update={"source_item_count": 2}
+    )
+
+    flagged = _evaluate_ocr_quality(response, OCRQualityPolicy())
+    assert [(item.code, item.severity) for item in flagged] == [
+        ("source_item_loss", "warning")
+    ]
+
+    rejected = _evaluate_ocr_quality(
+        response, OCRQualityPolicy(reject_source_item_loss=True)
+    )
+    assert [(item.code, item.severity) for item in rejected] == [
+        ("source_item_loss", "error")
+    ]
+
+
+@pytest.mark.ci
 def test_ocr_quality_policy_rejects_invalid_coordinates_for_item_precision() -> None:
     response = _fake_ocr_response(1, "quality signal").model_copy(
         update={

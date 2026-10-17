@@ -616,6 +616,7 @@ def run_docling_ocr_page(
         scan_quality="medium",
         contains_table=any("table" in _external_text(item, "label").lower() for item in items),
         unresolved_item_count=unresolved_item_count,
+        source_item_count=len(clusters) + len(non_text_objects) + unresolved_item_count,
         spatial_accuracy="region" if ordering else "page",
     )
 

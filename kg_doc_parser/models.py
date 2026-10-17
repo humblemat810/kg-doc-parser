@@ -130,6 +130,15 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
             'with a usable bounding box or modality record.'
         ),
     )
+    source_item_count: DtoType[int | None] = Field(
+        default=None,
+        ge=0,
+        description=(
+            'Total number of source items observed by the provider. When set, '
+            'the sum of represented text/non-text clusters and unresolved items '
+            'must equal this count.'
+        ),
+    )
     spatial_accuracy: DtoType[Literal['page', 'region', 'line', 'word', 'character']] = Field(
         default='page',
         description=(

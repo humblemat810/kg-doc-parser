@@ -405,6 +405,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     assert response.meaningful_ordering == [0, 1, 2]
     assert response.contains_table is True
     assert response.unresolved_item_count == 1
+    assert response.source_item_count == 4
 
     class PlaceholderDocument:
         def iterate_items(self) -> list[Item]:
@@ -420,6 +421,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     assert [cluster.text for cluster in placeholder_response.OCR_text_clusters] == ["heading"]
     assert placeholder_response.non_text_objects == []
     assert placeholder_response.unresolved_item_count == 1
+    assert placeholder_response.source_item_count == 2
 
     class FallbackDocument:
         def iterate_items(self) -> list[Item]:
@@ -437,6 +439,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     )
     assert [cluster.text for cluster in fallback_response.OCR_text_clusters] == ["heading"]
     assert fallback_response.unresolved_item_count == 1
+    assert fallback_response.source_item_count == 2
 
 
 def test_registered_provider_is_explicit_and_process_local(tmp_path: Path) -> None:

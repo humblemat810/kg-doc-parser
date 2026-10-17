@@ -50,6 +50,7 @@ class OCRPageJSON(TypedDict):
     unresolved_item_count: NotRequired[int]
     is_blank_page: NotRequired[bool]
     meaningful_ordering: NotRequired[list[int]]
+    source_item_count: NotRequired[int]
     metadata: NotRequired[dict[str, JsonValue]]
     OCR_text_clusters: NotRequired[list[OCRTextClusterJSON]]
     non_text_objects: NotRequired[list[OCRNonTextObjectJSON]]
@@ -93,6 +94,11 @@ def _validated_ocr_page_json(
         type(unresolved_item_count) is not int or unresolved_item_count < 0
     ):
         raise TypeError("OCR page field 'unresolved_item_count' must be a non-negative integer")
+    source_item_count = value.get("source_item_count")
+    if source_item_count is not None and (
+        type(source_item_count) is not int or source_item_count < 0
+    ):
+        raise TypeError("OCR page field 'source_item_count' must be a non-negative integer")
     for key in ("meaningful_ordering",):
         field = value.get(key)
         if field is not None and (
@@ -245,6 +251,7 @@ def normalize_ocr_pages(
             "data_loss_likelihood",
             "scan_quality",
             "unresolved_item_count",
+            "source_item_count",
         ):
             value = raw_page.get(key)
             if value is not None:
