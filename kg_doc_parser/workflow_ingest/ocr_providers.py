@@ -534,9 +534,12 @@ def run_docling_ocr_page(
     raw_items = iterate_items() if iterate_items is not None else ()
     items = list(_as_external_sequence(raw_items))
     unresolved_markers = 0
-    represented_visual_items = 0
+    observed_visual_items = 0
     for item_record in items:
         item = item_record[0] if isinstance(item_record, tuple) and item_record else item_record
+        label = _external_text(item, "label").lower()
+        if any(kind in label for kind in ("picture", "figure", "image", "table")):
+            observed_visual_items += 1
         box = _box(item)
         if box is None:
             unresolved_item_count += 1
@@ -546,13 +549,10 @@ def run_docling_ocr_page(
             export_item = _external_callable(item, "export_to_markdown")
             text_value = export_item() if export_item is not None else ""
         text = str(text_value or "").strip()
-        label = _external_text(item, "label").lower()
         for marker in ("<!-- image -->", "<!-- table -->"):
             marker_count = text.count(marker)
             unresolved_markers += marker_count
             text = text.replace(marker, "").strip()
-        if any(kind in label for kind in ("picture", "figure", "image", "table")):
-            represented_visual_items += 1
         cluster_number = len(ordering)
         if text and "table" not in label and "picture" not in label and "figure" not in label:
             clusters.append(
@@ -582,7 +582,7 @@ def run_docling_ocr_page(
     # Docling can expose a page-wide text item whose Markdown contains a
     # placeholder for a picture/table but omit the corresponding item from
     # ``iterate_items``. Do not silently claim that placeholder is grounded.
-    unresolved_item_count += max(0, unresolved_markers - represented_visual_items)
+    unresolved_item_count += max(0, unresolved_markers - observed_visual_items)
 
     if not ordering:
         export = _external_callable(document, "export_to_markdown")

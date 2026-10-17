@@ -459,6 +459,23 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     assert placeholder_response.unresolved_item_count == 1
     assert placeholder_response.source_item_count == 2
 
+    class UnboxedPlaceholderDocument:
+        def iterate_items(self) -> list[Item]:
+            return [
+                Item("text", "heading\n\n<!-- image -->", BBox(0, 40, 5, 20)),
+                Item("picture", "", None),
+            ]
+
+    Conversion.document = UnboxedPlaceholderDocument()
+    unboxed_placeholder_response = run_docling_ocr_page(
+        image_path,
+        1,
+        WorkflowProviderSettings(ocr=ProviderEndpointConfig(provider="docling", model="docling")),
+        engine="rapidocr",
+    )
+    assert unboxed_placeholder_response.unresolved_item_count == 1
+    assert unboxed_placeholder_response.source_item_count == 2
+
     class FallbackDocument:
         def iterate_items(self) -> list[Item]:
             return []
