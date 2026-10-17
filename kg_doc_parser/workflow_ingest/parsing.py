@@ -24,6 +24,7 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 from .document_models import SummaryPolicy
 from .ocr_pipeline import (
+    GroundedSummaryGenerator,
     OCRImagePayload,
     OCRRunner,
     OCRWorkflowArtifacts,
@@ -68,8 +69,10 @@ class OCRParseKwargs(TypedDict):
     pdf_rasterizer: NotRequired[PDFRasterizer | None]
     ocr_candidate_models: NotRequired[Sequence[str] | None]
     probe: NotRequired[WorkflowProbe | None]
+    grouping_policy_version: NotRequired[str]
     summary_policy: NotRequired[SummaryPolicy | None]
     summary_generator: NotRequired[SummaryGenerator | None]
+    grounded_summary_generator: NotRequired[GroundedSummaryGenerator | None]
 
 
 class PageIndexParseKwargs(TypedDict):
@@ -116,8 +119,10 @@ class OCRParseRequest:
     probe: WorkflowProbe | None = None
     restore_grouping_checkpoint: bool = True
     persist_grouping_checkpoint: bool = True
+    grouping_policy_version: str = "baseline-v1"
     summary_policy: SummaryPolicy | None = None
     summary_generator: SummaryGenerator | None = None
+    grounded_summary_generator: GroundedSummaryGenerator | None = None
 
 
 @dataclass(slots=True)
@@ -215,6 +220,7 @@ def parse_ocr_document(
     grouping_policy_version: str = "baseline-v1",
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
+    grounded_summary_generator: GroundedSummaryGenerator | None = None,
 ) -> OCRWorkflowArtifacts:
     """Parse OCR inputs into normalized workflow-ingest artifacts."""
 
@@ -244,6 +250,7 @@ def parse_ocr_document(
         grouping_policy_version=grouping_policy_version,
         summary_policy=summary_policy,
         summary_generator=summary_generator,
+    grounded_summary_generator=grounded_summary_generator,
     )
 
 
@@ -351,6 +358,10 @@ def parse_document(*, mode: ParseMode, **kwargs: object) -> ParseDocumentResult:
             pdf_rasterizer=request.pdf_rasterizer,
             ocr_candidate_models=request.ocr_candidate_models,
             probe=request.probe,
+            grouping_policy_version=request.grouping_policy_version,
+            summary_policy=request.summary_policy,
+            summary_generator=request.summary_generator,
+            grounded_summary_generator=request.grounded_summary_generator,
         )
     if mode == "page_index":
         request = PageIndexParseRequest(**cast(PageIndexParseKwargs, kwargs))

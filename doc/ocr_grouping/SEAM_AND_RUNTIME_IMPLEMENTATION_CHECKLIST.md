@@ -1136,6 +1136,7 @@ an adapter-only test, or a source-checkout-only runtime test.
   Graph export now carries the authoritative source revision from the accepted
   grouping tree in both top-level graph payload and root-node metadata; coverage
   is provided by `test_export_carries_authoritative_source_revision`.
+  Parser CI run `39045083192` passed the full matrix on `4cbb8cb`.
   Complete downstream revision evidence remains open.
 - [~] Separate document ID, source revision, OCR config, grouping revision, and
   parse generation namespaces. The OCR root now persists a dedicated
