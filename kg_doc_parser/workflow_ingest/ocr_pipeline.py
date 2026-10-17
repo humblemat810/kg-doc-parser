@@ -1590,6 +1590,10 @@ class OCRWorkflowStateStore:
                 "SELECT document_id FROM grouping_frontier_state WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
+            current_metadata = conn.execute(
+                "SELECT document_id FROM grouping_checkpoint_metadata WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
             current_revision = None if current is None else str(current["tree_revision"])
             has_frontier = current_frontier is not None
             # A process can die after this SQLite commit but before the
@@ -1599,6 +1603,7 @@ class OCRWorkflowStateStore:
             if (
                 current_revision == tree_revision
                 and has_frontier
+                and current_metadata is not None
                 and current is not None
                 and str(current["source_fingerprint"]) == tree.source_fingerprint()
                 and str(current["grouping_policy_version"]) == grouping_policy_version
