@@ -1029,7 +1029,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   and `_json_pages()` rehydrates accepted page JSON on demand; legacy checkpoints
   with `raw_pages` remain readable. The regression
   `tests/test_workflow_ingest_ocr_pipeline.py::test_new_page_checkpoint_rehydrates_pages_from_artifacts_without_raw_payload`
-  passes, while the 100/500/1000-page size-growth benchmark remains open.
+  passes. The 100/500/1000-page artifact-backed checkpoint-growth regression
+  now covers the long-document storage invariant; a machine-speed benchmark is
+  intentionally outside this parser contract.
 - [~] Restore before advancing and prove byte-equivalent no-op reruns. The
   grouping runtime has a passing resume test. Grouping summary writes now also
   carry the same expected revision/absence fence, but OCR/page and dual-store
