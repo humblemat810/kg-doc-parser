@@ -163,6 +163,14 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
         all_ids_set = set(all_ids)
         if len(self.meaningful_ordering) != len(all_ids_set) or set(self.meaningful_ordering) != all_ids_set:
             raise ValueError("meaningful_ordering must cover each text and non-text cluster exactly once")
+        if self.source_item_count is not None:
+            accounted_item_count = len(all_clusters) + self.unresolved_item_count
+            if self.source_item_count != accounted_item_count:
+                raise ValueError(
+                    "OCR source item accounting does not reconcile "
+                    f"({self.source_item_count} observed versus "
+                    f"{accounted_item_count} represented or unresolved)"
+                )
         return self
 
     
