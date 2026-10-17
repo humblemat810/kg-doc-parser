@@ -85,6 +85,12 @@ from .ocr_pipeline import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
+from .ocr_quality import (
+    OCRGroundTruth,
+    OCRGroundTruthItem,
+    OCRGroundTruthReport,
+    evaluate_ocr_ground_truth,
+)
 from .ocr_providers import (
     DoclingEngine,
     OCRPageProvider,
@@ -222,6 +228,9 @@ __all__ = [
     "NormalizedPage",
     "NormalizedSourceCollection",
     "OCRImagePayload",
+    "OCRGroundTruth",
+    "OCRGroundTruthItem",
+    "OCRGroundTruthReport",
     "OCRMetadata",
     "OCRPageProvider",
     "OCRParseRequest",
@@ -289,6 +298,7 @@ __all__ = [
     "default_parse_semantic_fn",
     "discover_input_files",
     "emit_probe_event",
+    "evaluate_ocr_ground_truth",
     "ensure_ingest_workflow_design",
     "extract_reference_mentions",
     "finalize_semantic_tree",
