@@ -5,6 +5,8 @@ from typing import ClassVar
 
 import pytest
 from PIL import Image
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from kg_doc_parser.models import OCRClusterResponse, TextCluster
 from kg_doc_parser.workflow_ingest import ocr_pipeline, pdf_native
@@ -65,6 +67,46 @@ def test_native_pdf_text_defers_pages_with_embedded_images(
     monkeypatch.setattr(pdf_native, "PdfReader", lambda _path: _Reader(_ImagePage()))
 
     assert pdf_native.extract_native_pdf_page(Path("scan.pdf"), 1) is None
+
+
+def test_native_pdf_text_reads_a_real_selectable_pdf(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "selectable.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=600, height=800)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    resources = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {NameObject("/F1"): writer._add_object(font)}
+            )
+        }
+    )
+    page[NameObject("/Resources")] = resources
+    content = DecodedStreamObject()
+    content.set_data(
+        b"BT /F1 12 Tf 40 700 Td (upper line) Tj "
+        b"0 -40 Td (lower line) Tj ET"
+    )
+    page[NameObject("/Contents")] = writer._add_object(content)
+    with pdf_path.open("wb") as stream:
+        writer.write(stream)
+
+    result = pdf_native.extract_native_pdf_page(pdf_path, 1)
+
+    assert result is not None
+    assert [cluster.text for cluster in result.OCR_text_clusters] == [
+        "upper line",
+        "lower line",
+    ]
+    assert result.meaningful_ordering == [0, 1]
+    assert result.spatial_accuracy == "line"
+    assert result.OCR_text_clusters[0].bb_y_min > result.OCR_text_clusters[1].bb_y_min
 
 
 def test_pdf_text_mode_is_part_of_ocr_cache_identity() -> None:
