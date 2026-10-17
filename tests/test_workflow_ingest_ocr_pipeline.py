@@ -3788,6 +3788,36 @@ def test_ocr_state_rebuild_rejects_non_digest_progress_hash() -> None:
 
 
 @pytest.mark.ci
+def test_grouping_checkpoint_migrates_legacy_schema_with_generation_column(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "legacy-ocr-state.sqlite"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE grouping_checkpoint_metadata (
+                document_id TEXT PRIMARY KEY,
+                source_fingerprint TEXT NOT NULL,
+                grouping_policy_version TEXT NOT NULL,
+                accepted_page_frontier_json TEXT NOT NULL,
+                tree_revision TEXT NOT NULL,
+                last_runtime_step TEXT NOT NULL,
+                last_updated_ts REAL NOT NULL
+            )
+            """
+        )
+
+    OCRWorkflowStateStore(db_path)
+    with sqlite3.connect(db_path) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute(
+                "PRAGMA table_info(grouping_checkpoint_metadata)"
+            ).fetchall()
+        }
+    assert "merge_revision" in columns
+
+
 def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source() -> None:
     scratch = _scratch("ocr_grouping_checkpoint")
     tree = DocumentTree(
