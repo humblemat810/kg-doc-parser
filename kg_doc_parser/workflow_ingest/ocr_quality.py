@@ -71,6 +71,9 @@ class OCRGroundTruthReport(BaseModel):
     extra_cluster_numbers: tuple[int, ...] = ()
     text_mismatch_item_ids: tuple[str, ...] = ()
     minimum_iou: float = Field(ge=0.0, le=1.0)
+    item_recall_by_modality: dict[OCRGroundTruthModality, float] = Field(
+        default_factory=dict
+    )
 
 
 def _normalise_text(value: str) -> str:
@@ -187,6 +190,17 @@ def evaluate_ocr_ground_truth(
         for cluster in response.non_text_objects
     ]
     assignments = _assign_matches(ground_truth.items, candidates, minimum_iou)
+    recall_by_modality: dict[OCRGroundTruthModality, float] = {}
+    for modality in ("text", "non_text"):
+        expected_indices = [
+            index
+            for index, item in enumerate(ground_truth.items)
+            if item.modality == modality
+        ]
+        matched_count = sum(index in assignments for index in expected_indices)
+        recall_by_modality[modality] = (
+            matched_count / len(expected_indices) if expected_indices else 1.0
+        )
     missing: list[str] = []
     mismatches: list[str] = []
     spatial_ious: list[float] = []
@@ -217,4 +231,5 @@ def evaluate_ocr_ground_truth(
         ),
         text_mismatch_item_ids=tuple(mismatches),
         minimum_iou=minimum_iou,
+        item_recall_by_modality=recall_by_modality,
     )

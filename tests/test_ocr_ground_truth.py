@@ -189,6 +189,31 @@ def test_ground_truth_report_matches_non_text_modalities_without_text() -> None:
     assert report.text_mismatch_item_ids == ()
 
 
+def test_ground_truth_report_exposes_missing_non_text_recall_separately() -> None:
+    ground_truth = OCRGroundTruth(
+        items=(
+            *_ground_truth().items,
+            OCRGroundTruthItem(
+                item_id="figure",
+                modality="non_text",
+                x_min=25.0,
+                y_min=0.0,
+                x_max=75.0,
+                y_max=20.0,
+            ),
+        )
+    )
+
+    report = evaluate_ocr_ground_truth(_response(), ground_truth)
+
+    assert report.item_recall == pytest.approx(2 / 3)
+    assert report.item_recall_by_modality == {
+        "text": 1.0,
+        "non_text": 0.0,
+    }
+    assert report.missing_item_ids == ("figure",)
+
+
 def test_ground_truth_contract_rejects_invalid_annotations() -> None:
     with pytest.raises(ValueError, match="positive area"):
         OCRGroundTruthItem(
