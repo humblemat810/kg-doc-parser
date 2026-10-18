@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import struct
 from pathlib import Path
 
 import pytest
@@ -210,6 +212,14 @@ def test_ground_truth_contract_rejects_invalid_annotations() -> None:
 
 def test_recorded_codex_layout_fixture_has_independent_spatial_coverage() -> None:
     fixture_dir = Path(__file__).parent / "fixtures" / "ocr_ground_truth"
+    source_image = fixture_dir / "codex_ocr_layout_page.png"
+    image_bytes = source_image.read_bytes()
+    assert hashlib.sha256(image_bytes).hexdigest() == (
+        "5f55174cf5cfddd227c5833c07de0c56563fd5850817f7ae518f25cbceecfc3c"
+    )
+    assert image_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", image_bytes[16:24]) == (1600, 1200)
+
     response = OCRClusterResponse.model_validate_json(
         (fixture_dir / "codex_ocr_layout_page_response.json").read_text(
             encoding="utf-8"
@@ -223,6 +233,7 @@ def test_recorded_codex_layout_fixture_has_independent_spatial_coverage() -> Non
 
     report = evaluate_ocr_ground_truth(response, ground_truth)
 
+    assert len(ground_truth.items) == 16
     assert report.item_recall == pytest.approx(1.0)
     assert report.mean_spatial_iou >= report.minimum_iou
     assert report.text_mismatch_item_ids == ()
