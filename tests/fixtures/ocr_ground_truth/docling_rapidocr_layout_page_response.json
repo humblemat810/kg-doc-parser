@@ -1,0 +1,26 @@
+{
+  "OCR_text_clusters": [
+    {
+      "text": "OCR Layout Evaluation\n\n1. Firstordered item\n\n2. Second ordered item\n\n3. Third ordered item\n\n<!-- image -->",
+      "bb_x_min": 0.0,
+      "bb_x_max": 1600.0,
+      "bb_y_min": 0.0,
+      "bb_y_max": 1200.0,
+      "cluster_number": 0
+    }
+  ],
+  "non_text_objects": [],
+  "is_empty_page": false,
+  "printed_page_number": null,
+  "meaningful_ordering": [0],
+  "page_x_min": 0.0,
+  "page_x_max": 1600.0,
+  "page_y_min": 0.0,
+  "page_y_max": 1200.0,
+  "estimated_rotation_degrees": 0.0,
+  "incomplete_words_on_edge": false,
+  "incomplete_text": false,
+  "data_loss_likelihood": 0.0,
+  "scan_quality": "medium",
+  "contains_table": false
+}

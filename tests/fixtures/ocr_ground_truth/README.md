@@ -16,4 +16,15 @@ This is a controlled fixture, not a representative OCR benchmark. It contains
 no figure or other non-text object, so it does not close the independent
 completeness gate for visual regions.
 
+The real Docling+EasyOCR and Docling+RapidOCR runs on this exact image are
+preserved as `docling_easyocr_layout_page_response.json` and
+`docling_rapidocr_layout_page_response.json`. The normalized responses were
+captured on 2026-10-14; their raw provider outputs remain in the local smoke
+artifacts. Both returned one full-page text box and no non-text objects. Against
+the independent 17-item annotations, neither has a spatially matched item
+(0/17 recall at IoU 0.5); the page-sized box is deliberately not accepted as
+region-level grounding. EasyOCR's text contains "First ordered item" while
+RapidOCR's contains "Firstordered item". These captured-response tests are
+reproducibility checks, not fresh live provider calls.
+
 SHA-256: `5f55174cf5cfddd227c5833c07de0c56563fd5850817f7ae518f25cbceecfc3c`

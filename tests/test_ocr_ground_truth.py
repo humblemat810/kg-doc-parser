@@ -295,3 +295,33 @@ def test_recorded_codex_layout_fixture_has_independent_spatial_coverage() -> Non
     assert report.mean_spatial_iou >= report.minimum_iou
     assert report.text_mismatch_item_ids == ()
     assert report.extra_cluster_numbers == ()
+
+
+@pytest.mark.parametrize(
+    "response_name",
+    [
+        "docling_easyocr_layout_page_response.json",
+        "docling_rapidocr_layout_page_response.json",
+    ],
+)
+def test_recorded_docling_full_page_fallback_does_not_claim_region_grounding(
+    response_name: str,
+) -> None:
+    fixture_dir = Path(__file__).parent / "fixtures" / "ocr_ground_truth"
+    ground_truth = OCRGroundTruth.model_validate_json(
+        (fixture_dir / "codex_ocr_layout_page_ground_truth.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    response = OCRClusterResponse.model_validate_json(
+        (fixture_dir / response_name).read_text(encoding="utf-8")
+    )
+
+    report = evaluate_ocr_ground_truth(response, ground_truth)
+
+    assert report.expected_item_count == 17
+    assert report.matched_item_count == 0
+    assert report.item_recall == 0.0
+    assert report.item_recall_by_modality == {"text": 0.0, "non_text": 0.0}
+    assert report.missing_item_ids == tuple(item.item_id for item in ground_truth.items)
+    assert report.extra_cluster_numbers == (0,)
