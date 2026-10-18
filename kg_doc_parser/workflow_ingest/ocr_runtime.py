@@ -14,7 +14,14 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, TypedDict, cast
+from typing import (
+    TYPE_CHECKING,
+    Literal,
+    NotRequired,
+    Protocol,
+    TypedDict,
+    cast,
+)
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver
@@ -48,8 +55,17 @@ from .document_adapters import (
     attach_document_tree_metadata,
     suggest_cross_page_continuations,
 )
-from .document_grouping import GroupProposal
-from .document_models import DocumentTree, SummaryPolicy
+from .document_grouping import (
+    GroupProposal,
+    GroupProposalBatch,
+    GroupProposalGenerator,
+    build_grouping_pass_context,
+    grouping_frontier_windows,
+    grouping_policy_identity,
+    resolve_grouping_proposals,
+    validate_grouping_window_proposals,
+)
+from .document_models import AdaptiveGroupingPolicy, DocumentTree, SummaryPolicy
 from .handlers import build_ingest_step_resolver
 from .models import WorkflowExportBundle, WorkflowIngestInput
 from .ocr_pipeline import (
@@ -64,9 +80,12 @@ from .ocr_pipeline import (
     _finalize_ocr_workflow_artifacts,
     _generate_tree_summaries,
     _process_ocr_page,
+    _summary_generator_identity,
     _sync_progress_from_state,
     _write_document_tree,
     _write_summary,
+    build_production_grounded_summary_generator,
+    build_production_group_proposal_generator,
 )
 from .runtime_contracts import WorkflowRuntimeDeps
 from .serialization import JsonObject, decode_json_object, decode_json_value
@@ -158,6 +177,15 @@ class _OCRCheckpointPatch(TypedDict):
     raw_pages: NotRequired[list[OCRPageJSON]]
 
 
+def _checkpoint_repair_cursor(patch: Mapping[str, object]) -> int:
+    """Read the required rewind cursor and fail closed on malformed state."""
+
+    cursor = patch.get("page_cursor")
+    if type(cursor) is not int or cursor < 0:
+        raise ValueError("OCR checkpoint repair requires a non-negative page_cursor")
+    return cursor
+
+
 def _page_source_state(value: object) -> _PageSourceState:
     """Decode one persisted page source without widening known fields."""
 
@@ -205,7 +233,12 @@ StateStringKey = Literal[
     "legacy_dir",
     "checkpoint_revision",
 ]
-StateBoolKey = Literal["checkpoint_absent", "checkpoint_restored", "summaries_generated"]
+StateBoolKey = Literal[
+    "adaptive_grouping_complete",
+    "checkpoint_absent",
+    "checkpoint_restored",
+    "summaries_generated",
+]
 StateObjectKey = Literal[
     "tree",
     "workflow_input",
@@ -247,6 +280,11 @@ class _OCRWorkflowState(TypedDict, total=False):
     last_failed_page: int
     checkpoint_revision: str
     grouping_passes: list[list[JsonObject]]
+    adaptive_grouping_round: int
+    adaptive_grouping_history: list[JsonObject]
+    adaptive_grouping_complete: bool
+    adaptive_grouping_window: int
+    adaptive_grouping_window_proposals: list[JsonObject]
     workflow_input: JsonObject
     grouping_result: JsonObject
     semantic_result: JsonObject
@@ -300,6 +338,8 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
 
     integer_keys = (
         "pass_index",
+        "adaptive_grouping_round",
+        "adaptive_grouping_window",
         "ocr_page_recovery_generation",
         "page_cursor",
         "last_failed_page",
@@ -309,7 +349,12 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
         if field is not None and type(field) is not int:
             raise TypeError(f"OCR workflow state field {key!r} must be an integer")
 
-    boolean_keys = ("checkpoint_restored", "checkpoint_absent", "summaries_generated")
+    boolean_keys = (
+        "checkpoint_restored",
+        "checkpoint_absent",
+        "summaries_generated",
+        "adaptive_grouping_complete",
+    )
     for key in boolean_keys:
         field = value.get(key)
         if field is not None and type(field) is not bool:
@@ -334,6 +379,28 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
         state["grouping_passes"] = _json_object_passes(
             grouping_passes, label="grouping_passes"
         )
+
+    adaptive_history = value.get("adaptive_grouping_history")
+    if adaptive_history is not None:
+        if not isinstance(adaptive_history, list):
+            raise TypeError("OCR workflow state adaptive_grouping_history must be a list")
+        state["adaptive_grouping_history"] = [
+            decode_json_object(item, label=f"adaptive_grouping_history[{index}]")
+            for index, item in enumerate(adaptive_history)
+        ]
+    window_proposals = value.get("adaptive_grouping_window_proposals")
+    if window_proposals is not None:
+        if not isinstance(window_proposals, list):
+            raise TypeError(
+                "OCR workflow state adaptive_grouping_window_proposals must be a list"
+            )
+        state["adaptive_grouping_window_proposals"] = [
+            decode_json_object(
+                item,
+                label=f"adaptive_grouping_window_proposals[{index}]",
+            )
+            for index, item in enumerate(window_proposals)
+        ]
 
     for key in ("completed_pages", "reused_pages"):
         field = value.get(key)
@@ -442,6 +509,43 @@ def _proposals(value: object) -> tuple[GroupProposal, ...]:
 def _pass_count(state: _OCRWorkflowState) -> int:
     value = state.get("pass_index", 0)
     return value if type(value) is int and value >= 0 else 0
+
+
+def _adaptive_round(state: _OCRWorkflowState) -> int:
+    value = state.get("adaptive_grouping_round", 0)
+    if type(value) is not int or value < 0:
+        raise ValueError("adaptive grouping round must be a non-negative integer")
+    return value
+
+
+def _adaptive_window(state: _OCRWorkflowState) -> int:
+    value = state.get("adaptive_grouping_window", 0)
+    if type(value) is not int or value < 0:
+        raise ValueError("adaptive grouping window cursor must be a non-negative integer")
+    return value
+
+
+def _adaptive_grouping_complete(tree: DocumentTree, *, policy_identity: str) -> bool:
+    root = next(node for node in tree.nodes if node.node_id == tree.root_id)
+    return root.annotations.get("grouping:adaptive_complete") == policy_identity
+
+
+def _mark_adaptive_grouping_complete(
+    tree: DocumentTree, *, policy_identity: str
+) -> DocumentTree:
+    root = next(node for node in tree.nodes if node.node_id == tree.root_id)
+    updated_root = root.model_copy(
+        update={
+            "annotations": {
+                **root.annotations,
+                "grouping:adaptive_complete": policy_identity,
+            }
+        }
+    )
+    nodes = tuple(
+        updated_root if node.node_id == tree.root_id else node for node in tree.nodes
+    )
+    return tree.model_copy(update={"nodes": nodes})
 
 
 def _recovery_generation(state: _OCRWorkflowState) -> int:
@@ -924,7 +1028,7 @@ def _build_page_resolver(
             start_index=verified_prefix_cursor,
         )
         if repair is not None:
-            verified_prefix_cursor = repair["page_cursor"]
+            verified_prefix_cursor = _checkpoint_repair_cursor(repair)
             repair_update: StateUpdate = ("u", dict(repair))
             return _success("process_ocr_page", state_update=[repair_update])
         sources = _page_sources(state)
@@ -996,7 +1100,7 @@ def _build_page_resolver(
             source_plan=source_plan,
         )
         if repair is not None:
-            verified_prefix_cursor = repair["page_cursor"]
+            verified_prefix_cursor = _checkpoint_repair_cursor(repair)
             return _success("process_ocr_page", state_update=[("u", dict(repair))])
         context.state_store.refresh_document_completion(document_id=context.document_id)
         _sync_progress_from_state(
@@ -1134,6 +1238,8 @@ def _register_grouping_steps(
     summary_policy: SummaryPolicy | None,
     summary_generator: SummaryGenerator | None,
     grounded_summary_generator: GroundedSummaryGenerator | None,
+    adaptive_grouping_policy: AdaptiveGroupingPolicy,
+    grouping_proposer: GroupProposalGenerator | None,
 ) -> None:
     @resolver.register("start")
     def _start(ctx: StepContext) -> StepRunResult:
@@ -1163,6 +1269,9 @@ def _register_grouping_steps(
                             "checkpoint_restored": True,
                             "checkpoint_absent": False,
                             "checkpoint_revision": revision,
+                            "adaptive_grouping_complete": _adaptive_grouping_complete(
+                                restored, policy_identity=policy_version
+                            ),
                         },
                     )
                 ],
@@ -1195,7 +1304,152 @@ def _register_grouping_steps(
                     )
                 ],
             )
-        return _success("generate_grouping_summaries")
+        if not adaptive_grouping_policy.enabled or _state_bool(
+            state, "adaptive_grouping_complete"
+        ):
+            return _success("generate_grouping_summaries")
+        if grouping_proposer is None:
+            raise RuntimeError(
+                "adaptive grouping is enabled without a proposal generator"
+            )
+
+        policy_version = _state_string(state, "grouping_policy_version", "baseline-v1")
+        round_index = _adaptive_round(state)
+        history = state.get("adaptive_grouping_history", [])
+        if round_index >= adaptive_grouping_policy.maximum_rounds:
+            completed_tree = _mark_adaptive_grouping_complete(
+                tree, policy_identity=policy_version
+            )
+            history.append(
+                {
+                    "round": round_index,
+                    "outcome": "maximum_rounds_reached",
+                }
+            )
+            return _success(
+                "generate_grouping_summaries",
+                state_update=[
+                    (
+                        "u",
+                        {
+                            "tree": completed_tree.model_dump(mode="json"),
+                            "adaptive_grouping_complete": True,
+                            "adaptive_grouping_history": history,
+                        },
+                    )
+                ],
+            )
+
+        root = next(node for node in tree.nodes if node.node_id == tree.root_id)
+        frontier = tuple(child.node_id for child in root.children)
+        windows = grouping_frontier_windows(frontier, adaptive_grouping_policy)
+        window_index = _adaptive_window(state)
+        pending_window_proposals = state.get("adaptive_grouping_window_proposals", [])
+        if window_index > len(windows):
+            raise ValueError("adaptive grouping window cursor exceeds the current frontier")
+        if window_index < len(windows):
+            window = windows[window_index]
+            context = build_grouping_pass_context(
+                tree,
+                pass_index=round_index,
+                frontier_ids=window,
+                maximum_evidence_items_per_candidate=(
+                    adaptive_grouping_policy.maximum_evidence_items_per_candidate
+                ),
+                maximum_text_chars_per_candidate=(
+                    adaptive_grouping_policy.maximum_text_chars_per_candidate
+                ),
+            )
+            batch = grouping_proposer(context)
+            if not isinstance(batch, GroupProposalBatch):
+                raise TypeError(
+                    "grouping proposal generator must return GroupProposalBatch"
+                )
+            validated_window_proposals = validate_grouping_window_proposals(
+                frontier=frontier,
+                window=window,
+                proposals=batch.proposals,
+            )
+            pending_window_proposals.extend(
+                proposal.model_dump(mode="json")
+                for proposal in validated_window_proposals
+            )
+            return _success(
+                "apply_grouping_pass",
+                state_update=[
+                    (
+                        "u",
+                        {
+                            "adaptive_grouping_window": window_index + 1,
+                            "adaptive_grouping_window_proposals": pending_window_proposals,
+                        },
+                    )
+                ],
+            )
+
+        proposals = resolve_grouping_proposals(
+            frontier=frontier,
+            proposals=_proposals(pending_window_proposals),
+        )
+        if not proposals:
+            completed_tree = _mark_adaptive_grouping_complete(
+                tree, policy_identity=policy_version
+            )
+            history.append(
+                {
+                    "round": round_index + 1,
+                    "input_frontier": list(frontier),
+                    "window_count": len(windows),
+                    "proposals": [],
+                    "outcome": "no_supported_groups",
+                }
+            )
+            return _success(
+                "generate_grouping_summaries",
+                state_update=[
+                    (
+                        "u",
+                        {
+                            "tree": completed_tree.model_dump(mode="json"),
+                            "adaptive_grouping_complete": True,
+                            "adaptive_grouping_history": history,
+                        },
+                    )
+                ],
+            )
+
+        next_tree = apply_grouping_proposals(
+            tree,
+            proposals,
+            grouping_policy_version=f"{policy_version}:adaptive:{round_index + 1}",
+        )
+        next_root = next(node for node in next_tree.nodes if node.node_id == next_tree.root_id)
+        if len(next_root.children) >= len(frontier):
+            raise RuntimeError("adaptive grouping proposal did not reduce the frontier")
+        history.append(
+            {
+                "round": round_index + 1,
+                "input_frontier": list(frontier),
+                "proposals": [proposal.model_dump(mode="json") for proposal in proposals],
+                "output_frontier": [child.node_id for child in next_root.children],
+                "outcome": "groups_accepted",
+            }
+        )
+        return _success(
+            "apply_grouping_pass",
+            state_update=[
+                (
+                    "u",
+                    {
+                        "tree": next_tree.model_dump(mode="json"),
+                        "adaptive_grouping_round": round_index + 1,
+                        "adaptive_grouping_window": 0,
+                        "adaptive_grouping_window_proposals": [],
+                        "adaptive_grouping_history": history,
+                    },
+                )
+            ],
+        )
 
     @resolver.register("generate_grouping_summaries")
     def _summaries(ctx: StepContext) -> StepRunResult:
@@ -1275,6 +1529,8 @@ def run_grouping_workflow(
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
     grounded_summary_generator: GroundedSummaryGenerator | None = None,
+    adaptive_grouping_policy: AdaptiveGroupingPolicy | None = None,
+    grouping_proposer: GroupProposalGenerator | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
     run_ownership_lease_ms: int | None = None,
@@ -1285,6 +1541,25 @@ def run_grouping_workflow(
     explicit_passes = list(grouping_passes)
     if grouping_proposals:
         explicit_passes = [tuple(grouping_proposals)]
+    effective_adaptive_policy = adaptive_grouping_policy or AdaptiveGroupingPolicy(
+        enabled=grouping_proposer is not None
+    )
+    if effective_adaptive_policy.enabled != (grouping_proposer is not None):
+        raise ValueError(
+            "enabled adaptive grouping requires exactly one grouping proposer"
+        )
+    effective_policy_version = grouping_policy_version
+    if effective_adaptive_policy.enabled:
+        if grouping_proposer is None:
+            raise RuntimeError("adaptive grouping proposer was not constructed")
+        proposer_fingerprint = grouping_proposer.configuration_fingerprint
+        if not proposer_fingerprint:
+            raise ValueError("grouping proposer configuration fingerprint cannot be empty")
+        effective_policy_version = grouping_policy_identity(
+            policy_version=grouping_policy_version,
+            policy=effective_adaptive_policy,
+            proposer_fingerprint=proposer_fingerprint,
+        )
     if not explicit_passes:
         explicit_passes = [suggest_cross_page_continuations(tree)]
     ensure_ocr_grouping_workflow_design(workflow_engine)
@@ -1295,6 +1570,8 @@ def run_grouping_workflow(
         summary_policy=summary_policy,
         summary_generator=summary_generator,
         grounded_summary_generator=grounded_summary_generator,
+        adaptive_grouping_policy=effective_adaptive_policy,
+        grouping_proposer=grouping_proposer,
     )
     runtime = _workflow_runtime(
         workflow_engine=workflow_engine,
@@ -1310,7 +1587,7 @@ def run_grouping_workflow(
             state_store=state_store,
             document_id=document_id,
             tree=tree,
-            grouping_policy_version=grouping_policy_version,
+            grouping_policy_version=effective_policy_version,
         )
     existing_revision = state_store.document_tree_revision(document_id=document_id)
     result = (
@@ -1328,12 +1605,17 @@ def run_grouping_workflow(
             initial_state={
                 "document_id": document_id,
                 "tree": tree.model_dump(mode="json"),
-                "grouping_policy_version": grouping_policy_version,
+                "grouping_policy_version": effective_policy_version,
                 "grouping_passes": [
                     [proposal.model_dump(mode="json") for proposal in current_pass]
                     for current_pass in explicit_passes
                 ],
                 "pass_index": 0,
+                "adaptive_grouping_round": 0,
+                "adaptive_grouping_window": 0,
+                "adaptive_grouping_history": [],
+                "adaptive_grouping_window_proposals": [],
+                "adaptive_grouping_complete": False,
                 "checkpoint_revision": existing_revision,
                 "checkpoint_absent": existing_revision is None,
             },
@@ -1360,6 +1642,8 @@ def run_ocr_root_workflow(
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
     grounded_summary_generator: GroundedSummaryGenerator | None = None,
+    adaptive_grouping_policy: AdaptiveGroupingPolicy | None = None,
+    grouping_proposer: GroupProposalGenerator | None = None,
     deps: WorkflowRuntimeDeps | None = None,
     run_id: str | None = None,
     resume_from_checkpoint: bool = False,
@@ -1380,6 +1664,67 @@ def run_ocr_root_workflow(
 
     if not isinstance(provider_settings, WorkflowProviderSettings):
         raise TypeError("provider_settings must be WorkflowProviderSettings")
+    effective_adaptive_policy = adaptive_grouping_policy or AdaptiveGroupingPolicy(
+        enabled=(
+            grouping_proposer is not None
+            or provider_settings.parser.provider != "fake"
+        )
+    )
+    if effective_adaptive_policy.enabled and grouping_proposer is None:
+        if provider_settings.parser.provider == "fake":
+            raise ValueError(
+                "adaptive grouping is enabled with the fake parser provider; "
+                "supply a test proposer or disable adaptive grouping"
+            )
+        grouping_proposer = build_production_group_proposal_generator(provider_settings)
+    elif not effective_adaptive_policy.enabled and grouping_proposer is not None:
+        raise ValueError("grouping proposer was supplied while adaptive grouping is disabled")
+    effective_summary_policy = summary_policy
+    effective_grounded_summary_generator = grounded_summary_generator
+    if (
+        effective_adaptive_policy.enabled
+        and provider_settings.parser.provider != "fake"
+    ):
+        effective_summary_policy = effective_summary_policy or SummaryPolicy()
+        if summary_generator is None and effective_grounded_summary_generator is None:
+            effective_grounded_summary_generator = (
+                build_production_grounded_summary_generator(provider_settings)
+            )
+    if effective_adaptive_policy.enabled:
+        if grouping_proposer is None:
+            raise RuntimeError("adaptive grouping proposal generator was not constructed")
+        proposer_fingerprint = grouping_proposer.configuration_fingerprint
+        if not proposer_fingerprint:
+            raise ValueError("grouping proposer configuration fingerprint cannot be empty")
+        summary_fingerprint: str | None = None
+        active_summary_generator = (
+            summary_generator
+            if summary_generator is not None
+            else effective_grounded_summary_generator
+        )
+        if (
+            effective_summary_policy is not None
+            and effective_summary_policy.enabled
+            and active_summary_generator is not None
+        ):
+            summary_identity_payload = json.dumps(
+                [
+                    effective_summary_policy.model_dump(mode="json"),
+                    _summary_generator_identity(active_summary_generator),
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            summary_fingerprint = hashlib.sha256(
+                summary_identity_payload.encode("utf-8")
+            ).hexdigest()
+        grouping_policy_version = grouping_policy_identity(
+            policy_version=grouping_policy_version,
+            policy=effective_adaptive_policy,
+            proposer_fingerprint=proposer_fingerprint,
+            summary_fingerprint=summary_fingerprint,
+        )
     explicit_passes = list(grouping_passes)
     if grouping_proposals:
         explicit_passes = [tuple(grouping_proposals)]
@@ -1398,9 +1743,11 @@ def run_ocr_root_workflow(
     _register_grouping_steps(
         grouping_resolver,
         state_store=preparation.state_store,
-        summary_policy=summary_policy,
+        summary_policy=effective_summary_policy,
         summary_generator=summary_generator,
-        grounded_summary_generator=grounded_summary_generator,
+        grounded_summary_generator=effective_grounded_summary_generator,
+        adaptive_grouping_policy=effective_adaptive_policy,
+        grouping_proposer=grouping_proposer,
     )
     graph_client = DirectRuntimeIngestClient(
         workflow_engine=workflow_engine,
@@ -1435,6 +1782,12 @@ def run_ocr_root_workflow(
             "parse_generation": "u",
             "checkpoint_revision": "u",
             "checkpoint_absent": "u",
+            "grouping_passes": "u",
+            "adaptive_grouping_round": "u",
+            "adaptive_grouping_window": "u",
+            "adaptive_grouping_history": "u",
+            "adaptive_grouping_window_proposals": "u",
+            "adaptive_grouping_complete": "u",
             **page_resolver._state_schema,
             **semantic_resolver._state_schema,
         }
@@ -1565,6 +1918,11 @@ def run_ocr_root_workflow(
                         "grouping_policy_version": grouping_policy_version,
                         "grouping_passes": state.get("grouping_passes", []),
                         "pass_index": 0,
+                        "adaptive_grouping_round": 0,
+                        "adaptive_grouping_window": 0,
+                        "adaptive_grouping_history": [],
+                        "adaptive_grouping_window_proposals": [],
+                        "adaptive_grouping_complete": False,
                         "checkpoint_revision": existing_revision,
                         "checkpoint_absent": existing_revision is None,
                     },

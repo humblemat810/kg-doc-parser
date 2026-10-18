@@ -11,8 +11,18 @@ from kg_doc_parser.workflow_ingest.document_adapters import (
     extract_reference_mentions,
     select_summary_targets,
 )
-from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal, merge_groups
+from kg_doc_parser.workflow_ingest.document_grouping import (
+    GroupingPassContext,
+    GroupProposal,
+    GroupProposalBatch,
+    build_grouping_pass_context,
+    merge_groups,
+    propose_grouping_round,
+)
 from kg_doc_parser.workflow_ingest.document_models import (
+    AdaptiveGroupingPolicy,
+    BoundingBox,
+    ChildRef,
     DocumentNode,
     DocumentTree,
     MediaRef,
@@ -101,6 +111,189 @@ def test_merge_groups_is_deterministic_and_preserves_unmerged_members() -> None:
     assert first == second
     assert first[0] == (first[0][0], "c")
     assert len(first[1][0].children) == 2
+
+
+def test_grouping_context_preserves_typed_multimodal_frontier_evidence() -> None:
+    image = SourceItem(
+        item_id="figure-1",
+        kind="figure",
+        media=MediaRef(
+            uri="memory://figure-1",
+            mime_type="image/png",
+            sha256_hex="a" * 64,
+            byte_length=12,
+        ),
+        location=SourceLocation(
+            page_index=1,
+            printed_page_label="2",
+            bbox=BoundingBox(
+                x0=0.1,
+                y0=0.2,
+                x1=0.8,
+                y1=0.9,
+                coordinate_system="relative",
+            ),
+            accuracy="region",
+        ),
+    )
+    tree = DocumentTree(
+        document_id="group-context",
+        source_revision="source-v1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(_item("caption-1", "Figure 1 shows the system."), image),
+        nodes=(
+            _leaf("text-leaf", "caption-1", "Figure 1 shows the system."),
+            DocumentNode(
+                node_id="figure-leaf",
+                kind="figure",
+                parts=(SourceSlice(item_id="figure-1"),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(ChildRef(node_id="text-leaf"), ChildRef(node_id="figure-leaf")),
+            ),
+        ),
+    )
+
+    context = build_grouping_pass_context(tree, pass_index=2)
+
+    assert context.frontier_ids == ("text-leaf", "figure-leaf")
+    assert context.candidates[0].evidence[0].text_excerpt == "Figure 1 shows the system."
+    figure_evidence = context.candidates[1].evidence[0]
+    assert figure_evidence.item_id == "figure-1"
+    assert figure_evidence.modality == "image"
+    assert figure_evidence.media_mime_type == "image/png"
+    assert figure_evidence.page_index == 1
+    assert figure_evidence.printed_page_label == "2"
+    assert figure_evidence.bbox == image.location.bbox
+
+
+def test_grouping_context_rejects_noncontiguous_or_foreign_frontier_windows() -> None:
+    tree = DocumentTree(
+        document_id="group-window",
+        source_revision="source-v1",
+        tree_revision=1,
+        root_id="root",
+        source_items=tuple(_item(f"item-{index}", str(index)) for index in range(3)),
+        nodes=(
+            *tuple(
+                _leaf(f"leaf-{index}", f"item-{index}", str(index))
+                for index in range(3)
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=tuple(ChildRef(node_id=f"leaf-{index}") for index in range(3)),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="contiguous"):
+        build_grouping_pass_context(
+            tree,
+            pass_index=0,
+            frontier_ids=("leaf-0", "leaf-2"),
+        )
+
+
+def test_adaptive_grouping_deduplicates_windows_and_resolves_conflicts_deterministically() -> None:
+    frontier = tuple(f"leaf-{index}" for index in range(6))
+    tree = DocumentTree(
+        document_id="adaptive-window",
+        source_revision="source-v1",
+        tree_revision=1,
+        root_id="root",
+        source_items=tuple(_item(f"item-{index}", str(index)) for index in range(6)),
+        nodes=(
+            *tuple(
+                _leaf(node_id, f"item-{index}", str(index))
+                for index, node_id in enumerate(frontier)
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=tuple(ChildRef(node_id=node_id) for node_id in frontier),
+            ),
+        ),
+    )
+    seen_windows: list[tuple[str, ...]] = []
+
+    class _Proposer:
+        configuration_fingerprint = "fake-group-proposer-v1"
+
+        def __call__(self, context: GroupingPassContext) -> GroupProposalBatch:
+            seen_windows.append(context.frontier_ids)
+            if context.frontier_ids == frontier[:4]:
+                return GroupProposalBatch(
+                    proposals=(GroupProposal(kind="section", members=("leaf-2", "leaf-3")),)
+                )
+            if context.frontier_ids == frontier[2:]:
+                return GroupProposalBatch(
+                    proposals=(
+                        GroupProposal(kind="section", members=("leaf-2", "leaf-3")),
+                        GroupProposal(kind="table", members=("leaf-3", "leaf-4")),
+                    )
+                )
+            return GroupProposalBatch()
+
+    proposals = propose_grouping_round(
+        tree,
+        pass_index=0,
+        policy=AdaptiveGroupingPolicy(window_size=4, window_overlap=2),
+        generator=_Proposer(),
+    )
+
+    assert seen_windows == [frontier[:4], frontier[2:]]
+    # The identical proposal is deduplicated, then the conflicting proposal
+    # loses by the documented leftmost deterministic precedence.
+    assert proposals == (GroupProposal(kind="section", members=("leaf-2", "leaf-3")),)
+
+
+def test_adaptive_grouping_rejects_proposals_outside_the_prompt_window() -> None:
+    frontier = ("leaf-0", "leaf-1", "leaf-2")
+    tree = DocumentTree(
+        document_id="adaptive-window-invalid",
+        source_revision="source-v1",
+        tree_revision=1,
+        root_id="root",
+        source_items=tuple(_item(f"item-{index}", str(index)) for index in range(3)),
+        nodes=(
+            *tuple(
+                _leaf(node_id, f"item-{index}", str(index))
+                for index, node_id in enumerate(frontier)
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=tuple(ChildRef(node_id=node_id) for node_id in frontier),
+            ),
+        ),
+    )
+
+    class _OutOfWindowProposer:
+        configuration_fingerprint = "fake-invalid-v1"
+
+        def __call__(self, context: GroupingPassContext) -> GroupProposalBatch:
+            del context
+            return GroupProposalBatch(
+                proposals=(GroupProposal(kind="section", members=("foreign", "leaf-1")),)
+            )
+
+    with pytest.raises(ValueError, match="outside its window"):
+        propose_grouping_round(
+            tree,
+            pass_index=0,
+            policy=AdaptiveGroupingPolicy(window_size=3, window_overlap=1),
+            generator=_OutOfWindowProposer(),
+        )
+    with pytest.raises(ValueError, match="outside the current frontier"):
+        build_grouping_pass_context(
+            tree,
+            pass_index=0,
+            frontier_ids=("foreign", "leaf-1"),
+        )
 
 
 def test_merge_groups_only_reifies_the_affected_frontier_window() -> None:

@@ -234,6 +234,25 @@ class SummaryPolicy(FrozenModel):
         return self
 
 
+class AdaptiveGroupingPolicy(FrozenModel):
+    """Bound iterative grouping work and its multimodal evidence context."""
+
+    enabled: bool = True
+    maximum_rounds: int = Field(default=6, ge=1, le=16)
+    window_size: int = Field(default=64, ge=2, le=64)
+    window_overlap: int = Field(default=31, ge=1, le=63)
+    maximum_evidence_items_per_candidate: int = Field(default=4, ge=1, le=16)
+    maximum_text_chars_per_candidate: int = Field(default=300, ge=32, le=2400)
+
+    @model_validator(mode="after")
+    def valid(self) -> AdaptiveGroupingPolicy:
+        if self.window_overlap >= self.window_size:
+            raise ValueError("grouping window overlap must be smaller than its size")
+        if self.window_size - self.window_overlap < 2:
+            raise ValueError("grouping windows must advance by at least two candidates")
+        return self
+
+
 class DocumentNode(FrozenModel):
     node_id: str = Field(min_length=1)
     kind: str = Field(min_length=1, max_length=128)

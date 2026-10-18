@@ -107,8 +107,16 @@ from kg_doc_parser.workflow_ingest import (
 )
 from kg_doc_parser.workflow_ingest.adapters import OCRPageJSON
 from kg_doc_parser.workflow_ingest.document_adapters import apply_grouping_proposals
-from kg_doc_parser.workflow_ingest.document_grouping import GroupProposal
+from kg_doc_parser.workflow_ingest.document_grouping import (
+    GroupingPassContext,
+    GroupProposal,
+    GroupProposalBatch,
+    GroupProposalGenerator,
+    build_grouping_pass_context,
+    grouping_policy_identity,
+)
 from kg_doc_parser.workflow_ingest.document_models import (
+    AdaptiveGroupingPolicy,
     ChildRef,
     DocumentNode,
     DocumentTree,
@@ -125,6 +133,7 @@ from kg_doc_parser.workflow_ingest.models import (
     LayerChildCandidate,
 )
 from kg_doc_parser.workflow_ingest.ocr_pipeline import (
+    GroundedChatGroupProposalGenerator,
     GroundedChatSummaryGenerator,
     GroupingCheckpointConflict,
     OCRPageProcessingContext,
@@ -147,6 +156,7 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     _write_png_atomic,
 )
 from kg_doc_parser.workflow_ingest.ocr_runtime import (
+    _checkpoint_repair_cursor,
     _json_pages,
     _page_workflow_initial_state,
     _reconcile_page_checkpoint,
@@ -158,6 +168,10 @@ from kg_doc_parser.workflow_ingest.ocr_runtime import (
 from kg_doc_parser.workflow_ingest.providers import SupportsStructuredOutput
 from kg_doc_parser.workflow_ingest.sdk_boundary import ContentCarrier, raw_content
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
+from kg_doc_parser.workflow_ingest.service import (
+    _TinyEmbeddingFunction,
+    build_default_engines,
+)
 
 pytestmark = [pytest.mark.workflow]
 
@@ -165,6 +179,11 @@ pytestmark = [pytest.mark.workflow]
 @pytest.mark.ci
 def test_ocr_checkpoint_repair_contract_requires_cursor() -> None:
     assert "page_cursor" in ocr_runtime_module._OCRCheckpointPatch.__required_keys__
+    assert _checkpoint_repair_cursor({"page_cursor": 3}) == 3
+    with pytest.raises(ValueError, match="requires a non-negative page_cursor"):
+        _checkpoint_repair_cursor({})
+    with pytest.raises(ValueError, match="requires a non-negative page_cursor"):
+        _checkpoint_repair_cursor({"page_cursor": -1})
 
 
 def test_materialize_image_payloads_uses_safe_atomic_page_paths(tmp_path: Path) -> None:
@@ -668,6 +687,370 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe(
         grouping_policy_version="test-v1:1",
     )
     assert resumed_after_crash == expected_after_crash
+
+
+@pytest.mark.ci
+def test_adaptive_grouping_iterates_in_kogwistar_and_reuses_completed_tree() -> None:
+    scratch = _scratch("adaptive_grouping_runtime")
+    workflow_engine, conversation_engine, _knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines",
+        "in_memory",
+    )
+    tree = DocumentTree(
+        document_id="adaptive-runtime-doc",
+        source_revision="ocr-v1:source-digest",
+        tree_revision=1,
+        root_id="root",
+        source_items=tuple(
+            SourceItem(
+                item_id=f"item-{suffix}",
+                kind="text",
+                text=suffix,
+                location=SourceLocation(page_index=0, accuracy="page"),
+            )
+            for suffix in ("alpha", "beta", "gamma", "delta", "epsilon")
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="leaf:alpha",
+                kind="paragraph",
+                parts=(SourceSlice(item_id="item-alpha", start=0, end=5),),
+            ),
+            DocumentNode(
+                node_id="leaf:beta",
+                kind="paragraph",
+                parts=(SourceSlice(item_id="item-beta", start=0, end=4),),
+            ),
+            DocumentNode(
+                node_id="leaf:gamma",
+                kind="paragraph",
+                parts=(SourceSlice(item_id="item-gamma", start=0, end=5),),
+            ),
+                DocumentNode(
+                    node_id="leaf:delta",
+                    kind="paragraph",
+                    parts=(SourceSlice(item_id="item-delta", start=0, end=5),),
+                ),
+                DocumentNode(
+                    node_id="leaf:epsilon",
+                    kind="paragraph",
+                    parts=(SourceSlice(item_id="item-epsilon", start=0, end=7),),
+                ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=tuple(
+                    ChildRef(node_id=f"leaf:{suffix}")
+                        for suffix in ("alpha", "beta", "gamma", "delta", "epsilon")
+                ),
+            ),
+        ),
+    )
+    policy = AdaptiveGroupingPolicy(
+        maximum_rounds=3,
+        window_size=4,
+        window_overlap=2,
+    )
+    seen_contexts: list[GroupingPassContext] = []
+
+    class _Proposer:
+        configuration_fingerprint = "adaptive-runtime-proposer-v1"
+
+        def __call__(self, context: GroupingPassContext) -> GroupProposalBatch:
+            seen_contexts.append(context)
+            if context.pass_index == 0 and context.frontier_ids[0] == "leaf:alpha":
+                return GroupProposalBatch(
+                    proposals=(
+                        GroupProposal(
+                            kind="section",
+                            members=("leaf:alpha", "leaf:beta"),
+                        ),
+                    )
+                )
+            return GroupProposalBatch()
+
+    proposer: GroupProposalGenerator = _Proposer()
+    state_store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    grouped, run_id = run_grouping_workflow(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        state_store=state_store,
+        tree=tree,
+        document_id=tree.document_id,
+        grouping_policy_version="adaptive-runtime-v1",
+        adaptive_grouping_policy=policy,
+        grouping_proposer=proposer,
+        run_id="adaptive-grouping-run",
+    )
+
+    assert run_id == "adaptive-grouping-run"
+    assert len(seen_contexts) == 3
+    assert seen_contexts[0].frontier_ids == (
+        "leaf:alpha",
+        "leaf:beta",
+        "leaf:gamma",
+        "leaf:delta",
+    )
+    assert seen_contexts[1].frontier_ids == (
+        "leaf:gamma",
+        "leaf:delta",
+        "leaf:epsilon",
+    )
+    assert seen_contexts[0].pass_index == seen_contexts[1].pass_index == 0
+    assert seen_contexts[2].pass_index == 1
+    assert seen_contexts[2].frontier_ids[0].startswith("merge:")
+    assert len(seen_contexts[2].frontier_ids) == 4
+    expected_identity = grouping_policy_identity(
+        policy_version="adaptive-runtime-v1",
+        policy=policy,
+        proposer_fingerprint=proposer.configuration_fingerprint,
+    )
+    assert grouping_policy_identity(
+        policy_version="adaptive-runtime-v1",
+        policy=policy,
+        proposer_fingerprint=proposer.configuration_fingerprint,
+        summary_fingerprint="grounded-summary-config-v1",
+    ) != expected_identity
+    root = next(node for node in grouped.nodes if node.node_id == grouped.root_id)
+    assert root.annotations["grouping:adaptive_complete"] == expected_identity
+    step_events = list(
+        conversation_engine.read.get_nodes(
+            where={
+                "$and": [
+                    {"entity_type": "workflow_step_exec"},
+                    {"run_id": run_id},
+                    {"op": "apply_grouping_pass"},
+                ]
+            }
+        )
+    )
+    assert len(step_events) >= 6
+
+    class _UnexpectedProviderCall:
+        configuration_fingerprint = "adaptive-runtime-proposer-v1"
+
+        def __call__(self, context: GroupingPassContext) -> GroupProposalBatch:
+            del context
+            raise AssertionError("completed adaptive grouping called its provider again")
+
+    restored, _restored_run_id = run_grouping_workflow(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        state_store=OCRWorkflowStateStore(scratch / "ocr-state.sqlite"),
+        tree=tree,
+        document_id=tree.document_id,
+        grouping_policy_version="adaptive-runtime-v1",
+        adaptive_grouping_policy=policy,
+        grouping_proposer=_UnexpectedProviderCall(),
+        run_id="adaptive-grouping-repair-incarnation",
+    )
+    assert restored == grouped
+
+
+@pytest.mark.ci
+def test_production_group_proposer_uses_typed_structured_output_payload() -> None:
+    tree = DocumentTree(
+        document_id="adaptive-provider-doc",
+        source_revision="ocr-v1:provider-source",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="item-a",
+                kind="text",
+                text="alpha",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+            SourceItem(
+                item_id="item-b",
+                kind="text",
+                text="beta",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="leaf-a",
+                kind="paragraph",
+                parts=(SourceSlice(item_id="item-a", start=0, end=5),),
+            ),
+            DocumentNode(
+                node_id="leaf-b",
+                kind="paragraph",
+                parts=(SourceSlice(item_id="item-b", start=0, end=4),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(ChildRef(node_id="leaf-a"), ChildRef(node_id="leaf-b")),
+            ),
+        ),
+    )
+    context = build_grouping_pass_context(tree, pass_index=0)
+    captured: dict[str, object] = {}
+
+    class _Runnable:
+        def __init__(self) -> None:
+            self.steps: list[object] = []
+
+        def invoke(
+            self,
+            messages: object,
+            config: object | None = None,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            del config, kwargs
+            captured["messages"] = messages
+            return {
+                "parsed": {
+                    "proposals": [
+                        {"kind": "section", "members": ["leaf-a", "leaf-b"]}
+                    ]
+                }
+            }
+
+    class _Chat:
+        def with_structured_output(
+            self, schema: object, **kwargs: object
+        ) -> _Runnable:
+            captured["schema"] = schema
+            captured["structured_options"] = kwargs
+            return _Runnable()
+
+    settings = WorkflowProviderSettings(
+        parser=ProviderEndpointConfig(provider="fake", model="fixture-parser")
+    )
+    generator = GroundedChatGroupProposalGenerator(
+        provider_settings=settings,
+        chat_model=_Chat(),
+    )
+
+    batch = generator(context)
+
+    assert batch.proposals == (
+        GroupProposal(kind="section", members=("leaf-a", "leaf-b")),
+    )
+    assert captured["schema"] is GroupProposalBatch
+    assert captured["structured_options"] == {
+        "include_raw": True,
+        "method": "json_schema",
+    }
+    messages = captured["messages"]
+    assert isinstance(messages, list)
+    assert "untrusted data" in messages[0].content
+    assert "leaf-a" in messages[1].content
+
+
+@pytest.mark.ci
+def test_adaptive_grouping_resume_continues_at_uncheckpointed_window() -> None:
+    scratch = _scratch("adaptive_grouping_window_resume")
+    workflow_engine, conversation_engine, _knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines",
+        "in_memory",
+    )
+    suffixes = ("alpha", "beta", "gamma", "delta", "epsilon")
+    tree = DocumentTree(
+        document_id="adaptive-window-resume-doc",
+        source_revision="ocr-v1:source-digest",
+        tree_revision=1,
+        root_id="root",
+        source_items=tuple(
+            SourceItem(
+                item_id=f"item-{suffix}",
+                kind="text",
+                text=suffix,
+                location=SourceLocation(page_index=0, accuracy="page"),
+            )
+            for suffix in suffixes
+        ),
+        nodes=(
+            *tuple(
+                DocumentNode(
+                    node_id=f"leaf:{suffix}",
+                    kind="paragraph",
+                    parts=(
+                        SourceSlice(
+                            item_id=f"item-{suffix}",
+                            start=0,
+                            end=len(suffix),
+                        ),
+                    ),
+                )
+                for suffix in suffixes
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=tuple(ChildRef(node_id=f"leaf:{name}") for name in suffixes),
+            ),
+        ),
+    )
+    policy = AdaptiveGroupingPolicy(maximum_rounds=3, window_size=4, window_overlap=2)
+    first_window = tuple(f"leaf:{name}" for name in suffixes[:4])
+    second_window = tuple(f"leaf:{name}" for name in suffixes[2:])
+    seen: list[GroupingPassContext] = []
+
+    class _FailOnceOnSecondWindow:
+        configuration_fingerprint = "adaptive-window-resume-v1"
+
+        def __init__(self) -> None:
+            self.failed = False
+
+        def __call__(self, context: GroupingPassContext) -> GroupProposalBatch:
+            seen.append(context)
+            if context.pass_index == 0 and context.frontier_ids == first_window:
+                return GroupProposalBatch(
+                    proposals=(
+                        GroupProposal(kind="section", members=first_window[:2]),
+                    )
+                )
+            if (
+                context.pass_index == 0
+                and context.frontier_ids == second_window
+                and not self.failed
+            ):
+                self.failed = True
+                raise RuntimeError("simulated provider interruption on second window")
+            return GroupProposalBatch()
+
+    proposer = _FailOnceOnSecondWindow()
+    state_store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    run_id = "adaptive-window-resume-run"
+    with pytest.raises(RuntimeError, match="OCR grouping workflow failure"):
+        run_grouping_workflow(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            state_store=state_store,
+            tree=tree,
+            document_id=tree.document_id,
+            grouping_policy_version="adaptive-window-resume-v1",
+            adaptive_grouping_policy=policy,
+            grouping_proposer=proposer,
+            run_id=run_id,
+        )
+
+    resumed, resumed_run_id = run_grouping_workflow(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        state_store=OCRWorkflowStateStore(scratch / "ocr-state.sqlite"),
+        tree=tree,
+        document_id=tree.document_id,
+        grouping_policy_version="adaptive-window-resume-v1",
+        adaptive_grouping_policy=policy,
+        grouping_proposer=proposer,
+        run_id=run_id,
+        resume_from_checkpoint=True,
+    )
+
+    assert resumed_run_id == run_id
+    assert [context.frontier_ids for context in seen[:3]] == [
+        first_window,
+        second_window,
+        second_window,
+    ]
+    assert seen[0].pass_index == seen[1].pass_index == seen[2].pass_index == 0
+    assert seen[3].pass_index == 1
+    assert any(node.kind == "section" for node in resumed.nodes)
 
 
 def test_workflow_runtime_compatibility_rejects_unsupported_lease_argument(
@@ -2929,6 +3312,310 @@ def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
             for span in spans
             if isinstance(span, dict)
         ] == [pointer.verbatim_text for pointer in group_node.total_content_pointers]
+
+
+@pytest.mark.ci
+def test_default_adaptive_root_wires_grounded_summary_and_semantic_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scratch = _scratch("ocr_default_adaptive_root")
+    image_path = scratch / "images" / "page_1.png"
+    _draw_test_image(
+        image_path,
+        lines=["adaptive root alpha", "adaptive root beta", "adaptive root gamma", "adaptive root delta"],
+    )
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="root-adaptive-ocr"),
+        parser=ProviderEndpointConfig(provider="openai", model="root-adaptive-parser"),
+        embedding=EmbeddingProviderConfig(
+            provider="fake", model="root-adaptive-embed", dimension=1
+        ),
+    )
+    workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
+        scratch / "engines", "in_memory"
+    )
+    proposal_calls: list[GroupingPassContext] = []
+    summary_calls: list[tuple[str, tuple[str, ...]]] = []
+    semantic_group_summaries: list[str] = []
+
+    class _Proposer:
+        configuration_fingerprint = "root-adaptive-proposer-v1"
+
+        def __call__(self, context: GroupingPassContext) -> GroupProposalBatch:
+            proposal_calls.append(context)
+            if context.pass_index == 0 and len(context.frontier_ids) >= 4:
+                return GroupProposalBatch(
+                    proposals=(
+                        GroupProposal(kind="section", members=context.frontier_ids[:2]),
+                        GroupProposal(kind="section", members=context.frontier_ids[2:4]),
+                    )
+                )
+            return GroupProposalBatch()
+
+    class _Summary:
+        configuration_fingerprint = "root-adaptive-summary-v1"
+
+        def __call__(
+            self,
+            *,
+            tree: DocumentTree,
+            node_id: str,
+            evidence_slices: tuple[EvidenceSlice, ...],
+            input_fingerprint: str,
+        ) -> Summary:
+            del tree
+            item_ids = tuple(sorted({item.item_id for item in evidence_slices}))
+            summary_calls.append((node_id, item_ids))
+            return Summary(
+                status="generated",
+                text="Grounded section summary",
+                evidence_item_ids=item_ids,
+                provider_model="test:grounded-summary",
+                prompt_revision="test-summary-v1",
+                input_fingerprint=input_fingerprint,
+            )
+
+    proposer = _Proposer()
+    summarizer = _Summary()
+    monkeypatch.setattr(
+        ocr_runtime_module,
+        "build_production_group_proposal_generator",
+        lambda _settings: proposer,
+    )
+    monkeypatch.setattr(
+        ocr_runtime_module,
+        "build_production_grounded_summary_generator",
+        lambda _settings: summarizer,
+    )
+    def _runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        return _fake_ocr_response(page_number, "adaptive root alpha").model_copy(
+            update={
+                "OCR_text_clusters": [
+                    TextCluster(
+                        text="adaptive root alpha",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=10.0,
+                        bb_y_max=50.0,
+                        cluster_number=0,
+                    ),
+                    TextCluster(
+                        text="adaptive root beta",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=60.0,
+                        bb_y_max=100.0,
+                        cluster_number=1,
+                    ),
+                    TextCluster(
+                        text="adaptive root gamma",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=110.0,
+                        bb_y_max=150.0,
+                        cluster_number=2,
+                    ),
+                    TextCluster(
+                        text="adaptive root delta",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=160.0,
+                        bb_y_max=200.0,
+                        cluster_number=3,
+                    ),
+                ],
+                "meaningful_ordering": [0, 1, 2, 3],
+            }
+        )
+
+    def _parse(*, collection, parser_input_dict, parser_source_map):
+        grouping_tree = parser_input_dict.get("document_tree")
+        assert isinstance(grouping_tree, dict)
+        nodes = grouping_tree.get("nodes")
+        assert isinstance(nodes, list)
+        sections = [
+            node
+            for node in nodes
+            if isinstance(node, dict) and node.get("kind") == "section"
+        ]
+        assert len(sections) == 2
+        semantic = _grounded_semantic_tree(
+            collection=collection,
+            parser_input_dict=parser_input_dict,
+            parser_source_map=parser_source_map,
+        )
+        semantic_groups: list[SemanticNode] = []
+        for group_index, section_record in enumerate(sections):
+            section_id = section_record.get("node_id")
+            assert isinstance(section_id, str)
+            summary = section_record.get("summary")
+            assert isinstance(summary, dict), f"summary calls so far: {summary_calls!r}"
+            summary_text = summary.get("text")
+            assert isinstance(summary_text, str)
+            semantic_group_summaries.append(summary_text)
+            group_leaves = semantic.child_nodes[group_index * 2 : group_index * 2 + 2]
+            semantic_groups.append(
+                SemanticNode(
+                    node_id=f"semantic:{section_id}",
+                    parent_id=semantic.node_id,
+                    node_type="TEXT_FLOW",
+                    title=summary_text,
+                    total_content_pointers=[
+                        pointer
+                        for leaf in group_leaves
+                        for pointer in leaf.total_content_pointers
+                    ],
+                    child_nodes=[],
+                    level_from_root=1,
+                )
+            )
+        semantic.child_nodes = semantic_groups
+        return semantic
+
+    run, bundle, artifacts = run_ocr_ingest_workflow(
+        document_id="ocr-default-adaptive-root",
+        title="Default Adaptive OCR Root",
+        output_dir=scratch / "artifacts",
+        image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+        provider_settings=settings,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        ocr_runner=_runner,
+        deps={"parse_semantic_fn": _parse, "propose_layer_fn": None, "max_depth": 1},
+        run_id="ocr-default-adaptive-root-run",
+    )
+
+    assert run.status == "succeeded"
+    assert bundle is not None
+    assert artifacts.document_tree is not None
+    assert proposal_calls
+    assert len(summary_calls) == 3
+    assert sorted(len(item_ids) for _, item_ids in summary_calls) == [2, 2, 4]
+    assert semantic_group_summaries == ["Grounded section summary"] * 2
+    section_ids = {
+        node.node_id for node in artifacts.document_tree.nodes if node.kind == "section"
+    }
+    sections = [node for node in artifacts.document_tree.nodes if node.kind == "section"]
+    assert len(sections) == 2
+    assert all(node.summary is not None for node in sections)
+    graph_node_ids = {
+        record.get("id")
+        for record in bundle.graph_payload["nodes"]
+        if isinstance(record, dict)
+    }
+    assert section_ids
+    assert {f"semantic:{node_id}" for node_id in section_ids} & graph_node_ids
+
+
+@pytest.mark.ci_full
+def test_ocr_root_graph_publication_survives_durable_engine_reopen() -> None:
+    pytest.importorskip("chromadb")
+    scratch = _scratch("ocr_durable_graph_reopen")
+    image_path = scratch / "images" / "page_1.png"
+    _draw_test_image(image_path, lines=["durable OCR alpha", "durable OCR beta"])
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="durable-ocr"),
+        parser=ProviderEndpointConfig(provider="fake", model="durable-parser"),
+        embedding=EmbeddingProviderConfig(
+            provider="fake", model="durable-embedding", dimension=2
+        ),
+    )
+    engines = build_default_engines(
+        scratch / "engines", embedding_function=_TinyEmbeddingFunction()
+    )
+    workflow_engine, conversation_engine, knowledge_engine = engines
+
+    def _runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        return _fake_ocr_response(page_number, "durable OCR alpha").model_copy(
+            update={
+                "OCR_text_clusters": [
+                    TextCluster(
+                        text="durable OCR alpha",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=10.0,
+                        bb_y_max=50.0,
+                        cluster_number=0,
+                    ),
+                    TextCluster(
+                        text="durable OCR beta",
+                        bb_x_min=10.0,
+                        bb_x_max=500.0,
+                        bb_y_min=60.0,
+                        bb_y_max=100.0,
+                        cluster_number=1,
+                    ),
+                ],
+                "meaningful_ordering": [0, 1],
+            }
+        )
+
+    try:
+        run, bundle, _artifacts = run_ocr_ingest_workflow(
+            document_id="ocr-durable-graph-reopen",
+            title="Durable OCR graph reopen",
+            output_dir=scratch / "artifacts",
+            image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+            provider_settings=settings,
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            knowledge_engine=knowledge_engine,
+            ocr_runner=_runner,
+            deps={"parse_semantic_fn": _grounded_semantic_tree},
+            run_id="ocr-durable-graph-reopen-run",
+        )
+        assert run.status == "succeeded"
+        assert bundle is not None
+        drain_phase1_indexes_until_idle(*engines)
+        expected_node_ids = {
+            str(record["id"])
+            for record in bundle.graph_payload["nodes"]
+            if isinstance(record, dict) and isinstance(record.get("id"), str)
+        }
+        expected_edge_ids = {
+            str(record["id"])
+            for record in bundle.graph_payload["edges"]
+            if isinstance(record, dict) and isinstance(record.get("id"), str)
+        }
+        assert expected_node_ids
+        assert expected_edge_ids
+        assert len(expected_node_ids) == len(bundle.graph_payload["nodes"])
+        assert len(expected_edge_ids) == len(bundle.graph_payload["edges"])
+        assert all(knowledge_engine.persist.exists_node(node_id) for node_id in expected_node_ids)
+        assert all(knowledge_engine.persist.exists_edge(edge_id) for edge_id in expected_edge_ids)
+    finally:
+        for engine in engines:
+            engine.close()
+
+    reopened_engines = build_default_engines(
+        scratch / "engines", embedding_function=_TinyEmbeddingFunction()
+    )
+    reopened_knowledge = reopened_engines[2]
+    try:
+        assert all(reopened_knowledge.persist.exists_node(node_id) for node_id in expected_node_ids)
+        assert all(reopened_knowledge.persist.exists_edge(edge_id) for edge_id in expected_edge_ids)
+        stored_node_ids = {
+            node.id for node in reopened_knowledge.read.get_nodes(limit=1000)
+        }
+        stored_edge_ids = {
+            edge.id for edge in reopened_knowledge.read.get_edges(limit=1000)
+        }
+        assert stored_node_ids == expected_node_ids
+        assert stored_edge_ids == expected_edge_ids
+    finally:
+        for engine in reopened_engines:
+            engine.close()
 
 
 @pytest.mark.ci

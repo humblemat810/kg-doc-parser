@@ -166,3 +166,28 @@ jobs:
           tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact
           tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_retries_after_grouping_sqlite_commit_before_nested_checkpoint
           tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_retries_after_semantic_graph_commit_before_checkpoint
+
+  durable-graph-gate:
+    name: Durable OCR graph publication
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Poetry, parser dependencies, and Chroma
+        run: |
+          python -m pip install --upgrade poetry
+          poetry install --no-interaction --no-root
+          poetry run pip install "chromadb>=1.0.15"
+
+      - name: Verify OCR graph publication survives durable engine reopen
+        run: >-
+          poetry run pytest -p no:cacheprovider -q
+          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_graph_publication_survives_durable_engine_reopen
