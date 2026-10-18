@@ -106,6 +106,10 @@ def test_ground_truth_report_detects_recall_and_text_loss_independently() -> Non
     )
 
     assert report.item_recall == pytest.approx(0.5)
+    assert report.item_recall_by_modality == {
+        "text": 0.5,
+        "non_text": None,
+    }
     assert report.missing_item_ids == ("beta",)
     assert report.text_mismatch_item_ids == ()
 
