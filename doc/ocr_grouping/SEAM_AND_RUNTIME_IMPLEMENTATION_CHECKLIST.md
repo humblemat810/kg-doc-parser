@@ -1336,17 +1336,17 @@ result contains the accepted section and summary. This proves grouping
 checkpoint reopening on the host platform, but not Linux `SIGKILL`,
 installed-package recovery, or complete artifact/SQLite/runtime reconciliation.
 
-The 100-page regression `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
-passed in 1030.06 seconds with the real persisted parser/runtime path and
-merged Kogwistar source commit `c0eb92c` supplied on `PYTHONPATH`. The
-uninterrupted and resumed canonical graph payloads matched; the injected page
-failure was retried, and accepted page work was reused. This supersedes the
-older source-checkout evidence in the C05 row, but does not close C05: the
-published Kogwistar `0.6.9` package had a public-version mismatch, and
-Linux SIGKILL recovery, duplicate root-resume races, and cross-store
-reconciliation remain open. The upstream correction is merged in Kogwistar at
-`c11efd9` and tagged `v0.6.10`; a PyPI query on 2026-10-15 still reports
-`0.6.9` as latest, so publication and parser verification remain pending.
+The 100-page deterministic comparison regression
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
+passed with the real persisted parser/runtime path and compares the
+uninterrupted and resumed canonical graph payloads. Separately,
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_after_page_63`
+now kills a 100-page run after page 63 is accepted, resumes the same Kogwistar
+root in a fresh process, and verifies exact Chroma node/edge IDs after reopening
+the durable graph. The latter passed locally in 537.97 seconds; its updated
+Linux recovery-gate CI run is pending. These tests establish the two halves
+independently, not yet a single durable interrupted-versus-uninterrupted
+comparison. Independent visual OCR completeness remains open.
 The focused fresh-process page-state test
 `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_resume_reopens_state_in_a_fresh_process`
 also passes in 33.32 seconds and proves accepted page reuse across

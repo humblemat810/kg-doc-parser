@@ -178,10 +178,11 @@ def main() -> int:
         calls.append(page_number)
         if mode == "interrupt" and page_number == 2:
             raise RuntimeError("fresh root interruption")
-        hold_page = 64 if mode == "long-hold" else 2
+        hold_page = 64 if mode.endswith("long-hold") else 2
         if mode in {
             "hold",
             "long-hold",
+            "durable-long-hold",
             "durable-hold",
             "durable-summary-hold",
         } and page_number == hold_page:
@@ -201,7 +202,7 @@ def main() -> int:
             "race-b",
         } and page_number == 1:
             raise AssertionError("accepted page was replayed")
-        if mode == "long-resume" and page_number <= 63:
+        if mode.endswith("long-resume") and page_number <= 63:
             raise AssertionError("page before the termination boundary was replayed")
         return _response(page_number)
 
@@ -229,6 +230,7 @@ def main() -> int:
         if mode in {
             "resume",
             "long-resume",
+            "durable-long-resume",
             "durable-resume",
             "durable-summary-publish-hold",
             "durable-summary-resume",
@@ -317,6 +319,7 @@ def main() -> int:
             in {
                 "resume",
                 "long-resume",
+                "durable-long-resume",
                 "durable-summary-publish-hold",
                 "durable-summary-resume",
                 "race-a",
@@ -341,6 +344,7 @@ def main() -> int:
     if mode not in {
         "resume",
         "long-resume",
+        "durable-long-resume",
         "durable-resume",
         "durable-summary-resume",
         "resume-missing-artifact",

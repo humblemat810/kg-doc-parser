@@ -2163,7 +2163,8 @@ def test_ocr_root_reopens_after_real_process_termination() -> None:
 @pytest.mark.ci
 @pytest.mark.slow
 def test_ocr_root_fresh_process_resume_after_page_63() -> None:
-    """A 100-page root resumes after a real termination at the page-64 boundary."""
+    """A 100-page root resumes after termination and durably publishes its graph."""
+    pytest.importorskip("chromadb")
     scratch = _scratch("ocr_root_100_page_process_termination")
     page_count = 100
     (scratch / "page-count.txt").write_text(str(page_count), encoding="utf-8")
@@ -2185,7 +2186,7 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     )
 
     interrupted = subprocess.Popen(
-        [sys.executable, str(worker), str(scratch), "long-hold"],
+        [sys.executable, str(worker), str(scratch), "durable-long-hold"],
         env=child_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -2201,7 +2202,7 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     assert interrupted.returncode != 0
 
     resumed = subprocess.run(
-        [sys.executable, str(worker), str(scratch), "long-resume"],
+        [sys.executable, str(worker), str(scratch), "durable-long-resume"],
         capture_output=True,
         text=True,
         check=False,
@@ -2222,7 +2223,7 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
         "has_grouping_tree": True,
     }
     lineage = json.loads(
-        (scratch / "long-resume-lineage.json").read_text(encoding="utf-8")
+        (scratch / "durable-long-resume-lineage.json").read_text(encoding="utf-8")
     )
     lineage_rows = lineage["lineage"]
     assert len({row["id"] for row in lineage_rows}) == len(lineage_rows)
@@ -2233,6 +2234,23 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     }.issubset({row["workflow_id"] for row in lineage_rows})
     assert lineage["graph_node_ids"]
     assert set(lineage["graph_node_ids"]) == set(lineage["persisted_graph_node_ids"])
+    assert lineage["graph_edge_ids"]
+    assert set(lineage["graph_edge_ids"]) == set(lineage["persisted_graph_edge_ids"])
+
+    reopened_knowledge = GraphKnowledgeEngine(
+        persist_directory=str(scratch / "engines" / "durable-knowledge"),
+        kg_graph_type="knowledge",
+        embedding_function=_TinyEmbeddingFunction(),
+    )
+    try:
+        assert {
+            node.id for node in reopened_knowledge.read.get_nodes(limit=10_000)
+        } == set(lineage["graph_node_ids"])
+        assert {
+            edge.id for edge in reopened_knowledge.read.get_edges(limit=10_000)
+        } == set(lineage["graph_edge_ids"])
+    finally:
+        reopened_knowledge.close()
 
 
 @pytest.mark.ci

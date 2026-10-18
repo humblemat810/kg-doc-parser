@@ -157,6 +157,7 @@ jobs:
         run: |
           python -m pip install --upgrade poetry
           poetry install --no-interaction --no-root
+          poetry run pip install "chromadb>=1.0.15"
 
       - name: Run process-recovery release gate
         run: >-
