@@ -361,3 +361,26 @@ def test_recorded_live_docling_provenance_exposes_text_loss_and_region_recall() 
         "done",
     )
     assert report.text_mismatch_item_ids == ("list-1",)
+
+
+@pytest.mark.ci
+def test_recorded_live_direct_rapidocr_exposes_missing_visual_region() -> None:
+    fixture_dir = Path(__file__).parent / "fixtures" / "ocr_ground_truth"
+    ground_truth = OCRGroundTruth.model_validate_json(
+        (fixture_dir / "codex_ocr_layout_page_ground_truth.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    response = OCRClusterResponse.model_validate_json(
+        (fixture_dir / "rapidocr_direct_layout_page_response.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    report = evaluate_ocr_ground_truth(response, ground_truth)
+
+    assert report.matched_item_count == 15
+    assert report.item_recall == pytest.approx(15 / 17)
+    assert report.item_recall_by_modality == {"text": 15 / 16, "non_text": 0.0}
+    assert report.missing_item_ids == ("8", "table-region")
+    assert report.extra_cluster_numbers == (15,)

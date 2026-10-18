@@ -37,4 +37,11 @@ result, not a CI provider call. It demonstrates successful spatial provenance
 for the table/picture region while the selected OCR engine still misses most
 table-cell text; it does not close the figure or corpus-wide completeness gate.
 
+`rapidocr_direct_layout_page_response.json` is a fresh direct-RapidOCR run
+using the local ONNX models on the same page. It matches 15/17 annotations:
+15/16 text items, with the `8` cell text missed, and 0/1 table-region items.
+This contrasts with the Docling pipeline result, which preserves the table
+region but misses most table-cell text. The captured response is offline test
+data and is not a live CI call.
+
 SHA-256: `5f55174cf5cfddd227c5833c07de0c56563fd5850817f7ae518f25cbceecfc3c`
