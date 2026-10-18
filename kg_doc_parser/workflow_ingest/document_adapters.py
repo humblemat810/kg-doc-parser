@@ -430,33 +430,33 @@ def select_summary_targets(
     used_tokens = 0
     eligible = set(policy.eligible_kinds)
     for node in tree.nodes:
-        has_accepted_summary = node.summary is not None and node.summary.status in {
+        summary = node.summary
+        has_accepted_summary = summary is not None and summary.status in {
             "generated",
             "verified",
         }
-        summary_matches_policy = bool(
-            has_accepted_summary
-            and (
-                node.summary.generation_fingerprint == policy.generation_fingerprint
+        summary_matches_policy = False
+        if summary is not None and summary.status in {"generated", "verified"}:
+            summary_matches_policy = (
+                summary.generation_fingerprint == policy.generation_fingerprint
                 or (
-                    node.summary.generation_fingerprint is None
+                    summary.generation_fingerprint is None
                     and policy.generation_fingerprint == "summary-v1"
                 )
             )
-        )
-        if summary_matches_policy and node.summary is not None:
+        if summary_matches_policy and summary is not None:
             # The policy bounds accepted work for the whole tree, not just one
             # invocation. This keeps resume from resetting target/token caps.
             completed_targets += 1
             used_tokens += sum(
                 max(1, (_evidence_payload_size(slice_) + 3) // 4)
                 for slice_ in tree.evidence_slices(node.node_id)
-                if slice_.item_id in node.summary.evidence_item_ids
+                if slice_.item_id in summary.evidence_item_ids
             )
             continue
         # A completed summary from a different generation is stale and must be
         # eligible for replacement; non-completed states remain non-candidates.
-        if node.parts or (node.summary is not None and not has_accepted_summary) or node.kind not in eligible:
+        if node.parts or (summary is not None and not has_accepted_summary) or node.kind not in eligible:
             continue
         evidence = tree.evidence_slices(node.node_id)
         item_ids = {slice_.item_id for slice_ in evidence}

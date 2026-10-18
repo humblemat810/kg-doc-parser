@@ -2163,18 +2163,23 @@ def test_ocr_root_reopens_after_real_process_termination() -> None:
 @pytest.mark.ci
 @pytest.mark.slow
 def test_ocr_root_fresh_process_resume_after_page_63() -> None:
-    """A 100-page root survives two crashes and matches a durable reference."""
+    """A rich 100-page PDF survives two crashes and matches durable output."""
     pytest.importorskip("chromadb")
     scratch = _scratch("ocr_root_100_page_process_termination")
     page_count = 100
     child_env = dict(os.environ)
     child_env["OCR_TEST_LEASE_MS"] = "1000"
-    (scratch / "page-count.txt").write_text(str(page_count), encoding="utf-8")
-    for page_number in range(1, page_count + 1):
-        _draw_test_image(
-            scratch / "source" / f"page-{page_number}.png",
-            lines=[f"long document page {page_number}"],
-        )
+    def _write_pdf_case(directory: Path) -> None:
+        (directory / "page-count.txt").write_text(str(page_count), encoding="utf-8")
+        source = directory / "source"
+        source.mkdir(parents=True, exist_ok=True)
+        writer = PdfWriter()
+        for _ in range(page_count):
+            writer.add_blank_page(width=1200, height=800)
+        with (source / "acceptance.pdf").open("wb") as stream:
+            writer.write(stream)
+
+    _write_pdf_case(scratch)
     worker = Path(__file__).with_name("_ocr_root_fresh_process_worker.py")
     repo_root = Path(__file__).resolve().parents[1]
     child_env["PYTHONPATH"] = os.pathsep.join(
@@ -2187,7 +2192,7 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     )
 
     interrupted = subprocess.Popen(
-        [sys.executable, str(worker), str(scratch), "durable-summary-long-hold"],
+        [sys.executable, str(worker), str(scratch), "durable-rich-summary-long-hold"],
         env=child_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -2207,7 +2212,7 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
             sys.executable,
             str(worker),
             str(scratch),
-            "durable-summary-long-publish-hold",
+            "durable-rich-summary-long-publish-hold",
         ],
         env=child_env,
         stdout=subprocess.PIPE,
@@ -2247,7 +2252,7 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     ).read_text(encoding="utf-8")
 
     resumed = subprocess.run(
-        [sys.executable, str(worker), str(scratch), "durable-summary-long-resume"],
+        [sys.executable, str(worker), str(scratch), "durable-rich-summary-long-resume"],
         capture_output=True,
         text=True,
         check=False,
@@ -2273,7 +2278,7 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
         "resuming semantic publication regenerated an already accepted summary"
     )
     lineage = json.loads(
-        (scratch / "durable-summary-long-resume-lineage.json").read_text(
+        (scratch / "durable-rich-summary-long-resume-lineage.json").read_text(
             encoding="utf-8"
         )
     )
@@ -2307,13 +2312,9 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     reference = scratch / "uninterrupted-reference"
     reference.mkdir(parents=True, exist_ok=True)
     (reference / "page-count.txt").write_text(str(page_count), encoding="utf-8")
-    for page_number in range(1, page_count + 1):
-        _draw_test_image(
-            reference / "source" / f"page-{page_number}.png",
-            lines=[f"long document page {page_number}"],
-        )
+    _write_pdf_case(reference)
     baseline = subprocess.run(
-        [sys.executable, str(worker), str(reference), "durable-summary-reference"],
+        [sys.executable, str(worker), str(reference), "durable-rich-summary-reference"],
         capture_output=True,
         text=True,
         check=False,
@@ -2322,7 +2323,7 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     )
     assert baseline.returncode == 0, baseline.stderr
     reference_publication = json.loads(
-        (reference / "durable-summary-reference-lineage.json").read_text(
+        (reference / "durable-rich-summary-reference-lineage.json").read_text(
             encoding="utf-8"
         )
     )
@@ -2342,6 +2343,27 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
         reference_publication["grouping_tree_sha256"]
         == lineage["grouping_tree_sha256"]
         == accepted_grouping_digest
+    )
+    source_items = lineage["source_items"]
+    assert isinstance(source_items, list) and source_items
+    text_items = [
+        item.get("text", "")
+        for item in source_items
+        if isinstance(item, dict) and item.get("kind") == "text"
+    ]
+    assert sum(
+        text == "duplicate paragraph retained at a distinct source position"
+        for text in text_items
+    ) >= 2
+    assert any("Figure 1. Deterministic multimodal acceptance fixture." in text for text in text_items)
+    assert any("| row-80 | 800 |" in text for text in text_items)
+    assert any("starts on page 62" in text for text in text_items)
+    assert any("Continuation of the cross-page reference from page 62." in text for text in text_items)
+    assert any(
+        isinstance(item, dict)
+        and item.get("kind") == "non_text:description"
+        and "deterministic acceptance fixture" in str(item.get("text", ""))
+        for item in source_items
     )
 
 

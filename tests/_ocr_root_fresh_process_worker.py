@@ -11,8 +11,10 @@ from pathlib import Path
 from _kogwistar_test_helpers import build_workflow_engine_triplet
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.rust_meta_sqlite import build_sqlite_meta_store
+from PIL import Image, ImageDraw
+from pypdf import PdfReader
 
-from kg_doc_parser.models import OCRClusterResponse, TextCluster
+from kg_doc_parser.models import NonTextCluster, OCRClusterResponse, TextCluster
 from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     OCRImagePayload,
@@ -36,7 +38,83 @@ from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, Semanti
 from kg_doc_parser.workflow_ingest.service import _TinyEmbeddingFunction
 
 
-def _response(page_number: int) -> OCRClusterResponse:
+def _response(page_number: int, *, rich: bool = False) -> OCRClusterResponse:
+    if rich and page_number in {1, 40, 62, 63, 100}:
+        continuation = {
+            62: "Cross-page reference starts on page 62 and continues on page 63.",
+            63: "Continuation of the cross-page reference from page 62.",
+        }.get(page_number, "Caption follows the figure and the table.")
+        return OCRClusterResponse(
+            OCR_text_clusters=[
+                TextCluster(
+                    text=f"Front matter page {page_number}",
+                    bb_x_min=10.0,
+                    bb_x_max=500.0,
+                    bb_y_min=10.0,
+                    bb_y_max=40.0,
+                    cluster_number=0,
+                ),
+                TextCluster(
+                    text="duplicate paragraph retained at a distinct source position",
+                    bb_x_min=10.0,
+                    bb_x_max=700.0,
+                    bb_y_min=60.0,
+                    bb_y_max=100.0,
+                    cluster_number=1,
+                ),
+                TextCluster(
+                    text=continuation,
+                    bb_x_min=10.0,
+                    bb_x_max=700.0,
+                    bb_y_min=120.0,
+                    bb_y_max=160.0,
+                    cluster_number=2,
+                ),
+                TextCluster(
+                    text="Figure 1. Deterministic multimodal acceptance fixture.",
+                    bb_x_min=20.0,
+                    bb_x_max=700.0,
+                    bb_y_min=380.0,
+                    bb_y_max=420.0,
+                    cluster_number=3,
+                ),
+                TextCluster(
+                    text=(
+                        "| Period | Value |\n| --- | --- |\n"
+                        + "".join(f"| row-{row} | {row * 10} |\n" for row in range(1, 81))
+                    ),
+                    bb_x_min=320.0,
+                    bb_x_max=1100.0,
+                    bb_y_min=430.0,
+                    bb_y_max=760.0,
+                    cluster_number=4,
+                ),
+            ],
+            non_text_objects=[
+                NonTextCluster(
+                    description="figure: deterministic acceptance fixture",
+                    bb_x_min=20.0,
+                    bb_x_max=300.0,
+                    bb_y_min=180.0,
+                    bb_y_max=360.0,
+                    cluster_number=5,
+                )
+            ],
+            is_empty_page=False,
+            printed_page_number=str(page_number),
+            meaningful_ordering=[0, 5, 3, 4, 1, 2],
+            page_x_min=0.0,
+            page_x_max=1200.0,
+            page_y_min=0.0,
+            page_y_max=800.0,
+            estimated_rotation_degrees=0.0,
+            incomplete_words_on_edge=False,
+            incomplete_text=False,
+            data_loss_likelihood=0.0,
+            scan_quality="high",
+            contains_table=True,
+            spatial_accuracy="region",
+        )
     return OCRClusterResponse(
         OCR_text_clusters=[
             TextCluster(
@@ -80,6 +158,8 @@ def _semantic_tree(
         level_from_root=0,
     )
     for cluster_id, record in parser_source_map.items():
+        if record.get("participates_in_semantic_text", True) is False:
+            continue
         text = record.get("text")
         if not isinstance(text, str) or not text:
             continue
@@ -167,12 +247,14 @@ def main() -> int:
     page_count_path = scratch / "page-count.txt"
     page_count = int(page_count_path.read_text(encoding="utf-8")) if page_count_path.exists() else 2
     page_numbers = tuple(range(1, page_count + 1))
+    rich_pdf_mode = mode.startswith("durable-rich-")
     image_payloads = [
         OCRImagePayload(
             page_number=page,
             image_path=str(scratch / "source" / f"page-{page}.png"),
         )
         for page in page_numbers
+        if not rich_pdf_mode
     ]
     settings = WorkflowProviderSettings(
         ocr=ProviderEndpointConfig(provider="fake", model="fresh-root-ocr"),
@@ -199,6 +281,7 @@ def main() -> int:
             "long-hold",
             "durable-long-hold",
             "durable-summary-long-hold",
+            "durable-rich-summary-long-hold",
             "durable-hold",
             "durable-summary-hold",
         } and page_number == hold_page:
@@ -224,10 +307,24 @@ def main() -> int:
             in {
                 "durable-summary-long-publish-hold",
                 "durable-summary-long-resume",
+                "durable-rich-summary-long-publish-hold",
+                "durable-rich-summary-long-resume",
             }
         ) and page_number <= 63:
             raise AssertionError("page before the termination boundary was replayed")
-        return _response(page_number)
+        return _response(page_number, rich=rich_pdf_mode)
+
+    def pdf_rasterizer(source: Path, rendered_dir: Path) -> list[Path]:
+        rendered_dir.mkdir(parents=True, exist_ok=True)
+        page_count_from_pdf = len(PdfReader(str(source)).pages)
+        paths: list[Path] = []
+        for page_number in range(1, page_count_from_pdf + 1):
+            path = rendered_dir / f"page_{page_number}.png"
+            image = Image.new("RGB", (1200, 800), "white")
+            ImageDraw.Draw(image).text((24, 24), f"PDF page {page_number}", fill="black")
+            image.save(path)
+            paths.append(path)
+        return paths
 
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
         scratch / "engines", "in_memory"
@@ -256,6 +353,8 @@ def main() -> int:
             "durable-long-resume",
             "durable-summary-long-publish-hold",
             "durable-summary-long-resume",
+            "durable-rich-summary-long-publish-hold",
+            "durable-rich-summary-long-resume",
             "durable-resume",
             "durable-summary-publish-hold",
             "durable-summary-resume",
@@ -267,12 +366,16 @@ def main() -> int:
             # keeps the subprocess test bounded without bypassing ownership.
             time.sleep((lease_ms + 200) / 1000)
 
-        summary_mode = mode.startswith("durable-summary-")
+        summary_mode = mode.startswith(("durable-summary-", "durable-rich-summary-"))
         long_summary_mode = mode in {
             "durable-summary-long-hold",
             "durable-summary-long-publish-hold",
             "durable-summary-long-resume",
             "durable-summary-reference",
+            "durable-rich-summary-long-hold",
+            "durable-rich-summary-long-publish-hold",
+            "durable-rich-summary-long-resume",
+            "durable-rich-summary-reference",
         }
 
         def parse_semantic_fn(
@@ -302,6 +405,7 @@ def main() -> int:
                 if mode in {
                     "durable-summary-publish-hold",
                     "durable-summary-long-publish-hold",
+                    "durable-rich-summary-long-publish-hold",
                 }:
                     grouping_tree_digest = hashlib.sha256(
                         json.dumps(
@@ -333,6 +437,8 @@ def main() -> int:
             conversation_engine=conversation_engine,
             knowledge_engine=knowledge_engine,
             image_payloads=image_payloads,
+            pdf_path=(scratch / "source" / "acceptance.pdf") if rich_pdf_mode else None,
+            pdf_rasterizer=pdf_rasterizer if rich_pdf_mode else None,
             provider_settings=settings,
             ocr_runner=runner,
             deps={"parse_semantic_fn": parse_semantic_fn},
@@ -378,6 +484,8 @@ def main() -> int:
                 "durable-summary-resume",
                 "race-a",
                 "race-b",
+                "durable-rich-summary-long-publish-hold",
+                "durable-rich-summary-long-resume",
             },
             run_ownership_lease_ms=lease_ms,
         )
@@ -398,12 +506,14 @@ def main() -> int:
     if mode not in {
         "durable-reference",
         "durable-summary-reference",
+        "durable-rich-summary-reference",
         "resume",
         "long-resume",
         "durable-long-resume",
         "durable-resume",
         "durable-summary-resume",
         "durable-summary-long-resume",
+        "durable-rich-summary-long-resume",
         "resume-missing-artifact",
         "race-a",
         "race-b",
@@ -472,6 +582,9 @@ def main() -> int:
     ).hexdigest()
     if not isinstance(bundle.grouping_tree, dict):
         raise TypeError("accepted OCR result is missing its grouping tree")
+    source_items = bundle.grouping_tree.get("source_items")
+    if not isinstance(source_items, list):
+        raise TypeError("accepted OCR grouping tree has no source item list")
     grouping_tree_digest = hashlib.sha256(
         json.dumps(
             bundle.grouping_tree,
@@ -493,6 +606,7 @@ def main() -> int:
                 "graph_edge_ids": graph_edge_ids,
                 "graph_payload_sha256": graph_payload_digest,
                 "grouping_tree_sha256": grouping_tree_digest,
+                "source_items": source_items,
                 "persisted_graph_node_ids": persisted_graph_node_ids,
                 "persisted_graph_edge_ids": [
                     edge_id
