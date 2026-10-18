@@ -231,6 +231,10 @@ def main() -> int:
         for edge in bundle.graph_payload.get("edges", [])
         if isinstance(edge, dict) and isinstance(edge.get("id"), str)
     ]
+    if len(graph_node_ids) != len(set(graph_node_ids)):
+        raise AssertionError("accepted OCR graph contains duplicate node IDs")
+    if len(graph_edge_ids) != len(set(graph_edge_ids)):
+        raise AssertionError("accepted OCR graph contains duplicate edge IDs")
     persisted_graph_node_ids = [
         node_id
         for node_id in graph_node_ids

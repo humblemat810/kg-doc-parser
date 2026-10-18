@@ -3738,8 +3738,22 @@ def test_ocr_root_fresh_process_resume_publishes_durable_graph() -> None:
     expected_edge_ids = set(publication["graph_edge_ids"])
     assert expected_node_ids
     assert expected_edge_ids
+    assert len(publication["graph_node_ids"]) == len(expected_node_ids)
+    assert len(publication["graph_edge_ids"]) == len(expected_edge_ids)
     assert set(publication["persisted_graph_node_ids"]) == expected_node_ids
     assert set(publication["persisted_graph_edge_ids"]) == expected_edge_ids
+    lineage = publication["lineage"]
+    assert len(lineage) == 3
+    assert {entry["workflow_id"] for entry in lineage} == {
+        "kg_doc_parser.ocr_pages.v1",
+        "kg_doc_parser.ocr_grouping.v1",
+        "kg_doc_parser.ingest.v1",
+    }
+    assert {entry["parent_run_id"] for entry in lineage} == {
+        "ocr|fresh-root-document"
+    }
+    assert len({entry["child_run_id"] for entry in lineage}) == 3
+    assert len({entry["id"] for entry in lineage}) == 3
 
     reopened_knowledge = GraphKnowledgeEngine(
         persist_directory=str(scratch / "engines" / "durable-knowledge"),
