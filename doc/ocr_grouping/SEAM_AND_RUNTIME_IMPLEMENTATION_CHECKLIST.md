@@ -505,7 +505,8 @@ cannot close A-6.
   invalidation. `load_document_tree()` now verifies the tree digest, source and
   policy identities, persisted frontier, and companion metadata in one SQLite
   read snapshot; `test_grouping_checkpoint_load_rejects_mismatched_companion_records`
-  rejects a stale metadata digest and a frontier that disagrees with the tree.
+  rejects a stale metadata digest, a frontier that disagrees with the tree,
+  and create over orphaned metadata.
   The broader writer/generation audit remains open. The
   default non-fake OCR root runs an iterative proposer over bounded,
   multimodal-aware frontier windows, resolves overlaps deterministically, and

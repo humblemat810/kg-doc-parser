@@ -2057,15 +2057,17 @@ class OCRWorkflowStateStore:
                 if current_metadata is None
                 else int(current_metadata["merge_revision"]) + 1
             )
-            if require_no_existing_tree and (current_revision is not None or has_frontier):
+            if current_revision is None and (has_frontier or current_metadata is not None):
                 raise GroupingCheckpointConflict(
                     f"grouping checkpoint create conflict for {document_id!r}: "
-                    f"found existing revision {current_revision!r} or frontier"
+                    "found orphaned frontier or metadata without a tree"
                 )
-            if current_revision is None and has_frontier:
+            if require_no_existing_tree and (
+                current_revision is not None or has_frontier or current_metadata is not None
+            ):
                 raise GroupingCheckpointConflict(
                     f"grouping checkpoint create conflict for {document_id!r}: "
-                    "found orphaned frontier without a tree"
+                    f"found existing revision {current_revision!r}, frontier, or metadata"
                 )
             if expected_tree_revision is not None and current_revision != expected_tree_revision:
                 raise GroupingCheckpointConflict(

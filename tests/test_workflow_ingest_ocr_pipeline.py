@@ -6984,6 +6984,22 @@ def test_grouping_checkpoint_load_rejects_mismatched_companion_records() -> None
     with pytest.raises(ValueError, match="frontier does not match"):
         store.load_document_tree(document_id=tree.document_id)
 
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "DELETE FROM document_tree_state WHERE document_id = ?",
+            (tree.document_id,),
+        )
+        conn.execute(
+            "DELETE FROM grouping_frontier_state WHERE document_id = ?",
+            (tree.document_id,),
+        )
+    with pytest.raises(GroupingCheckpointConflict, match="orphaned frontier or metadata"):
+        store.save_document_tree(
+            document_id=tree.document_id,
+            tree=tree,
+            require_no_existing_tree=True,
+        )
+
 
 @pytest.mark.ci
 def test_ocr_completion_requires_exact_expected_page_numbers() -> None:
