@@ -187,7 +187,8 @@ jobs:
           poetry install --no-interaction --no-root
           poetry run pip install "chromadb>=1.0.15"
 
-      - name: Verify OCR graph publication survives durable engine reopen
+      - name: Verify OCR graph publication and fresh-process recovery
         run: >-
           poetry run pytest -p no:cacheprovider -q
           tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_graph_publication_survives_durable_engine_reopen
+          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_publishes_durable_graph

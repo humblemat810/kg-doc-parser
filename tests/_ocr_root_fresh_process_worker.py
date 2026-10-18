@@ -8,6 +8,7 @@ import traceback
 from pathlib import Path
 
 from _kogwistar_test_helpers import build_workflow_engine_triplet
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.rust_meta_sqlite import build_sqlite_meta_store
 
 from kg_doc_parser.models import OCRClusterResponse, TextCluster
@@ -19,6 +20,7 @@ from kg_doc_parser.workflow_ingest import (
     run_ocr_ingest_workflow,
 )
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
+from kg_doc_parser.workflow_ingest.service import _TinyEmbeddingFunction
 
 
 def _response(page_number: int) -> OCRClusterResponse:
@@ -122,7 +124,7 @@ def main() -> int:
         if mode == "interrupt" and page_number == 2:
             raise RuntimeError("fresh root interruption")
         hold_page = 64 if mode == "long-hold" else 2
-        if mode in {"hold", "long-hold"} and page_number == hold_page:
+        if mode in {"hold", "long-hold", "durable-hold"} and page_number == hold_page:
             (scratch / f"page-{hold_page}-started").write_text("ready", encoding="utf-8")
             time.sleep(120.0)
         if mode.startswith("race-") and page_number == 2:
@@ -130,7 +132,7 @@ def main() -> int:
                 "ready", encoding="utf-8"
             )
             time.sleep(3.0)
-        if mode in {"resume", "race-a", "race-b"} and page_number == 1:
+        if mode in {"resume", "durable-resume", "race-a", "race-b"} and page_number == 1:
             raise AssertionError("accepted page was replayed")
         if mode == "long-resume" and page_number <= 63:
             raise AssertionError("page before the termination boundary was replayed")
@@ -139,6 +141,13 @@ def main() -> int:
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
         scratch / "engines", "in_memory"
     )
+    if mode.startswith("durable-"):
+        knowledge_engine.close()
+        knowledge_engine = GraphKnowledgeEngine(
+            persist_directory=str(scratch / "engines" / "durable-knowledge"),
+            kg_graph_type="knowledge",
+            embedding_function=_TinyEmbeddingFunction(),
+        )
     for name, engine in (
         ("workflow", workflow_engine),
         ("conversation", conversation_engine),
@@ -149,11 +158,12 @@ def main() -> int:
         engine.metadata = metadata
         engine._phase1_enable_index_jobs = False
     try:
-        if mode in {"resume", "long-resume", "race-a", "race-b"}:
+        lease_ms = int(os.environ.get("OCR_TEST_LEASE_MS", "30000"))
+        if mode in {"resume", "long-resume", "durable-resume", "race-a", "race-b"}:
             # Simulate a fresh process after the crash-recovery lease expires.
             # The production default remains long-lived; this test-only lease
             # keeps the subprocess test bounded without bypassing ownership.
-            time.sleep(30.2)
+            time.sleep((lease_ms + 200) / 1000)
         result, bundle, _ = run_ocr_ingest_workflow(
             document_id="fresh-root-document",
             title="Fresh Root",
@@ -167,7 +177,7 @@ def main() -> int:
             deps={"parse_semantic_fn": _semantic_tree},
             run_id="ocr|fresh-root-document",
             resume_from_checkpoint=mode in {"resume", "long-resume", "race-a", "race-b"},
-            run_ownership_lease_ms=30_000,
+            run_ownership_lease_ms=lease_ms,
         )
     except Exception as error:
         if mode != "interrupt":
@@ -183,7 +193,7 @@ def main() -> int:
         )
         return 17
 
-    if mode not in {"resume", "long-resume", "resume-missing-artifact", "race-a", "race-b"} or result.status != "succeeded" or bundle is None:
+    if mode not in {"resume", "long-resume", "durable-resume", "resume-missing-artifact", "race-a", "race-b"} or result.status != "succeeded" or bundle is None:
         raise AssertionError("fresh root resume did not produce one accepted result")
     result_name = (
         f"{mode}-result.json"
@@ -216,6 +226,11 @@ def main() -> int:
         for node in bundle.graph_payload.get("nodes", [])
         if isinstance(node, dict) and isinstance(node.get("id"), str)
     ]
+    graph_edge_ids = [
+        str(edge["id"])
+        for edge in bundle.graph_payload.get("edges", [])
+        if isinstance(edge, dict) and isinstance(edge.get("id"), str)
+    ]
     persisted_graph_node_ids = [
         node_id
         for node_id in graph_node_ids
@@ -226,7 +241,13 @@ def main() -> int:
             {
                 "lineage": lineage,
                 "graph_node_ids": graph_node_ids,
+                "graph_edge_ids": graph_edge_ids,
                 "persisted_graph_node_ids": persisted_graph_node_ids,
+                "persisted_graph_edge_ids": [
+                    edge_id
+                    for edge_id in graph_edge_ids
+                    if knowledge_engine.persist.exists_edge(edge_id)
+                ],
             },
             sort_keys=True,
         ),
