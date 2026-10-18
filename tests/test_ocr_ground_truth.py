@@ -411,6 +411,11 @@ def test_recorded_chart_provider_results_separate_text_and_visual_recall() -> No
             encoding="utf-8"
         )
     )
+    easyocr = OCRClusterResponse.model_validate_json(
+        (fixture_dir / "easyocr_direct_chart_response.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
     direct_report = evaluate_ocr_ground_truth(direct, ground_truth)
     assert direct_report.item_recall_by_modality == {"text": 1.0, "non_text": 0.0}
@@ -434,3 +439,22 @@ def test_recorded_chart_provider_results_separate_text_and_visual_recall() -> No
         "quarter-q3",
         "quarter-q4",
     )
+
+    easyocr_report = evaluate_ocr_ground_truth(easyocr, ground_truth)
+    assert easyocr_report.item_recall_by_modality == {
+        "text": pytest.approx(2 / 11),
+        "non_text": 0.0,
+    }
+    assert easyocr_report.missing_item_ids == (
+        "tick-100",
+        "tick-75",
+        "tick-50",
+        "tick-25",
+        "tick-0",
+        "quarter-q1",
+        "quarter-q2",
+        "quarter-q3",
+        "quarter-q4",
+        "bar-chart-region",
+    )
+    assert easyocr_report.text_mismatch_item_ids == ()

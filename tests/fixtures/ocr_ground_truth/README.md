@@ -48,10 +48,12 @@ data and is not a live CI call.
 visual region, title, axis ticks, and quarter labels. Its independently
 authored `ocr_chart_figure_ground_truth.json` is anchored to the rendered
 geometry, not to any OCR output. Fresh direct RapidOCR captured all 11 text
-items but no visual region. Fresh Docling+RapidOCR captured the chart region
-and chart title, but returned only one of 11 expected text items. These real
-captured responses are offline regression data, not live CI provider calls.
-Together with the table page, this provides two modality-diverse controlled
-pages; it remains too small to claim corpus-wide completeness.
+items but no visual region. Direct EasyOCR emitted nine text detections, but
+only the two title boxes meet the evaluator's 0.5 spatial-IoU threshold; it
+detects no chart region. Fresh Docling+RapidOCR captured the chart region and
+chart title, but returned only one of 11 expected text items. These captured
+responses are offline regression data, not live CI provider calls. Together
+with the table page, this provides two modality-diverse controlled pages; it
+remains too small to claim corpus-wide completeness.
 
 SHA-256: `5f55174cf5cfddd227c5833c07de0c56563fd5850817f7ae518f25cbceecfc3c`
