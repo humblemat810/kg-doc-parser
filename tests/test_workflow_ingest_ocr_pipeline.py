@@ -1621,6 +1621,7 @@ def test_summary_checkpoint_conflict_is_retryable_not_a_summary_warning() -> Non
                 eligible_kinds=("document",),
                 minimum_source_items=1,
                 minimum_source_chars=1,
+                generation_fingerprint="summary-checkpoint-conflict-v1",
             ),
             generator=_summary_generator,
             grouping_policy_version="summary-v1",
@@ -5531,6 +5532,7 @@ def test_prepare_ocr_workflow_input_generates_grounded_summary_with_journal() ->
             eligible_kinds=("document",),
             minimum_source_items=2,
             minimum_source_chars=1,
+            generation_fingerprint="summary-journal-test-v1",
         ),
         summary_generator=_generator,
     )
@@ -5627,6 +5629,7 @@ def test_grounded_summary_generator_receives_only_owned_source_slices() -> None:
         minimum_source_items=1,
         minimum_source_chars=1,
         minimum_information_gain_chars=0,
+        generation_fingerprint="grounded-summary-slices-v1",
     )
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
     updated = _generate_tree_summaries(
@@ -5737,6 +5740,7 @@ def test_summary_cache_reuses_exact_generation_and_slice_identity() -> None:
         minimum_source_items=1,
         minimum_source_chars=1,
         minimum_information_gain_chars=0,
+        generation_fingerprint="summary-cache-test-v1",
     )
     calls = {"count": 0}
 
@@ -5839,6 +5843,29 @@ def test_grounded_summary_generator_identity_is_not_none_type() -> None:
 
     assert identity.endswith(".grounded_generator")
     assert identity != "builtins.NoneType"
+
+
+def test_custom_summary_generator_requires_stable_cache_identity() -> None:
+    def generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree, node_id, source_items, input_fingerprint
+        raise AssertionError("identity validation must run before generation")
+
+    with pytest.raises(ValueError, match="configuration_fingerprint"):
+        ocr_pipeline_module._effective_summary_policy(SummaryPolicy(), generator)
+
+    explicit_policy = SummaryPolicy(generation_fingerprint="custom-v1")
+    effective = ocr_pipeline_module._effective_summary_policy(
+        explicit_policy, generator
+    )
+    assert effective.generation_fingerprint is not None
+    assert len(effective.generation_fingerprint) == 64
+    assert effective.generation_fingerprint != "custom-v1"
 
 
 class _FakeGroundedSummaryChat:
@@ -6191,23 +6218,28 @@ def test_summary_generation_fingerprint_invalidates_persisted_cache() -> None:
     )
     calls = {"count": 0}
 
-    def _generator(
-        *,
-        tree: DocumentTree,
-        node_id: str,
-        source_items: tuple[SourceItem, ...],
-        input_fingerprint: str,
-    ) -> Summary:
-        del tree
-        calls["count"] += 1
-        return Summary(
-            status="generated",
-            text=f"summary:{calls['count']}",
-            evidence_item_ids=tuple(item.item_id for item in source_items),
-            provider_model="fake-summary",
-            prompt_revision="summary-v1",
-            input_fingerprint=input_fingerprint,
-        )
+    class _Generator:
+        def __init__(self, configuration_fingerprint: str) -> None:
+            self.configuration_fingerprint = configuration_fingerprint
+
+        def __call__(
+            self,
+            *,
+            tree: DocumentTree,
+            node_id: str,
+            source_items: tuple[SourceItem, ...],
+            input_fingerprint: str,
+        ) -> Summary:
+            del tree, node_id
+            calls["count"] += 1
+            return Summary(
+                status="generated",
+                text=f"summary:{calls['count']}",
+                evidence_item_ids=tuple(item.item_id for item in source_items),
+                provider_model="fake-summary",
+                prompt_revision="summary-v1",
+                input_fingerprint=input_fingerprint,
+            )
 
     first = _generate_tree_summaries(
         tree,
@@ -6218,15 +6250,14 @@ def test_summary_generation_fingerprint_invalidates_persisted_cache() -> None:
             minimum_source_items=1,
             minimum_source_chars=1,
             minimum_information_gain_chars=0,
-            generation_fingerprint="provider-a:model-a:prompt-a",
         ),
-        generator=_generator,
+        generator=_Generator("provider-a:model-a:prompt-a"),
         grouping_policy_version="summary-cache-v1",
         expected_tree_revision=initial_revision,
     )
     first_summary = next(node.summary for node in first.nodes if node.node_id == "root")
     assert first_summary is not None
-    assert first_summary.generation_fingerprint == "provider-a:model-a:prompt-a"
+    assert first_summary.generation_fingerprint is not None
     current_revision = store.document_tree_revision(document_id=tree.document_id)
     assert current_revision is not None
     second = _generate_tree_summaries(
@@ -6238,9 +6269,8 @@ def test_summary_generation_fingerprint_invalidates_persisted_cache() -> None:
             minimum_source_items=1,
             minimum_source_chars=1,
             minimum_information_gain_chars=0,
-            generation_fingerprint="provider-b:model-b:prompt-b",
         ),
-        generator=_generator,
+        generator=_Generator("provider-b:model-b:prompt-b"),
         grouping_policy_version="summary-cache-v1",
         expected_tree_revision=current_revision,
     )
@@ -6249,7 +6279,8 @@ def test_summary_generation_fingerprint_invalidates_persisted_cache() -> None:
     second_summary = next(node.summary for node in second.nodes if node.node_id == "root")
     assert second_summary is not None
     assert second_summary.text == "summary:2"
-    assert second_summary.generation_fingerprint == "provider-b:model-b:prompt-b"
+    assert second_summary.generation_fingerprint is not None
+    assert second_summary.generation_fingerprint != first_summary.generation_fingerprint
 
 
 @pytest.mark.ci
@@ -6288,6 +6319,7 @@ def test_summary_failure_is_journaled_without_failing_ocr_ingestion() -> None:
             eligible_kinds=("document",),
             minimum_source_items=1,
             minimum_source_chars=1,
+            generation_fingerprint="summary-failure-test-v1",
         ),
         summary_generator=_generator,
     )
@@ -6326,6 +6358,7 @@ def test_failed_summary_is_retryable_without_replaying_ocr() -> None:
         eligible_kinds=("document",),
         minimum_source_items=1,
         minimum_source_chars=1,
+        generation_fingerprint="summary-retry-test-v1",
     )
 
     def _failed_generator(

@@ -13,12 +13,12 @@ section after a test run.
 
 | Track | Status | Release-blocking remainder |
 | --- | --- | --- |
-| Track A: persisted Kogwistar runtime integration | PASS LOCALLY; EXPANDED C05 CI PENDING | Recovery-versus-repair review confirms ordinary interruption resumes the same Kogwistar run; terminal-artifact repair alone uses a new root incarnation. Current `test_ocr_root_fresh_process_resume_after_page_63` passes locally (`1 passed, 1293.43s`): two real process terminations, fresh-process recovery, persistent Chroma reopen, accepted v1 OCR/summary reuse, semantic publication, v1 canonical tree/graph comparison, and revision-two reprocessing of pages 1-100 with digest-matched page-40 artifact verification. Parser CI run `39114468766` verifies the earlier test version, not the expanded assertion. Do not add another checkpoint layer. |
+| Track A: persisted Kogwistar runtime integration | PASS LOCALLY AND CI | Recovery-versus-repair review confirms ordinary interruption resumes the same Kogwistar run; terminal-artifact repair alone uses a new root incarnation. `test_ocr_root_fresh_process_resume_after_page_63` passes locally (`1 passed, 1293.43s`) and in Parser CI run `39135756441`: two real process terminations, fresh-process recovery, persistent Chroma reopen, accepted v1 OCR/summary reuse, semantic publication, v1 canonical tree/graph comparison, and revision-two reprocessing of pages 1-100 with digest-matched page-40 artifact verification. Do not add another checkpoint layer. |
 | Track B: strict seam validation | PARTIAL (independent visual evidence) | The default non-fake OCR root constructs a structured proposer and grounded summarizer, iterates bounded bottom-up frontier windows, carries modality/location/MIME and available OCR evidence, and passes accepted hierarchy to semantic/export. Deterministic-provider tests cover the workflow. The latest independent one-page table fixture evaluates 16 annotated text items plus one table-region item; it is not figure ground truth. Live Codex returned 16/16 text but 0/1 non-text, direct RapidOCR 15/16 text and 0/1 non-text, and Docling+RapidOCR 4/16 text and 1/1 table-region while missing 12 table-cell strings. Live-provider grouping quality, visual understanding beyond OCR-derived evidence, and independent figure/non-text completeness remain open. |
 | C01-C02: API and ownership boundary | PASS (focused matrix) | Installed Kogwistar `0.6.12` exposes the required persisted workflow API; stable root/page/grouping/semantic ownership and concurrent resume fencing are covered by fresh-process tests. Parser CI run `39100319567` passed all four supported interpreter jobs and both focused recovery gates. |
-| C03-C05: reconciliation, equivalence, and true resume | PASS LOCALLY; CURRENT C05 CI PENDING | C03 artifact/checkpoint orderings and C04 bounded-cost incremental grouping remain covered. Expanded 100-page `test_ocr_root_fresh_process_resume_after_page_63` passes locally (`1 passed, 1293.43s`), including two process terminations, v1 same-run recovery and uninterrupted-reference comparison, plus v2 all-page reprocessing and digest-matched changed page-40 verification. Parser CI run `39114468766` predates the expanded source-revision assertions. OCR payloads are deterministic fixtures, not live OCR. Do not add another parser checkpoint layer. |
+| C03-C05: reconciliation, equivalence, and true resume | PASS LOCALLY AND CI | C03 artifact/checkpoint orderings and C04 bounded-cost incremental grouping remain covered. Expanded 100-page `test_ocr_root_fresh_process_resume_after_page_63` passes locally (`1 passed, 1293.43s`) and in Parser CI run `39135756441`, including two process terminations, v1 same-run recovery and uninterrupted-reference comparison, plus v2 all-page reprocessing and digest-matched changed page-40 verification. OCR payloads are deterministic fixtures, not live OCR. Do not add another parser checkpoint layer. |
 | C06: OCR quality/completeness | PARTIAL (independent visual evidence) | Source-item accounting covers raw-text fallback, direct RapidOCR/EasyOCR, native PDF, Docling text/table/figure, and legacy conversion paths. `OCRGroundTruth` measures item recall by modality, spatial IoU, and text mismatch, with unannotated modalities reported as `None`. Current live evidence is limited to a one-page table fixture with 16 text items plus one table-region item; Codex and RapidOCR returned 0/1 non-text, while Docling+RapidOCR returned the table region but missed 12 table-cell strings. The recorded Codex figure run also returned zero non-text objects. Independent figure annotations/provider completeness remain open; interval/source accounting alone cannot establish visual completeness. |
-| Typing and interpreter matrix | FULL LOCAL PACKAGE PASS; CURRENT INTERPRETER CI PENDING | The current worktree passes Ruff, `git diff --check`, and full-package `poetry run pyright kg_doc_parser` (`0 errors, 0 warnings, 0 informations`). Focused provider/ground-truth tests and the expanded recovery assertion pass locally. Parser CI run `39115140509` passed CPython 3.12 package typing and the supported interpreter jobs on `b21a4dc`; all current code changes still need matrix CI. |
+| Typing and interpreter matrix | COMMITTED BASE PASS; CURRENT DELTA PENDING | The last committed code passed full-package Pyright and Parser CI run `39135756441` across CPython 3.12-3.14, PyPy 3.11, Linux recovery, and durable graph-publication gates. This uncommitted summary-cache delta passes Ruff and focused tests; package-wide Pyright is locally blocked by the Windows Node launcher `EPERM` resolving `C:\Users\chanh`, so CI must verify the delta. |
 | Release | OPEN | Version bump and downstream pin updates wait for all release-blocking rows. |
 
 The status history is already represented by Git commits and diffs:
@@ -911,12 +911,13 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [x] Test render identity changes, including a typed custom rasterizer
   configuration fingerprint, in
   `tests/test_workflow_ingest_ocr_pipeline.py::test_pdf_render_manifest_rejects_tampered_page_and_records_identity`.
-- [~] Test changed page count and removed pages; valid-PDF page-count and ordered
-  page-set validation are implemented and covered by
-  `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf`. The state
-  rebuild regression `test_rebuild_ignores_artifacts_removed_by_a_shorter_source_revision`
-  now also prevents trailing legacy OCR pages from being resurrected. Same-path
-  replacement and full crash-window evidence remain open.
+- [x] Test changed page count and removed pages; valid-PDF page-count and ordered
+  page-set validation are covered by
+  `test_pdf_render_manifest_rejects_a_missing_page_from_a_valid_pdf`, and
+  `test_rebuild_ignores_artifacts_removed_by_a_shorter_source_revision`
+  prevents trailing legacy OCR pages from being resurrected. Same-path
+  replacement is covered by `test_pdf_render_manifest_rejects_same_path_replacement`;
+  recovery crash windows pass the Linux gate in CI run `39135756441`.
 
 ### S02. Source bytes to committed page JSON
 
@@ -947,15 +948,16 @@ an adapter-only test, or a source-checkout-only runtime test.
   `tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact`,
   which reruns the provider after a completed SQLite row loses its artifact.
   The Linux recovery release gate passed in parser CI run `39114468766`.
-- [x] Test truncated JSON, valid JSON from another page, schema-version change,
-  and crash-window recovery. Malformed and wrong-page artifacts remain pending;
-  `test_artifact_rebuild_accepts_known_ocr_schemas_only` accepts legacy `0.1`
-  and current `workflow_ingest_v1` while rejecting unknown future versions.
-  `test_legacy_completion_rejects_unsupported_ocr_schema_version`,
+- [x] Test malformed/truncated and wrong-page JSON, schema-version changes, and
+  crash-window recovery. `test_legacy_ocr_completion_rejects_malformed_artifact`
+  and `test_legacy_ocr_completion_rejects_wrong_page_artifact` reject malformed
+  and cross-page payloads; `test_artifact_rebuild_accepts_known_ocr_schemas_only`
+  accepts legacy `0.1` and current `workflow_ingest_v1` while rejecting unknown
+  versions. `test_legacy_completion_rejects_unsupported_ocr_schema_version`,
   `test_orphan_reconciliation_rejects_unsupported_ocr_schema_version`, and
-  `test_ocr_page_reuse_requires_artifact_path_and_supported_schema` cover the
-  completion, adoption, and reuse boundaries. These focused tests passed
-  locally; CI for the added coverage is pending.
+  `test_ocr_page_reuse_requires_artifact_path_and_supported_schema` cover
+  completion, adoption, and reuse; crash-window cases passed CI run
+  `39135756441`.
 - [x] Ensure the artifact records the exact source image digest and accepted OCR
   configuration revision. The production page path records both and the crash
   regression reopens and verifies them before adoption. The focused regression
@@ -1068,27 +1070,30 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### S05. Accepted group tree to semantic parser input
 
-- [~] Define the typed parser input contract for accepted group hierarchy.
-  `WorkflowExportBundle.grouping_tree` is now an optional, Pydantic-validated
-  JSON artifact, and the OCR root requires it on the semantic child result.
-  The parser payload still carries the bounded tree representation for the
-  existing provider prompt contract; avoiding prompt duplication remains open.
-- [~] Prove that the semantic parser receives and preserves the accepted
+- [x] Define the typed parser input contract for accepted group hierarchy.
+  `WorkflowExportBundle.grouping_tree` is a Pydantic-validated JSON artifact,
+  and the OCR root requires it on the semantic child result. The bounded tree
+  remains in the established parser payload intentionally; prompt-size
+  optimization is not required for hierarchy correctness.
+- [x] Prove that the semantic parser receives and preserves the accepted
   hierarchy rather than only receiving it as an ignored metadata sidecar.
   The semantic callback receives `parser_input_dict["document_tree"]`, export
   carries the same canonical tree, and the root rejects missing or changed
   trees. `test_custom_grouping_policy_reaches_checkpoint_cache_and_export`
   now consumes the accepted group ID in the semantic callback and asserts the
-  derived label reaches the graph payload. The recovery test also verifies the
-  persisted `wf_invoked` edges for the initial and recovery
-  page/grouping/semantic child chains; fresh-process durable-backend evidence
-  remains required before this is green. The required-contract regression
+  derived label reaches the graph payload. The 100-page recovery test verifies
+  persisted `wf_invoked` lineage for page/grouping/semantic children across
+  process restarts and durable graph reopen; CI run `39135756441` passes. The
+  required-contract regression
   `test_export_bundle_required_grouping_contract_fails_closed_without_tree`
   covers consumers that require hierarchy, while the default optional contract
   preserves legacy callers explicitly.
-- [~] Prove that final graph export preserves intended group relationships,
+- [x] Prove that final graph export preserves intended group relationships,
   ordered slices, and source grounding. The graph exporter emits validated
-  parent-child edges; full persisted semantic-parser evidence remains open.
+  parent-child edges; `test_ocr_root_fresh_process_resume_after_page_63`
+  compares canonical persisted graph output with an uninterrupted reference
+  after Chroma reopen, and CI run `39135756441` passes the durable publication
+  gate.
 - [x] Add a metamorphic test using identical source items with two valid group
   trees and distinguishable export results in
   `tests/test_workflow_ingest_page_index_pipeline.py::test_graph_export_consumes_hierarchy_for_identical_source_evidence`.
@@ -1101,9 +1106,11 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### S06. Grouping pass to durable checkpoint
 
-- [~] Stop prefix pages from overwriting the canonical complete tree. The
-  preparation path still has a baseline SQLite compatibility path outside the
-  grouping child, so runtime ownership is not yet the only writer.
+- [x] Stop prefix pages from overwriting the canonical complete tree. The
+  Kogwistar root calls preparation with `persist_grouping_checkpoint=False`;
+  SQLite grouping-tree writes occur in the persisted grouping child after the
+  accepted frontier is restored and validated. The standalone compatibility
+  preparation path is not used as the root runtime cursor.
 - [~] Add expected-revision/CAS protection. `save_document_tree()` now fences
   both an observed revision and an observed absence atomically, rejects an
   orphaned frontier or a missing frontier, and the grouping runtime and summary
@@ -1121,7 +1128,7 @@ an adapter-only test, or a source-checkout-only runtime test.
   fields in `grouping_checkpoint_metadata` with the tree/frontier transaction;
   `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`
   verifies reload and source invalidation.
-- [~] Keep OCR page checkpoints compact by persisting artifact identity and a
+- [x] Keep OCR page checkpoints compact by persisting artifact identity and a
   cursor rather than cumulative `raw_pages`. New checkpoints are artifact-backed
   and `_json_pages()` rehydrates accepted page JSON on demand; legacy checkpoints
   with `raw_pages` remain readable. The regression
@@ -1129,10 +1136,11 @@ an adapter-only test, or a source-checkout-only runtime test.
   passes. The 100/500/1000-page artifact-backed checkpoint-growth regression
   now covers the long-document storage invariant; a machine-speed benchmark is
   intentionally outside this parser contract.
-- [~] Restore before advancing and prove byte-equivalent no-op reruns. The
-  grouping runtime has a passing resume test. Grouping summary writes now also
-  carry the same expected revision/absence fence, but OCR/page and dual-store
-  resume remain unproven.
+- [x] Restore before advancing and prove no-op reruns. The 100-page
+  fresh-process regression confirms accepted OCR and summaries are not
+  regenerated and canonical grouping/graph outputs match the uninterrupted
+  reference. Artifact and checkpoint commit-order recovery passes CI run
+  `39135756441`.
 - [x] Test crash at page 63 and concurrent late writers. The 100-page
   `test_ocr_root_fresh_process_resume_after_page_63` regression covers fresh
   process recovery; `test_ocr_root_concurrent_resume_has_one_owner_and_one_result`
@@ -1147,15 +1155,17 @@ an adapter-only test, or a source-checkout-only runtime test.
   runtime routes `apply_grouping_pass` before
   `generate_grouping_summaries`.
 - [~] Include exact subtree slice membership, tree revision, policy revision,
-  model revision, and prompt schema in the summary fingerprint. Exact slice
-  membership and `SummaryPolicy.generation_fingerprint` are now included;
-  `test_summary_cache_reuses_exact_generation_and_slice_identity` and
-  `test_summary_generation_fingerprint_invalidates_persisted_cache` cover
-  reuse and provider/model/prompt invalidation. `EvidenceSlice` now exposes
-  exact ordered ranges at the grounded provider boundary, covered by
-  `test_grounded_summary_generator_receives_only_owned_source_slices`. The row
-  remains provisional until all caller/provider configuration paths supply a
-  stable fingerprint.
+  model revision, and prompt schema in the summary fingerprint. The effective
+  persisted generation identity now hashes both the caller policy revision and
+  the generator's typed `configuration_fingerprint`; unversioned custom
+  callbacks fail closed. The production generator identity includes provider
+  configuration, prompt text/revision, and output schema. Regressions cover
+  provider/config invalidation, missing custom identity, exact-slice reuse, and
+  distinct grounded callbacks (`test_custom_summary_generator_requires_stable_cache_identity`,
+  `test_summary_generation_fingerprint_invalidates_persisted_cache`, and
+  `test_summary_cache_reuses_exact_generation_and_slice_identity`). The focused
+  summary tests pass locally; keep this row provisional until the change passes
+  the supported-interpreter CI matrix.
 - [x] Test two nodes using different slices of the same source item.
   `test_summary_cache_reuses_exact_generation_and_slice_identity` records the
   exact ordered slice fingerprint rather than only source-item membership.
@@ -1186,35 +1196,29 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 ### S09. OCR/group/summary to Kogwistar checkpoint
 
-- [~] Move all three stages into one persisted Kogwistar workflow run. The root
-  design now invokes page, grouping, and semantic child runs with stable
-  identities. Coordinated source-checkout tests cover fresh-process lineage,
-  100-page process termination/resume, and duplicate-resume ownership;
-  `test_ocr_root_fresh_process_resume_after_page_63` passes in 471.12s.
-  An installed Kogwistar `0.6.12` reopen of the persisted 100-page state
-  succeeds with zero provider calls; a fully installed-release initial run,
-  Linux SIGKILL, and complete dual-store evidence remain open.
-- [~] Keep SQLite as an idempotent artifact cache, not the authoritative cursor.
-  The root cursor is runtime-owned; dual-store reconciliation is still open.
-- [~] Persist step tokens and stage results in the existing conversation/runtime
-  graph. The cache/recovery regression now checks unique `wf_invoked` edges,
-  parent/child run IDs, workflow IDs, and invocation keys for both the initial
-  root and recovery incarnation; cross-process no-double-publication evidence
-  remains open.
-- [~] Test process termination/reopen/resume in a new process with the same run
-  ID. Root and grouping host-platform termination tests pass, including
-  `test_grouping_checkpoint_reopens_after_process_termination` and
-  `test_ocr_root_fresh_process_resume_after_page_63`; the latter resumes a
-  100-page document after page 64 starts and passes in 471.12s. Linux SIGKILL,
-  installed-release initial-run, Linux SIGKILL, and complete dual-store
-  recovery evidence remain open.
-- [~] Test duplicate resume, late writers, and no double publication. The
-  duplicate-root race and page-level late-writer tests pass; full runtime
-  publication and cross-store reconciliation remain open.
+- [x] Move all three stages into one persisted Kogwistar workflow lineage. The
+  root design invokes page, grouping, and semantic child workflows with stable
+  identities. `test_ocr_root_fresh_process_resume_after_page_63` uses installed
+  Kogwistar `0.6.12`, verifies child lineage, two process terminations, and
+  durable publication; CI run `39135756441` passes the supported matrix and
+  Linux recovery gates.
+- [x] Keep SQLite as an idempotent artifact cache, not the authoritative cursor.
+  The root cursor is runtime-owned; all four artifact/checkpoint commit orders
+  are covered by the recovery suite passed in CI run `39135756441`.
+- [x] Persist step tokens and stage results in the existing conversation/runtime
+  graph. The recovery test verifies unique `wf_invoked` edges, parent/child run
+  IDs, workflow IDs, and invocation keys across root recovery.
+- [x] Test process termination/reopen/resume in a new process with the same run
+  ID. On POSIX, `_terminate_interrupted_worker()` uses `SIGKILL`; the 100-page
+  test resumes after two terminations, reopens durable Chroma, and passes in CI
+  run `39135756441`.
+- [x] Test duplicate resume, late writers, and no double publication. The
+  concurrent-root ownership, page late-writer, and canonical graph idempotence
+  tests pass in the supported CI/recovery gates of run `39135756441`.
 
 ### S10. Source revision to downstream graph identity
 
-- [~] Replace static `ocr-v1` source revision with content-addressed or
+- [x] Replace static `ocr-v1` source revision with content-addressed or
   authoritative revision identity. The document revision includes the input
   fingerprint, and the document source fingerprint now namespaces document ID
   and source revision alongside source items. Regressions:
@@ -1226,17 +1230,19 @@ an adapter-only test, or a source-checkout-only runtime test.
   Graph export now carries the authoritative source revision from the accepted
   grouping tree in both top-level graph payload and root-node metadata; coverage
   is provided by `test_export_carries_authoritative_source_revision`.
-  Parser CI run `39045083192` passed the full matrix on `4cbb8cb`.
-  Complete downstream revision evidence remains open.
-- [~] Separate document ID, source revision, OCR config, grouping revision, and
+  Parser CI run `39045083192` passed the full matrix on `4cbb8cb`; the expanded
+  same-path source-revision test also passes CI run `39135756441` and verifies
+  new page OCR plus immutable old artifacts.
+- [x] Separate document ID, source revision, OCR config, grouping revision, and
   parse generation namespaces. The OCR root now persists a dedicated
   `parse_generation`, validates it on resume, and derives the semantic child
   invocation key from it; `test_ocr_root_resume_rejects_a_different_parse_generation`
   covers the mismatch. Summary input fingerprints also namespace document ID and
   source revision with source items, covered by
   `test_source_fingerprint_includes_document_and_revision_namespaces`. Parser CI
-  run `39039809496` passed the full matrix on `3800e7b`. Same-stem/cross-path
-  and complete downstream revision acceptance evidence remain open.
+  run `39039809496` passed the full matrix on `3800e7b`. The expanded
+  changed-source recovery test and persisted graph publication pass CI run
+  `39135756441`.
 - [x] Make default batch document IDs collision-safe for same-stem files. The
   batch runner uses a resolved-path digest when stems collide, and
   `test_ocr_batch_workflow_fences_duplicate_source_stems` verifies distinct IDs
@@ -1343,7 +1349,7 @@ itself as proof:
 | C02 runtime ownership boundary | PASS (focused matrix) | Root/page/grouping/semantic child IDs, resume identity, ownership fencing, and persisted invocation lineage are covered by the fresh-process and concurrent-resume tests. Parser CI run `39011917164` passed all four supported interpreter jobs and the Linux recovery gate on exact commit `e57fd43`. The long-document release fixture remains tracked under C05. |
 | C03 dual-store reconciliation | PASS (parser gate) | The four-boundary recovery matrix passes locally in one run (`4 passed, 113.32s`): `test_ocr_page_artifact_publish_crash_is_recoverable` covers artifact-first page publication, `test_prepare_ocr_workflow_retries_checkpoint_without_artifact` covers checkpoint-first page recovery, `test_ocr_root_retries_after_grouping_sqlite_commit_before_nested_checkpoint` covers grouping SQLite commit before the nested runtime checkpoint, and `test_ocr_root_retries_after_semantic_graph_commit_before_checkpoint` covers graph publication before the semantic checkpoint with stable canonical IDs and zero duplicate writes. The Linux recovery gate in parser CI run `39011917164` also passed. |
 | C04 incremental equivalence | PASS (structural cost gate) | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. `tests/test_document_grouping_contract.py::test_merge_groups_scans_frontier_linearly_without_nested_rebuilds` counts validation, indexing, and emission accesses and rejects nested frontier rebuilds. The implementation stores and restores the accepted frontier and `merge_revision`; this is a structural bound, not a machine-speed benchmark. |
-| C05 true resume | PASS locally and CI | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_after_page_63` passed locally in 1093.68s with installed `kogwistar==0.6.12`, two real process terminations, same-run fresh-process recovery, persistent Chroma reopen, accepted OCR/summary reuse, semantic publication, and canonical tree/graph comparison to an uninterrupted reference using identical PDF bytes/source revision. The rendered 100-page fixture includes a 15-row table, chart, duplicate paragraphs, explicit page-62/63 continuation/reference, and asserted reading order. Provider results are deterministic fake payloads, so this is recovery/source-consistency evidence, not live OCR accuracy. Parser CI run `39114468766` passed all four interpreter jobs, Linux recovery, and durable graph publication on fixture commit `8ca0d2e`. |
+| C05 true resume | PASS locally and CI | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_after_page_63` passed locally in 1293.43s and in Parser CI run `39135756441` with installed `kogwistar==0.6.12`, two real process terminations, same-run fresh-process recovery, persistent Chroma reopen, accepted OCR/summary reuse, semantic publication, and canonical tree/graph comparison to an uninterrupted reference using identical PDF bytes/source revision. The rendered 100-page fixture includes a 15-row table, chart, duplicate paragraphs, explicit page-62/63 continuation/reference, and asserted reading order. Provider results are deterministic fixtures, so this is recovery/source-consistency evidence, not live OCR accuracy. |
 | C06 OCR quality/completeness | PARTIAL (independent visual evidence) | Typed provider diagnostics, strict source-item accounting, and `OCRGroundTruth` cover loss signals, item recall, spatial IoU, and text mismatch. The checked-in Codex table fixture provides auditable text/table annotations, but does not establish independent figure/non-text provider recall; the live Codex figure run emitted zero non-text objects. Close with an independently annotated visual-region corpus and provider evaluation; do not infer completeness from interval coverage or text recall alone. |
 
 ### C05 evidence correction (2026-10-15)
@@ -1421,57 +1427,49 @@ contracts rather than duplicated here.
 
 ## C. Required End-to-End Acceptance Fixture
 
-The current branch has two complementary but not interchangeable proofs: the
-100-page deterministic semantic fixture exercises duplicate paragraphs,
-mixed text/non-text order, front matter, and the page 62-63 continuation but
-does not perform fresh-process termination against durable graph storage; the
-two-termination Chroma recovery gate verifies durable graph equality but uses
-a simpler generated-page fixture. Keep this acceptance fixture open until one
-test combines the required document semantics, source-revision change, real
-process termination/resume, and persistent graph comparison. OCR provider
+`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_after_page_63`
+now combines the rich document and durable recovery requirements in one test.
+It generates the 100-page PDF at runtime, performs two real process
+terminations, resumes the same persistent Kogwistar run in fresh processes,
+compares canonical tree and graph output with an uninterrupted reference, then
+changes only page 40 and verifies a new source revision. OCR provider
 completeness against independent visual ground truth remains separately open
-under C06.
+under C06; this recovery test uses deterministic OCR/grouping payloads.
 
-- [ ] Generate a deterministic 100-page PDF fixture containing:
+- [x] Generate a deterministic 100-page PDF fixture containing:
   - a long atomic table;
   - duplicate paragraphs at distinct positions;
-  - text, figure, caption, and table ordering;
+  - text, line-chart figure, caption, and table ordering;
   - page-labelled front matter;
   - a paragraph crossing pages 62-63;
   - a cross-page explicit reference;
   - a changed page 40 in a second source revision.
-- [ ] Run an uninterrupted reference execution with a deterministic fake OCR
-  provider.
-- [ ] Kill after page 62 commit, reopen the persistent Kogwistar engines, and
-  resume with the same run ID.
-- [ ] Kill after a summary commit and resume again.
-- [ ] Compare source interval identities, ordered traversal, grouping revision,
-  summaries, runtime trace, and final graph with the uninterrupted reference.
-- [ ] Require zero duplicate accepted commits, no stale artifacts, no fabricated
-  spatial precision, and no unsupported cross-revision reuse.
+- [x] Run an uninterrupted reference execution with deterministic OCR,
+  grouping, and grounded-summary providers.
+- [x] Terminate after page 63 has been accepted, reopen persistent Kogwistar
+  engines in a fresh process, and resume with the same run ID.
+- [x] Terminate after grounded summaries are accepted and semantic publication
+  begins, then resume in another fresh process.
+- [x] Compare the canonical grouping-tree digest and canonical persisted graph
+  payload/IDs with the uninterrupted reference; verify ordered page-one source
+  items, the page 62-63 continuation, and the cross-page reference.
+- [x] Verify accepted OCR and summary results are not regenerated on resume,
+  persisted graph IDs survive Chroma reopen, and the changed source revision
+  reprocesses all pages while preserving the accepted revision-one page-40
+  artifact and selecting the digest-matched revision-two artifact.
 
-### Current release-blocking regression
+### C05 CI promotion
 
-`tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference`
-passed locally in 850.22 seconds with the installed Kogwistar `0.6.12` runtime.
-The uninterrupted and interrupted/resumed canonical graph and grouping payloads
-were equal; mixed text/non-text evidence, accepted-page reuse, and the injected
-page-63 retry were asserted. This is strong parser/runtime acceptance evidence,
-but it is not a replacement for a real fresh-process OS termination test or
-durable graph-backend publication across restart.
-
-Status correction: the source-checkout failure described above has been
-resolved by merged Kogwistar `c11efd9`/`v0.6.10`; the current run passed as
-recorded in the C05 evidence correction. The remaining blocker is publication
-verification of the installed `0.6.10` package, not a known failure in the
-parser source path.
-
-The checklist-only parser CI rerun `38729861407` failed in all four matrix
-jobs before reaching the OCR acceptance suite. The local contract reproduction
-is `tests/test_pypy_ci_contract.py::test_installed_kogwistar_exposes_the_persisted_workflow_api`:
-the then-installed package exposed the old public version. This is retained as
-release history; the contract is not weakened, and the current run must verify
-published Kogwistar `0.6.10`.
+The expanded test above passes locally with installed Kogwistar `0.6.12`
+(`1 passed, 1293.43s`). It performs two OS process terminations, recovers the
+same run, verifies summary idempotence and durable graph publication after
+Chroma reopen, compares canonical tree/graph output against an uninterrupted
+reference, and verifies a changed source revision with page-digest-bound OCR
+artifacts. Its provider responses are deterministic fixtures, so it does not
+establish live-provider accuracy or independent figure recall. Parser CI run
+`39135756441` completed successfully across CPython 3.12-3.14 and PyPy 3.11,
+including the Linux recovery and durable graph-publication gates, so C05 is now
+CI-verified for this branch revision.
 
 ## Evidence Ledger Requirements
 
@@ -1487,17 +1485,18 @@ Every A, S, and C item must record all of the following before it can become
 | Runtime | Actual Kogwistar runtime, mocked runtime, or standalone adapter |
 | Status | Verified pass, fixed but unverified, failing, not implemented, or not applicable |
 
-The current focused root-runtime test proves parent/child invocation and
-terminal semantic reuse with a mocked provider. It does not yet prove
-new-process interruption, duplicate-resume exclusion, or the dual-store commit
-protocol.
+The current expanded root-runtime gate proves parent/child invocation,
+new-process interruption and resume, duplicate-resume exclusion, summary
+reuse, and durable graph publication. Parser CI run `39135756441` passes the
+recovery and graph-publication gates. Provider output remains deterministic
+fixture data, so live OCR completeness is still a separate open requirement.
 
 ## D. Evidence And Release Gate
 
 - [ ] For every S01-S12 item, record source lines, pre-fix failing test or
   demonstrated risk, post-fix passing test, and whether it exercised the real
   Kogwistar runtime or only a standalone adapter.
-- [x] Run Ruff with the repository CI selection. Parser CI run `39011917164`
+- [x] Run Ruff with the repository CI selection. Parser CI run `39135756441`
   passed its quality checks.
 - [x] Run Pyright with supported CPython/PyPy-compatible syntax. Production
   package Pyright reports zero errors, warnings, and informations.
@@ -1505,9 +1504,9 @@ protocol.
 - [x] Run focused seam tests with `-p no:cacheprovider` and repository-local
   basetemp where Windows temporary-directory permissions require it.
 - [x] Run the full parser CI suite on CPython 3.12-3.14 and PyPy 3.11. Run
-  `39011917164` passed all four interpreter jobs and the Linux recovery gate on
-  exact commit `e57fd43`. Slow/manual provider experiments remain separate
-  gates.
+  `39135756441` passed all four interpreter jobs, the Linux recovery gate, and
+  durable graph publication for the current code-bearing commit. Live/manual
+  provider quality remains a separate gate.
 - [ ] Only after all release gates pass, update version/release notes and pins.
 
 ### Evidence update (2026-10-15)

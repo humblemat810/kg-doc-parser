@@ -222,9 +222,9 @@ class SummaryPolicy(FrozenModel):
     """Bound optional derived-summary work independently of OCR."""
 
     enabled: bool = True
-    # Change this whenever the summary provider, model, prompt, or other
-    # output-affecting generation configuration changes. It is cache identity.
-    generation_fingerprint: str = Field(default="summary-v1", min_length=1)
+    # Custom generators without their own configuration_fingerprint must set
+    # this to a stable caller-owned revision before summaries can be cached.
+    generation_fingerprint: str | None = Field(default=None, min_length=1)
     eligible_kinds: tuple[str, ...] = (
         "table",
         "figure",
@@ -242,6 +242,11 @@ class SummaryPolicy(FrozenModel):
     def valid(self) -> SummaryPolicy:
         if len(set(self.eligible_kinds)) != len(self.eligible_kinds):
             raise ValueError("summary policy kinds must be unique")
+        if (
+            self.generation_fingerprint is not None
+            and not self.generation_fingerprint.strip()
+        ):
+            raise ValueError("summary generation fingerprint must not be blank")
         return self
 
 

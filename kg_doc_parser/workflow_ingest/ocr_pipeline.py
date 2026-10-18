@@ -384,8 +384,20 @@ class GroundedSummaryGenerator(Protocol):
     ) -> Summary: ...
 
 
+@runtime_checkable
+class SummaryGeneratorWithIdentity(Protocol):
+    """Optional stable identity required for persistent summary cache reuse."""
+
+    @property
+    def configuration_fingerprint(self) -> str: ...
+
+
 _GROUNDED_SUMMARY_PROMPT_REVISION = "grounded-summary-v1"
 _ADAPTIVE_GROUPING_PROMPT_REVISION = "adaptive-grouping-v1"
+_GROUNDED_SUMMARY_SYSTEM_PROMPT = (
+    "Summarize only the supplied evidence. Return one Summary. "
+    "Every evidence item must be represented by evidence_item_ids."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,11 +410,17 @@ class GroundedChatSummaryGenerator:
     @property
     def configuration_fingerprint(self) -> str:
         configuration = json.dumps(
-            _provider_endpoint_configuration_identity(
-                self.provider_settings.parser
-            ),
+            {
+                "prompt_revision": _GROUNDED_SUMMARY_PROMPT_REVISION,
+                "system_prompt": _GROUNDED_SUMMARY_SYSTEM_PROMPT,
+                "output_schema": Summary.model_json_schema(),
+                "provider": _provider_endpoint_configuration_identity(
+                    self.provider_settings.parser
+                ),
+            },
             sort_keys=True,
             separators=(",", ":"),
+            ensure_ascii=False,
         )
         return hashlib.sha256(configuration.encode("utf-8")).hexdigest()
 
@@ -433,10 +451,7 @@ class GroundedChatSummaryGenerator:
                     f"media={slice_.media.sha256_hex}|{slice_.media.mime_type}"
                 )
         messages = [
-            SystemMessage(
-                "Summarize only the supplied evidence. Return one Summary. "
-                "Every evidence item must be represented by evidence_item_ids."
-            ),
+            SystemMessage(_GROUNDED_SUMMARY_SYSTEM_PROMPT),
             HumanMessage("\n".join(evidence_lines)),
         ]
         structured = cast(
@@ -565,14 +580,50 @@ def _summary_generator_identity(
     generator: SummaryGenerator | GroundedSummaryGenerator,
 ) -> str:
     """Return a stable, typed identity for the active summary implementation."""
+    if isinstance(generator, SummaryGeneratorWithIdentity):
+        generator_type = type(generator)
+        identity = f"{generator_type.__module__}.{generator_type.__qualname__}"
+        return f"{identity}:{generator.configuration_fingerprint}"
     if isinstance(generator, FunctionType):
         return f"{generator.__module__}.{generator.__qualname__}"
     generator_type = type(generator)
-    identity = f"{generator_type.__module__}.{generator_type.__qualname__}"
-    fingerprint = getattr(generator, "configuration_fingerprint", None)
-    if isinstance(fingerprint, str):
-        return f"{identity}:{fingerprint}"
-    return identity
+    return f"{generator_type.__module__}.{generator_type.__qualname__}"
+
+
+def _validate_summary_generator_identity(
+    generator: SummaryGenerator | GroundedSummaryGenerator,
+    policy: SummaryPolicy,
+) -> None:
+    """Require a stable identity for any persisted summary cache entry."""
+
+    if isinstance(generator, SummaryGeneratorWithIdentity):
+        fingerprint = generator.configuration_fingerprint
+        if fingerprint.strip():
+            return
+    if policy.generation_fingerprint is None:
+        raise ValueError(
+            "custom summary generators must expose a non-empty "
+            "configuration_fingerprint or use SummaryPolicy.generation_fingerprint"
+        )
+
+
+def _effective_summary_policy(
+    policy: SummaryPolicy,
+    generator: SummaryGenerator | GroundedSummaryGenerator,
+) -> SummaryPolicy:
+    """Bind cached summaries to both policy and generator configuration."""
+
+    _validate_summary_generator_identity(generator, policy)
+    payload = json.dumps(
+        {
+            "policy": policy.generation_fingerprint,
+            "generator": _summary_generator_identity(generator),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return policy.model_copy(update={"generation_fingerprint": fingerprint})
 
 
 class OCRQualityPolicy(BaseModel):
@@ -865,11 +916,15 @@ def _generate_tree_summaries(
         raise ValueError("provide generator or grounded_generator, not both")
     items = {item.item_id: item for item in tree.source_items}
     current = tree
-    for node_id in select_summary_targets(current, policy):
+    active_generator = generator if generator is not None else grounded_generator
+    assert active_generator is not None
+    effective_policy = _effective_summary_policy(policy, active_generator)
+    targets = select_summary_targets(current, effective_policy)
+    if not targets:
+        return current
+    for node_id in targets:
         evidence_fingerprint = current.summary_input_fingerprint(node_id)
-        policy_payload = policy.model_dump(mode="json") if policy is not None else {}
-        active_generator = generator if generator is not None else grounded_generator
-        assert active_generator is not None
+        policy_payload = effective_policy.model_dump(mode="json")
         generator_name = _summary_generator_identity(active_generator)
         input_fingerprint = hashlib.sha256(
             json.dumps(
@@ -878,7 +933,7 @@ def _generate_tree_summaries(
                     "tree_revision": current.tree_revision,
                     "grouping_policy_version": grouping_policy_version,
                     "summary_policy": policy_payload,
-                    "generation_fingerprint": policy.generation_fingerprint,
+                    "generation_fingerprint": effective_policy.generation_fingerprint,
                     "generator": generator_name,
                 },
                 sort_keys=True,
@@ -956,7 +1011,7 @@ def _generate_tree_summaries(
                 )
             summary = summary.model_copy(
                 update={
-                    "generation_fingerprint": policy.generation_fingerprint,
+                    "generation_fingerprint": effective_policy.generation_fingerprint,
                     "evidence_slice_fingerprint": current.summary_slice_fingerprint(
                         node_id, evidence_ids
                     )

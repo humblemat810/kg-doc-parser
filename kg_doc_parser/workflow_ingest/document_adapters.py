@@ -692,13 +692,7 @@ def select_summary_targets(
         summary_matches_policy = False
         if summary is not None and summary.status in {"generated", "verified"}:
             generation_fingerprint = summary.generation_fingerprint
-            summary_matches_policy = (
-                generation_fingerprint == policy.generation_fingerprint
-                or (
-                    generation_fingerprint is None
-                    and policy.generation_fingerprint == "summary-v1"
-                )
-            )
+            summary_matches_policy = generation_fingerprint == policy.generation_fingerprint
         if summary_matches_policy and summary is not None:
             # The policy bounds accepted work for the whole tree, not just one
             # invocation. This keeps resume from resetting target/token caps.
