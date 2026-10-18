@@ -848,10 +848,15 @@ an adapter-only test, or a source-checkout-only runtime test.
   `persist_grouping_result`, and the runtime trace regression asserts both
   nodes.
 - [x] Recover an accepted summary journal entry when the surrounding runtime
-  checkpoint is interrupted. `test_summary_journal_commit_is_recoverable_before_runtime_checkpoint`
-  simulates a crash after the generated journal row and tree revision commit;
-  resume restores the summary without invoking the provider again. The
-  separate runtime-node publication gate remains partial.
+  checkpoint is interrupted. The implementation commits the idempotent
+  accepted summary journal before its derived tree field. The regression
+  `test_summary_journal_commit_is_recoverable_before_runtime_checkpoint`
+  simulates process death after journal acceptance but before tree publication,
+  then proves fresh retry repairs the tree from the journal without invoking
+  the provider again. `test_summary_tree_uses_existing_accepted_journal_result`
+  proves a racing duplicate projects the journal's first accepted value rather
+  than overwriting it with a late provider response. The separate runtime-node
+  publication gate remains partial.
 - [x] Persist summary input identity including exact subtree slices, tree
   revision, grouping policy, summary policy, provider/model revision, and prompt
   schema revision. The `EvidenceSlice`/`GroundedSummaryGenerator` boundary

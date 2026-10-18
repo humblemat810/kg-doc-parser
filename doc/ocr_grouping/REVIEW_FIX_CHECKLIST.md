@@ -566,7 +566,12 @@ S01-S12 and C01-C06 rows in
   tested against the same accepted-result rules.
 - [x] An accepted summary journal row is recoverable after a crash before the
   surrounding runtime checkpoint. `test_summary_journal_commit_is_recoverable_before_runtime_checkpoint`
-  proves the accepted summary is reused and the provider is not called twice.
+  now simulates process death after journal acceptance but before derived tree
+  publication, then proves retry repairs the tree from the accepted journal
+  without calling the provider twice. `test_summary_tree_uses_existing_accepted_journal_result`
+  proves a concurrent duplicate cannot replace the first accepted summary in
+  the tree projection. The journal is the accepted-result authority; the tree
+  field is a repairable projection.
 - [x] Grouping and summary writers use revision/generation fencing; all legacy
   and compatibility writers are audited. The two parser call sites both use
   absence or expected-revision fencing, and the stale-writer regression covers

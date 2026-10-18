@@ -6088,10 +6088,130 @@ def test_duplicate_accepted_summary_delivery_is_idempotent() -> None:
 
 
 @pytest.mark.ci
+def test_summary_tree_uses_existing_accepted_journal_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A concurrent duplicate cannot make the tree disagree with the journal."""
+    scratch = _scratch("ocr_summary_accepted_journal_wins")
+    tree = DocumentTree(
+        document_id="summary-accepted-journal-doc",
+        source_revision="ocr-v1:summary-accepted-journal",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="item-a",
+                kind="text",
+                text="summary source",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="leaf:item-a",
+                kind="text",
+                parts=(SourceSlice(item_id="item-a", start=0, end=14),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(ChildRef(node_id="leaf:item-a"),),
+            ),
+        ),
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    accepted_tree_revision = store.save_document_tree(
+        document_id=tree.document_id,
+        tree=tree,
+        grouping_policy_version="summary-journal-v1",
+        require_no_existing_tree=True,
+    )
+    canonical = Summary(
+        status="generated",
+        text="first accepted result",
+        evidence_item_ids=("item-a",),
+        provider_model="fake-summary",
+        prompt_revision="summary-v1",
+        input_fingerprint=tree.summary_input_fingerprint("root"),
+        generation_fingerprint="journal-summary-v1",
+        evidence_slice_fingerprint=tree.summary_slice_fingerprint(
+            "root", ("item-a",)
+        ),
+    )
+    original_record = store.record_summary_attempt
+    inserted = False
+
+    def _record_with_competing_acceptance(*args: object, **kwargs: object) -> int:
+        nonlocal inserted
+        if kwargs.get("status") == "generated" and not inserted:
+            inserted = True
+            original_record(
+                document_id=str(kwargs["document_id"]),
+                node_id=str(kwargs["node_id"]),
+                input_fingerprint=str(kwargs["input_fingerprint"]),
+                status="generated",
+                summary=canonical,
+            )
+        return original_record(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "record_summary_attempt", _record_with_competing_acceptance)
+
+    def _generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree, node_id, source_items
+        return Summary(
+            status="generated",
+            text="late duplicate result",
+            evidence_item_ids=("item-a",),
+            provider_model="fake-summary",
+            prompt_revision="summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+    result = _generate_tree_summaries(
+        tree,
+        document_id=tree.document_id,
+        state_store=store,
+        policy=SummaryPolicy(
+            eligible_kinds=("document",),
+            minimum_source_items=1,
+            minimum_source_chars=1,
+            minimum_information_gain_chars=0,
+            generation_fingerprint="journal-summary-v1",
+        ),
+        generator=_generator,
+        grouping_policy_version="summary-journal-v1",
+        expected_tree_revision=accepted_tree_revision,
+    )
+
+    root = next(node for node in result.nodes if node.node_id == result.root_id)
+    accepted_attempt = next(
+        attempt
+        for attempt in store.list_summary_attempts(document_id=tree.document_id)
+        if attempt["status"] == "generated"
+    )
+    journal_summary = store.load_completed_summary(
+        document_id=tree.document_id,
+        node_id="root",
+        input_fingerprint=str(accepted_attempt["input_fingerprint"]),
+    )
+    assert journal_summary == canonical
+    assert root.summary == journal_summary, [
+        (attempt["status"], attempt["error_message"])
+        for attempt in store.list_summary_attempts(document_id=tree.document_id)
+    ]
+
+
+@pytest.mark.ci
 def test_summary_journal_commit_is_recoverable_before_runtime_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A committed summary is reused if the surrounding step crashes."""
+    """An accepted journal entry repairs the tree after process interruption."""
     scratch = _scratch("ocr_summary_journal_commit_crash")
     tree = DocumentTree(
         document_id="summary-journal-commit-crash-doc",
@@ -6146,35 +6266,42 @@ def test_summary_journal_commit_is_recoverable_before_runtime_checkpoint(
             input_fingerprint=input_fingerprint,
         )
 
-    original_record = store.record_summary_attempt
+    class _SimulatedProcessCrash(BaseException):
+        pass
+
+    original_save = store.save_document_tree
     crashed = False
 
-    def _record_then_crash(*args: object, **kwargs: object) -> int:
+    def _save_then_crash(*args: object, **kwargs: object) -> str:
         nonlocal crashed
-        result = original_record(*args, **kwargs)  # type: ignore[arg-type]
-        if kwargs.get("status") == "generated" and not crashed:
+        candidate = kwargs.get("tree")
+        if (
+            isinstance(candidate, DocumentTree)
+            and any(node.summary is not None for node in candidate.nodes)
+            and not crashed
+        ):
             crashed = True
-            raise RuntimeError("simulated crash after summary journal commit")
-        return result
+            raise _SimulatedProcessCrash("crash before derived tree checkpoint")
+        return original_save(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(store, "record_summary_attempt", _record_then_crash)
-    first = _generate_tree_summaries(
-        tree,
-        document_id=tree.document_id,
-        state_store=store,
-        policy=SummaryPolicy(
-            eligible_kinds=("document",),
-            minimum_source_items=1,
-            minimum_source_chars=1,
-            minimum_information_gain_chars=0,
-            generation_fingerprint="journal-summary-v1",
-        ),
-        generator=_generator,
-        grouping_policy_version="summary-journal-v1",
-        expected_tree_revision=initial_revision,
-    )
+    monkeypatch.setattr(store, "save_document_tree", _save_then_crash)
+    with pytest.raises(_SimulatedProcessCrash, match="before derived tree checkpoint"):
+        _generate_tree_summaries(
+            tree,
+            document_id=tree.document_id,
+            state_store=store,
+            policy=SummaryPolicy(
+                eligible_kinds=("document",),
+                minimum_source_items=1,
+                minimum_source_chars=1,
+                minimum_information_gain_chars=0,
+                generation_fingerprint="journal-summary-v1",
+            ),
+            generator=_generator,
+            grouping_policy_version="summary-journal-v1",
+            expected_tree_revision=initial_revision,
+        )
 
-    assert first.nodes[-1].summary is None
     assert calls["count"] == 1
     accepted_attempt = next(
         attempt
@@ -6187,10 +6314,9 @@ def test_summary_journal_commit_is_recoverable_before_runtime_checkpoint(
         input_fingerprint=str(accepted_attempt["input_fingerprint"]),
     )
     assert accepted is not None
+    assert store.document_tree_revision(document_id=tree.document_id) == initial_revision
 
-    monkeypatch.setattr(store, "record_summary_attempt", original_record)
-    persisted = store.document_tree_revision(document_id=tree.document_id)
-    assert persisted is not None
+    monkeypatch.setattr(store, "save_document_tree", original_save)
     resumed = _generate_tree_summaries(
         tree,
         document_id=tree.document_id,
@@ -6204,7 +6330,7 @@ def test_summary_journal_commit_is_recoverable_before_runtime_checkpoint(
         ),
         generator=_generator,
         grouping_policy_version="summary-journal-v1",
-        expected_tree_revision=persisted,
+        expected_tree_revision=initial_revision,
     )
 
     root = next(node for node in resumed.nodes if node.node_id == resumed.root_id)

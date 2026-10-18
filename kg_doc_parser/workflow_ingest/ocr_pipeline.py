@@ -1012,6 +1012,26 @@ def _generate_tree_summaries(
                     )
                 }
             )
+            # The journal is the authoritative accepted result. Commit it
+            # before the derived tree field so a crash can replay the journal
+            # entry and repair the tree without invoking the provider again.
+            state_store.record_summary_attempt(
+                document_id=document_id,
+                node_id=node_id,
+                input_fingerprint=input_fingerprint,
+                status=summary.status,
+                summary=summary,
+            )
+            accepted_summary = state_store.load_completed_summary(
+                document_id=document_id,
+                node_id=node_id,
+                input_fingerprint=input_fingerprint,
+            )
+            if accepted_summary is None:
+                raise RuntimeError(
+                    "summary journal did not return its accepted result"
+                )
+            summary = accepted_summary
             updated = apply_summary_updates(current, {node_id: summary})
             expected_tree_revision = state_store.save_document_tree(
                 document_id=document_id,
@@ -1022,13 +1042,6 @@ def _generate_tree_summaries(
                 last_runtime_step=last_runtime_step,
             )
             require_no_existing_tree = False
-            state_store.record_summary_attempt(
-                document_id=document_id,
-                node_id=node_id,
-                input_fingerprint=input_fingerprint,
-                status=summary.status,
-                summary=summary,
-            )
             current = updated
         except GroupingCheckpointConflict:
             # A stale writer must fail the workflow so the caller can restore
