@@ -44,4 +44,14 @@ This contrasts with the Docling pipeline result, which preserves the table
 region but misses most table-cell text. The captured response is offline test
 data and is not a live CI call.
 
+`ocr_chart_figure.png` is a second controlled source image with a bar-chart
+visual region, title, axis ticks, and quarter labels. Its independently
+authored `ocr_chart_figure_ground_truth.json` is anchored to the rendered
+geometry, not to any OCR output. Fresh direct RapidOCR captured all 11 text
+items but no visual region. Fresh Docling+RapidOCR captured the chart region
+and chart title, but returned only one of 11 expected text items. These real
+captured responses are offline regression data, not live CI provider calls.
+Together with the table page, this provides two modality-diverse controlled
+pages; it remains too small to claim corpus-wide completeness.
+
 SHA-256: `5f55174cf5cfddd227c5833c07de0c56563fd5850817f7ae518f25cbceecfc3c`

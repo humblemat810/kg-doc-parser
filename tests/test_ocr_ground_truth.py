@@ -384,3 +384,53 @@ def test_recorded_live_direct_rapidocr_exposes_missing_visual_region() -> None:
     assert report.item_recall_by_modality == {"text": 15 / 16, "non_text": 0.0}
     assert report.missing_item_ids == ("8", "table-region")
     assert report.extra_cluster_numbers == (15,)
+
+
+@pytest.mark.ci
+def test_recorded_chart_provider_results_separate_text_and_visual_recall() -> None:
+    fixture_dir = Path(__file__).parent / "fixtures" / "ocr_ground_truth"
+    image_bytes = (fixture_dir / "ocr_chart_figure.png").read_bytes()
+    assert hashlib.sha256(image_bytes).hexdigest() == (
+        "b2331086114e580824a787a2551965487517e3737fcb3a09d0057fcb1387a311"
+    )
+    assert image_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", image_bytes[16:24]) == (1600, 1200)
+
+    ground_truth = OCRGroundTruth.model_validate_json(
+        (fixture_dir / "ocr_chart_figure_ground_truth.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    direct = OCRClusterResponse.model_validate_json(
+        (fixture_dir / "rapidocr_direct_chart_response.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    docling = OCRClusterResponse.model_validate_json(
+        (fixture_dir / "docling_rapidocr_chart_response.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    direct_report = evaluate_ocr_ground_truth(direct, ground_truth)
+    assert direct_report.item_recall_by_modality == {"text": 1.0, "non_text": 0.0}
+    assert direct_report.missing_item_ids == ("bar-chart-region",)
+    assert direct_report.text_mismatch_item_ids == ()
+
+    docling_report = evaluate_ocr_ground_truth(docling, ground_truth)
+    assert docling_report.item_recall_by_modality == {
+        "text": pytest.approx(1 / 11),
+        "non_text": 1.0,
+    }
+    assert docling_report.missing_item_ids == (
+        "page-title",
+        "tick-100",
+        "tick-75",
+        "tick-50",
+        "tick-25",
+        "tick-0",
+        "quarter-q1",
+        "quarter-q2",
+        "quarter-q3",
+        "quarter-q4",
+    )

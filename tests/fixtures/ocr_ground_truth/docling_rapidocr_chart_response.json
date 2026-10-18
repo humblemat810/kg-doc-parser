@@ -1,0 +1,41 @@
+{
+  "OCR_text_clusters": [
+    {
+      "text": "Revenue by Quarter",
+      "bb_x_min": 513.7096761067709,
+      "bb_x_max": 831.45166015625,
+      "bb_y_min": 209.04254150390625,
+      "bb_y_max": 251.32977294921875,
+      "cluster_number": 1
+    }
+  ],
+  "non_text_objects": [
+    {
+      "description": "Revenue by Quarter\n\n<!-- 🖼️❌ Image not available. Please use `PdfPipelineOptions(generate_picture_images=True)` -->",
+      "bb_x_min": 248.864501953125,
+      "bb_x_max": 1371.3677978515625,
+      "bb_y_min": 278.56488037109375,
+      "bb_y_max": 920.905517578125,
+      "cluster_number": 0
+    }
+  ],
+  "is_empty_page": false,
+  "printed_page_number": null,
+  "meaningful_ordering": [
+    0,
+    1
+  ],
+  "page_x_min": 0.0,
+  "page_x_max": 1600.0,
+  "page_y_min": 0.0,
+  "page_y_max": 1200.0,
+  "estimated_rotation_degrees": 0.0,
+  "incomplete_words_on_edge": false,
+  "incomplete_text": false,
+  "data_loss_likelihood": 0.0,
+  "scan_quality": "medium",
+  "contains_table": false,
+  "unresolved_item_count": 0,
+  "source_item_count": 2,
+  "spatial_accuracy": "region"
+}

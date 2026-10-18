@@ -1,0 +1,16 @@
+{
+  "items": [
+    {"item_id": "page-title", "modality": "text", "x_min": 108.0, "y_min": 76.0, "x_max": 418.0, "y_max": 128.0, "text": "Quarterly Revenue"},
+    {"item_id": "chart-title", "modality": "text", "x_min": 508.0, "y_min": 206.0, "x_max": 838.0, "y_max": 258.0, "text": "Revenue by Quarter"},
+    {"item_id": "tick-100", "modality": "text", "x_min": 280.0, "y_min": 294.0, "x_max": 344.0, "y_max": 344.0, "text": "100"},
+    {"item_id": "tick-75", "modality": "text", "x_min": 276.0, "y_min": 414.0, "x_max": 330.0, "y_max": 464.0, "text": "75"},
+    {"item_id": "tick-50", "modality": "text", "x_min": 278.0, "y_min": 534.0, "x_max": 330.0, "y_max": 584.0, "text": "50"},
+    {"item_id": "tick-25", "modality": "text", "x_min": 278.0, "y_min": 654.0, "x_max": 330.0, "y_max": 704.0, "text": "25"},
+    {"item_id": "tick-0", "modality": "text", "x_min": 284.0, "y_min": 783.0, "x_max": 310.0, "y_max": 814.0, "text": "0"},
+    {"item_id": "quarter-q1", "modality": "text", "x_min": 488.0, "y_min": 834.0, "x_max": 546.0, "y_max": 880.0, "text": "Q1"},
+    {"item_id": "quarter-q2", "modality": "text", "x_min": 688.0, "y_min": 834.0, "x_max": 746.0, "y_max": 880.0, "text": "Q2"},
+    {"item_id": "quarter-q3", "modality": "text", "x_min": 888.0, "y_min": 834.0, "x_max": 946.0, "y_max": 880.0, "text": "Q3"},
+    {"item_id": "quarter-q4", "modality": "text", "x_min": 1088.0, "y_min": 834.0, "x_max": 1146.0, "y_max": 880.0, "text": "Q4"},
+    {"item_id": "bar-chart-region", "modality": "non_text", "x_min": 250.0, "y_min": 280.0, "x_max": 1370.0, "y_max": 920.0}
+  ]
+}
