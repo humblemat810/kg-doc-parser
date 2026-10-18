@@ -73,7 +73,7 @@ from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 import pytest
@@ -6923,6 +6923,81 @@ def test_grouping_checkpoint_rejects_stale_writer_after_source_revision_changes(
         tree=new_tree,
         require_no_existing_tree=True,
     )
+
+
+@pytest.mark.ci
+def test_grouping_checkpoint_concurrent_updates_accept_one_revision() -> None:
+    scratch = _scratch("ocr_grouping_checkpoint_concurrent_updates")
+    store_path = scratch / "ocr-state.sqlite"
+    document_id = "concurrent-grouping-checkpoint-doc"
+    store = OCRWorkflowStateStore(store_path)
+    store.ensure_document(
+        document_id=document_id,
+        title="Concurrent grouping checkpoint",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-v1",
+    )
+    initial_tree = DocumentTree(
+        document_id=document_id,
+        source_revision="ocr-v1:source-v1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="item",
+                kind="text",
+                text="checkpoint",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                parts=(SourceSlice(item_id="item", start=0, end=10),),
+            ),
+        ),
+    )
+    initial_revision = store.save_document_tree(
+        document_id=document_id,
+        tree=initial_tree,
+        require_no_existing_tree=True,
+    )
+    candidates = (
+        initial_tree.model_copy(update={"tree_revision": 2}),
+        initial_tree.model_copy(update={"tree_revision": 3}),
+    )
+    stores = (OCRWorkflowStateStore(store_path), OCRWorkflowStateStore(store_path))
+    barrier = threading.Barrier(2)
+
+    def _update(
+        index: int,
+    ) -> tuple[Literal["accepted", "conflict"], str | None]:
+        barrier.wait(timeout=10)
+        try:
+            revision = stores[index].save_document_tree(
+                document_id=document_id,
+                tree=candidates[index],
+                expected_tree_revision=initial_revision,
+            )
+        except GroupingCheckpointConflict:
+            return "conflict", None
+        return "accepted", revision
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(_update, (0, 1)))
+
+    accepted = [revision for status, revision in outcomes if status == "accepted"]
+    assert len(accepted) == 1
+    assert sum(status == "conflict" for status, _ in outcomes) == 1
+    restored = store.load_document_tree(document_id=document_id)
+    assert restored in candidates
+    assert store.document_tree_revision(document_id=document_id) == accepted[0]
+    metadata = store.load_grouping_checkpoint_metadata(document_id=document_id)
+    assert metadata is not None
+    assert metadata.tree_revision == accepted[0]
+    assert metadata.merge_revision == 2
 
 
 @pytest.mark.ci
