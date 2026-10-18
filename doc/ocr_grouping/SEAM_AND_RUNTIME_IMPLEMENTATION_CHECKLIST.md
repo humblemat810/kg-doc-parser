@@ -961,7 +961,11 @@ an adapter-only test, or a source-checkout-only runtime test.
   regression reopens and verifies them before adoption. The focused regression
   `test_rebuild_rejects_legacy_ocr_when_page_40_changes_in_new_source_revision`
   also proves that a same-numbered page's legacy OCR is invalidated when its
-  rendered bytes change across source revisions. The additional
+  rendered bytes change across source revisions. The root-resume regression
+  `test_ocr_root_resume_rebuilds_after_same_path_source_change` now changes a
+  page image at the same path after a process interruption, resumes the same
+  root run, and asserts both pages are rerun under the new source revision and
+  the prior page text is absent. The additional
   `test_rebuild_does_not_trust_legacy_image_as_current_source` proves the
   legacy artifact directory cannot authenticate its own stale image when the
   authoritative current render is absent. CI run `39114954960` passed the
@@ -1020,7 +1024,10 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [x] Normalize text and non-text objects into one explicit source traversal in
   the response models and document adapter. Focused tests cover mixed text and
   figure order. The public OCR-root integration test also supplies that order
-  to grouping and semantic parsing; the graph remains a text-only projection.
+  to grouping and semantic parsing. Graph export now reifies media-bearing
+  source items as Kogwistar multimodal evidence nodes linked to the semantic
+  root; see `test_media_source_items_project_to_ordered_kogwistar_multimodal_graph_evidence`
+  and `test_export_projects_grouped_media_into_kogwistar_multimodal_evidence`.
 - [x] Validate that `meaningful_ordering` covers every accepted cluster exactly
   once, including non-text clusters. Duplicate IDs, missing IDs, and empty-page
   agreement are rejected by the typed model/adapter boundary. Diagnostics name
@@ -1035,9 +1042,10 @@ an adapter-only test, or a source-checkout-only runtime test.
   by `test_graph_export_preserves_mixed_multimodal_sibling_reading_order`.
   `test_ocr_grouping_and_semantic_graph_preserve_mixed_reading_order` verifies
   the OCR-root grouping callback receives text A, figure, caption, text B and
-  that the semantic graph's text-only projection retains text order. A graph
-  representation for non-text evidence and a real multi-object provider
-  fixture remain open.
+  that the semantic graph's text projection retains text order. The graph now
+  additionally preserves non-text evidence as ordered Kogwistar multimodal
+  source records with digest/revision and spatial or temporal grounding. A real
+  multi-object provider fixture with independent ground truth remains open.
 - [x] Represent ambiguous provider order explicitly instead of silently
   appending non-text objects after text. When `meaningful_ordering` is absent
   for a mixed page, normalized page metadata records
@@ -1048,9 +1056,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   now covers figure/caption/table/text traversal and asserts modality order.
   `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_grouping_and_semantic_graph_preserve_mixed_reading_order`
   additionally exercises the public OCR-root workflow, grouped child order,
-  semantic callback input order, and text-only graph projection. A graph-level
-  non-text evidence projection and provider-backed multimodal fixture remain
-  open.
+  semantic callback input order, and graph export. The new projection tests
+  verify typed multimodal evidence and export integration; a provider-backed
+  multi-object fixture with independent ground truth remains open.
 
 ### S05. Accepted group tree to semantic parser input
 

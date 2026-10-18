@@ -60,16 +60,16 @@ import importlib.util
 import json
 import logging
 import os
-import signal
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
-from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -2863,6 +2863,103 @@ def test_ocr_root_resume_rejects_changed_provider_before_replaying_pages() -> No
             run_id="ocr|ocr-root-identity",
             resume_from_checkpoint=True,
         )
+
+
+@pytest.mark.ci
+def test_ocr_root_resume_rebuilds_after_same_path_source_change() -> None:
+    """A changed source revision rebuilds instead of reusing accepted pages."""
+    scratch = _scratch("ocr_root_resume_source_revision")
+    payloads: list[OCRImagePayload] = []
+    for page_number in (1, 2):
+        image_path = scratch / "source" / f"page-{page_number}.png"
+        _draw_test_image(image_path, lines=[f"Source revision page {page_number}"])
+        payloads.append(OCRImagePayload(page_number=page_number, image_path=str(image_path)))
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="source-revision-ocr"),
+        parser=ProviderEndpointConfig(provider="fake", model="source-revision-parser"),
+        embedding=EmbeddingProviderConfig(
+            provider="fake", model="source-revision-embed", dimension=1
+        ),
+        triage_enabled=False,
+    )
+    engines = build_workflow_engine_triplet(scratch / "engines", "in_memory")
+    calls: list[int] = []
+
+    def _interrupting_runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        calls.append(page_number)
+        if page_number == 2:
+            raise RuntimeError("simulated interruption")
+        return _fake_ocr_response(page_number, f"Source revision page {page_number}")
+
+    with pytest.raises(RuntimeError, match="OCR root workflow"):
+        run_ocr_ingest_workflow(
+            document_id="ocr-root-source-revision-doc",
+            title="OCR Root Source Revision",
+            output_dir=scratch / "artifacts",
+            image_payloads=payloads,
+            provider_settings=settings,
+            workflow_engine=engines[0],
+            conversation_engine=engines[1],
+            knowledge_engine=engines[2],
+            ocr_runner=_interrupting_runner,
+            deps={"parse_semantic_fn": _grounded_semantic_tree},
+            run_id="ocr|ocr-root-source-revision",
+        )
+    assert calls == [1, 2]
+
+    # Keep the source path and provider configuration fixed while changing the
+    # bytes that define the interrupted run's source revision.
+    _draw_test_image(
+        Path(payloads[0].image_path), lines=["Changed page 1 in source revision two"]
+    )
+
+    def _revision_two_runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del provider_settings
+        calls.append(page_number)
+        page_text = (
+            "Changed page 1 in source revision two"
+            if page_number == 1
+            else "Source revision page 2"
+        )
+        assert Path(image_path).read_bytes()
+        return _fake_ocr_response(page_number, page_text)
+
+    result, bundle, _ = run_ocr_ingest_workflow(
+        document_id="ocr-root-source-revision-doc",
+        title="OCR Root Source Revision",
+        output_dir=scratch / "artifacts",
+        image_payloads=payloads,
+        provider_settings=settings,
+        workflow_engine=engines[0],
+        conversation_engine=engines[1],
+        knowledge_engine=engines[2],
+        ocr_runner=_revision_two_runner,
+        deps={"parse_semantic_fn": _grounded_semantic_tree},
+        run_id="ocr|ocr-root-source-revision",
+        resume_from_checkpoint=True,
+    )
+    assert result.status == "succeeded"
+    assert calls == [1, 2, 1, 2], "the new source revision reused a prior OCR page"
+    assert bundle is not None and bundle.grouping_tree is not None
+    source_items = bundle.grouping_tree["source_items"]
+    page_one_text = [
+        item.get("text")
+        for item in source_items
+        if isinstance(item, dict)
+        and isinstance(item.get("location"), dict)
+        and item["location"].get("page_index") == 0
+    ]
+    assert "Changed page 1 in source revision two" in page_one_text
+    assert "Source revision page 1" not in page_one_text
 
 
 def _fake_ocr_response(page_number: int, text: str) -> OCRClusterResponse:

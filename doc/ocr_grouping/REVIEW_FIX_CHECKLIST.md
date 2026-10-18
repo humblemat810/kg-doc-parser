@@ -18,7 +18,7 @@ individual acceptance criteria.
 | Adaptive grouping and summary durability | IMPLEMENTED; quality evidence PARTIAL | The review claim that only generic grouping primitives exist is no longer accurate for this branch: the default non-fake root path constructs a structured proposer and grounded summarizer, iterates bounded ordered frontier windows bottom-up, feeds accepted groups into later rounds, and supplies modality/location/MIME plus available OCR text or summaries. Deterministic-provider tests cover default wiring, iteration, grounding, resume, and semantic/export consumption. Remaining work is evidence, not another grouping abstraction: evaluate live-provider grouping quality and independently establish figure/non-text completeness. The grouping prompt does not inspect raw image pixels or claim unseen media content. Summary limits and accepted summaries survive two fresh-process interruptions and match the uninterrupted reference. |
 | Semantic hierarchy publication | PASS locally and CI | Static/custom and default adaptive accepted grouping are consumed by semantic parsing and preserved by graph export; grounded summaries reach semantic parsing. The 100-page test passed locally in 1093.68s, comparing recovered tree and canonical graph against an uninterrupted persistent reference after two process terminations and verifying Chroma after reopen over identical PDF bytes/source revision. Deterministic synthetic OCR payloads validate persistence/recovery semantics, not real OCR quality. Parser CI run `39114468766` passed the Linux recovery and durable graph publication gates. The recovery-vs-repair audit is complete; do not duplicate Kogwistar's resume mechanism. |
 | OCR completeness and positional fidelity | PARTIAL (independent evidence) | Provider precision, source-item accounting, and unresolved-item diagnostics are enforced. The typed `OCRGroundTruth` evaluator measures aggregate and per-modality item recall, spatial IoU, and text mismatch; modalities without ground-truth annotations report `None`, not false 100% recall. It rejects malformed provider boxes and does not count disjoint boxes as matches even when `minimum_iou=0`, covered by `test_ground_truth_evaluator_rejects_invalid_provider_boxes` and `test_zero_iou_threshold_does_not_match_spatially_disjoint_items`. `test_ground_truth_report_exposes_missing_non_text_recall_separately` prevents text hits from obscuring a missing figure/table annotation. Its Codex table fixture includes the exact 1600x1200 source page, checked by SHA-256 and dimensions in `test_recorded_codex_layout_fixture_has_independent_spatial_coverage`, making 16 annotated text/table regions auditable. This is controlled fixture evidence, not independent provider completeness for figures/non-text. The recorded live Codex figure run returned zero non-text objects. Independent annotated visual-region/provider evidence remains open. |
-| Typing and interpreter matrix | PASS on `b21a4dc`; new OCR pipeline change locally checked | `document_adapters.py` narrows `summary` before reading `generation_fingerprint`. Parser CI run `39115140509` passed the CPython 3.12 package type-check step and all supported interpreter jobs on `b21a4dc`. The unpushed OCR artifact schema validation change passes local Pyright with zero diagnostics; its remote CI is pending. |
+| Typing and interpreter matrix | Local checks PASS; pushed CI pending | `document_adapters.py` narrows `summary` before reading `generation_fingerprint`; full local Pyright reports 0 diagnostics. Ruff and 60 focused adapter/grouping tests pass. Commit `1ad7e43` is pushed on `feat/ocr-source-item-accounting`; Parser CI run `39118358791` remains in progress. The prior interpreter-matrix success is run `39115140509` on `b21a4dc`; the current commit is not yet CI-verified. |
 | Release | OPEN | Do not bump the parser version or downstream pins until the release-blocking rows are green with evidence. |
 
 The status history is the Git history. For example:
@@ -603,10 +603,15 @@ S01-S12 and C01-C06 rows in
   Pyright); CI for this new pipeline slice is pending. Durable graph
   publication remains a separate Kogwistar backend gate.
 - [~] S03-S04 preserve declared spatial precision, media provenance, and
-  deterministic mixed-object ordering; mixed pages without declared ordering
-  now record `ordering_status="ambiguous_provider_order"` instead of silently
-  implying text-before-non-text order. Live multi-object provider evidence and
-  caption permutation coverage are still required.
+  deterministic mixed-object ordering. Mixed pages without declared ordering
+  record `ordering_status="ambiguous_provider_order"`; caption/text/table
+  permutation is covered by the provider-normalization and OCR-root tests.
+  Graph export now emits ordered Kogwistar multimodal evidence records with
+  source digest/revision and validated spatial/temporal grounding, covered by
+  `test_media_source_items_project_to_ordered_kogwistar_multimodal_graph_evidence`
+  and `test_export_projects_grouped_media_into_kogwistar_multimodal_evidence`.
+  A real multi-object provider run with independent visual ground truth remains
+  open under C06.
 - [x] S05 proves accepted hierarchy reaches semantic parsing and graph export,
   rather than surviving only as ignored metadata. The export metamorphic test
   proves parent-child structure is consumed, and the local 100-page fresh-
