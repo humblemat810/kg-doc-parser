@@ -378,7 +378,9 @@ def main() -> int:
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
         scratch / "engines", "in_memory"
     )
-    if mode.startswith("durable-"):
+    # Config-fingerprint recovery uses SQLite-backed workflow checkpoints but
+    # does not verify graph publication; keep its knowledge engine provider-free.
+    if mode.startswith("durable-") and not mode.startswith("durable-config-"):
         knowledge_engine.close()
         knowledge_engine = GraphKnowledgeEngine(
             persist_directory=str(scratch / "engines" / "durable-knowledge"),
