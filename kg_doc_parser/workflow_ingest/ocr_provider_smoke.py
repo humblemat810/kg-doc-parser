@@ -29,12 +29,15 @@ def main() -> int:
     )
     parser.add_argument("--page-number", type=int, default=1)
     args = parser.parse_args()
+    image_path: Path | None = None
     if args.ground_truth is not None and not args.live:
         parser.error("--ground-truth requires --live")
-    if args.live and args.image is None:
-        parser.error("--image is required with --live")
-    if args.live and args.image is not None and not args.image.is_file():
-        parser.error(f"image file does not exist: {args.image}")
+    if args.live:
+        image_path = args.image
+        if image_path is None:
+            parser.error("--image is required with --live")
+        elif not image_path.is_file():
+            parser.error(f"image file does not exist: {image_path}")
     if args.page_number < 1:
         parser.error("--page-number must be positive")
     if args.live and args.ground_truth is not None and not args.ground_truth.is_file():
@@ -70,15 +73,16 @@ def main() -> int:
         "providers": provider_records,
     }
     if args.live:
+        assert image_path is not None
         live_result: JsonObject = {
             "provider": "configured",
-            "image": str(args.image),
+            "image": str(image_path),
             "page_number": args.page_number,
             "credentials_recorded": False,
         }
         try:
             response = _run_live_ocr_page(
-                args.image,
+                image_path,
                 args.page_number,
                 WorkflowProviderSettings.from_env(),
             )
