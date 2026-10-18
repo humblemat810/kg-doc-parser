@@ -13,10 +13,10 @@ section after a test run.
 
 | Track | Status | Release-blocking remainder |
 | --- | --- | --- |
-| Track A: persisted Kogwistar runtime integration | PARTIAL (remote verification) | The recovery-versus-repair review is complete: ordinary interruption resumes the same Kogwistar run; terminal-artifact repair alone uses a new root incarnation. The expanded 100-page local gate now passes with two real process terminations, same-root fresh-process recovery, durable Chroma reopen, accepted OCR/summary reuse, semantic publication, and recovered-versus-uninterrupted tree and canonical graph equality. Remote CI for this expanded gate is pending. Do not add another checkpoint layer. |
-| Track B: strict seam validation | PARTIAL (independent visual evidence and remote CI) | Adaptive grouping/grounded-summary behavior is already implemented and covered with deterministic providers: the default non-fake OCR root iterates bounded bottom-up frontier grouping, carries modality/location and available evidence, and passes accepted hierarchy to semantic/export. The expanded 100-page crash/recovery equivalence test passes locally. Live-provider grouping quality, visual understanding beyond OCR evidence, independent figure/non-text completeness, and remote CI for the expanded test remain unverified. |
+| Track A: persisted Kogwistar runtime integration | PASS (local and remote) | The recovery-versus-repair review is complete: ordinary interruption resumes the same Kogwistar run; terminal-artifact repair alone uses a new root incarnation. The expanded 100-page gate passes with two real process terminations, same-root fresh-process recovery, durable Chroma reopen, accepted OCR/summary reuse, semantic publication, and recovered-versus-uninterrupted tree and canonical graph equality. Parser CI run `39106578551` passed. Do not add another checkpoint layer. |
+| Track B: strict seam validation | PARTIAL (independent visual evidence) | The reviewer concern that only generic grouping primitives exist is superseded by the default non-fake OCR root: it constructs a structured proposer and grounded summarizer, iterates bounded bottom-up frontier windows, carries modality/location/MIME and available OCR evidence, and passes accepted hierarchy to semantic/export. Deterministic-provider tests cover the workflow. The expanded 100-page crash/recovery equivalence test also passes locally and in Parser CI run `39106578551`. Still open: live-provider grouping quality, actual visual understanding beyond OCR-derived evidence, and independent figure/non-text completeness. |
 | C01-C02: API and ownership boundary | PASS (focused matrix) | Installed Kogwistar `0.6.12` exposes the required persisted workflow API; stable root/page/grouping/semantic ownership and concurrent resume fencing are covered by fresh-process tests. Parser CI run `39100319567` passed all four supported interpreter jobs and both focused recovery gates. |
-| C03-C05: reconciliation, equivalence, and true resume | PARTIAL (remote verification) | C03 parser-side artifact/checkpoint ordering is covered. The expanded 100-page local test now proves two process interruptions, same-run fresh-process recovery, durable Chroma persistence, accepted OCR/summary reuse, and canonical tree/graph equivalence against an uninterrupted persistent reference. Remote CI for this combined gate is pending. C04 bounded-cost frontier evidence is covered by `test_merge_groups_scans_frontier_linearly_without_nested_rebuilds`; C05 process recovery and duplicate-resume gates have parser coverage. Recovery remains coordinated with Kogwistar rather than duplicated in parser; ordinary interruptions resume the same run, and terminal-artifact repair alone uses a new root incarnation. |
+| C03-C05: reconciliation, equivalence, and true resume | PASS (local and remote recovery gate) | C03 parser-side artifact/checkpoint ordering is covered. The expanded 100-page test proves two process interruptions, same-run fresh-process recovery, durable Chroma persistence, accepted OCR/summary reuse, and canonical tree/graph equivalence against an uninterrupted persistent reference; Parser CI run `39106578551` passed. C04 bounded-cost frontier evidence is covered by `test_merge_groups_scans_frontier_linearly_without_nested_rebuilds`; C05 process recovery and duplicate-resume gates have parser coverage. Recovery-versus-repair was reviewed: ordinary interruption resumes the same Kogwistar run; only repair after a terminal run uses a new root incarnation because succeeded runs are immutable. The richer semantic fixture remains separate from this durable recovery proof, as tracked in C. |
 | C06: OCR quality/completeness | PARTIAL | Source-item accounting covers raw-text fallback, direct RapidOCR/EasyOCR, native PDF, Docling text/table/figure, and legacy conversion paths. `OCRGroundTruth` independently measures aggregate and per-modality item recall, spatial IoU, and text mismatch; modalities without annotations report `None` instead of an unsupported 1.0. `test_ground_truth_report_exposes_missing_non_text_recall_separately` catches a missed figure even when text recall is 1.0. The auditable Codex table fixture includes its source page and covers 16/16 annotated text/table regions. The recorded live Codex figure run returned zero non-text objects; independent provider completeness for figures/non-text remains open. |
 | Typing and interpreter matrix | PASS | Production-package Pyright reports 0 errors, 0 warnings. Parser CI run `39085988324` passed commit `d693e06` on CPython 3.12-3.14 and PyPy 3.11, including the Linux recovery gate; the required checkpoint repair cursor also has a dedicated regression test. |
 | Release | OPEN | Version bump and downstream pin updates wait for all release-blocking rows. |
@@ -438,27 +438,30 @@ runtime classification to the evidence ledger below.
   and `test_ocr_workflow_resumes_cached_pages_and_terminal_semantic_run` cover
   the two distinct paths. Do not replace either path with a duplicate
   parser-owned retry mechanism.
-- [~] **A-5. Summary recovery:** summaries are derived, revision-fenced, and
+- [x] **A-5. Summary recovery:** summaries are derived, revision-fenced, and
   independently retryable. A cache hit must not call the provider or create a
   second accepted journal row; a failed summary must not invalidate accepted
   OCR/grouping state. Grounded summary generation and the separate adaptive
   grouping proposer are both wired into the default non-fake root path. Their
-  deterministic workflow contract is tested. The new
+  deterministic workflow contract is tested. The
   `test_ocr_summary_is_not_regenerated_after_fresh_process_resume` proves the
   accepted summary survives termination before semantic publication and is not
-  regenerated on recovery; local test passes and remote CI is pending. Live-
-  provider grouping quality remains open.
-- [~] **A-6. Process-boundary proof:** terminate a real worker after a page and
+  regenerated on recovery; the 100-page durable two-termination gate confirms
+  the same behavior after reopening persistent Chroma. Parser CI run
+  `39106578551` passed. Live-provider grouping quality remains open under
+  Track B.
+- [x] **A-6. Process-boundary proof:** terminate a real worker after a page and
   after a grouping/summary checkpoint, reopen the same engines and run ID in a
   new process, and prove one lineage, no duplicate accepted result, and no
-  replay of completed work. The 100-page same-process/reference regression was
-  run against a coordinated source checkout and is not installed-release
-  evidence. Kogwistar `0.6.10` is now published and installed-package
-  verification passes. The fresh-process root path is covered with
-  `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process`,
-  and the real termination and concurrent-resume tests also pass. Linux
-  SIGKILL, complete dual-store reconciliation, and independent OCR
-  completeness evidence remain open.
+  replay of completed work. The installed-package test
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_after_page_63`
+  kills the worker after page 63 and again after accepted summary generation,
+  resumes in fresh processes with the same root identity, compares recovered
+  tree and canonical graph output with an uninterrupted persistent reference,
+  and reopens Chroma to verify persisted node/edge IDs. On POSIX the helper
+  uses `SIGKILL`. Parser CI run `39106578551` passed. The separate rich
+  semantic-fixture and independent OCR-completeness criteria remain open
+  under Track B/C; they do not invalidate this process-recovery result.
 
 **Track A is complete only when:** the test uses the installed Kogwistar
 package, survives a real process boundary, compares canonical output with an
@@ -539,8 +542,10 @@ whose contract crosses SQLite, Kogwistar, a provider, or graph export.
   runtime fixes before claiming Track A-6 or the 100-page release fixture.
   Kogwistar `0.6.12` is visible on PyPI and is now the parser's locked
   dependency. The post-pin parser matrix remains the evidence gate.
-- [ ] **D-4.** Close Track A process/recovery evidence before claiming Track B
-  end-to-end seam closure.
+- [x] **D-4.** Close Track A process/recovery evidence before claiming Track B
+  end-to-end seam closure. The installed-package 100-page, two-termination
+  recovery gate passed locally and in Parser CI run `39106578551`; Track B's
+  separate rich-fixture and independent-completeness gates remain open.
 - [ ] **D-5.** Only after both tracks are green, bump the parser version, add
   release notes, update downstream pins, and publish.
 
@@ -1378,6 +1383,17 @@ publication across process restart remains delegated to Kogwistar backend
 contracts rather than duplicated here.
 
 ## C. Required End-to-End Acceptance Fixture
+
+The current branch has two complementary but not interchangeable proofs: the
+100-page deterministic semantic fixture exercises duplicate paragraphs,
+mixed text/non-text order, front matter, and the page 62-63 continuation but
+does not perform fresh-process termination against durable graph storage; the
+two-termination Chroma recovery gate verifies durable graph equality but uses
+a simpler generated-page fixture. Keep this acceptance fixture open until one
+test combines the required document semantics, source-revision change, real
+process termination/resume, and persistent graph comparison. OCR provider
+completeness against independent visual ground truth remains separately open
+under C06.
 
 - [ ] Generate a deterministic 100-page PDF fixture containing:
   - a long atomic table;

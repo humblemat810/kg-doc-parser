@@ -430,7 +430,21 @@ def select_summary_targets(
     used_tokens = 0
     eligible = set(policy.eligible_kinds)
     for node in tree.nodes:
-        if node.summary is not None and node.summary.status in {"generated", "verified"}:
+        has_accepted_summary = node.summary is not None and node.summary.status in {
+            "generated",
+            "verified",
+        }
+        summary_matches_policy = bool(
+            has_accepted_summary
+            and (
+                node.summary.generation_fingerprint == policy.generation_fingerprint
+                or (
+                    node.summary.generation_fingerprint is None
+                    and policy.generation_fingerprint == "summary-v1"
+                )
+            )
+        )
+        if summary_matches_policy and node.summary is not None:
             # The policy bounds accepted work for the whole tree, not just one
             # invocation. This keeps resume from resetting target/token caps.
             completed_targets += 1
@@ -440,7 +454,9 @@ def select_summary_targets(
                 if slice_.item_id in node.summary.evidence_item_ids
             )
             continue
-        if node.parts or node.summary is not None or node.kind not in eligible:
+        # A completed summary from a different generation is stale and must be
+        # eligible for replacement; non-completed states remain non-candidates.
+        if node.parts or (node.summary is not None and not has_accepted_summary) or node.kind not in eligible:
             continue
         evidence = tree.evidence_slices(node.node_id)
         item_ids = {slice_.item_id for slice_ in evidence}

@@ -5907,13 +5907,13 @@ def test_summary_generation_fingerprint_invalidates_persisted_cache() -> None:
         grouping_policy_version="summary-cache-v1",
         expected_tree_revision=initial_revision,
     )
+    first_summary = next(node.summary for node in first.nodes if node.node_id == "root")
+    assert first_summary is not None
+    assert first_summary.generation_fingerprint == "provider-a:model-a:prompt-a"
     current_revision = store.document_tree_revision(document_id=tree.document_id)
     assert current_revision is not None
-    without_summary = first.model_copy(
-        update={"nodes": tuple(node.model_copy(update={"summary": None}) for node in first.nodes)}
-    )
     second = _generate_tree_summaries(
-        without_summary,
+        first,
         document_id=tree.document_id,
         state_store=store,
         policy=SummaryPolicy(
@@ -5929,7 +5929,10 @@ def test_summary_generation_fingerprint_invalidates_persisted_cache() -> None:
     )
 
     assert calls["count"] == 2
-    assert next(node.summary for node in second.nodes if node.node_id == "root").text == "summary:2"
+    second_summary = next(node.summary for node in second.nodes if node.node_id == "root")
+    assert second_summary is not None
+    assert second_summary.text == "summary:2"
+    assert second_summary.generation_fingerprint == "provider-b:model-b:prompt-b"
 
 
 @pytest.mark.ci

@@ -623,6 +623,7 @@ def test_summary_target_budget_is_not_reset_when_tree_already_has_summaries() ->
                 evidence_item_ids=("item-0", "item-1"),
                 provider_model="fake",
                 prompt_revision="prompt-v1",
+                generation_fingerprint="provider-current",
                 input_fingerprint=base.summary_input_fingerprint("section"),
             )
         },
@@ -637,6 +638,7 @@ def test_summary_target_budget_is_not_reset_when_tree_already_has_summaries() ->
             minimum_source_chars=1,
             minimum_information_gain_chars=0,
             maximum_targets=1,
+            generation_fingerprint="provider-current",
         ),
     ) == ()
     completed_summary_budget = sum(
@@ -652,8 +654,35 @@ def test_summary_target_budget_is_not_reset_when_tree_already_has_summaries() ->
             minimum_information_gain_chars=0,
             maximum_targets=10,
             maximum_input_tokens=completed_summary_budget,
+            generation_fingerprint="provider-current",
         ),
     ) == ()
+
+    stale_summary_tree = apply_summary_updates(
+        base,
+        {
+            "section": Summary(
+                status="generated",
+                text="old summary",
+                evidence_item_ids=("item-0", "item-1"),
+                provider_model="old-provider",
+                prompt_revision="prompt-v1",
+                generation_fingerprint="provider-old",
+                input_fingerprint=base.summary_input_fingerprint("section"),
+            )
+        },
+    )
+    assert select_summary_targets(
+        stale_summary_tree,
+        SummaryPolicy(
+            eligible_kinds=("section",),
+            minimum_source_items=2,
+            minimum_source_chars=1,
+            minimum_information_gain_chars=0,
+            maximum_targets=1,
+            generation_fingerprint="provider-new",
+        ),
+    ) == ("section",)
 
 
 def test_summary_target_planner_does_not_send_oversized_evidence() -> None:

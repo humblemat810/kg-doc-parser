@@ -164,6 +164,7 @@ class Summary(FrozenModel):
     evidence_item_ids: tuple[str, ...] = ()
     provider_model: str | None = None
     prompt_revision: str | None = None
+    generation_fingerprint: str | None = None
     input_fingerprint: str | None = None
     evidence_slice_fingerprint: str | None = None
 
@@ -175,6 +176,8 @@ class Summary(FrozenModel):
             raise ValueError("unavailable summaries cannot contain text")
         if len(set(self.evidence_item_ids)) != len(self.evidence_item_ids):
             raise ValueError("summary evidence items must be unique")
+        if self.generation_fingerprint is not None and not self.generation_fingerprint.strip():
+            raise ValueError("summary generation fingerprint must not be blank")
         return self
 
 

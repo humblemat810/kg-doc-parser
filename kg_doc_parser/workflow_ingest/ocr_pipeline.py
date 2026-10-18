@@ -943,6 +943,7 @@ def _generate_tree_summaries(
                 )
             summary = summary.model_copy(
                 update={
+                    "generation_fingerprint": policy.generation_fingerprint,
                     "evidence_slice_fingerprint": current.summary_slice_fingerprint(
                         node_id, evidence_ids
                     )
