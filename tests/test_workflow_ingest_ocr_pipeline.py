@@ -3596,6 +3596,57 @@ def test_ocr_strict_quality_rejection_recovers_with_valid_provider_result() -> N
 
 
 @pytest.mark.ci
+def test_strict_quality_rejection_recovers_in_a_fresh_process() -> None:
+    """A persisted rejected attempt is retried, not accepted, after restart."""
+    scratch = _scratch("ocr_strict_quality_fresh_process")
+    _draw_test_image(scratch / "source" / "page-1.png", lines=["strict restart"])
+    worker = Path(__file__).with_name("_ocr_strict_quality_fresh_process_worker.py")
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        path
+        for path in (
+            str(repo_root),
+            str(repo_root.parent / "kogwistar"),
+            child_env.get("PYTHONPATH", ""),
+        )
+        if path
+    )
+
+    results: dict[str, dict[str, object]] = {}
+    for mode in ("reject", "resume"):
+        process = subprocess.run(
+            [sys.executable, str(worker), str(scratch), mode],
+            env=child_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert process.returncode == 0, process.stdout + process.stderr
+        results[mode] = json.loads(
+            (scratch / f"{mode}-result.json").read_text(encoding="utf-8")
+        )
+        if mode == "reject":
+            assert results[mode]["calls"] == 1
+            assert results[mode]["status"] == "rejected"
+            assert results[mode]["page_status"] == "failed"
+            rejected_artifact = Path(str(results[mode]["artifact_path"]))
+            assert not rejected_artifact.exists()
+
+    assert results["resume"]["calls"] == 1
+    assert results["resume"]["status"] == "completed"
+    assert results["resume"]["page_status"] == "completed"
+    accepted_artifact = Path(str(results["resume"]["artifact_path"]))
+    assert accepted_artifact.is_file()
+    persisted = json.loads(accepted_artifact.read_text(encoding="utf-8"))
+    assert persisted["source_item_count"] == 2
+    assert persisted["unresolved_item_count"] == 0
+    assert persisted["non_text_objects"][0]["description"] == (
+        "figure: recovered diagram"
+    )
+
+
+@pytest.mark.ci
 def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
     """The public policy override must remain one identity at every seam."""
     scratch = _scratch("ocr_custom_grouping_policy")
