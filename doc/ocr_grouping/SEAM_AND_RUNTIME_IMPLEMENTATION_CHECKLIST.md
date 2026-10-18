@@ -481,15 +481,18 @@ cannot close A-6.
   contracts preserve explicit spatial precision and downgrade missing or
   unknown declarations to page accuracy. Real provider smoke and downstream
   graph-export tests verify the boundary.
-- [~] **B-3 / S05 hierarchy consumption:** the graph exporter has a metamorphic
+- [x] **B-3 / S05 hierarchy consumption:** the graph exporter has a metamorphic
   test with two valid trees over identical source items. The public OCR-root
-  test `test_custom_grouping_policy_reaches_checkpoint_cache_and_export` now
-  feeds two accepted grouping sections through the semantic callback and
-  asserts their identities, ordered source excerpts, and parent-child graph
-  edges survive export. The accepted group nodes are terminal semantic units
-  here to preserve the no-unary-refinement invariant. Explicit compatibility
-  behavior for consumers that ignore hierarchy and durable graph-backend
-  publication remain open.
+  test `test_custom_grouping_policy_reaches_checkpoint_cache_and_export` feeds
+  accepted grouping sections through the semantic callback and asserts their
+  identities, ordered source excerpts, and parent-child graph edges survive
+  export. `WorkflowExportBundle.grouping_contract` makes hierarchy optional
+  only for compatibility callers and rejects a missing tree when required.
+  The 100-page fresh-process test compares recovered hierarchy and canonical
+  graph output with an uninterrupted reference after persistent Chroma reopen;
+  Parser CI run `39135756441` passed the recovery and durable-publication gates.
+  OCR payloads in that gate are deterministic fixtures, not provider accuracy
+  evidence.
 - [~] **B-4 / S06-S08 durable grouping and summaries:** fence every grouping
   writer, preserve meaningful groups and atomic objects, invalidate summaries
   on grouping changes, and test duplicate/replay behavior. Grouping updates
