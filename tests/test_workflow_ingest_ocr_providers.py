@@ -480,6 +480,42 @@ def test_direct_rapidocr_adapter_normalizes_boxes_without_docling(
     assert response.source_item_count == 1
 
 
+@pytest.mark.ci
+def test_direct_rapidocr_adapter_orders_clear_columns_top_to_bottom(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from PIL import Image
+
+    image_path = tmp_path / "two-columns.png"
+    Image.new("RGB", (100, 100), "white").save(image_path)
+
+    class Output:
+        boxes: ClassVar[list[list[tuple[int, int]]]] = [
+            [(5, 10), (40, 10), (40, 20), (5, 20)],
+            [(60, 10), (95, 10), (95, 20), (60, 20)],
+            [(5, 30), (40, 30), (40, 40), (5, 40)],
+            [(60, 30), (95, 30), (95, 40), (60, 40)],
+        ]
+        txts: ClassVar[list[str]] = ["left top", "right top", "left next", "right next"]
+
+    class FakeRapidOCR:
+        def __call__(self, _path: str) -> Output:
+            return Output()
+
+    module = ModuleType("rapidocr")
+    module.RapidOCR = FakeRapidOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidocr", module)
+
+    response = run_rapidocr_page(
+        image_path, 1, ProviderEndpointConfig(provider="rapidocr")
+    )
+
+    assert [
+        response.OCR_text_clusters[index].text
+        for index in response.meaningful_ordering
+    ] == ["left top", "left next", "right top", "right next"]
+
+
 def test_direct_rapidocr_adapter_accepts_numpy_style_iterables(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

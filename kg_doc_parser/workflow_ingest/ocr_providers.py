@@ -16,6 +16,7 @@ import platform
 import shutil
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from typing import Literal, Protocol, SupportsFloat, cast
 
@@ -374,7 +375,7 @@ def _direct_response(
             continue
         x_min, x_max, y_min, y_max = _box_to_bounds(box)
         normalized.append((x_min, y_min, x_max, y_max, value))
-    normalized.sort(key=lambda item: (item[1], item[0]))
+    normalized = _reading_order(normalized, float(width))
     clusters = [
         TextCluster(
             text=text,
@@ -406,6 +407,56 @@ def _direct_response(
         source_item_count=len(clusters) + unresolved_item_count,
         spatial_accuracy="region",
     )
+
+
+def _reading_order(
+    items: list[tuple[float, float, float, float, str]], page_width: float
+) -> list[tuple[float, float, float, float, str]]:
+    """Use column-major order only when geometry exposes a clear repeated gutter."""
+
+    spatial_order = sorted(items, key=lambda item: (item[1], item[0]))
+    if len(spatial_order) < 4:
+        return spatial_order
+
+    centers = sorted({(item[0] + item[2]) / 2 for item in spatial_order})
+    best_split: tuple[float, float] | None = None
+    minimum_gutter = max(8.0, page_width * 0.04)
+    for left_center, right_center in pairwise(centers):
+        split = (left_center + right_center) / 2
+        left = [item for item in spatial_order if (item[0] + item[2]) / 2 < split]
+        right = [item for item in spatial_order if (item[0] + item[2]) / 2 >= split]
+        if len(left) < 2 or len(right) < 2:
+            continue
+        gutter = min(item[0] for item in right) - max(item[2] for item in left)
+        if gutter < minimum_gutter:
+            continue
+        if _vertical_band_count(left) < 2 or _vertical_band_count(right) < 2:
+            continue
+        if best_split is None or gutter > best_split[0]:
+            best_split = (gutter, split)
+
+    if best_split is None:
+        return spatial_order
+    _gutter, split = best_split
+    left = [item for item in spatial_order if (item[0] + item[2]) / 2 < split]
+    right = [item for item in spatial_order if (item[0] + item[2]) / 2 >= split]
+    return sorted(left, key=lambda item: (item[1], item[0])) + sorted(
+        right, key=lambda item: (item[1], item[0])
+    )
+
+
+def _vertical_band_count(
+    items: Sequence[tuple[float, float, float, float, str]],
+) -> int:
+    bands = 0
+    band_end = float("-inf")
+    for item in sorted(items, key=lambda value: (value[1], value[3])):
+        if item[1] > band_end:
+            bands += 1
+            band_end = item[3]
+        else:
+            band_end = max(band_end, item[3])
+    return bands
 
 
 def _easyocr_detections(
