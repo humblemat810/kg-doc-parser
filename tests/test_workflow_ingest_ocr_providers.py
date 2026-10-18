@@ -662,6 +662,36 @@ def test_direct_easyocr_adapter_accounts_for_malformed_detection_rows(
 
 
 @pytest.mark.ci
+def test_direct_easyocr_adapter_rejects_invalid_result_container(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from PIL import Image
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+
+    class FakeReader:
+        def __init__(self, languages: list[str], *, gpu: bool, verbose: bool) -> None:
+            del languages
+            assert gpu is False and verbose is False
+
+        def readtext(self, path: str, *, detail: int) -> object:
+            assert path == str(image_path) and detail == 1
+            return object()
+
+    module = ModuleType("easyocr")
+    module.Reader = FakeReader  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "easyocr", module)
+
+    with pytest.raises(TypeError, match="invalid container"):
+        run_easyocr_page(
+            image_path,
+            1,
+            ProviderEndpointConfig(provider="easyocr"),
+        )
+
+
+@pytest.mark.ci
 def test_direct_rapidocr_adapter_accounts_for_empty_detections(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
