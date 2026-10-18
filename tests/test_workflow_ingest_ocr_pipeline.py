@@ -604,6 +604,7 @@ def test_grouping_runs_inside_kogwistar_runtime_and_is_resume_safe(
         eligible_kinds=("document",),
         minimum_source_items=1,
         minimum_source_chars=1,
+        generation_fingerprint="fake-summary-v1",
     )
     grouped, run_id = run_grouping_workflow(
         workflow_engine=workflow_engine,
@@ -1466,6 +1467,7 @@ def test_grouping_incremental_resume_matches_uninterrupted_reference(
         eligible_kinds=("document",),
         minimum_source_items=1,
         minimum_source_chars=1,
+        generation_fingerprint="fake-summary-v1",
     )
 
     def _reference_summary(
@@ -6126,6 +6128,7 @@ def test_summary_journal_commit_is_recoverable_before_runtime_checkpoint(
             minimum_source_items=1,
             minimum_source_chars=1,
             minimum_information_gain_chars=0,
+            generation_fingerprint="journal-summary-v1",
         ),
         generator=_generator,
         grouping_policy_version="summary-journal-v1",
@@ -6158,6 +6161,7 @@ def test_summary_journal_commit_is_recoverable_before_runtime_checkpoint(
             minimum_source_items=1,
             minimum_source_chars=1,
             minimum_information_gain_chars=0,
+            generation_fingerprint="journal-summary-v1",
         ),
         generator=_generator,
         grouping_policy_version="summary-journal-v1",

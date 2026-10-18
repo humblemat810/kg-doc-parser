@@ -115,6 +115,7 @@ jobs:
           tests/test_workflow_ingest_layerwise_llm.py
           tests/test_workflow_ingest_layerwise_parser.py
           tests/test_workflow_ingest_ocr_pipeline.py
+          tests/test_workflow_ingest_ocr_providers.py
           tests/test_workflow_ingest_page_index_pipeline.py
           tests/test_workflow_ingest_resolver_invariants.py
           -q --durations=25 --durations-min=0 -p no:cacheprovider
@@ -135,6 +136,7 @@ jobs:
           tests/test_workflow_ingest_layerwise_llm.py
           tests/test_workflow_ingest_layerwise_parser.py
           tests/test_workflow_ingest_ocr_pipeline.py
+          tests/test_workflow_ingest_ocr_providers.py
           tests/test_workflow_ingest_page_index_pipeline.py
           tests/test_workflow_ingest_resolver_invariants.py
           -q --durations=25 --durations-min=0 -p no:cacheprovider

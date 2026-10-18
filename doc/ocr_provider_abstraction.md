@@ -85,8 +85,14 @@ The capability command writes a sanitized JSON report under the chosen
 experiment directory. A real one-page provider smoke is reproducible with
 `ocr-provider-smoke --live --image <page.png> --output-dir <dir>` after loading
 the provider environment. It writes `live-result.json` without credentials or
-raw responses. Keep rendered pages, `ocr-state.sqlite`, page JSON, diagnostics,
-and provider caches together for a full workflow run; do not commit them.
+raw responses. For an independently annotated page, pass
+`--ground-truth <OCRGroundTruth.json>`; the command also writes
+`quality-report.json` with one-to-one item recall, modality recall, spatial
+IoU, and transcription mismatches. The checked-in table fixture can be used as
+a deterministic command-contract example, but its captured response is not a
+new live-provider run. Keep rendered pages, `ocr-state.sqlite`, page JSON,
+diagnostics, and provider caches together for a full workflow run; do not
+commit them.
 
 The Codex bridge accepts only inline base64 image data URLs, materializes them
 in a temporary directory, and passes them to `codex exec --image`. Remote URLs,

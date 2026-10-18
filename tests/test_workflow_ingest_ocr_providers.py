@@ -5,6 +5,7 @@ import sys
 from collections.abc import Iterator
 from importlib.util import find_spec
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import ClassVar, Self
 
@@ -55,6 +56,7 @@ def test_capability_inventory_contains_all_docling_engines_and_codex_boundary() 
     assert {item.provider for item in capabilities} >= {"custom", "kserve"}
 
 
+@pytest.mark.ci
 def test_ocr_provider_smoke_writes_typed_json_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -73,6 +75,137 @@ def test_ocr_provider_smoke_writes_typed_json_report(
     assert isinstance(report, dict)
     assert report["live_status"] == "not_requested"
     assert isinstance(report["providers"], list)
+
+
+@pytest.mark.ci
+def test_ocr_provider_smoke_rejects_ground_truth_without_live_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = Path("tests") / ".tmp_ocr_provider_smoke_invalid_ground_truth"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ocr-provider-smoke",
+            "--ground-truth",
+            "missing-ground-truth.json",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        ocr_provider_smoke.main()
+    assert not output_dir.exists()
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize(
+    ("arguments", "expected_error"),
+    [
+        (["--live", "--image", "missing-image.png"], "image file does not exist"),
+        (["--live", "--image", "tests/test_workflow_ingest_ocr_providers.py", "--page-number", "0"], "page-number must be positive"),
+    ],
+)
+def test_ocr_provider_smoke_rejects_invalid_live_inputs_before_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    expected_error: str,
+) -> None:
+    with TemporaryDirectory(prefix="ocr-provider-smoke-invalid-", dir="tests") as tmp_dir:
+        output_dir = Path(tmp_dir) / "invalid-live-input"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["ocr-provider-smoke", *arguments, "--output-dir", str(output_dir)],
+        )
+
+        with pytest.raises(SystemExit, match="2"):
+            ocr_provider_smoke.main()
+        assert expected_error in capsys.readouterr().err
+        assert not output_dir.exists()
+
+
+@pytest.mark.ci
+def test_ocr_provider_smoke_rejects_malformed_ground_truth_before_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with TemporaryDirectory(prefix="ocr-provider-smoke-ground-truth-", dir="tests") as tmp_dir:
+        temp_path = Path(tmp_dir)
+        ground_truth = temp_path / "ground-truth.json"
+        ground_truth.write_text("not-json", encoding="utf-8")
+        output_dir = temp_path / "invalid-ground-truth"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "ocr-provider-smoke",
+                "--live",
+                "--image",
+                __file__,
+                "--ground-truth",
+                str(ground_truth),
+                "--output-dir",
+                str(output_dir),
+            ],
+        )
+
+        with pytest.raises(SystemExit, match="2"):
+            ocr_provider_smoke.main()
+        assert "invalid ground-truth file" in capsys.readouterr().err
+        assert not output_dir.exists()
+
+
+@pytest.mark.ci
+def test_ocr_provider_smoke_evaluates_live_response_against_ground_truth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_dir = Path(__file__).parent / "fixtures" / "ocr_ground_truth"
+    output_dir = Path("tests") / ".tmp_ocr_provider_smoke_ground_truth"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    image_path = fixture_dir / "codex_ocr_layout_page.png"
+    ground_truth_path = fixture_dir / "codex_ocr_layout_page_ground_truth.json"
+    response = OCRClusterResponse.model_validate_json(
+        (fixture_dir / "codex_ocr_layout_page_response.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    monkeypatch.setattr(
+        ocr_provider_smoke,
+        "_run_live_ocr_page",
+        lambda _image, _page, _settings: response,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ocr-provider-smoke",
+            "--live",
+            "--image",
+            str(image_path),
+            "--ground-truth",
+            str(ground_truth_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert ocr_provider_smoke.main() == 0
+    live_result = json.loads(
+        (output_dir / "live-result.json").read_text(encoding="utf-8")
+    )
+    quality_report = json.loads(
+        (output_dir / "quality-report.json").read_text(encoding="utf-8")
+    )
+    assert live_result["status"] == "succeeded"
+    assert quality_report["expected_item_count"] == 17
+    assert quality_report["item_recall_by_modality"] == {
+        "non_text": 0.0,
+        "text": 1.0,
+    }
+    assert "OCR_text_clusters" not in live_result
 
 
 def test_ocr_response_accepts_unified_text_and_nontext_reading_order() -> None:

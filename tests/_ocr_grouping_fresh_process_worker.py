@@ -88,6 +88,7 @@ def main() -> int:
         minimum_source_items=1,
         minimum_source_chars=1,
         minimum_information_gain_chars=0,
+        generation_fingerprint="fresh-grouping-summary-v1",
     )
 
     if mode == "resume":
