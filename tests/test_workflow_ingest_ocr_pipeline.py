@@ -7517,6 +7517,309 @@ assert store.should_skip_page(
 
 
 @pytest.mark.ci
+@pytest.mark.parametrize(
+    ("schema_version", "expected_status"),
+    [
+        ("0.1", "completed"),
+        ("workflow_ingest_v1", "completed"),
+        ("workflow_ingest_v99", "pending"),
+    ],
+)
+def test_artifact_rebuild_accepts_known_ocr_schemas_only(
+    schema_version: str, expected_status: str
+) -> None:
+    scratch = _scratch("ocr_schema_rebuild")
+    rendered_dir = scratch / "rendered"
+    legacy_dir = scratch / "legacy"
+    rendered_dir.mkdir(parents=True)
+    legacy_dir.mkdir(parents=True)
+    image = rendered_dir / "page_1.png"
+    image.write_bytes(b"source-image")
+    artifact = legacy_dir / "page_1.json"
+    source_digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=source_digest,
+        ocr_configuration_fingerprint="provider/model",
+    )
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["metadata"]["ocr_json_version"] = schema_version
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    assert store.rebuild_from_artifacts(
+        document_id="ocr-schema-rebuild-doc",
+        title="OCR Schema Rebuild",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-revision",
+        rendered_dir=rendered_dir,
+        legacy_dir=legacy_dir,
+        progress_path=scratch / "progress.json",
+    )
+
+    state = store.get_page_state(
+        document_id="ocr-schema-rebuild-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None
+    assert state.status == expected_status
+    if schema_version == "workflow_ingest_v99":
+        assert state.last_error == (
+            "unsupported OCR artifact schema version: 'workflow_ingest_v99'"
+        )
+
+
+@pytest.mark.ci
+def test_ocr_page_reuse_requires_artifact_path_and_supported_schema() -> None:
+    scratch = _scratch("ocr_schema_reuse")
+    artifact = scratch / "page-1.json"
+    source_digest = hashlib.sha256(b"source-image").hexdigest()
+    config_fingerprint = "provider/model"
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=source_digest,
+        ocr_configuration_fingerprint=config_fingerprint,
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="ocr-schema-reuse-doc",
+        title="OCR Schema Reuse",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-revision",
+    )
+    attempt = store.record_attempt(
+        document_id="ocr-schema-reuse-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        model_name="model",
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+    assert store.record_page_completed(
+        document_id="ocr-schema-reuse-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        artifact_path=artifact,
+        model_name="model",
+        attempt_index=attempt,
+        config_fingerprint=config_fingerprint,
+    )
+    identity = {
+        "document_id": "ocr-schema-reuse-doc",
+        "page_number": 1,
+        "stage": "ocr",
+        "content_hash": source_digest,
+        "config_fingerprint": config_fingerprint,
+    }
+    assert not store.should_skip_page(**identity)
+
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["metadata"]["ocr_json_version"] = "workflow_ingest_v99"
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE page_state SET artifact_sha256 = ? WHERE document_id = ? AND page_number = 1 AND stage = 'ocr'",
+            (hashlib.sha256(artifact.read_bytes()).hexdigest(), "ocr-schema-reuse-doc"),
+        )
+
+    assert not store.should_skip_page(**identity, artifact_path=artifact)
+
+
+@pytest.mark.ci
+def test_legacy_completion_rejects_unsupported_ocr_schema_version() -> None:
+    scratch = _scratch("ocr_unsupported_schema_completion")
+    artifact = scratch / "page-1.json"
+    source_digest = "source-image-hash"
+    config_fingerprint = "provider/model"
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=source_digest,
+        ocr_configuration_fingerprint=config_fingerprint,
+    )
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["metadata"]["ocr_json_version"] = "workflow_ingest_v99"
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="ocr-unsupported-schema-completion-doc",
+        title="OCR Unsupported Schema Completion",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-revision",
+    )
+    attempt = store.record_attempt(
+        document_id="ocr-unsupported-schema-completion-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        model_name="model",
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+
+    assert not store.record_page_completed(
+        document_id="ocr-unsupported-schema-completion-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        artifact_path=artifact,
+        model_name="model",
+        attempt_index=attempt,
+        config_fingerprint=config_fingerprint,
+    )
+
+
+@pytest.mark.ci
+def test_orphan_reconciliation_rejects_unsupported_ocr_schema_version() -> None:
+    scratch = _scratch("ocr_unsupported_schema_orphan")
+    artifact = scratch / "page-1.json"
+    source_digest = "source-image-hash"
+    config_fingerprint = "provider/model"
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=source_digest,
+        ocr_configuration_fingerprint=config_fingerprint,
+    )
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["metadata"]["ocr_json_version"] = "workflow_ingest_v99"
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="ocr-unsupported-schema-orphan-doc",
+        title="OCR Unsupported Schema Orphan",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-revision",
+    )
+
+    assert not store.reconcile_orphan_artifact(
+        document_id="ocr-unsupported-schema-orphan-doc",
+        page_number=1,
+        content_hash=source_digest,
+        artifact_path=artifact,
+        config_fingerprints=(config_fingerprint,),
+    )
+    assert store.get_page_state(
+        document_id="ocr-unsupported-schema-orphan-doc", page_number=1, stage="ocr"
+    ) is None
+
+
+@pytest.mark.ci
+def test_ocr_artifact_disappearing_during_recovery_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scratch = _scratch("ocr_artifact_disappears_during_recovery")
+    artifact = scratch / "page-1.json"
+    source_digest = "source-image-hash"
+    config_fingerprint = "provider/model"
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=source_digest,
+        ocr_configuration_fingerprint=config_fingerprint,
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    completed_document_id = "ocr-artifact-disappears-completed-doc"
+    store.ensure_document(
+        document_id=completed_document_id,
+        title="OCR Artifact Disappears Completed",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-revision",
+    )
+    attempt = store.record_attempt(
+        document_id=completed_document_id,
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        model_name="model",
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+    assert store.record_page_completed(
+        document_id=completed_document_id,
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        artifact_path=artifact,
+        model_name="model",
+        attempt_index=attempt,
+        config_fingerprint=config_fingerprint,
+    )
+    orphan_document_id = "ocr-artifact-disappears-orphan-doc"
+    store.ensure_document(
+        document_id=orphan_document_id,
+        title="OCR Artifact Disappears Orphan",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-revision",
+    )
+
+    def _raise_missing_file(_path: Path) -> dict[str, object]:
+        raise FileNotFoundError("artifact removed after the existence check")
+
+    def _raise_hash_error(_path: Path) -> str:
+        raise FileNotFoundError("artifact removed after the existence check")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(ocr_pipeline_module, "_sha256_file", _raise_hash_error)
+        assert not store.should_skip_page(
+            document_id=completed_document_id,
+            page_number=1,
+            stage="ocr",
+            content_hash=source_digest,
+            artifact_path=artifact,
+            config_fingerprint=config_fingerprint,
+        )
+        assert not store.record_page_completed(
+            document_id=completed_document_id,
+            page_number=1,
+            stage="ocr",
+            content_hash=source_digest,
+            artifact_path=artifact,
+            model_name="model",
+            attempt_index=attempt,
+            config_fingerprint=config_fingerprint,
+        )
+        assert not store.reconcile_orphan_artifact(
+            document_id=orphan_document_id,
+            page_number=1,
+            content_hash=source_digest,
+            artifact_path=artifact,
+            config_fingerprints=(config_fingerprint,),
+        )
+
+    monkeypatch.setattr(ocr_pipeline_module, "_read_json_object", _raise_missing_file)
+    assert not store.should_skip_page(
+        document_id=completed_document_id,
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+    assert not store.record_page_completed(
+        document_id=completed_document_id,
+        page_number=1,
+        stage="ocr",
+        content_hash=source_digest,
+        artifact_path=artifact,
+        model_name="model",
+        attempt_index=attempt,
+        config_fingerprint=config_fingerprint,
+    )
+    assert not store.reconcile_orphan_artifact(
+        document_id=orphan_document_id,
+        page_number=1,
+        content_hash=source_digest,
+        artifact_path=artifact,
+        config_fingerprints=(config_fingerprint,),
+    )
+
+
+@pytest.mark.ci
 def test_ocr_render_reuse_requires_render_configuration_identity() -> None:
     scratch = _scratch("ocr_render_config_identity")
     artifact = scratch / "page-1.png"

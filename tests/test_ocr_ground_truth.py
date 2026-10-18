@@ -135,6 +135,21 @@ def test_zero_iou_threshold_does_not_match_spatially_disjoint_items() -> None:
     assert report.missing_item_ids == ("alpha", "beta")
 
 
+@pytest.mark.parametrize(
+    ("x_min", "x_max"),
+    [(float("nan"), 50.0), (10.0, 10.0)],
+)
+def test_ground_truth_evaluator_rejects_invalid_provider_boxes(
+    x_min: float, x_max: float
+) -> None:
+    response = _response(include_beta=False)
+    response.OCR_text_clusters[0].bb_x_min = x_min
+    response.OCR_text_clusters[0].bb_x_max = x_max
+
+    with pytest.raises(ValueError, match="finite, positive-area bounds"):
+        evaluate_ocr_ground_truth(response, _ground_truth())
+
+
 def test_ground_truth_matching_can_reassign_an_overlapping_candidate() -> None:
     """A valid one-to-one assignment must not depend on greedy item order."""
     ground_truth = OCRGroundTruth(

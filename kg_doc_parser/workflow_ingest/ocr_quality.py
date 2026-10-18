@@ -190,6 +190,14 @@ def evaluate_ocr_ground_truth(
         )
         for cluster in response.non_text_objects
     ]
+    for modality, cluster_number, bounds, _text in candidates:
+        if not all(math.isfinite(value) for value in bounds) or not (
+            bounds[0] < bounds[2] and bounds[1] < bounds[3]
+        ):
+            raise ValueError(
+                f"OCR candidate {cluster_number} ({modality}) must have finite, "
+                "positive-area bounds"
+            )
     assignments = _assign_matches(ground_truth.items, candidates, minimum_iou)
     recall_by_modality: dict[OCRGroundTruthModality, float | None] = {}
     for modality in ("text", "non_text"):

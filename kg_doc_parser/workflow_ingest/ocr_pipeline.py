@@ -255,6 +255,9 @@ class _OCRArtifactMetadata(TypedDict, total=False):
     ocr_datetime: NotRequired[float]
 
 
+_SUPPORTED_OCR_JSON_VERSIONS = frozenset({"0.1", "workflow_ingest_v1"})
+
+
 def _ocr_artifact_metadata(payload: Mapping[str, object]) -> _OCRArtifactMetadata:
     """Narrow the metadata fields used by reuse and recovery decisions."""
 
@@ -281,6 +284,16 @@ def _ocr_artifact_metadata(payload: Mapping[str, object]) -> _OCRArtifactMetadat
     if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool):
         metadata["ocr_datetime"] = float(timestamp)
     return metadata
+
+
+def _ocr_artifact_schema_error(payload: Mapping[str, object]) -> str | None:
+    """Reject unknown serialized OCR contracts while retaining known legacy data."""
+
+    version = _ocr_artifact_metadata(payload).get("ocr_json_version")
+    if version not in _SUPPORTED_OCR_JSON_VERSIONS:
+        received = repr(version) if version is not None else "missing"
+        return f"unsupported OCR artifact schema version: {received}"
+    return None
 
 
 @dataclass(slots=True)
@@ -2256,20 +2269,28 @@ class OCRWorkflowStateStore:
             config_fingerprint: str | None = None
             artifact_valid = False
             artifact_error: str | None = None
+            artifact_sha256: str | None = None
             try:
                 persisted = _read_json_object(json_path)
                 SplitPage.model_validate(persisted)
                 artifact_valid = True
                 metadata = _ocr_artifact_metadata(persisted)
+                artifact_error = _ocr_artifact_schema_error(persisted)
+                if artifact_error is not None:
+                    artifact_valid = False
                 config_fingerprint = metadata.get("ocr_configuration_fingerprint")
                 source_digest = metadata.get("source_image_sha256")
-                if source_digest != content_hash:
+                if artifact_valid and source_digest != content_hash:
                     artifact_valid = False
                     artifact_error = (
                         "OCR artifact source-image digest does not match the "
                         "current rendered page"
                     )
+                if artifact_valid:
+                    artifact_sha256 = _sha256_file(json_path)
             except (OSError, ValueError) as exc:
+                artifact_valid = False
+                artifact_sha256 = None
                 artifact_error = f"invalid OCR artifact during state rebuild: {exc}"
             if content_hash is None:
                 artifact_valid = False
@@ -2286,7 +2307,7 @@ class OCRWorkflowStateStore:
                 last_error=artifact_error,
                 last_model=None,
                 config_fingerprint=config_fingerprint,
-                artifact_sha256=_sha256_file(json_path) if artifact_valid else None,
+                artifact_sha256=artifact_sha256 if artifact_valid else None,
             )
         self.refresh_document_completion(document_id=document_id)
         return rebuilt_any
@@ -2393,10 +2414,30 @@ class OCRWorkflowStateStore:
         if expected and state.config_fingerprint not in expected:
             return False
         if artifact_path is None:
-            return True
+            return stage != "ocr"
         if not artifact_path.is_file():
             return False
-        return state.artifact_sha256 is not None and _sha256_file(artifact_path) == state.artifact_sha256
+        try:
+            artifact_sha256 = _sha256_file(artifact_path)
+        except OSError:
+            return False
+        if state.artifact_sha256 is None or artifact_sha256 != state.artifact_sha256:
+            return False
+        if stage != "ocr":
+            return True
+        try:
+            persisted = _read_json_object(artifact_path)
+            split_page = SplitPage.model_validate(persisted)
+            metadata = _ocr_artifact_metadata(persisted)
+        except (OSError, TypeError, ValueError):
+            return False
+        return (
+            split_page.pdf_page_num == page_number
+            and _ocr_artifact_schema_error(persisted) is None
+            and metadata.get("source_image_sha256") == content_hash
+            and metadata.get("ocr_configuration_fingerprint")
+            == state.config_fingerprint
+        )
 
     def reconcile_orphan_artifact(
         self,
@@ -2420,12 +2461,15 @@ class OCRWorkflowStateStore:
             return False
         if not artifact_path.is_file():
             return False
-        persisted = _read_json_object(artifact_path)
         try:
+            persisted = _read_json_object(artifact_path)
             split_page = SplitPage.model_validate(persisted)
-        except ValueError:
+            artifact_sha256 = _sha256_file(artifact_path)
+        except (OSError, TypeError, ValueError):
             return False
         if split_page.pdf_page_num != page_number:
+            return False
+        if _ocr_artifact_schema_error(persisted) is not None:
             return False
         metadata = _ocr_artifact_metadata(persisted)
         source_digest = metadata.get("source_image_sha256")
@@ -2446,7 +2490,7 @@ class OCRWorkflowStateStore:
             last_error=None,
             last_model=model_name if isinstance(model_name, str) else None,
             config_fingerprint=config_fingerprint,
-            artifact_sha256=_sha256_file(artifact_path),
+            artifact_sha256=artifact_sha256,
         )
         return True
 
@@ -2644,14 +2688,22 @@ class OCRWorkflowStateStore:
                 persisted = _read_json_object(artifact_path)
                 split_page = SplitPage.model_validate(persisted)
                 metadata = _ocr_artifact_metadata(persisted)
+                if _ocr_artifact_schema_error(persisted) is not None:
+                    return False
                 if split_page.pdf_page_num != page_number:
                     return False
                 if metadata.get("source_image_sha256") != content_hash:
                     return False
-            except (TypeError, ValueError):
+            except (OSError, TypeError, ValueError):
                 # Compatibility callers must not turn malformed JSON into an
                 # accepted page; the canonical publisher applies the same
                 # schema gate before recording completion.
+                return False
+        artifact_sha256: str | None = None
+        if artifact_path is not None and artifact_path.is_file():
+            try:
+                artifact_sha256 = _sha256_file(artifact_path)
+            except OSError:
                 return False
         now = time.time()
         with self._session() as conn:
@@ -2704,7 +2756,7 @@ class OCRWorkflowStateStore:
                     str(artifact_path) if artifact_path is not None else None,
                     model_name,
                     config_fingerprint,
-                    _sha256_file(artifact_path) if artifact_path is not None and artifact_path.is_file() else None,
+                    artifact_sha256,
                     now,
                     document_id,
                     page_number,
