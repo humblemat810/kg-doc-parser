@@ -952,7 +952,11 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [~] Ensure the artifact records the exact source image digest and accepted OCR
   configuration revision. The production page path records both and the crash
   regression reopens and verifies them before adoption; broader provider and
-  policy coverage remains part of the release gate.
+  policy coverage remains part of the release gate. The focused regression
+  `test_rebuild_rejects_legacy_ocr_when_page_40_changes_in_new_source_revision`
+  also proves that a same-numbered page's legacy OCR is invalidated when its
+  rendered bytes change across source revisions; it does not replace the open
+  full-document cross-revision crash/recovery fixture below.
 - [~] Fence the legacy `record_page_completed()` writer as well as the primary
   OCR publication path. It now accepts only a pending row with matching source
   and configuration identity, and treats an identical completed delivery as

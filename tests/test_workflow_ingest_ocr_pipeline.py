@@ -7370,38 +7370,55 @@ def test_rebuild_ignores_artifacts_removed_by_a_shorter_source_revision() -> Non
 
 
 @pytest.mark.ci
-def test_rebuild_rejects_legacy_ocr_from_replaced_same_numbered_page() -> None:
-    """A same-sized source replacement must not reuse old page OCR."""
+def test_rebuild_rejects_legacy_ocr_when_page_40_changes_in_new_source_revision() -> None:
+    """A changed page 40 in revision two invalidates revision one's OCR."""
     scratch = _scratch("ocr_replaced_same_page")
     rendered_dir = scratch / "rendered"
     legacy_dir = scratch / "legacy"
     rendered_dir.mkdir(parents=True)
     legacy_dir.mkdir(parents=True)
-    rendered = rendered_dir / "page_1.png"
-    rendered.write_bytes(b"new-source-page")
-    old_digest = hashlib.sha256(b"old-source-page").hexdigest()
+    rendered = rendered_dir / "page_40.png"
+    rendered.write_bytes(b"revision-one-page-40")
+    old_digest = hashlib.sha256(rendered.read_bytes()).hexdigest()
     _write_valid_ocr_artifact(
-        legacy_dir / "page_1.json", source_image_sha256=old_digest
+        legacy_dir / "page_40.json", source_image_sha256=old_digest
     )
     (scratch / "progress.json").write_text(
-        json.dumps({"pages": {"1": {"image_sha256": old_digest}}}),
+        json.dumps({"pages": {"40": {"image_sha256": old_digest}}}),
         encoding="utf-8",
     )
 
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
     assert store.rebuild_from_artifacts(
-        document_id="replaced-same-page-doc",
-        title="Replaced Same Page",
-        source_kind="image",
-        total_pages=1,
-        input_fingerprint="new-source-fingerprint",
+        document_id="source-revision-page-40-doc",
+        title="Source Revision Page 40",
+        source_kind="pdf",
+        total_pages=100,
+        input_fingerprint="source-revision-one",
         rendered_dir=rendered_dir,
         legacy_dir=legacy_dir,
         progress_path=scratch / "progress.json",
     )
 
+    initial_state = store.get_page_state(
+        document_id="source-revision-page-40-doc", page_number=40, stage="ocr"
+    )
+    assert initial_state is not None
+    assert initial_state.status == "completed"
+
+    rendered.write_bytes(b"revision-two-changed-page-40")
+    assert store.rebuild_from_artifacts(
+        document_id="source-revision-page-40-doc",
+        title="Source Revision Page 40",
+        source_kind="pdf",
+        total_pages=100,
+        input_fingerprint="source-revision-two",
+        rendered_dir=rendered_dir,
+        legacy_dir=legacy_dir,
+        progress_path=scratch / "progress.json",
+    )
     state = store.get_page_state(
-        document_id="replaced-same-page-doc", page_number=1, stage="ocr"
+        document_id="source-revision-page-40-doc", page_number=40, stage="ocr"
     )
     assert state is not None
     assert state.status == "pending"
