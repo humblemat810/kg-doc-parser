@@ -6986,6 +6986,36 @@ def test_grouping_checkpoint_load_rejects_mismatched_companion_records() -> None
 
     with sqlite3.connect(store.db_path) as conn:
         conn.execute(
+            "UPDATE grouping_frontier_state SET frontier_json = ? WHERE document_id = ?",
+            (json.dumps(["root"]), tree.document_id),
+        )
+        tree_row = conn.execute(
+            "SELECT tree_json FROM document_tree_state WHERE document_id = ?",
+            (tree.document_id,),
+        ).fetchone()
+        assert tree_row is not None
+        payload = json.loads(str(tree_row[0]))
+        payload["source_items"][0]["text"] = "tampered!!"
+        tree_json = json.dumps(
+            payload,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        tampered_revision = hashlib.sha256(tree_json.encode("utf-8")).hexdigest()
+        conn.execute(
+            "UPDATE document_tree_state SET tree_json = ?, tree_revision = ? WHERE document_id = ?",
+            (tree_json, tampered_revision, tree.document_id),
+        )
+        conn.execute(
+            "UPDATE grouping_checkpoint_metadata SET tree_revision = ? WHERE document_id = ?",
+            (tampered_revision, tree.document_id),
+        )
+    with pytest.raises(ValueError, match="tree source fingerprint is inconsistent"):
+        store.load_document_tree(document_id=tree.document_id)
+
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
             "DELETE FROM document_tree_state WHERE document_id = ?",
             (tree.document_id,),
         )
@@ -6999,6 +7029,23 @@ def test_grouping_checkpoint_load_rejects_mismatched_companion_records() -> None
             tree=tree,
             require_no_existing_tree=True,
         )
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "DELETE FROM grouping_checkpoint_metadata WHERE document_id = ?",
+            (tree.document_id,),
+        )
+    store.save_document_tree(
+        document_id=tree.document_id,
+        tree=tree,
+        require_no_existing_tree=True,
+    )
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "DELETE FROM grouping_checkpoint_metadata WHERE document_id = ?",
+            (tree.document_id,),
+        )
+    with pytest.raises(ValueError, match="missing a companion record"):
+        store.load_document_tree(document_id=tree.document_id)
 
 
 @pytest.mark.ci
