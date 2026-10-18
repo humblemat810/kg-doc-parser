@@ -634,12 +634,14 @@ S01-S12 and C01-C06 rows in
   cross-path, and complete downstream revision evidence remain open.
 - [~] S11-S12 cover cross-page references, preserve references outside the
   primary coverage partition, and reject conflicting public versus
-  internal policy values. Multiple reference slices now round-trip and validate
-  at the document-model boundary, and contradictory public/runtime parse
-  strategies now fail closed with focused contract tests. Custom-policy
-  persistence is covered by
-  `test_custom_grouping_policy_reaches_checkpoint_cache_and_export`; downstream
-  export and cross-page consumer evidence remain open.
+  internal policy values. Multiple reference slices round-trip and validate at
+  the document-model boundary. `test_cross_page_reference_survives_public_workflow_export`
+  now proves a reference split across OCR pages reaches the public export's
+  grouping tree with exact source slices and does not create a speculative
+  graph edge. Target resolution and behavior in downstream consumers remain
+  open. Contradictory public/runtime parse strategies fail closed, and custom-
+  policy persistence is covered by
+  `test_custom_grouping_policy_reaches_checkpoint_cache_and_export`.
 - [~] C06 has typed provider-loss diagnostics and strict rejection; source-side
   completeness for figures, tables, captions, and unsupported coordinates is
   not yet proven.

@@ -3647,6 +3647,76 @@ def test_strict_quality_rejection_recovers_in_a_fresh_process() -> None:
 
 
 @pytest.mark.ci
+def test_cross_page_reference_survives_public_workflow_export() -> None:
+    """Export keeps exact cross-page reference evidence as grouping metadata."""
+    scratch = _scratch("ocr_cross_page_reference_export")
+    payloads: list[OCRImagePayload] = []
+    for page_number, text in ((1, "See table"), (2, " 7 for details.")):
+        image_path = scratch / "images" / f"page-{page_number}.png"
+        _draw_test_image(image_path, lines=[text])
+        payloads.append(OCRImagePayload(page_number=page_number, image_path=str(image_path)))
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="reference-ocr"),
+        parser=ProviderEndpointConfig(provider="fake", model="reference-parser"),
+        embedding=EmbeddingProviderConfig(
+            provider="fake", model="reference-embedding", dimension=1
+        ),
+        triage_enabled=False,
+    )
+    workflow_engine, conversation_engine, knowledge_engine = (
+        build_workflow_engine_triplet(scratch / "engines", "in_memory")
+    )
+
+    def _runner(
+        image_path: Path,
+        page_number: int,
+        provider_settings: WorkflowProviderSettings,
+    ) -> OCRClusterResponse:
+        del image_path, provider_settings
+        text = "See table" if page_number == 1 else " 7 for details."
+        return _fake_ocr_response(page_number, text)
+
+    run, bundle, artifacts = run_ocr_ingest_workflow(
+        document_id="ocr-cross-page-reference-export",
+        title="OCR Cross-Page Reference Export",
+        output_dir=scratch / "artifacts",
+        image_payloads=payloads,
+        provider_settings=settings,
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        ocr_runner=_runner,
+        deps={"parse_semantic_fn": _grounded_semantic_tree},
+        run_id="ocr|cross-page-reference-export",
+    )
+
+    assert run.status == "succeeded"
+    assert bundle is not None and bundle.grouping_tree is not None
+    assert artifacts.document_tree is not None
+    mentions = artifacts.document_tree.references
+    assert len(mentions) == 1
+    mention = mentions[0]
+    assert (mention.target_kind, mention.target_label, mention.status) == (
+        "table",
+        "7",
+        "pending",
+    )
+    items = {item.item_id: item for item in artifacts.document_tree.source_items}
+    source_fragments = [
+        items[source.item_id].text[source.start : source.end]
+        for source in mention.sources
+    ]
+    assert source_fragments == ["See table", " 7"]
+    exported_mentions = bundle.grouping_tree.get("references")
+    assert isinstance(exported_mentions, list)
+    assert exported_mentions == [mention.model_dump(mode="json")]
+    assert not any(
+        isinstance(edge, dict) and edge.get("relation") == "REFERENCES"
+        for edge in bundle.graph_payload["edges"]
+    )
+
+
+@pytest.mark.ci
 def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
     """The public policy override must remain one identity at every seam."""
     scratch = _scratch("ocr_custom_grouping_policy")

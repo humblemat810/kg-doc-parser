@@ -1278,7 +1278,12 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [x] Support references spanning clusters, lines, and pages. Reference
   extraction now searches the deterministic text reading-order stream and maps
   every match back to one or more exact source slices; parser/export
-  integration for all downstream consumers remains a separate concern.
+  integration is covered by
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_cross_page_reference_survives_public_workflow_export`,
+  which verifies an OCR-page-spanning mention and its exact slices survive in
+  the public export grouping tree. Target resolution and downstream consumer
+  behavior remain a separate concern; references are not silently converted
+  into graph edges.
 - [x] Preserve multiple exact source slices for one reference mention in
   `DocumentReferenceMention.additional_sources`, validated against every
   authoritative text item and covered by
