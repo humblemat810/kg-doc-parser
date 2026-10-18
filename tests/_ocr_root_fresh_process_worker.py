@@ -23,9 +23,9 @@ from kg_doc_parser.workflow_ingest import (
     run_ocr_ingest_workflow,
 )
 from kg_doc_parser.workflow_ingest.document_grouping import (
+    GroupingPassContext,
     GroupProposal,
     GroupProposalBatch,
-    GroupingPassContext,
 )
 from kg_doc_parser.workflow_ingest.document_models import (
     AdaptiveGroupingPolicy,
@@ -122,8 +122,13 @@ class _FreshProcessGroupProposer:
 class _FreshProcessGroundedSummaryGenerator:
     configuration_fingerprint = "fresh-process-grounded-summary-v1"
 
-    def __init__(self, calls_path: Path) -> None:
+    def __init__(
+        self,
+        calls_path: Path,
+        identity_calls_path: Path | None = None,
+    ) -> None:
         self.calls_path = calls_path
+        self.identity_calls_path = identity_calls_path
 
     def __call__(
         self,
@@ -133,9 +138,18 @@ class _FreshProcessGroundedSummaryGenerator:
         evidence_slices: tuple[EvidenceSlice, ...],
         input_fingerprint: str,
     ) -> Summary:
-        del tree, node_id
+        del tree
         with self.calls_path.open("a", encoding="utf-8") as stream:
             stream.write("called\n")
+        if self.identity_calls_path is not None:
+            with self.identity_calls_path.open("a", encoding="utf-8") as stream:
+                stream.write(
+                    json.dumps(
+                        {"node_id": node_id, "input_fingerprint": input_fingerprint},
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
         return Summary(
             status="generated",
             text="Grounded summary of the accepted section.",
@@ -184,6 +198,7 @@ def main() -> int:
             "hold",
             "long-hold",
             "durable-long-hold",
+            "durable-summary-long-hold",
             "durable-hold",
             "durable-summary-hold",
         } and page_number == hold_page:
@@ -203,7 +218,14 @@ def main() -> int:
             "race-b",
         } and page_number == 1:
             raise AssertionError("accepted page was replayed")
-        if mode.endswith("long-resume") and page_number <= 63:
+        if (
+            mode.endswith("long-resume")
+            or mode
+            in {
+                "durable-summary-long-publish-hold",
+                "durable-summary-long-resume",
+            }
+        ) and page_number <= 63:
             raise AssertionError("page before the termination boundary was replayed")
         return _response(page_number)
 
@@ -232,6 +254,8 @@ def main() -> int:
             "resume",
             "long-resume",
             "durable-long-resume",
+            "durable-summary-long-publish-hold",
+            "durable-summary-long-resume",
             "durable-resume",
             "durable-summary-publish-hold",
             "durable-summary-resume",
@@ -243,13 +267,21 @@ def main() -> int:
             # keeps the subprocess test bounded without bypassing ownership.
             time.sleep((lease_ms + 200) / 1000)
 
+        summary_mode = mode.startswith("durable-summary-")
+        long_summary_mode = mode in {
+            "durable-summary-long-hold",
+            "durable-summary-long-publish-hold",
+            "durable-summary-long-resume",
+            "durable-summary-reference",
+        }
+
         def parse_semantic_fn(
             *,
             collection: object,
             parser_input_dict: dict[str, object],
             parser_source_map: dict[str, dict[str, object]],
         ) -> SemanticNode:
-            if mode in {"durable-summary-publish-hold", "durable-summary-resume"}:
+            if summary_mode:
                 grouping_tree = parser_input_dict.get("document_tree")
                 if not isinstance(grouping_tree, dict):
                     raise AssertionError("semantic parser did not receive the grouping tree")
@@ -263,11 +295,26 @@ def main() -> int:
                     and isinstance(node.get("summary"), dict)
                     and node["summary"].get("status") == "generated"
                 ]
-                if len(generated_summaries) != 1:
+                if not generated_summaries:
                     raise AssertionError(
-                        "semantic parser must receive exactly one accepted grounded summary"
+                        "semantic parser must receive an accepted grounded summary"
                     )
-                if mode == "durable-summary-publish-hold":
+                if mode in {
+                    "durable-summary-publish-hold",
+                    "durable-summary-long-publish-hold",
+                }:
+                    grouping_tree_digest = hashlib.sha256(
+                        json.dumps(
+                            grouping_tree,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                            ensure_ascii=False,
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    (scratch / "semantic-input-grouping-tree-sha256.txt").write_text(
+                        grouping_tree_digest,
+                        encoding="utf-8",
+                    )
                     (scratch / "grounded-summary-ready").write_text(
                         "ready", encoding="utf-8"
                     )
@@ -278,7 +325,6 @@ def main() -> int:
                 parser_source_map=parser_source_map,
             )
 
-        summary_mode = mode.startswith("durable-summary-")
         result, bundle, _ = run_ocr_ingest_workflow(
             document_id="fresh-root-document",
             title="Fresh Root",
@@ -293,8 +339,8 @@ def main() -> int:
             adaptive_grouping_policy=(
                 AdaptiveGroupingPolicy(
                     maximum_rounds=2,
-                    window_size=3,
-                    window_overlap=1,
+                    window_size=64 if long_summary_mode else 3,
+                    window_overlap=31 if long_summary_mode else 1,
                 )
                 if summary_mode
                 else None
@@ -311,7 +357,12 @@ def main() -> int:
                 else None
             ),
             grounded_summary_generator=(
-                _FreshProcessGroundedSummaryGenerator(scratch / "summary-calls.txt")
+                _FreshProcessGroundedSummaryGenerator(
+                    scratch / "summary-calls.txt",
+                    scratch / "summary-call-identities.jsonl"
+                    if long_summary_mode
+                    else None,
+                )
                 if summary_mode
                 else None
             ),
@@ -322,6 +373,8 @@ def main() -> int:
                 "long-resume",
                 "durable-long-resume",
                 "durable-summary-publish-hold",
+                "durable-summary-long-publish-hold",
+                "durable-summary-long-resume",
                 "durable-summary-resume",
                 "race-a",
                 "race-b",
@@ -344,11 +397,13 @@ def main() -> int:
 
     if mode not in {
         "durable-reference",
+        "durable-summary-reference",
         "resume",
         "long-resume",
         "durable-long-resume",
         "durable-resume",
         "durable-summary-resume",
+        "durable-summary-long-resume",
         "resume-missing-artifact",
         "race-a",
         "race-b",
@@ -416,7 +471,7 @@ def main() -> int:
         ).encode("utf-8")
     ).hexdigest()
     if not isinstance(bundle.grouping_tree, dict):
-        raise AssertionError("accepted OCR result is missing its grouping tree")
+        raise TypeError("accepted OCR result is missing its grouping tree")
     grouping_tree_digest = hashlib.sha256(
         json.dumps(
             bundle.grouping_tree,

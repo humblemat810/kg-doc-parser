@@ -426,8 +426,20 @@ def select_summary_targets(
         return result
 
     candidates: list[tuple[int, str, int]] = []
+    completed_targets = 0
+    used_tokens = 0
     eligible = set(policy.eligible_kinds)
     for node in tree.nodes:
+        if node.summary is not None and node.summary.status in {"generated", "verified"}:
+            # The policy bounds accepted work for the whole tree, not just one
+            # invocation. This keeps resume from resetting target/token caps.
+            completed_targets += 1
+            used_tokens += sum(
+                max(1, (_evidence_payload_size(slice_) + 3) // 4)
+                for slice_ in tree.evidence_slices(node.node_id)
+                if slice_.item_id in node.summary.evidence_item_ids
+            )
+            continue
         if node.parts or node.summary is not None or node.kind not in eligible:
             continue
         evidence = tree.evidence_slices(node.node_id)
@@ -447,9 +459,8 @@ def select_summary_targets(
         candidates.append((depth(node.node_id), node.node_id, estimated_tokens))
 
     selected: list[str] = []
-    used_tokens = 0
     for _depth, node_id, estimated_tokens in sorted(candidates):
-        if len(selected) >= policy.maximum_targets:
+        if completed_targets + len(selected) >= policy.maximum_targets:
             break
         # The planner's estimate is also the provider boundary.  Clamping the
         # accounting while still sending the full evidence payload makes the

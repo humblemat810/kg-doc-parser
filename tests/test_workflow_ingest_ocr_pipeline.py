@@ -2163,10 +2163,12 @@ def test_ocr_root_reopens_after_real_process_termination() -> None:
 @pytest.mark.ci
 @pytest.mark.slow
 def test_ocr_root_fresh_process_resume_after_page_63() -> None:
-    """A 100-page root resumes after termination and durably publishes its graph."""
+    """A 100-page root survives two crashes and matches a durable reference."""
     pytest.importorskip("chromadb")
     scratch = _scratch("ocr_root_100_page_process_termination")
     page_count = 100
+    child_env = dict(os.environ)
+    child_env["OCR_TEST_LEASE_MS"] = "1000"
     (scratch / "page-count.txt").write_text(str(page_count), encoding="utf-8")
     for page_number in range(1, page_count + 1):
         _draw_test_image(
@@ -2175,7 +2177,6 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
         )
     worker = Path(__file__).with_name("_ocr_root_fresh_process_worker.py")
     repo_root = Path(__file__).resolve().parents[1]
-    child_env = dict(os.environ)
     child_env["PYTHONPATH"] = os.pathsep.join(
         path
         for path in (
@@ -2186,7 +2187,7 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     )
 
     interrupted = subprocess.Popen(
-        [sys.executable, str(worker), str(scratch), "durable-long-hold"],
+        [sys.executable, str(worker), str(scratch), "durable-summary-long-hold"],
         env=child_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -2201,29 +2202,80 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     interrupted.wait(timeout=30)
     assert interrupted.returncode != 0
 
+    grouping_resumed = subprocess.Popen(
+        [
+            sys.executable,
+            str(worker),
+            str(scratch),
+            "durable-summary-long-publish-hold",
+        ],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    summary_marker = scratch / "grounded-summary-ready"
+    deadline = time.monotonic() + 900.0
+    while not summary_marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if not summary_marker.exists():
+        _terminate_interrupted_worker(grouping_resumed)
+        stdout, stderr = grouping_resumed.communicate(timeout=30)
+        pytest.fail(
+            "resumed 100-page run did not reach semantic publication after summary\n"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+    _terminate_interrupted_worker(grouping_resumed)
+    grouping_resumed.wait(timeout=30)
+    assert grouping_resumed.returncode != 0
+    summary_call_identities = [
+        json.loads(line)
+        for line in (scratch / "summary-call-identities.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    summary_call_keys = [
+        (entry["node_id"], entry["input_fingerprint"])
+        for entry in summary_call_identities
+    ]
+    assert summary_call_keys
+    assert len(summary_call_keys) == len(set(summary_call_keys)), (
+        "the same grounded summary identity was generated more than once before resume"
+    )
+    accepted_grouping_digest = (
+        scratch / "semantic-input-grouping-tree-sha256.txt"
+    ).read_text(encoding="utf-8")
+
     resumed = subprocess.run(
-        [sys.executable, str(worker), str(scratch), "durable-long-resume"],
+        [sys.executable, str(worker), str(scratch), "durable-summary-long-resume"],
         capture_output=True,
         text=True,
         check=False,
         env=child_env,
-        # The hosted PyPy/CPython lanes persist a 100-page runtime trace and
-        # grouping checkpoint. Keep a bounded release-gate timeout while
-        # allowing the observed worst-case recovery run to finish.
         timeout=900,
     )
     assert resumed.returncode == 0, resumed.stderr
     result = json.loads(
         (scratch / "resume-result.json").read_text(encoding="utf-8")
     )
-    assert result == {
-        "status": "succeeded",
-        "run_id": "ocr|fresh-root-document",
-        "calls": list(range(64, page_count + 1)),
-        "has_grouping_tree": True,
-    }
+    assert result["status"] == "succeeded", result
+    assert result["run_id"] == "ocr|fresh-root-document", result
+    assert result["calls"] == [], f"accepted OCR pages were replayed: {result}"
+    assert result["has_grouping_tree"] is True, result
+    assert result["grouping_summary_count"] == len(summary_call_keys), result
+    resumed_summary_call_identities = [
+        json.loads(line)
+        for line in (scratch / "summary-call-identities.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert resumed_summary_call_identities == summary_call_identities, (
+        "resuming semantic publication regenerated an already accepted summary"
+    )
     lineage = json.loads(
-        (scratch / "durable-long-resume-lineage.json").read_text(encoding="utf-8")
+        (scratch / "durable-summary-long-resume-lineage.json").read_text(
+            encoding="utf-8"
+        )
     )
     lineage_rows = lineage["lineage"]
     assert len({row["id"] for row in lineage_rows}) == len(lineage_rows)
@@ -2251,6 +2303,46 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
         } == set(lineage["graph_edge_ids"])
     finally:
         reopened_knowledge.close()
+
+    reference = scratch / "uninterrupted-reference"
+    reference.mkdir(parents=True, exist_ok=True)
+    (reference / "page-count.txt").write_text(str(page_count), encoding="utf-8")
+    for page_number in range(1, page_count + 1):
+        _draw_test_image(
+            reference / "source" / f"page-{page_number}.png",
+            lines=[f"long document page {page_number}"],
+        )
+    baseline = subprocess.run(
+        [sys.executable, str(worker), str(reference), "durable-summary-reference"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=900,
+    )
+    assert baseline.returncode == 0, baseline.stderr
+    reference_publication = json.loads(
+        (reference / "durable-summary-reference-lineage.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    reference_result = json.loads(
+        (reference / "resume-result.json").read_text(encoding="utf-8")
+    )
+    assert reference_result["grouping_summary_count"] == result[
+        "grouping_summary_count"
+    ]
+    assert set(reference_publication["graph_node_ids"]) == set(lineage["graph_node_ids"])
+    assert set(reference_publication["graph_edge_ids"]) == set(lineage["graph_edge_ids"])
+    assert (
+        reference_publication["graph_payload_sha256"]
+        == lineage["graph_payload_sha256"]
+    )
+    assert (
+        reference_publication["grouping_tree_sha256"]
+        == lineage["grouping_tree_sha256"]
+        == accepted_grouping_digest
+    )
 
 
 @pytest.mark.ci

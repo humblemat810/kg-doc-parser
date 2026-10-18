@@ -592,6 +592,70 @@ def test_summary_target_planner_counts_exact_slices_not_whole_source_items() -> 
     ) == ()
 
 
+def test_summary_target_budget_is_not_reset_when_tree_already_has_summaries() -> None:
+    source_items = tuple(_item(f"item-{index}", f"content-{index}") for index in range(4))
+    base = DocumentTree(
+        document_id="resumed-summary-budget",
+        source_revision="r1",
+        tree_revision=1,
+        root_id="root",
+        source_items=source_items,
+        nodes=(
+            *(_leaf(f"leaf-{index}", item.item_id, item.text or "") for index, item in enumerate(source_items)),
+            DocumentNode(
+                node_id="section",
+                kind="section",
+                children=({"node_id": "leaf-0"}, {"node_id": "leaf-1"}),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=({"node_id": "section"}, {"node_id": "leaf-2"}, {"node_id": "leaf-3"}),
+            ),
+        ),
+    )
+    summarized = apply_summary_updates(
+        base,
+        {
+            "section": Summary(
+                status="generated",
+                text="summary",
+                evidence_item_ids=("item-0", "item-1"),
+                provider_model="fake",
+                prompt_revision="prompt-v1",
+                input_fingerprint=base.summary_input_fingerprint("section"),
+            )
+        },
+    )
+
+    # The completed section consumes the sole target even when planning is
+    # invoked again after a workflow restart.
+    assert select_summary_targets(
+        summarized,
+        SummaryPolicy(
+            minimum_source_items=2,
+            minimum_source_chars=1,
+            minimum_information_gain_chars=0,
+            maximum_targets=1,
+        ),
+    ) == ()
+    completed_summary_budget = sum(
+        max(1, (len(slice_.model_dump_json().encode("utf-8")) + 3) // 4)
+        for slice_ in summarized.evidence_slices("section")
+        if slice_.item_id in {"item-0", "item-1"}
+    )
+    assert select_summary_targets(
+        summarized,
+        SummaryPolicy(
+            minimum_source_items=2,
+            minimum_source_chars=1,
+            minimum_information_gain_chars=0,
+            maximum_targets=10,
+            maximum_input_tokens=completed_summary_budget,
+        ),
+    ) == ()
+
+
 def test_summary_target_planner_does_not_send_oversized_evidence() -> None:
     large = "x" * 20_000
     tree = DocumentTree(
