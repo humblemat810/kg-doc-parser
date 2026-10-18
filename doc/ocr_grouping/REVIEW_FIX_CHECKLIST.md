@@ -13,12 +13,12 @@ individual acceptance criteria.
 
 | Track | Status | Release-blocking remainder |
 | --- | --- | --- |
-| Runtime ownership and persisted stage graph | PASS (local; latest rich-gate CI pending) | Recovery-versus-repair review is complete against installed Kogwistar `0.6.12`: ordinary interruption resumes the same run; terminal-artifact repair uses a new root incarnation only because terminal runs are not re-executed. The updated 100-page test passed locally with two real process terminations, same-run fresh-process recovery, durable Chroma, summary reuse, semantic publication, and canonical tree/graph equivalence to an uninterrupted persistent reference. Its OCR responses are deterministic synthetic fixtures, not live provider OCR. Parser CI run `39106578551` passed an earlier revision; this update still needs CI. No duplicate parser resume/retry responsibility was found, so no additional parser retry or checkpoint layer is proposed. |
+| Runtime ownership and persisted stage graph | PASS locally; current fixture CI pending | Recovery-versus-repair review is complete against installed Kogwistar `0.6.12`: ordinary interruption resumes the same run; terminal-artifact repair uses a new root incarnation only because terminal runs are not re-executed. The updated 100-page test passed locally in 1093.68s with two real process terminations, same-run fresh-process recovery, durable Chroma reopen, summary reuse, semantic publication, and canonical tree/graph equivalence to an uninterrupted persistent reference using identical PDF bytes/source revision. Its fake OCR output is grounded in text/chart/table rendered into the fixture; it is not live provider accuracy evidence. Parser CI run `39106578551` passed an earlier fixture revision; the current update still needs CI. No duplicate parser resume/retry responsibility was found, so no additional parser retry or checkpoint layer is proposed. |
 | Artifact and checkpoint crash consistency | PASS (parser gate) | The four-boundary recovery matrix passes locally in one run (`4 passed, 113.32s`), covering artifact-first and checkpoint-first page publication plus grouping-checkpoint and semantic-graph publication orderings; parser CI run `39011917164` also passed the Linux recovery gate. |
 | Adaptive grouping and summary durability | IMPLEMENTED; quality evidence PARTIAL | The review claim that only generic grouping primitives exist is no longer accurate for this branch: the default non-fake root path constructs a structured proposer and grounded summarizer, iterates bounded ordered frontier windows bottom-up, feeds accepted groups into later rounds, and supplies modality/location/MIME plus available OCR text or summaries. Deterministic-provider tests cover default wiring, iteration, grounding, resume, and semantic/export consumption. Remaining work is evidence, not another grouping abstraction: evaluate live-provider grouping quality and independently establish figure/non-text completeness. The grouping prompt does not inspect raw image pixels or claim unseen media content. Summary limits and accepted summaries survive two fresh-process interruptions and match the uninterrupted reference. |
-| Semantic hierarchy publication | PASS locally; updated fixture CI pending | Static/custom and default adaptive accepted grouping are consumed by semantic parsing and preserved by graph export; grounded summaries reach semantic parsing. The updated 100-page test compares recovered tree and canonical graph against an uninterrupted persistent reference after two process terminations and verifies Chroma after reopen. It passed locally; deterministic synthetic OCR payloads validate persistence/recovery semantics, not real OCR quality. Parser CI run `39106578551` passed an earlier revision; this update still needs CI. The recovery-vs-repair audit is complete; do not duplicate Kogwistar's resume mechanism. |
+| Semantic hierarchy publication | PASS locally; current fixture CI pending | Static/custom and default adaptive accepted grouping are consumed by semantic parsing and preserved by graph export; grounded summaries reach semantic parsing. The 100-page test passed locally in 1093.68s, comparing recovered tree and canonical graph against an uninterrupted persistent reference after two process terminations and verifying Chroma after reopen over identical PDF bytes/source revision. Deterministic synthetic OCR payloads validate persistence/recovery semantics, not real OCR quality. Parser CI run `39106578551` passed an earlier revision; this update still needs CI. The recovery-vs-repair audit is complete; do not duplicate Kogwistar's resume mechanism. |
 | OCR completeness and positional fidelity | PARTIAL (independent evidence) | Provider precision, source-item accounting, and unresolved-item diagnostics are enforced. The typed `OCRGroundTruth` evaluator measures aggregate and per-modality item recall, spatial IoU, and text mismatch; modalities without ground-truth annotations report `None`, not false 100% recall. `test_ground_truth_report_exposes_missing_non_text_recall_separately` prevents text hits from obscuring a missing figure/table annotation. Its Codex table fixture includes the exact 1600x1200 source page, checked by SHA-256 and dimensions in `test_recorded_codex_layout_fixture_has_independent_spatial_coverage`, making 16 annotated text/table regions auditable. This is controlled fixture evidence, not independent provider completeness for figures/non-text. The recorded live Codex figure run returned zero non-text objects. Independent annotated visual-region/provider evidence remains open. |
-| Typing and interpreter matrix | BASELINE PASS; latest Pyright fix pending verification | Previous production-package Pyright and Parser CI runs passed the supported interpreter matrix. The current `document_adapters.py` optional-summary narrowing addresses the latest reported Pyright error; local Pyright is unavailable due to the Windows Node launcher `EPERM`, so the modified source still requires CI confirmation. |
+| Typing and interpreter matrix | PASS on `f96a739`; fixture-only changes pending CI | `document_adapters.py` narrows `summary` before reading `generation_fingerprint`. Parser CI run `39111134448` passed the CPython 3.12 package type-check step and all supported interpreter jobs on `f96a739`. Local Pyright cannot start because the Windows Node launcher receives `EPERM` while resolving `C:\Users\chanh`; the current uncommitted changes are tests/docs only and do not touch production typing. |
 | Release | OPEN | Do not bump the parser version or downstream pins until the release-blocking rows are green with evidence. |
 
 The status history is the Git history. For example:
@@ -576,14 +576,13 @@ S01-S12 and C01-C06 rows in
   bounded-access frontier regression both pass.
 - [~] A fresh process reopens the same root run after real interruption and
   does not create a second semantic generation or duplicate graph publication.
-  `test_ocr_root_fresh_process_resume_after_page_63` now passes in 471.12s on
-  a 100-page document, with pages 1-63 not replayed and one accepted grouping
-  result. Coordinated source-checkout tests cover process termination and
-  concurrent ownership fencing; installed-package, Linux SIGKILL, and full
-  graph publication verification remain open. A separate installed Kogwistar
-  `0.6.12` reopen of the persisted 100-page state succeeds with zero provider
-  calls and the same run ID; the initial run still used the coordinated core
-  source checkout.
+  `test_ocr_root_fresh_process_resume_after_page_63` passed locally in 1093.68s
+  against installed Kogwistar `0.6.12`: a 100-page rendered PDF, two real
+  process terminations, same root run ID, no accepted OCR-page or summary
+  replay, fresh-process semantic publication, persistent Chroma reopen, and
+  canonical tree/graph equality with an uninterrupted run over the identical
+  PDF bytes. The updated fixture must still pass remote CI; Linux recovery is
+  a separate existing CI gate.
 - [x] The installed released Kogwistar version supports retrying a durably
   failed child; the parser does not substitute a private child-ID workaround.
   Installed Kogwistar `0.6.12` passes
@@ -606,8 +605,9 @@ S01-S12 and C01-C06 rows in
   caption permutation coverage are still required.
 - [~] S05 proves accepted hierarchy reaches semantic parsing and graph export,
   rather than surviving only as ignored metadata. The export metamorphic test
-  now proves parent-child structure is consumed; persisted semantic-parser
-  publication evidence remains open.
+  proves parent-child structure is consumed, and the local 100-page fresh-
+  process test verifies persisted semantic publication and graph records after
+  reopening Chroma. Promote after the updated test revision passes CI.
 - [x] S06-S08 protect grouping checkpoints, preserve atomic objects, and
   invalidate summaries; S08's final-group identity loss is fixed and covered,
   while monotonic generation and the complete writer audit are now covered by

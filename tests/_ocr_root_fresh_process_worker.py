@@ -6,12 +6,13 @@ import os
 import sys
 import time
 import traceback
+from io import BytesIO
 from pathlib import Path
 
 from _kogwistar_test_helpers import build_workflow_engine_triplet
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.rust_meta_sqlite import build_sqlite_meta_store
-from PIL import Image, ImageDraw
+from PIL import Image
 from pypdf import PdfReader
 
 from kg_doc_parser.models import NonTextCluster, OCRClusterResponse, TextCluster
@@ -41,9 +42,13 @@ from kg_doc_parser.workflow_ingest.service import _TinyEmbeddingFunction
 def _response(page_number: int, *, rich: bool = False) -> OCRClusterResponse:
     if rich and page_number in {1, 40, 62, 63, 100}:
         continuation = {
-            62: "Cross-page reference starts on page 62 and continues on page 63.",
-            63: "Continuation of the cross-page reference from page 62.",
-        }.get(page_number, "Caption follows the figure and the table.")
+            62: "This paragraph starts on page 62 and continues",
+            63: "on page 63 with a cross-page reference to page 40.",
+        }.get(page_number, "This page contains the table and figure described below.")
+        table_text = (
+            "| Period | Value |\n| --- | --- |\n"
+            + "".join(f"| row-{row} | {row * 10} |\n" for row in range(1, 16))
+        )
         return OCRClusterResponse(
             OCR_text_clusters=[
                 TextCluster(
@@ -79,10 +84,7 @@ def _response(page_number: int, *, rich: bool = False) -> OCRClusterResponse:
                     cluster_number=3,
                 ),
                 TextCluster(
-                    text=(
-                        "| Period | Value |\n| --- | --- |\n"
-                        + "".join(f"| row-{row} | {row * 10} |\n" for row in range(1, 81))
-                    ),
+                    text=table_text,
                     bb_x_min=320.0,
                     bb_x_max=1100.0,
                     bb_y_min=430.0,
@@ -92,7 +94,7 @@ def _response(page_number: int, *, rich: bool = False) -> OCRClusterResponse:
             ],
             non_text_objects=[
                 NonTextCluster(
-                    description="figure: deterministic acceptance fixture",
+                    description="figure: line chart",
                     bb_x_min=20.0,
                     bb_x_max=300.0,
                     bb_y_min=180.0,
@@ -102,7 +104,7 @@ def _response(page_number: int, *, rich: bool = False) -> OCRClusterResponse:
             ],
             is_empty_page=False,
             printed_page_number=str(page_number),
-            meaningful_ordering=[0, 5, 3, 4, 1, 2],
+            meaningful_ordering=[0, 1, 2, 5, 3, 4],
             page_x_min=0.0,
             page_x_max=1200.0,
             page_y_min=0.0,
@@ -316,13 +318,17 @@ def main() -> int:
 
     def pdf_rasterizer(source: Path, rendered_dir: Path) -> list[Path]:
         rendered_dir.mkdir(parents=True, exist_ok=True)
-        page_count_from_pdf = len(PdfReader(str(source)).pages)
+        pdf_pages = PdfReader(str(source)).pages
         paths: list[Path] = []
-        for page_number in range(1, page_count_from_pdf + 1):
+        for page_number, pdf_page in enumerate(pdf_pages, start=1):
+            embedded_images = pdf_page.images
+            if len(embedded_images) != 1:
+                raise ValueError(
+                    f"fixture PDF page {page_number} must contain exactly one raster"
+                )
             path = rendered_dir / f"page_{page_number}.png"
-            image = Image.new("RGB", (1200, 800), "white")
-            ImageDraw.Draw(image).text((24, 24), f"PDF page {page_number}", fill="black")
-            image.save(path)
+            with Image.open(BytesIO(embedded_images[0].data)) as page_image:
+                page_image.convert("RGB").save(path)
             paths.append(path)
         return paths
 

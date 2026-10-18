@@ -61,11 +61,13 @@ import json
 import logging
 import os
 import signal
+import shutil
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -2173,11 +2175,77 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
         (directory / "page-count.txt").write_text(str(page_count), encoding="utf-8")
         source = directory / "source"
         source.mkdir(parents=True, exist_ok=True)
-        writer = PdfWriter()
-        for _ in range(page_count):
-            writer.add_blank_page(width=1200, height=800)
-        with (source / "acceptance.pdf").open("wb") as stream:
-            writer.write(stream)
+        pages: list[Image.Image] = []
+        rich_pages = {1, 40, 62, 63, 100}
+        for page_number in range(1, page_count + 1):
+            image = Image.new("L", (1200, 800), 255)
+            draw = ImageDraw.Draw(image)
+            if page_number not in rich_pages:
+                draw.text((10, 20), f"root page {page_number}", fill=0)
+                pages.append(image)
+                continue
+
+            draw.text((10, 10), f"Front matter page {page_number}", fill=0)
+            draw.text(
+                (10, 60),
+                "duplicate paragraph retained at a distinct source position",
+                fill=0,
+            )
+            cross_page_text = {
+                62: "This paragraph starts on page 62 and continues",
+                63: "on page 63 with a cross-page reference to page 40.",
+            }.get(page_number, "This page contains the table and figure described below.")
+            draw.text((10, 120), cross_page_text, fill=0)
+
+            # This plotted region is deliberately non-text and has no OCR labels.
+            draw.rectangle((20, 180, 300, 360), outline=0, width=3)
+            draw.line(
+                [(35, 330), (90, 290), (145, 310), (200, 230), (280, 205)],
+                fill=0,
+                width=4,
+            )
+            draw.text(
+                (20, 380),
+                "Figure 1. Deterministic multimodal acceptance fixture.",
+                fill=0,
+            )
+
+            table_left, table_top = 320, 430
+            column_edges = (table_left, 720, 1100)
+            row_height = 20
+            for row in range(17):
+                y = table_top + row * row_height
+                draw.line((table_left, y, 1100, y), fill=0, width=2)
+            draw.line((table_left, table_top, table_left, table_top + 16 * row_height), fill=0, width=2)
+            draw.line((column_edges[1], table_top, column_edges[1], table_top + 16 * row_height), fill=0, width=2)
+            draw.line((1100, table_top, 1100, table_top + 16 * row_height), fill=0, width=2)
+            draw.text((330, table_top + 4), "Period", fill=0)
+            draw.text((730, table_top + 4), "Value", fill=0)
+            for row in range(1, 16):
+                y = table_top + row * row_height + 4
+                draw.text((330, y), f"row-{row}", fill=0)
+                draw.text((730, y), str(row * 10), fill=0)
+            draw.line(
+                (table_left, table_top + 16 * row_height, 1100, table_top + 16 * row_height),
+                fill=0,
+                width=2,
+            )
+            pages.append(image)
+
+        pages[0].save(
+            source / "acceptance.pdf",
+            format="PDF",
+            save_all=True,
+            append_images=pages[1:],
+            resolution=72,
+        )
+        pdf_pages = PdfReader(str(source / "acceptance.pdf")).pages
+        assert len(pdf_pages) == page_count
+        assert all(len(pdf_page.images) == 1 for pdf_page in pdf_pages)
+        with Image.open(BytesIO(pdf_pages[0].images[0].data)) as embedded_page:
+            assert embedded_page.convert("L").getpixel((20, 200)) < 128
+        with Image.open(BytesIO(pdf_pages[61].images[0].data)) as embedded_page:
+            assert embedded_page.convert("L").getpixel((20, 190)) < 128
 
     _write_pdf_case(scratch)
     worker = Path(__file__).with_name("_ocr_root_fresh_process_worker.py")
@@ -2312,7 +2380,15 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     reference = scratch / "uninterrupted-reference"
     reference.mkdir(parents=True, exist_ok=True)
     (reference / "page-count.txt").write_text(str(page_count), encoding="utf-8")
-    _write_pdf_case(reference)
+    reference_source = reference / "source"
+    reference_source.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        scratch / "source" / "acceptance.pdf",
+        reference_source / "acceptance.pdf",
+    )
+    assert _compute_input_fingerprint(
+        pdf_path=scratch / "source" / "acceptance.pdf"
+    ) == _compute_input_fingerprint(pdf_path=reference_source / "acceptance.pdf")
     baseline = subprocess.run(
         [sys.executable, str(worker), str(reference), "durable-rich-summary-reference"],
         capture_output=True,
@@ -2356,13 +2432,29 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
         for text in text_items
     ) >= 2
     assert any("Figure 1. Deterministic multimodal acceptance fixture." in text for text in text_items)
-    assert any("| row-80 | 800 |" in text for text in text_items)
-    assert any("starts on page 62" in text for text in text_items)
-    assert any("Continuation of the cross-page reference from page 62." in text for text in text_items)
+    assert any("| row-15 | 150 |" in text for text in text_items)
+    assert any("starts on page 62 and continues" in text for text in text_items)
+    assert any("on page 63 with a cross-page reference to page 40." in text for text in text_items)
+    page_one_items = [
+        item
+        for item in source_items
+        if isinstance(item, dict)
+        and isinstance(item.get("location"), dict)
+        and item["location"].get("page_index") == 0
+    ]
+    assert [str(item.get("text", "")) for item in page_one_items] == [
+        "Front matter page 1",
+        "duplicate paragraph retained at a distinct source position",
+        "This page contains the table and figure described below.",
+        "figure: line chart",
+        "Figure 1. Deterministic multimodal acceptance fixture.",
+        "| Period | Value |\n| --- | --- |\n"
+        + "".join(f"| row-{row} | {row * 10} |\n" for row in range(1, 16)),
+    ]
     assert any(
         isinstance(item, dict)
         and item.get("kind") == "non_text:description"
-        and "deterministic acceptance fixture" in str(item.get("text", ""))
+        and "line chart" in str(item.get("text", ""))
         for item in source_items
     )
 

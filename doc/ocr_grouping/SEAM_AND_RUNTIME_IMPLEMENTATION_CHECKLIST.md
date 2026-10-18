@@ -1277,16 +1277,19 @@ an adapter-only test, or a source-checkout-only runtime test.
   nested frontier rebuilding.
 - [~] **C05 — True resume:** completed OCR, grouping, and summaries are not
   rerun after covered process stops, and duplicate resume accepts one result.
-  `test_ocr_root_fresh_process_resume_after_page_63` passes locally and in
-  Parser CI run `39106578551` using installed Kogwistar `0.6.12`, two real
-  process terminations, same-run fresh-process recovery, persistent Chroma,
-  summary reuse, semantic publication, and canonical tree/graph comparison
-  with an uninterrupted persistent reference. This closes durable recovery
-  for the deterministic fixture. Still open: combine the richer 100-page
-  multimodal, duplicate-text, cross-page-reference, and changed-source-revision
-  fixture with the same two-termination persistent-graph acceptance. The
-  target is at-least-once execution with exactly one accepted canonical
-  result, not exactly-once provider calls.
+  The updated `test_ocr_root_fresh_process_resume_after_page_63` passed locally
+  in 1093.68s using installed Kogwistar `0.6.12`, two real process
+  terminations, same-run fresh-process recovery, persistent Chroma, summary
+  reuse, semantic publication, and canonical tree/graph comparison with an
+  uninterrupted persistent reference using identical PDF bytes/source
+  revision. The embedded page images now contain the fixture text, chart, and
+  15-row table; the declared OCR reading order is asserted against the rendered
+  page. Its deterministic synthetic OCR payloads cover duplicate text and a
+  sentence continuing across pages 62-63; this is recovery evidence, not live
+  OCR accuracy. Parser CI run `39106578551` covers the earlier fixture
+  revision; the current revision still needs CI. The target remains
+  at-least-once execution with exactly one accepted canonical result, not
+  exactly-once provider calls.
 - [~] **C06 — OCR quality/completeness:** interval coverage is necessary, not
   sufficient. `OCRQualityPolicy` records provider diagnostics and can reject
   incomplete text, edge-word loss, excessive data-loss likelihood, unresolved
@@ -1311,7 +1314,7 @@ itself as proof:
 | C02 runtime ownership boundary | PASS (focused matrix) | Root/page/grouping/semantic child IDs, resume identity, ownership fencing, and persisted invocation lineage are covered by the fresh-process and concurrent-resume tests. Parser CI run `39011917164` passed all four supported interpreter jobs and the Linux recovery gate on exact commit `e57fd43`. The long-document release fixture remains tracked under C05. |
 | C03 dual-store reconciliation | PASS (parser gate) | The four-boundary recovery matrix passes locally in one run (`4 passed, 113.32s`): `test_ocr_page_artifact_publish_crash_is_recoverable` covers artifact-first page publication, `test_prepare_ocr_workflow_retries_checkpoint_without_artifact` covers checkpoint-first page recovery, `test_ocr_root_retries_after_grouping_sqlite_commit_before_nested_checkpoint` covers grouping SQLite commit before the nested runtime checkpoint, and `test_ocr_root_retries_after_semantic_graph_commit_before_checkpoint` covers graph publication before the semantic checkpoint with stable canonical IDs and zero duplicate writes. The Linux recovery gate in parser CI run `39011917164` also passed. |
 | C04 incremental equivalence | PASS (structural cost gate) | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. `tests/test_document_grouping_contract.py::test_merge_groups_scans_frontier_linearly_without_nested_rebuilds` counts validation, indexing, and emission accesses and rejects nested frontier rebuilds. The implementation stores and restores the accepted frontier and `merge_revision`; this is a structural bound, not a machine-speed benchmark. |
-| C05 true resume | PASS locally; CI pending | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_after_page_63` passed locally in 1046.05s with installed `kogwistar==0.6.12`, two real process terminations, same-run fresh-process recovery, persistent Chroma reopen, accepted OCR/summary reuse, semantic publication, and canonical tree/graph comparison to an uninterrupted persistent reference. The deterministic synthetic OCR fixture includes table, figure-description, duplicate-text, and cross-page items. Parser CI run `39106578551` covers an earlier test revision; the current revision must pass remote CI before this is promoted. |
+| C05 true resume | PASS locally; CI pending | `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_after_page_63` passed locally in 1093.68s with installed `kogwistar==0.6.12`, two real process terminations, same-run fresh-process recovery, persistent Chroma reopen, accepted OCR/summary reuse, semantic publication, and canonical tree/graph comparison to an uninterrupted reference using identical PDF bytes/source revision. The rendered 100-page fixture includes a 15-row table, chart, duplicate paragraphs, explicit page-62/63 continuation/reference, and asserted reading order. Provider results are deterministic fake payloads, so this is recovery/source-consistency evidence, not live OCR accuracy. Parser CI run `39106578551` covers an earlier test revision; this revision still needs remote CI. |
 | C06 OCR quality/completeness | PARTIAL (independent visual evidence) | Typed provider diagnostics, strict source-item accounting, and `OCRGroundTruth` cover loss signals, item recall, spatial IoU, and text mismatch. The checked-in Codex table fixture provides auditable text/table annotations, but does not establish independent figure/non-text provider recall; the live Codex figure run emitted zero non-text objects. Close with an independently annotated visual-region corpus and provider evaluation; do not infer completeness from interval coverage or text recall alone. |
 
 ### C05 evidence correction (2026-10-15)
