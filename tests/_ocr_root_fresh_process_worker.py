@@ -318,6 +318,17 @@ def main() -> int:
             }
         ) and page_number <= 63:
             raise AssertionError("page before the termination boundary was replayed")
+        if mode in {
+            "durable-rich-summary-long-hold",
+            "durable-rich-summary-long-publish-hold",
+            "durable-rich-summary-long-resume",
+        }:
+            with (scratch / "ocr-page-call-ledger.jsonl").open(
+                "a", encoding="utf-8"
+            ) as stream:
+                stream.write(
+                    json.dumps({"mode": mode, "page_number": page_number}) + "\n"
+                )
         return _response(
             page_number,
             rich=rich_pdf_mode,
@@ -585,6 +596,34 @@ def main() -> int:
         for edge in conversation_engine.read.get_edges(limit=10_000)
         if (edge.metadata or {}).get("relation") == "wf_invoked"
     ]
+    scoped_invocations = [
+        row
+        for row in lineage
+        if row["parent_run_id"] == root_run_id
+        or row["parent_run_id"].startswith(f"{root_run_id}|")
+        or row["child_run_id"] == root_run_id
+        or row["child_run_id"].startswith(f"{root_run_id}|")
+    ]
+    invocation_run_ids = {
+        run_id
+        for row in scoped_invocations
+        for run_id in (row["parent_run_id"], row["child_run_id"])
+    }
+    workflow_step_run_ids = {
+        str(run_id)
+        for node in conversation_engine.read.get_nodes(
+            where={"entity_type": "workflow_step_exec"},
+            limit=10_000,
+        )
+        if isinstance((run_id := (node.metadata or {}).get("run_id")), str)
+        and (run_id == root_run_id or run_id.startswith(f"{root_run_id}|"))
+    }
+    if workflow_step_run_ids != invocation_run_ids:
+        raise AssertionError(
+            "persisted workflow steps and invocation edges disagree: "
+            f"step_runs={sorted(workflow_step_run_ids)!r}, "
+            f"invocation_runs={sorted(invocation_run_ids)!r}"
+        )
     graph_node_ids = [
         str(node["id"])
         for node in bundle.graph_payload.get("nodes", [])
@@ -629,6 +668,7 @@ def main() -> int:
         json.dumps(
             {
                 "lineage": lineage,
+                "workflow_step_run_ids": sorted(workflow_step_run_ids),
                 "graph_node_ids": graph_node_ids,
                 "graph_edge_ids": graph_edge_ids,
                 "graph_payload_sha256": graph_payload_digest,

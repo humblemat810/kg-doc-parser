@@ -67,6 +67,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from io import BytesIO
@@ -2062,6 +2063,22 @@ def test_ocr_root_resume_reopens_same_lineage_in_a_fresh_process() -> None:
     )
     lineage_rows = lineage["lineage"]
     assert len({row["id"] for row in lineage_rows}) == len(lineage_rows)
+    execution_root_id = "ocr|fresh-root-document|recovery-1"
+    expected_stage_run_ids = {
+        f"{execution_root_id}|ocr-pages|recovery-1",
+        f"{execution_root_id}|grouping|recovery-1",
+        f"{execution_root_id}|semantic|recovery-1",
+    }
+    actual_stage_run_ids = {
+        row["child_run_id"]
+        for row in lineage_rows
+        if row["parent_run_id"] == execution_root_id
+    }
+    assert actual_stage_run_ids == expected_stage_run_ids
+    assert set(lineage["workflow_step_run_ids"]) == {
+        execution_root_id,
+        *expected_stage_run_ids,
+    }
     assert {
         "kg_doc_parser.ocr_pages.v1",
         "kg_doc_parser.ocr_grouping.v1",
@@ -2369,6 +2386,28 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     assert resumed_summary_call_identities == summary_call_identities, (
         "resuming semantic publication regenerated an already accepted summary"
     )
+    page_call_records = [
+        json.loads(line)
+        for line in (scratch / "ocr-page-call-ledger.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert Counter(record["page_number"] for record in page_call_records) == (
+        Counter({page_number: 1 for page_number in range(1, page_count + 1)})
+        + Counter({64: 1})
+    ), "recovery skipped a page or replayed an accepted OCR page"
+    continued_page_calls = [
+        record["page_number"]
+        for record in page_call_records
+        if record["mode"] == "durable-rich-summary-long-publish-hold"
+    ]
+    assert continued_page_calls == list(range(64, page_count + 1)), (
+        "the fresh root resume did not continue contiguously from page 64"
+    )
+    assert not any(
+        record["mode"] == "durable-rich-summary-long-resume"
+        for record in page_call_records
+    ), "semantic-publication recovery replayed OCR pages"
     lineage = json.loads(
         (scratch / "durable-rich-summary-long-resume-lineage.json").read_text(
             encoding="utf-8"
@@ -4180,7 +4219,7 @@ def test_ocr_root_fresh_process_resume_publishes_durable_graph() -> None:
         "kg_doc_parser.ingest.v1",
     }
     assert {entry["parent_run_id"] for entry in lineage} == {
-        "ocr|fresh-root-document"
+        "ocr|fresh-root-document|recovery-1"
     }
     assert len({entry["child_run_id"] for entry in lineage}) == 3
     assert len({entry["id"] for entry in lineage}) == 3
