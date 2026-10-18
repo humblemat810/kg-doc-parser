@@ -70,6 +70,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -77,6 +78,7 @@ from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
 )
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime.runtime import apply_state_update_inplace
 from PIL import Image, ImageDraw
 from pypdf import PdfReader, PdfWriter
@@ -149,6 +151,7 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     _ocr_page_metadata,
     _pdf_render_manifest_payload,
     _process_ocr_page,
+    _provider_endpoint_configuration_identity,
     _render_pdf_to_images,
     _resolve_ocr_source_plan,
     _summary_generator_identity,
@@ -170,7 +173,6 @@ from kg_doc_parser.workflow_ingest.sdk_boundary import ContentCarrier, raw_conte
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 from kg_doc_parser.workflow_ingest.service import (
     _TinyEmbeddingFunction,
-    build_default_engines,
 )
 
 pytestmark = [pytest.mark.workflow]
@@ -848,6 +850,35 @@ def test_adaptive_grouping_iterates_in_kogwistar_and_reuses_completed_tree() -> 
 
 
 @pytest.mark.ci
+def test_group_proposer_fingerprint_uses_provider_config_without_mode_dump() -> None:
+    base = ProviderEndpointConfig(
+        provider="openai",
+        model="group-model",
+        base_url="https://router.example/v1",
+        reasoning_effort="none",
+        api_key_env="PARSER_API_KEY",
+    )
+    settings = WorkflowProviderSettings(parser=base)
+    generator = GroundedChatGroupProposalGenerator(
+        provider_settings=settings,
+        chat_model=cast(SupportsStructuredOutput, object()),
+    )
+
+    assert generator.configuration_fingerprint == GroundedChatGroupProposalGenerator(
+        provider_settings=WorkflowProviderSettings(parser=base.model_copy(deep=True)),
+        chat_model=cast(SupportsStructuredOutput, object()),
+    ).configuration_fingerprint
+    assert generator.configuration_fingerprint != GroundedChatGroupProposalGenerator(
+        provider_settings=WorkflowProviderSettings(
+            parser=base.model_copy(update={"reasoning_effort": "high"})
+        ),
+        chat_model=cast(SupportsStructuredOutput, object()),
+    ).configuration_fingerprint
+    identity = _provider_endpoint_configuration_identity(base)
+    assert identity["api_key_env"] == "PARSER_API_KEY"
+    assert "api_key" not in identity
+
+
 def test_production_group_proposer_uses_typed_structured_output_payload() -> None:
     tree = DocumentTree(
         document_id="adaptive-provider-doc",
@@ -1570,6 +1601,7 @@ def test_ocr_pages_run_as_persisted_steps_and_terminal_resume_does_not_recall_pr
     )
     settings = WorkflowProviderSettings(
         ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        parser=ProviderEndpointConfig(provider="fake", model="fake-parser"),
         embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
     )
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
@@ -3526,10 +3558,16 @@ def test_ocr_root_graph_publication_survives_durable_engine_reopen() -> None:
             provider="fake", model="durable-embedding", dimension=2
         ),
     )
-    engines = build_default_engines(
-        scratch / "engines", embedding_function=_TinyEmbeddingFunction()
+    engine_dir = scratch / "engines"
+    workflow_engine, conversation_engine, unused_memory_knowledge = (
+        build_workflow_engine_triplet(engine_dir, "in_memory")
     )
-    workflow_engine, conversation_engine, knowledge_engine = engines
+    knowledge_engine = GraphKnowledgeEngine(
+        persist_directory=str(engine_dir / "knowledge"),
+        kg_graph_type="knowledge",
+        embedding_function=_TinyEmbeddingFunction(),
+    )
+    engines = (workflow_engine, conversation_engine, knowledge_engine)
 
     def _runner(
         image_path: Path,
@@ -3597,11 +3635,13 @@ def test_ocr_root_graph_publication_survives_durable_engine_reopen() -> None:
     finally:
         for engine in engines:
             engine.close()
+        unused_memory_knowledge.close()
 
-    reopened_engines = build_default_engines(
-        scratch / "engines", embedding_function=_TinyEmbeddingFunction()
+    reopened_knowledge = GraphKnowledgeEngine(
+        persist_directory=str(engine_dir / "knowledge"),
+        kg_graph_type="knowledge",
+        embedding_function=_TinyEmbeddingFunction(),
     )
-    reopened_knowledge = reopened_engines[2]
     try:
         assert all(reopened_knowledge.persist.exists_node(node_id) for node_id in expected_node_ids)
         assert all(reopened_knowledge.persist.exists_edge(edge_id) for edge_id in expected_edge_ids)
@@ -3614,8 +3654,7 @@ def test_ocr_root_graph_publication_survives_durable_engine_reopen() -> None:
         assert stored_node_ids == expected_node_ids
         assert stored_edge_ids == expected_edge_ids
     finally:
-        for engine in reopened_engines:
-            engine.close()
+        reopened_knowledge.close()
 
 
 @pytest.mark.ci
@@ -3632,6 +3671,7 @@ def test_ocr_grouping_and_semantic_graph_preserve_mixed_reading_order() -> None:
     )
     settings = WorkflowProviderSettings(
         ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+        parser=ProviderEndpointConfig(provider="fake", model="fake-parser"),
         embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
         parse_strategy="layer_excerpt",
         triage_enabled=False,
@@ -3837,6 +3877,7 @@ def test_failed_ocr_child_retries_from_kogwistar_checkpoint_without_replaying_pa
         payloads.append(OCRImagePayload(page_number=page_number, image_path=str(image_path)))
     settings = WorkflowProviderSettings(
         ocr=ProviderEndpointConfig(provider="fake", model="retry-ocr"),
+        parser=ProviderEndpointConfig(provider="fake", model="retry-parser"),
         embedding=EmbeddingProviderConfig(provider="fake", model="retry-embed", dimension=1),
     )
     calls: dict[int, int] = {}
@@ -5222,21 +5263,44 @@ def test_production_grounded_summary_uses_exact_evidence_and_parser_identity() -
 def test_production_grounded_summary_identity_includes_parser_config() -> None:
     first = GroundedChatSummaryGenerator(
         provider_settings=WorkflowProviderSettings(
-            parser=ProviderEndpointConfig(provider="openai", model="model-a")
+            parser=ProviderEndpointConfig(
+                provider="openai",
+                model="model-a",
+                base_url="https://router-a.example/v1",
+                reasoning_effort="none",
+            )
         ),
         chat_model=_FakeGroundedSummaryChat(),
     )
     second = GroundedChatSummaryGenerator(
         provider_settings=WorkflowProviderSettings(
-            parser=ProviderEndpointConfig(provider="openai", model="model-b")
+            parser=ProviderEndpointConfig(
+                provider="openai",
+                model="model-a",
+                base_url="https://router-b.example/v1",
+                reasoning_effort="none",
+            )
+        ),
+        chat_model=_FakeGroundedSummaryChat(),
+    )
+    third = GroundedChatSummaryGenerator(
+        provider_settings=WorkflowProviderSettings(
+            parser=ProviderEndpointConfig(
+                provider="openai",
+                model="model-a",
+                base_url="https://router-a.example/v1",
+                reasoning_effort="high",
+            )
         ),
         chat_model=_FakeGroundedSummaryChat(),
     )
 
     first_identity = _summary_generator_identity(first)
     second_identity = _summary_generator_identity(second)
+    third_identity = _summary_generator_identity(third)
 
     assert first_identity != second_identity
+    assert first_identity != third_identity
     assert first_identity.startswith(
         "kg_doc_parser.workflow_ingest.ocr_pipeline.GroundedChatSummaryGenerator:"
     )

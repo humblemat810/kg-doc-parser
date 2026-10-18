@@ -92,6 +92,7 @@ from .probe import WorkflowProbe, emit_probe_event
 from .providers import (
     ProviderDiagnostics,
     ProviderDiagnosticsSink,
+    ProviderEndpointConfig,
     SupportsStructuredOutput,
     WorkflowProviderSettings,
     build_chat_model_for_role,
@@ -105,6 +106,37 @@ from .service import _RunCompat
 _LOGGER = logging.getLogger(__name__)
 
 JsonObject = dict[str, JsonValue]
+
+
+def _provider_endpoint_configuration_identity(
+    config: ProviderEndpointConfig,
+) -> JsonObject:
+    """Return the non-secret provider settings that define model behavior."""
+    identity: JsonObject = {
+        "provider": config.provider,
+        "model": config.model,
+        "temperature": config.temperature,
+        "reasoning_effort": config.reasoning_effort,
+        "base_url": config.base_url,
+        "api_key_env": config.api_key_env,
+        "api_version": config.api_version,
+        "project": config.project,
+        "ocr_engine": config.ocr_engine,
+        "pdf_text_mode": config.pdf_text_mode,
+        "ocr_language": config.ocr_language,
+        "location": config.location,
+        "max_retries": config.max_retries,
+        "max_output_tokens": config.max_output_tokens,
+        "timeout_seconds": config.timeout_seconds,
+        "retry_backoff_seconds": config.retry_backoff_seconds,
+        "retry_backoff_max_seconds": config.retry_backoff_max_seconds,
+        "max_in_flight_calls": config.max_in_flight_calls,
+        "fallback_specs": [
+            _provider_endpoint_configuration_identity(fallback)
+            for fallback in config.fallback_specs
+        ],
+    }
+    return identity
 
 
 def _json_object(value: object) -> JsonObject:
@@ -353,7 +385,9 @@ class GroundedChatSummaryGenerator:
     @property
     def configuration_fingerprint(self) -> str:
         configuration = json.dumps(
-            self.provider_settings.parser.model_dump(),
+            _provider_endpoint_configuration_identity(
+                self.provider_settings.parser
+            ),
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -447,7 +481,9 @@ class GroundedChatGroupProposalGenerator:
         configuration = json.dumps(
             [
                 _ADAPTIVE_GROUPING_PROMPT_REVISION,
-                self.provider_settings.parser.model_dump(mode="json"),
+                _provider_endpoint_configuration_identity(
+                    self.provider_settings.parser
+                ),
             ],
             sort_keys=True,
             separators=(",", ":"),
