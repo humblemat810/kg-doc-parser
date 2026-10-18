@@ -1202,11 +1202,18 @@ def _validated_grouping_checkpoint(
     restore step. Validate the SQLite tree/frontier seam before requesting
     that resume so terminal state cannot bypass corruption detection.
     """
-    restored = state_store.load_document_tree(
-        document_id=document_id,
-        source_fingerprint=tree.source_fingerprint(),
-        grouping_policy_version=grouping_policy_version,
-    )
+    try:
+        restored = state_store.load_document_tree(
+            document_id=document_id,
+            source_fingerprint=tree.source_fingerprint(),
+            grouping_policy_version=grouping_policy_version,
+        )
+    except ValueError as exc:
+        if "frontier" in str(exc):
+            raise RuntimeError(
+                "grouping checkpoint frontier does not match the restored tree"
+            ) from exc
+        raise RuntimeError(f"persisted grouping checkpoint is invalid: {exc}") from exc
     revision = state_store.document_tree_revision(document_id=document_id)
     if restored is None:
         if revision is not None:

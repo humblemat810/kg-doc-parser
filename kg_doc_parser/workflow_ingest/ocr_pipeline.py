@@ -2029,29 +2029,89 @@ class OCRWorkflowStateStore:
                 (document_id,),
             ).fetchone()
             current_frontier = conn.execute(
-                "SELECT document_id FROM grouping_frontier_state WHERE document_id = ?",
+                """
+                SELECT source_fingerprint, grouping_policy_version, frontier_json
+                FROM grouping_frontier_state WHERE document_id = ?
+                """,
                 (document_id,),
             ).fetchone()
             current_metadata = conn.execute(
-                "SELECT document_id, merge_revision "
-                "FROM grouping_checkpoint_metadata WHERE document_id = ?",
+                """
+                SELECT source_fingerprint, grouping_policy_version,
+                       accepted_page_frontier_json, tree_revision,
+                       merge_revision, last_runtime_step
+                FROM grouping_checkpoint_metadata WHERE document_id = ?
+                """,
                 (document_id,),
             ).fetchone()
             current_revision = None if current is None else str(current["tree_revision"])
             has_frontier = current_frontier is not None
+            root = next(node for node in tree.nodes if node.node_id == tree.root_id)
+            expected_frontier = (
+                tuple(child.node_id for child in root.children)
+                if root.children
+                else (root.node_id,)
+            )
+            if current_frontier is not None:
+                try:
+                    stored_frontier_payload = json.loads(
+                        str(current_frontier["frontier_json"])
+                    )
+                except (TypeError, ValueError):
+                    stored_frontier_payload = None
+                frontier_matches = (
+                    str(current_frontier["source_fingerprint"])
+                    == tree.source_fingerprint()
+                    and str(current_frontier["grouping_policy_version"])
+                    == grouping_policy_version
+                    and isinstance(stored_frontier_payload, list)
+                    and tuple(stored_frontier_payload) == expected_frontier
+                )
+            else:
+                frontier_matches = False
+            if current_metadata is not None:
+                try:
+                    accepted_pages_payload = json.loads(
+                        str(current_metadata["accepted_page_frontier_json"])
+                    )
+                except (TypeError, ValueError):
+                    accepted_pages_payload = None
+                metadata_matches = (
+                    str(current_metadata["source_fingerprint"])
+                    == tree.source_fingerprint()
+                    and str(current_metadata["grouping_policy_version"])
+                    == grouping_policy_version
+                    and str(current_metadata["tree_revision"]) == tree_revision
+                    and isinstance(accepted_pages_payload, list)
+                    and all(
+                        type(page) is int and page >= 1
+                        for page in accepted_pages_payload
+                    )
+                    and accepted_pages_payload
+                    == sorted(set(accepted_pages_payload))
+                    and int(current_metadata["merge_revision"]) >= 0
+                    and bool(str(current_metadata["last_runtime_step"]))
+                )
+            else:
+                metadata_matches = False
             # A process can die after this SQLite commit but before the
             # surrounding Kogwistar step checkpoint.  A retry with the same
-            # exact tree is safe to acknowledge; a different stale tree must
-            # still fail the revision fence below.
-            if (
-                current_revision == tree_revision
-                and has_frontier
-                and current_metadata is not None
-                and current is not None
-                and str(current["source_fingerprint"]) == tree.source_fingerprint()
-                and str(current["grouping_policy_version"]) == grouping_policy_version
-            ):
-                return tree_revision
+            # exact tree is safe to acknowledge only when every companion
+            # record still describes that exact commit.
+            if current_revision == tree_revision:
+                if (
+                    has_frontier
+                    and current is not None
+                    and str(current["source_fingerprint"]) == tree.source_fingerprint()
+                    and str(current["grouping_policy_version"]) == grouping_policy_version
+                    and frontier_matches
+                    and metadata_matches
+                ):
+                    return tree_revision
+                raise GroupingCheckpointConflict(
+                    f"idempotent grouping checkpoint replay for {document_id!r} "
+                    "found mismatched companion records"
+                )
             merge_revision = (
                 1
                 if current_metadata is None
@@ -2109,12 +2169,6 @@ class OCRWorkflowStateStore:
                     time.time(),
                 ),
             )
-            root = next(node for node in tree.nodes if node.node_id == tree.root_id)
-            frontier = (
-                tuple(child.node_id for child in root.children)
-                if root.children
-                else (root.node_id,)
-            )
             conn.execute(
                 """
                 INSERT INTO grouping_frontier_state (
@@ -2131,7 +2185,7 @@ class OCRWorkflowStateStore:
                     document_id,
                     tree.source_fingerprint(),
                     grouping_policy_version,
-                    json.dumps(frontier, separators=(",", ":")),
+                    json.dumps(expected_frontier, separators=(",", ":")),
                     time.time(),
                 ),
             )

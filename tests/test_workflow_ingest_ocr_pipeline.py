@@ -6969,6 +6969,11 @@ def test_grouping_checkpoint_load_rejects_mismatched_companion_records() -> None
             "UPDATE grouping_checkpoint_metadata SET tree_revision = ? WHERE document_id = ?",
             ("stale-revision", tree.document_id),
         )
+    with pytest.raises(GroupingCheckpointConflict, match="idempotent grouping checkpoint replay"):
+        store.save_document_tree(
+            document_id=tree.document_id,
+            tree=tree,
+        )
     with pytest.raises(ValueError, match="checkpoint records disagree"):
         store.load_document_tree(document_id=tree.document_id)
 
@@ -6980,6 +6985,11 @@ def test_grouping_checkpoint_load_rejects_mismatched_companion_records() -> None
         conn.execute(
             "UPDATE grouping_frontier_state SET frontier_json = ? WHERE document_id = ?",
             (json.dumps(["foreign-frontier"]), tree.document_id),
+        )
+    with pytest.raises(GroupingCheckpointConflict, match="idempotent grouping checkpoint replay"):
+        store.save_document_tree(
+            document_id=tree.document_id,
+            tree=tree,
         )
     with pytest.raises(ValueError, match="frontier does not match"):
         store.load_document_tree(document_id=tree.document_id)
