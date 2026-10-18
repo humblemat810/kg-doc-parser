@@ -3013,6 +3013,76 @@ def test_ocr_root_resume_rejects_changed_provider_before_replaying_pages() -> No
             resume_from_checkpoint=True,
         )
 
+
+@pytest.mark.ci
+def test_fresh_process_root_resume_rejects_each_output_affecting_ocr_setting() -> None:
+    """A provider identity change is rejected before fresh-process page replay."""
+    scratch = _scratch("ocr_root_config_fingerprint_fresh_process")
+    for page_number in (1, 2):
+        _draw_test_image(
+            scratch / "source" / f"page-{page_number}.png",
+            lines=[f"provider identity page {page_number}"],
+        )
+    worker = Path(__file__).with_name("_ocr_root_fresh_process_worker.py")
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["OCR_TEST_LEASE_MS"] = "50"
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        path
+        for path in (
+            str(repo_root),
+            str(repo_root.parent / "kogwistar"),
+            child_env.get("PYTHONPATH", ""),
+        )
+        if path
+    )
+
+    interrupted = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "durable-config-interrupt"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=120,
+    )
+    assert interrupted.returncode == 17, interrupted.stderr
+    interruption = json.loads(
+        (scratch / "interrupt-result.json").read_text(encoding="utf-8")
+    )
+    assert interruption["calls"] == [1, 2]
+
+    for setting_name in (
+        "temperature",
+        "reasoning-effort",
+        "location",
+        "output-tokens",
+        "engine",
+        "language",
+        "retries",
+        "timeout",
+        "fallback",
+    ):
+        resumed = subprocess.run(
+            [
+                sys.executable,
+                str(worker),
+                str(scratch),
+                f"durable-config-resume-{setting_name}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=child_env,
+            timeout=120,
+        )
+        assert resumed.returncode != 0, resumed.stdout
+        error_path = scratch / f"durable-config-resume-{setting_name}-error.txt"
+        assert error_path.is_file(), f"worker did not write {error_path.name}"
+        error = error_path.read_text(encoding="utf-8")
+        assert "identity mismatch" in error.lower(), error
+        assert "provider was called before root identity validation" not in error
+
+
 @pytest.mark.ci
 def test_ocr_root_resume_rebuilds_after_same_path_source_change() -> None:
     """A changed source revision rebuilds instead of reusing accepted pages."""

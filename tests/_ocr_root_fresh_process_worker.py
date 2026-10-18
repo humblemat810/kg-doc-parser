@@ -270,6 +270,28 @@ def main() -> int:
         ),
         triage_enabled=False,
     )
+    config_resume_variants: dict[str, dict[str, object]] = {
+        "temperature": {"temperature": 0.4},
+        "reasoning-effort": {"reasoning_effort": "high"},
+        "location": {"location": "region-b"},
+        "output-tokens": {"max_output_tokens": 2048},
+        "engine": {"ocr_engine": "easyocr"},
+        "language": {"ocr_language": "fr"},
+        "retries": {"max_retries": 3},
+        "timeout": {"timeout_seconds": 31.0},
+        "fallback": {
+            "fallback_specs": [
+                ProviderEndpointConfig(
+                    provider="fake", model="fresh-root-ocr-fallback"
+                )
+            ]
+        },
+    }
+    if mode.startswith("durable-config-resume-"):
+        variant_name = mode.removeprefix("durable-config-resume-")
+        settings = settings.model_copy(
+            update={"ocr": settings.ocr.model_copy(update=config_resume_variants[variant_name])}
+        )
     calls: list[int] = []
 
     def runner(
@@ -279,7 +301,7 @@ def main() -> int:
     ) -> OCRClusterResponse:
         del image_path, provider_settings
         calls.append(page_number)
-        if mode == "interrupt" and page_number == 2:
+        if mode in {"interrupt", "durable-config-interrupt"} and page_number == 2:
             raise RuntimeError("fresh root interruption")
         if mode in {
             "durable-rich-summary-long-hold",
@@ -309,7 +331,7 @@ def main() -> int:
                 "ready", encoding="utf-8"
             )
             time.sleep(3.0)
-        if mode in {
+        if mode.startswith("durable-config-resume-") or mode in {
             "resume",
             "durable-resume",
             "durable-summary-publish-hold",
@@ -318,6 +340,8 @@ def main() -> int:
             "race-b",
         } and page_number == 1:
             raise AssertionError("accepted page was replayed")
+        if mode.startswith("durable-config-resume-"):
+            raise AssertionError("provider was called before root identity validation")
         if (
             mode.endswith("long-resume")
             or mode
@@ -372,7 +396,7 @@ def main() -> int:
         engine._phase1_enable_index_jobs = False
     try:
         lease_ms = int(os.environ.get("OCR_TEST_LEASE_MS", "30000"))
-        if mode in {
+        if mode.startswith("durable-config-resume-") or mode in {
             "resume",
             "long-resume",
             "durable-long-resume",
@@ -504,7 +528,8 @@ def main() -> int:
                 else None
             ),
             run_id=root_run_id,
-            resume_from_checkpoint=mode
+            resume_from_checkpoint=mode.startswith("durable-config-resume-")
+            or mode
             in {
                 "resume",
                 "long-resume",
@@ -522,10 +547,11 @@ def main() -> int:
             run_ownership_lease_ms=lease_ms,
         )
     except Exception as error:
-        if mode != "interrupt":
-            error_name = (
-                f"{mode}-error.txt" if mode.startswith("race-") else "resume-error.txt"
-            )
+        if mode not in {"interrupt", "durable-config-interrupt"}:
+            if mode.startswith(("race-", "durable-config-resume-")):
+                error_name = f"{mode}-error.txt"
+            else:
+                error_name = "resume-error.txt"
             (scratch / error_name).write_text(
                 traceback.format_exc(), encoding="utf-8"
             )
