@@ -192,3 +192,4 @@ jobs:
           poetry run pytest -p no:cacheprovider -q
           tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_graph_publication_survives_durable_engine_reopen
           tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_publishes_durable_graph
+          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_summary_is_not_regenerated_after_fresh_process_resume

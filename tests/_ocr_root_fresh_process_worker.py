@@ -16,8 +16,20 @@ from kg_doc_parser.workflow_ingest import (
     EmbeddingProviderConfig,
     OCRImagePayload,
     ProviderEndpointConfig,
+    Summary,
+    SummaryPolicy,
     WorkflowProviderSettings,
     run_ocr_ingest_workflow,
+)
+from kg_doc_parser.workflow_ingest.document_grouping import (
+    GroupProposal,
+    GroupProposalBatch,
+    GroupingPassContext,
+)
+from kg_doc_parser.workflow_ingest.document_models import (
+    AdaptiveGroupingPolicy,
+    DocumentTree,
+    EvidenceSlice,
 )
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 from kg_doc_parser.workflow_ingest.service import _TinyEmbeddingFunction
@@ -90,6 +102,49 @@ def _semantic_tree(
     return root
 
 
+class _FreshProcessGroupProposer:
+    configuration_fingerprint = "fresh-process-grounded-summary-grouping-v1"
+
+    def __call__(self, context: GroupingPassContext, /) -> GroupProposalBatch:
+        if context.pass_index != 0 or len(context.frontier_ids) < 2:
+            return GroupProposalBatch()
+        return GroupProposalBatch(
+            proposals=(
+                GroupProposal(
+                    kind="section",
+                    members=context.frontier_ids[:2],
+                ),
+            )
+        )
+
+
+class _FreshProcessGroundedSummaryGenerator:
+    configuration_fingerprint = "fresh-process-grounded-summary-v1"
+
+    def __init__(self, calls_path: Path) -> None:
+        self.calls_path = calls_path
+
+    def __call__(
+        self,
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        evidence_slices: tuple[EvidenceSlice, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        del tree, node_id
+        with self.calls_path.open("a", encoding="utf-8") as stream:
+            stream.write("called\n")
+        return Summary(
+            status="generated",
+            text="Grounded summary of the accepted section.",
+            evidence_item_ids=tuple(sorted({item.item_id for item in evidence_slices})),
+            provider_model="fresh-process-test-summary",
+            prompt_revision="fresh-process-summary-v1",
+            input_fingerprint=input_fingerprint,
+        )
+
+
 def main() -> int:
     os.environ.setdefault("KOGWISTAR_IMPL_META_STORE", "python")
     scratch = Path(sys.argv[1])
@@ -124,7 +179,12 @@ def main() -> int:
         if mode == "interrupt" and page_number == 2:
             raise RuntimeError("fresh root interruption")
         hold_page = 64 if mode == "long-hold" else 2
-        if mode in {"hold", "long-hold", "durable-hold"} and page_number == hold_page:
+        if mode in {
+            "hold",
+            "long-hold",
+            "durable-hold",
+            "durable-summary-hold",
+        } and page_number == hold_page:
             (scratch / f"page-{hold_page}-started").write_text("ready", encoding="utf-8")
             time.sleep(120.0)
         if mode.startswith("race-") and page_number == 2:
@@ -132,7 +192,14 @@ def main() -> int:
                 "ready", encoding="utf-8"
             )
             time.sleep(3.0)
-        if mode in {"resume", "durable-resume", "race-a", "race-b"} and page_number == 1:
+        if mode in {
+            "resume",
+            "durable-resume",
+            "durable-summary-publish-hold",
+            "durable-summary-resume",
+            "race-a",
+            "race-b",
+        } and page_number == 1:
             raise AssertionError("accepted page was replayed")
         if mode == "long-resume" and page_number <= 63:
             raise AssertionError("page before the termination boundary was replayed")
@@ -159,11 +226,56 @@ def main() -> int:
         engine._phase1_enable_index_jobs = False
     try:
         lease_ms = int(os.environ.get("OCR_TEST_LEASE_MS", "30000"))
-        if mode in {"resume", "long-resume", "durable-resume", "race-a", "race-b"}:
+        if mode in {
+            "resume",
+            "long-resume",
+            "durable-resume",
+            "durable-summary-publish-hold",
+            "durable-summary-resume",
+            "race-a",
+            "race-b",
+        }:
             # Simulate a fresh process after the crash-recovery lease expires.
             # The production default remains long-lived; this test-only lease
             # keeps the subprocess test bounded without bypassing ownership.
             time.sleep((lease_ms + 200) / 1000)
+
+        def parse_semantic_fn(
+            *,
+            collection: object,
+            parser_input_dict: dict[str, object],
+            parser_source_map: dict[str, dict[str, object]],
+        ) -> SemanticNode:
+            if mode in {"durable-summary-publish-hold", "durable-summary-resume"}:
+                grouping_tree = parser_input_dict.get("document_tree")
+                if not isinstance(grouping_tree, dict):
+                    raise AssertionError("semantic parser did not receive the grouping tree")
+                nodes = grouping_tree.get("nodes")
+                if not isinstance(nodes, list):
+                    raise AssertionError("semantic parser received malformed grouping nodes")
+                generated_summaries = [
+                    node["summary"]
+                    for node in nodes
+                    if isinstance(node, dict)
+                    and isinstance(node.get("summary"), dict)
+                    and node["summary"].get("status") == "generated"
+                ]
+                if len(generated_summaries) != 1:
+                    raise AssertionError(
+                        "semantic parser must receive exactly one accepted grounded summary"
+                    )
+                if mode == "durable-summary-publish-hold":
+                    (scratch / "grounded-summary-ready").write_text(
+                        "ready", encoding="utf-8"
+                    )
+                    time.sleep(120.0)
+            return _semantic_tree(
+                collection=collection,
+                parser_input_dict=parser_input_dict,
+                parser_source_map=parser_source_map,
+            )
+
+        summary_mode = mode.startswith("durable-summary-")
         result, bundle, _ = run_ocr_ingest_workflow(
             document_id="fresh-root-document",
             title="Fresh Root",
@@ -174,9 +286,42 @@ def main() -> int:
             image_payloads=image_payloads,
             provider_settings=settings,
             ocr_runner=runner,
-            deps={"parse_semantic_fn": _semantic_tree},
+            deps={"parse_semantic_fn": parse_semantic_fn},
+            adaptive_grouping_policy=(
+                AdaptiveGroupingPolicy(
+                    maximum_rounds=2,
+                    window_size=3,
+                    window_overlap=1,
+                )
+                if summary_mode
+                else None
+            ),
+            grouping_proposer=_FreshProcessGroupProposer() if summary_mode else None,
+            summary_policy=(
+                SummaryPolicy(
+                    eligible_kinds=("section",),
+                    minimum_source_items=2,
+                    minimum_source_chars=1,
+                    maximum_targets=1,
+                )
+                if summary_mode
+                else None
+            ),
+            grounded_summary_generator=(
+                _FreshProcessGroundedSummaryGenerator(scratch / "summary-calls.txt")
+                if summary_mode
+                else None
+            ),
             run_id="ocr|fresh-root-document",
-            resume_from_checkpoint=mode in {"resume", "long-resume", "race-a", "race-b"},
+            resume_from_checkpoint=mode
+            in {
+                "resume",
+                "long-resume",
+                "durable-summary-publish-hold",
+                "durable-summary-resume",
+                "race-a",
+                "race-b",
+            },
             run_ownership_lease_ms=lease_ms,
         )
     except Exception as error:
@@ -193,7 +338,15 @@ def main() -> int:
         )
         return 17
 
-    if mode not in {"resume", "long-resume", "durable-resume", "resume-missing-artifact", "race-a", "race-b"} or result.status != "succeeded" or bundle is None:
+    if mode not in {
+        "resume",
+        "long-resume",
+        "durable-resume",
+        "durable-summary-resume",
+        "resume-missing-artifact",
+        "race-a",
+        "race-b",
+    } or result.status != "succeeded" or bundle is None:
         raise AssertionError("fresh root resume did not produce one accepted result")
     result_name = (
         f"{mode}-result.json"
@@ -207,6 +360,19 @@ def main() -> int:
                 "run_id": result.run_id,
                 "calls": calls,
                 "has_grouping_tree": bundle.grouping_tree is not None,
+                **(
+                    {
+                        "grouping_summary_count": sum(
+                            1
+                            for node in bundle.grouping_tree.get("nodes", [])
+                            if isinstance(node, dict)
+                            and isinstance(node.get("summary"), dict)
+                            and node["summary"].get("status") == "generated"
+                        )
+                    }
+                    if summary_mode and isinstance(bundle.grouping_tree, dict)
+                    else {}
+                ),
             }
         ),
         encoding="utf-8",

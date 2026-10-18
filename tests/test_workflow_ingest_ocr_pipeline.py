@@ -3771,6 +3771,116 @@ def test_ocr_root_fresh_process_resume_publishes_durable_graph() -> None:
         reopened_knowledge.close()
 
 
+@pytest.mark.ci_full
+def test_ocr_summary_is_not_regenerated_after_fresh_process_resume() -> None:
+    """A completed grounded summary survives a crash before semantic publication."""
+    pytest.importorskip("chromadb")
+    scratch = _scratch("ocr_summary_fresh_resume_durable_graph")
+    for page_number in (1, 2):
+        _draw_test_image(
+            scratch / "source" / f"page-{page_number}.png",
+            lines=[f"summary resume page {page_number}"],
+        )
+    worker = Path(__file__).with_name("_ocr_root_fresh_process_worker.py")
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["OCR_TEST_LEASE_MS"] = "1000"
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        path for path in (str(repo_root), child_env.get("PYTHONPATH", "")) if path
+    )
+
+    interrupted_ocr = subprocess.Popen(
+        [sys.executable, str(worker), str(scratch), "durable-summary-hold"],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    page_marker = scratch / "page-2-started"
+    deadline = time.monotonic() + 90.0
+    while not page_marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if not page_marker.exists():
+        _terminate_interrupted_worker(interrupted_ocr)
+        stdout, stderr = interrupted_ocr.communicate(timeout=30)
+        pytest.fail(
+            "worker did not reach page two before termination\n"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+    _terminate_interrupted_worker(interrupted_ocr)
+    interrupted_ocr.wait(timeout=30)
+    assert interrupted_ocr.returncode != 0
+
+    first_resume = subprocess.Popen(
+        [sys.executable, str(worker), str(scratch), "durable-summary-publish-hold"],
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    summary_marker = scratch / "grounded-summary-ready"
+    deadline = time.monotonic() + 120.0
+    while not summary_marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if not summary_marker.exists():
+        _terminate_interrupted_worker(first_resume)
+        stdout, stderr = first_resume.communicate(timeout=30)
+        pytest.fail(
+            "semantic parser did not receive the accepted summary\n"
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+    _terminate_interrupted_worker(first_resume)
+    first_resume.wait(timeout=30)
+    assert first_resume.returncode != 0
+    assert (scratch / "summary-calls.txt").read_text(encoding="utf-8").splitlines() == [
+        "called"
+    ]
+
+    resumed = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "durable-summary-resume"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=120,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    result = json.loads((scratch / "resume-result.json").read_text(encoding="utf-8"))
+    assert result == {
+        "status": "succeeded",
+        "run_id": "ocr|fresh-root-document",
+        "calls": [],
+        "has_grouping_tree": True,
+        "grouping_summary_count": 1,
+    }
+    assert (scratch / "summary-calls.txt").read_text(encoding="utf-8").splitlines() == [
+        "called"
+    ]
+    publication = json.loads(
+        (scratch / "durable-summary-resume-lineage.json").read_text(encoding="utf-8")
+    )
+    expected_node_ids = set(publication["graph_node_ids"])
+    expected_edge_ids = set(publication["graph_edge_ids"])
+    assert expected_node_ids
+    assert expected_edge_ids
+    assert set(publication["persisted_graph_node_ids"]) == expected_node_ids
+    assert set(publication["persisted_graph_edge_ids"]) == expected_edge_ids
+    reopened_knowledge = GraphKnowledgeEngine(
+        persist_directory=str(scratch / "engines" / "durable-knowledge"),
+        kg_graph_type="knowledge",
+        embedding_function=_TinyEmbeddingFunction(),
+    )
+    try:
+        assert {
+            node.id for node in reopened_knowledge.read.get_nodes(limit=1000)
+        } == expected_node_ids
+        assert {
+            edge.id for edge in reopened_knowledge.read.get_edges(limit=1000)
+        } == expected_edge_ids
+    finally:
+        reopened_knowledge.close()
+
+
 @pytest.mark.ci
 def test_ocr_grouping_and_semantic_graph_preserve_mixed_reading_order() -> None:
     scratch = _scratch("ocr_multimodal_grouping_export_order")
