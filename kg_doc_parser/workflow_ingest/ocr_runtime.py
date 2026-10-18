@@ -14,7 +14,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, TypedDict, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver
@@ -149,13 +149,13 @@ class _PageSourceState(TypedDict):
     image_path: str
 
 
-class _OCRCheckpointPatch(TypedDict, total=False):
+class _OCRCheckpointPatch(TypedDict):
     """Validated partial state used to rewind an accepted page prefix."""
 
     page_cursor: int
-    completed_pages: list[int]
-    reused_pages: list[int]
-    raw_pages: list[OCRPageJSON]
+    completed_pages: NotRequired[list[int]]
+    reused_pages: NotRequired[list[int]]
+    raw_pages: NotRequired[list[OCRPageJSON]]
 
 
 def _page_source_state(value: object) -> _PageSourceState:

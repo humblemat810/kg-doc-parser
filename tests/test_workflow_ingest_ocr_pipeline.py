@@ -162,6 +162,11 @@ from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, Semanti
 pytestmark = [pytest.mark.workflow]
 
 
+@pytest.mark.ci
+def test_ocr_checkpoint_repair_contract_requires_cursor() -> None:
+    assert "page_cursor" in ocr_runtime_module._OCRCheckpointPatch.__required_keys__
+
+
 def test_materialize_image_payloads_uses_safe_atomic_page_paths(tmp_path: Path) -> None:
     rendered_dir = tmp_path / "rendered"
     payload = OCRImagePayload(
