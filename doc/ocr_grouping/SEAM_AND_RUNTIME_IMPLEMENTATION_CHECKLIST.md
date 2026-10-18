@@ -498,6 +498,11 @@ cannot close A-6.
   on grouping changes, and test duplicate/replay behavior. Grouping updates
   require an expected tree revision, summary identity includes exact evidence
   slices and parser configuration, and duplicate/replay tests cover both. The
+  SQLite grouping writer now also checks the tree's `ocr-v1:<input fingerprint>`
+  against the active document fingerprint inside the write transaction;
+  `test_grouping_checkpoint_rejects_stale_writer_after_source_revision_changes`
+  proves an old worker cannot recreate a cleared checkpoint after source
+  invalidation. The broader writer/generation audit remains open. The
   default non-fake OCR root runs an iterative proposer over bounded,
   multimodal-aware frontier windows, resolves overlaps deterministically, and
   checkpoints per-window proposal progress in Kogwistar. It also constructs

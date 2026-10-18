@@ -6862,6 +6862,70 @@ def test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source
 
 
 @pytest.mark.ci
+def test_grouping_checkpoint_rejects_stale_writer_after_source_revision_changes() -> None:
+    scratch = _scratch("ocr_grouping_stale_source_writer")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+
+    def source_tree(source_revision: str, text: str) -> DocumentTree:
+        return DocumentTree(
+            document_id="stale-grouping-doc",
+            source_revision=source_revision,
+            tree_revision=1,
+            root_id="root",
+            source_items=(
+                SourceItem(
+                    item_id="item",
+                    kind="text",
+                    text=text,
+                    location=SourceLocation(page_index=0, accuracy="page"),
+                ),
+            ),
+            nodes=(
+                DocumentNode(
+                    node_id="root",
+                    kind="document",
+                    parts=(SourceSlice(item_id="item", start=0, end=len(text)),),
+                ),
+            ),
+        )
+
+    old_tree = source_tree("ocr-v1:source-v1", "old source")
+    store.ensure_document(
+        document_id=old_tree.document_id,
+        title="Source revision race",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-v1",
+    )
+    store.save_document_tree(
+        document_id=old_tree.document_id,
+        tree=old_tree,
+        require_no_existing_tree=True,
+    )
+
+    store.ensure_document(
+        document_id=old_tree.document_id,
+        title="Source revision race",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-v2",
+    )
+    with pytest.raises(GroupingCheckpointConflict, match="source revision conflict"):
+        store.save_document_tree(
+            document_id=old_tree.document_id,
+            tree=old_tree,
+            require_no_existing_tree=True,
+        )
+
+    new_tree = source_tree("ocr-v1:source-v2", "new source")
+    store.save_document_tree(
+        document_id=new_tree.document_id,
+        tree=new_tree,
+        require_no_existing_tree=True,
+    )
+
+
+@pytest.mark.ci
 def test_ocr_completion_requires_exact_expected_page_numbers() -> None:
     scratch = _scratch("ocr_completion_page_set")
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")

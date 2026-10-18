@@ -2006,6 +2006,20 @@ class OCRWorkflowStateStore:
         tree_revision = hashlib.sha256(tree_json.encode("utf-8")).hexdigest()
         with self._session() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            current_document = conn.execute(
+                "SELECT input_fingerprint FROM document_state WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            if current_document is not None and tree.source_revision.startswith("ocr-v1:"):
+                current_source_revision = (
+                    f"ocr-v1:{current_document['input_fingerprint']}"
+                )
+                if tree.source_revision != current_source_revision:
+                    raise GroupingCheckpointConflict(
+                        f"grouping checkpoint source revision conflict for "
+                        f"{document_id!r}: expected {current_source_revision!r}, "
+                        f"found {tree.source_revision!r}"
+                    )
             current = conn.execute(
                 """
                 SELECT tree_revision, source_fingerprint, grouping_policy_version
