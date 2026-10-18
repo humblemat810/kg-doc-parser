@@ -13,12 +13,12 @@ section after a test run.
 
 | Track | Status | Release-blocking remainder |
 | --- | --- | --- |
-| Track A: persisted Kogwistar runtime integration | PARTIAL | Published-core fresh-process recovery, ownership, and root/child lineage are verified. Persistent graph-backend publication across process restart remains a Kogwistar backend-specific gate, not a parser reimplementation task. |
-| Track B: strict seam validation | PARTIAL | Artifact/checkpoint crash ordering and accepted hierarchy consumption are verified. Provider completeness and durable graph-backend evidence remain open. |
+| Track A: persisted Kogwistar runtime integration | PARTIAL | Published-core fresh-process recovery, ownership, and root/child lineage are verified by Parser CI run `39074207944` on `f12c823`. Persistent graph-backend publication across process restart remains a Kogwistar backend-specific gate, not a parser reimplementation task. |
+| Track B: strict seam validation | PARTIAL | Artifact/checkpoint crash ordering and accepted two-group semantic hierarchy consumption are verified locally. Provider completeness, hierarchy-ignoring consumer compatibility, and durable graph-backend evidence remain open. |
 | C01-C02: API and ownership boundary | PASS (focused matrix) | Installed Kogwistar `0.6.12` exposes the required persisted workflow API; stable root/page/grouping/semantic ownership and concurrent resume fencing are covered by the fresh-process tests. |
-| C03-C05: reconciliation, equivalence, and true resume | PARTIAL | C03 crash-order reconciliation is PASS in the parser gate; C04 bounded-cost frontier evidence is PASS via `test_merge_groups_scans_frontier_linearly_without_nested_rebuilds`; C05 process recovery, duplicate-resume, and the deterministic 100-page PDF acceptance fixture are remotely verified in Parser CI #492 on `4f54000`, while durable graph-backend publication remains delegated to Kogwistar backend tests. |
-| C06: OCR quality/completeness | PARTIAL | Prove provider-side non-text coverage and strict recovery behavior. |
-| Typing and interpreter matrix | PASS | Production-package Pyright reports 0 errors, 0 warnings, and parser CI run `39011917164` passed CPython 3.12-3.14, PyPy 3.11, and the Linux recovery gate on exact commit `e57fd43`. |
+| C03-C05: reconciliation, equivalence, and true resume | PARTIAL | C03 crash-order reconciliation is PASS in the parser gate; C04 bounded-cost frontier evidence is PASS via `test_merge_groups_scans_frontier_linearly_without_nested_rebuilds`; C05 process recovery, duplicate-resume, and the deterministic 100-page PDF acceptance fixture are covered by the current parser recovery matrix and CI run `39074207944`, while durable graph-backend publication remains delegated to Kogwistar backend tests. |
+| C06: OCR quality/completeness | PARTIAL | Source-item accounting now covers raw-text fallback, direct RapidOCR/EasyOCR, native PDF, Docling text/table/figure, and legacy OCR conversion paths, including unboxed visual-placeholder reconciliation. The typed `OCRGroundTruth` evaluator uses deterministic maximum-cardinality one-to-one matching and `tests/test_ocr_ground_truth.py` independently measure item recall, spatial IoU, and text mismatch; the recorded real Codex table-page fixture covers all 16 title/list/table-cell regions with 16/16 recall, transcription, and spatial checks. An audit of all available live provider response artifacts found no provider-emitted figure/non-text objects, so that evidence remains open. |
+| Typing and interpreter matrix | PASS | Production-package Pyright reports 0 errors, 0 warnings, and Parser CI run `39074207944` passed CPython 3.12-3.14, PyPy 3.11, and the Linux recovery gate on `f12c823`. |
 | Release | OPEN | Version bump and downstream pin updates wait for all release-blocking rows. |
 
 The status history is already represented by Git commits and diffs:
@@ -456,38 +456,46 @@ cannot close A-6.
 
 ### Track B - strict seam validation
 
-- [~] **B-1 / S01-S02 identity and artifacts:** render/page reuse includes
+- [x] **B-1 / S01-S02 identity and artifacts:** render/page reuse includes
   source, renderer, provider, model, engine, policy, schema, and artifact
-  digests. Validate the exact reuse path, and reconcile artifact-first and
-  checkpoint-first crash orders.
-- [~] **B-2 / S03-S04 grounding and order:** preserve provider-declared
+  digests. The exact reuse path is validated, and artifact-first and
+  checkpoint-first crash orders are reconciled.
+- [x] **B-2 / S03-S04 grounding and order:** preserve provider-declared
   coordinate precision, media identity, and one traversal covering every
   accepted object exactly once. The OCR response and normalized source-unit
-  contracts now preserve explicit spatial precision and downgrade missing or
-  unknown declarations to page accuracy. Full provider-matrix and downstream
-  graph evidence remain open.
-- [~] **B-3 / S05 hierarchy consumption:** the graph exporter now has a
-  metamorphic test with two valid trees over identical source items. The OCR
-  end-to-end recovery test now also asserts every accepted graph-payload node
-  exists in the knowledge backend after semantic publication. Explicit
-  compatibility behavior for consumers that ignore hierarchy remains open.
-- [~] **B-4 / S06-S08 durable grouping and summaries:** fence every grouping
+  contracts preserve explicit spatial precision and downgrade missing or
+  unknown declarations to page accuracy. Real provider smoke and downstream
+  graph-export tests verify the boundary.
+- [~] **B-3 / S05 hierarchy consumption:** the graph exporter has a metamorphic
+  test with two valid trees over identical source items. The public OCR-root
+  test `test_custom_grouping_policy_reaches_checkpoint_cache_and_export` now
+  feeds two accepted grouping sections through the semantic callback and
+  asserts their identities, ordered source excerpts, and parent-child graph
+  edges survive export. The accepted group nodes are terminal semantic units
+  here to preserve the no-unary-refinement invariant. Explicit compatibility
+  behavior for consumers that ignore hierarchy and durable graph-backend
+  publication remain open.
+- [x] **B-4 / S06-S08 durable grouping and summaries:** fence every grouping
   writer, preserve meaningful groups and atomic objects, invalidate summaries
-  on grouping changes, and test duplicate/replay behavior. The current CAS
-  containment is not yet monotonic-generation or crash/restart proof. A
-  production parser-provider grounded-summary generator now uses exact
-  evidence slices and parser-configuration cache identity; CI remains pending.
-- [~] **B-5 / S09-S10 runtime and identity:** verify the persisted root/checkpoint
+  on grouping changes, and test duplicate/replay behavior. Grouping updates
+  require an expected tree revision, summary identity includes exact evidence
+  slices and parser configuration, and duplicate/replay tests cover both.
+  Durable graph-backend publication remains a separate Kogwistar gate.
+- [x] **B-5 / S09-S10 runtime and identity:** verify the persisted root/checkpoint
   boundary and separate document, source revision, OCR configuration, grouping
-  revision, and parse-generation identities. Add same-stem/cross-path and
-  changed-content tests.
-- [~] **B-6 / S11-S12 references and public options:** multi-slice
-  cross-page references now round-trip at the document-model boundary; policy
-  conflict rejection and full downstream export evidence remain open.
+  revision, and parse-generation identities. Same-stem/cross-path and
+  changed-content tests are present.
+- [x] **B-6 / S11-S12 references and public options:** multi-slice
+  cross-page references round-trip at the document-model boundary. Public and
+  runtime policy conflicts fail closed, and explicit policy runs inspect
+  persisted metadata, cache keys, and the exported hierarchy.
 - [~] **B-7 / C06 quality gate:** require typed provider loss diagnostics and
   strict-policy persistence, then add evidence for missing figures/tables,
-  unsupported coordinates, and reopening after a strict rejection. Interval
-  coverage alone is not sufficient.
+  unsupported coordinates, and reopening after a strict rejection. The typed
+  `OCRGroundTruth` evaluator now supplies independent item-recall, spatial-IoU,
+  and transcription-mismatch evidence in controlled fixtures. Interval
+  coverage alone is not sufficient; provider-specific annotated corpora remain
+  open.
 
 **Track B is complete only when:** every S01-S12 row has an implementation
 location, a reusable regression test, before/after behavior, and an explicit
@@ -763,11 +771,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   regression `test_ocr_state_store_round_trips_grouped_tree_and_invalidates_changed_source`
   asserts generations 1, 2, and stable replay at 2.
 - [x] Restore the latest valid grouping checkpoint before processing new input.
-- [~] Use CAS/expected revision or an equivalent monotonic generation guard;
-  last-writer-wins must not overwrite a newer accepted tree. The current
-  expected-revision/absence fence is useful containment, but any unconditional
-  upsert or compatibility writer remains a release blocker until audited and
-  covered by a late-writer regression.
+- [x] Use CAS/expected revision or an equivalent monotonic generation guard;
+  last-writer-wins must not overwrite a newer accepted tree.
+  `save_document_tree()` rejects any update to an existing tree without
+  `expected_tree_revision`, while the initial writer may create only from
+  absence. Late-writer and conflict regressions cover stale revisions and
+  orphaned frontiers.
 - [x] Persist and reuse the accepted merge frontier so long documents do not
   rebuild the entire prefix after every page. The root workflow invokes
   grouping after the accepted page frontier is available, and
@@ -794,11 +803,11 @@ an adapter-only test, or a source-checkout-only runtime test.
   simulates a crash after the generated journal row and tree revision commit;
   resume restores the summary without invoking the provider again. The
   separate runtime-node publication gate remains partial.
-- [~] Persist summary input identity including exact subtree slices, tree
+- [x] Persist summary input identity including exact subtree slices, tree
   revision, grouping policy, summary policy, provider/model revision, and prompt
-  schema revision. The new `EvidenceSlice`/`GroundedSummaryGenerator` boundary
-  exposes exact ordered ownership to opted-in providers; persisted identity and
-  full provider migration remain release gates.
+  schema revision. The `EvidenceSlice`/`GroundedSummaryGenerator` boundary
+  exposes exact ordered ownership to the production parser-provider generator,
+  and its configuration participates in the summary cache identity.
 - [x] Reuse a summary only when all those identities match. Covered by
   `tests/test_workflow_ingest_ocr_pipeline.py::test_summary_cache_reuses_exact_generation_and_slice_identity`
   and `::test_summary_generation_fingerprint_invalidates_persisted_cache`.
@@ -961,13 +970,25 @@ an adapter-only test, or a source-checkout-only runtime test.
 
 - [x] Normalize text and non-text objects into one explicit source traversal in
   the response models and document adapter. Focused tests cover mixed text and
-  figure order; downstream grouping/graph preservation remains open.
+  figure order. The public OCR-root integration test also supplies that order
+  to grouping and semantic parsing; the graph remains a text-only projection.
 - [x] Validate that `meaningful_ordering` covers every accepted cluster exactly
   once, including non-text clusters. Duplicate IDs, missing IDs, and empty-page
-  agreement are rejected by the typed model/adapter boundary.
+  agreement are rejected by the typed model/adapter boundary. Diagnostics name
+  missing, unknown, and duplicate cluster IDs and the bounded, typed failure
+  feedback is available to the next built-in OCR candidate prompt. Cluster
+  overlap and duplicate-order diagnostics use one-pass counts; the 256-cluster
+  permutation regression exercises the high-cardinality valid input path.
 - [~] Preserve order through normalization, grouping, serialization, and graph
-  export. Normalization is tested, but grouping/export and a real multi-object
-  provider fixture are not yet evidenced.
+  export. Normalization is covered by
+  `test_normalize_ocr_pages_preserves_caption_and_nontext_permutation`, and the
+  mixed figure/caption/table/body sibling order is now asserted at graph export
+  by `test_graph_export_preserves_mixed_multimodal_sibling_reading_order`.
+  `test_ocr_grouping_and_semantic_graph_preserve_mixed_reading_order` verifies
+  the OCR-root grouping callback receives text A, figure, caption, text B and
+  that the semantic graph's text-only projection retains text order. A graph
+  representation for non-text evidence and a real multi-object provider
+  fixture remain open.
 - [x] Represent ambiguous provider order explicitly instead of silently
   appending non-text objects after text. When `meaningful_ordering` is absent
   for a mixed page, normalized page metadata records
@@ -976,7 +997,11 @@ an adapter-only test, or a source-checkout-only runtime test.
 - [~] Test text A, figure, caption, text B and deliberate child permutation.
   `tests/test_workflow_ingest_ocr_providers.py::test_normalize_ocr_pages_preserves_caption_and_nontext_permutation`
   now covers figure/caption/table/text traversal and asserts modality order.
-  Grouping/export preservation and rejection diagnostics remain open.
+  `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_grouping_and_semantic_graph_preserve_mixed_reading_order`
+  additionally exercises the public OCR-root workflow, grouped child order,
+  semantic callback input order, and text-only graph projection. A graph-level
+  non-text evidence projection and provider-backed multimodal fixture remain
+  open.
 
 ### S05. Accepted group tree to semantic parser input
 
@@ -1228,7 +1253,9 @@ an adapter-only test, or a source-checkout-only runtime test.
   reject incomplete text, edge-word loss, excessive data-loss likelihood, and
   unresolved Docling Markdown placeholders. The live Docling/RapidOCR probe
   now reports an ungrounded image placeholder instead of silently accepting it;
-  independent table/figure recall and spatial ground truth remain open.
+  the typed `OCRGroundTruth` evaluator now measures independent item recall,
+  spatial IoU, and transcription mismatch in controlled fixtures. Provider-
+  specific annotated table/figure corpora remain open.
 
 ### Reviewer acceptance matrix
 
@@ -1243,7 +1270,7 @@ itself as proof:
 | C03 dual-store reconciliation | PASS (parser gate) | The four-boundary recovery matrix passes locally in one run (`4 passed, 113.32s`): `test_ocr_page_artifact_publish_crash_is_recoverable` covers artifact-first page publication, `test_prepare_ocr_workflow_retries_checkpoint_without_artifact` covers checkpoint-first page recovery, `test_ocr_root_retries_after_grouping_sqlite_commit_before_nested_checkpoint` covers grouping SQLite commit before the nested runtime checkpoint, and `test_ocr_root_retries_after_semantic_graph_commit_before_checkpoint` covers graph publication before the semantic checkpoint with stable canonical IDs and zero duplicate writes. The Linux recovery gate in parser CI run `39011917164` also passed. |
 | C04 incremental equivalence | PASS (structural cost gate) | `tests/test_workflow_ingest_ocr_pipeline.py::test_grouping_incremental_resume_matches_uninterrupted_reference` compares a two-pass interrupted/resumed grouping tree with an uninterrupted reference using canonical model payloads. `tests/test_document_grouping_contract.py::test_merge_groups_scans_frontier_linearly_without_nested_rebuilds` counts validation, indexing, and emission accesses and rejects nested frontier rebuilds. The implementation stores and restores the accepted frontier and `merge_revision`; this is a structural bound, not a machine-speed benchmark. |
 | C05 true resume | PARTIAL / CI VERIFIED | The installed `kogwistar==0.6.12` local acceptance run passed `tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_resumes_after_page_63_and_matches_uninterrupted_reference` in 850.22s. It compared uninterrupted and interrupted/resumed canonical graph and grouping payloads, asserted mixed text/non-text evidence, reused completed pages, and accepted one resumed result. Parser CI run `39018451404` completed successfully on commit `18e5505`. This test injects a deterministic provider interruption rather than sending an OS signal, and uses the parser's in-memory knowledge backend; persistent graph-backend publication across process restart remains a Kogwistar backend responsibility. A restored grouping tree/frontier mismatch is rejected before applying further passes. |
-| C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy now include unresolved provider items, invalid item-level coordinates, warning/error regression coverage, and Docling missing-provenance coverage. `test_ocr_quality_policy_rejects_invalid_coordinates_for_item_precision` rejects non-finite or non-positive boxes when a provider claims region/line/word/character precision. Independent missing-region recall and reopen-after-failure evidence remain. |
+| C06 OCR quality/completeness | PARTIAL | Typed provider diagnostics and strict policy now include unresolved provider items, invalid item-level coordinates, warning/error regression coverage, and Docling missing-provenance coverage. `OCRGroundTruth`/`evaluate_ocr_ground_truth` and `tests/test_ocr_ground_truth.py` independently measure missing items, spatial IoU, and text mismatch. Provider-specific annotated table/figure corpora and reopen-after-failure evidence remain. |
 
 ### C05 evidence correction (2026-10-15)
 

@@ -30,6 +30,7 @@ from .models import (
     OCRClusterResponse,
     SplitPage,
     TextCluster,
+    _meaningful_ordering_error,
 )
 
 try:
@@ -160,7 +161,7 @@ class RawOCRResponse(BaseModel):
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
-    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of all text and non-text clusters. Must cover every cluster once and only once. ")
+    meaningful_ordering : DtoType[list[int]] = Field(description="The authoritative reading order of all text and non-text clusters, from first to last meaningful item. Must contain every cluster number exactly once and no others. ")
     page_x_min : DtoType[float]=Field(description='the page x min in pixel coordinate. ')
     page_x_max : DtoType[float]=Field(description='the page x max in pixel coordinate. ')
     page_y_min : DtoType[float]=Field(description='the page y min in pixel coordinate. ')
@@ -192,7 +193,7 @@ class RawOCRResponse(BaseModel):
             raise ValueError(f"cluster number from non_text_objects block and boxes_2d must be ALL distinct. overlap ids {set(all_ids)}")
         all_ids_set = set(all_ids)
         if len(self.meaningful_ordering) != len(all_ids_set) or set(self.meaningful_ordering) != all_ids_set:
-            raise ValueError("meaningful_ordering must cover each text and non-text cluster exactly once")
+            raise ValueError(_meaningful_ordering_error(all_ids_set, self.meaningful_ordering))
         return self
 
 
@@ -223,7 +224,7 @@ class OCRClusterResponseMetaless(ModeSlicingMixin, BaseModel):
                                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
-    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of the identified text clusters. Must cover all OCR_text_clusters once and only once. ")
+    meaningful_ordering : DtoType[list[int]] = Field(description="The authoritative reading order of the identified text clusters, from first to last meaningful item. Must contain every OCR_text cluster number exactly once and no others. ")
 class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
     boxes_2d : list[box_2d] = Field(description = 'description of x min, y min, xmax and y max')
     non_text_objects:  DtoType[list[NonText_box_2d]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
@@ -231,7 +232,7 @@ class RawOCRResponseMetaless(ModeSlicingMixin, BaseModel):
                                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
-    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of the identified text clusters. Must cover all OCR_text_clusters once and only once. ")
+    meaningful_ordering : DtoType[list[int]] = Field(description="The authoritative reading order of every text and non-text cluster, from first to last meaningful item. Must contain every cluster number exactly once and no others. ")
 
 def _raw_content(value: object) -> object | None:
     """Extract raw SDK content without pretending it is a parsed OCR model."""
@@ -364,7 +365,7 @@ class NonTextObject(BaseModel):
 class TextBoxResponse(BaseModel):
     text_blocks: list[TextBox] = Field(description = "bounding boxes and text identified")
     non_text_blocks: list[NonTextObject] = Field(description = "bounding boxes and description of the object identified")
-    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of the identified text clusters. Must cover all OCR_text_clusters once and only once. ")
+    meaningful_ordering : DtoType[list[int]] = Field(description="The authoritative reading order of every text and non-text block, from first to last meaningful item. Must contain every block ID exactly once and no others. ")
     printed_page_number: str = Field("",description='the page number identified')    
 def RawOCRResponse_to_OCRClusterResponse(raw_response: RawOCRResponse | RawOCRResponseMetaless | TextBoxResponse) -> OCRClusterResponse:        
     temp = raw_response.model_dump()

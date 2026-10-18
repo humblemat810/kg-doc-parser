@@ -54,7 +54,7 @@ from typing import Literal, NotRequired, Protocol, TypedDict, cast, runtime_chec
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError, PdfStreamError
 
@@ -460,6 +460,18 @@ class OCRQualityDiagnostic(BaseModel):
     code: str
     severity: Literal["warning", "error"]
     message: str
+
+
+class _OCRQualityPolicyRejection(Exception):
+    """Internal failure carrying only parser-generated quality diagnostic codes."""
+
+    def __init__(self, page_number: int, codes: Sequence[str]) -> None:
+        self.page_number = page_number
+        self.codes = tuple(codes)
+        super().__init__(
+            f"OCR quality policy rejected page {page_number}: "
+            + "; ".join(self.codes)
+        )
 
 
 def _evaluate_ocr_quality(
@@ -908,6 +920,7 @@ class OCRPageProcessingContext:
     state_store: OCRWorkflowStateStore
     probe: WorkflowProbe | None
     configuration_fingerprints: tuple[str, ...]
+    retry_feedback_by_page: dict[int, tuple[str, ...]] = field(default_factory=dict)
     render_configuration_fingerprint: str = "render-v1"
     quality_policy: OCRQualityPolicy = field(default_factory=OCRQualityPolicy)
 
@@ -970,6 +983,7 @@ def _build_ocr_page_preparation(
         render_configuration_fingerprint=source_plan.render_configuration_fingerprint,
     )
     candidate_models = list(ocr_candidate_models or [provider_settings.ocr.model])
+    retry_feedback_by_page: dict[int, tuple[str, ...]] = {}
     if ocr_runner is None:
         def _instrumented_ocr_runner(
             image_path: Path,
@@ -985,6 +999,7 @@ def _build_ocr_page_preparation(
                     if probe is not None
                     else None
                 ),
+                retry_feedback=retry_feedback_by_page.get(page_number, ()),
             )
 
         effective_runner: OCRRunner = _instrumented_ocr_runner
@@ -1039,6 +1054,7 @@ def _build_ocr_page_preparation(
                 quality_policy=quality_policy or OCRQualityPolicy(),
             )["ocr_configuration_fingerprint"],
         ),
+        retry_feedback_by_page=retry_feedback_by_page,
         render_configuration_fingerprint=source_plan.render_configuration_fingerprint,
         quality_policy=quality_policy or OCRQualityPolicy(),
     )
@@ -1280,14 +1296,24 @@ def _process_ocr_page(
                 quality_policy=context.quality_policy,
             ),
         )
+        context.retry_feedback_by_page[page_number] = _retry_feedback_from_attempts(
+            state_store.list_model_attempts(
+                document_id=document_id,
+                page_number=page_number,
+                stage="ocr",
+            )
+        )
         try:
             response = context.ocr_page_runner(image_path, page_number, candidate_settings)
             quality_diagnostics = _evaluate_ocr_quality(response, context.quality_policy)
             if any(item.severity == "error" for item in quality_diagnostics):
-                raise ValueError(
-                    "OCR quality policy rejected page "
-                    f"{page_number}: "
-                    + "; ".join(item.code for item in quality_diagnostics)
+                raise _OCRQualityPolicyRejection(
+                    page_number,
+                    tuple(
+                        item.code
+                        for item in quality_diagnostics
+                        if item.severity == "error"
+                    ),
                 )
             split_page: SplitPage = SplitPage(
                 pdf_page_num=page_number,
@@ -1386,6 +1412,7 @@ def _process_ocr_page(
             break
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            retry_feedback = _safe_ocr_retry_feedback(exc)
             state_store.record_page_failed(
                 document_id=document_id,
                 page_number=page_number,
@@ -1398,6 +1425,7 @@ def _process_ocr_page(
                 ),
                 error_message=str(exc),
                 model_name=candidate_model,
+                retry_feedback=retry_feedback,
                 attempt_index=attempt_index,
             )
             _LOGGER.warning(
@@ -1633,6 +1661,7 @@ class OCRWorkflowStateStore:
                     model_name TEXT NOT NULL,
                     status TEXT NOT NULL,
                     error_message TEXT,
+                    retry_feedback TEXT,
                     attempted_ts REAL NOT NULL,
                     PRIMARY KEY (document_id, page_number, stage, attempt_index)
                 );
@@ -1683,6 +1712,12 @@ class OCRWorkflowStateStore:
                 conn.execute("ALTER TABLE page_state ADD COLUMN config_fingerprint TEXT")
             if "artifact_sha256" not in columns:
                 conn.execute("ALTER TABLE page_state ADD COLUMN artifact_sha256 TEXT")
+            attempt_columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(model_attempts)").fetchall()
+            }
+            if "retry_feedback" not in attempt_columns:
+                conn.execute("ALTER TABLE model_attempts ADD COLUMN retry_feedback TEXT")
             checkpoint_columns = {
                 str(row[1])
                 for row in conn.execute(
@@ -2458,7 +2493,7 @@ class OCRWorkflowStateStore:
             conn.execute(
                 """
                 UPDATE model_attempts
-                SET status = 'completed', error_message = NULL
+                SET status = 'completed', error_message = NULL, retry_feedback = NULL
                 WHERE document_id = ? AND page_number = ? AND stage = 'ocr' AND attempt_index = ?
                 """,
                 (document_id, page_number, attempt_index),
@@ -2565,7 +2600,7 @@ class OCRWorkflowStateStore:
                 conn.execute(
                     """
                     UPDATE model_attempts
-                    SET status = 'completed', error_message = NULL
+                    SET status = 'completed', error_message = NULL, retry_feedback = NULL
                     WHERE document_id = ? AND page_number = ? AND stage = ? AND attempt_index = ?
                     """,
                     (document_id, page_number, stage, attempt_index),
@@ -2582,6 +2617,7 @@ class OCRWorkflowStateStore:
         config_fingerprint: str | None,
         error_message: str,
         model_name: str | None,
+        retry_feedback: str | None = None,
         attempt_index: int | None = None,
     ) -> bool:
         """Record failure only for the still-owned pending attempt.
@@ -2626,10 +2662,17 @@ class OCRWorkflowStateStore:
                 conn.execute(
                     """
                     UPDATE model_attempts
-                    SET status = 'failed', error_message = ?
+                    SET status = 'failed', error_message = ?, retry_feedback = ?
                     WHERE document_id = ? AND page_number = ? AND stage = ? AND attempt_index = ?
                     """,
-                    (error_message, document_id, page_number, stage, attempt_index),
+                    (
+                        error_message,
+                        retry_feedback,
+                        document_id,
+                        page_number,
+                        stage,
+                        attempt_index,
+                    ),
                 )
             return updated_count == 1
 
@@ -2673,7 +2716,8 @@ class OCRWorkflowStateStore:
         with self._session() as conn:
             rows = conn.execute(
                 """
-                SELECT attempt_index, model_name, status, error_message, attempted_ts
+                SELECT attempt_index, model_name, status, error_message,
+                       retry_feedback, attempted_ts
                 FROM model_attempts
                 WHERE document_id = ? AND page_number = ? AND stage = ?
                 ORDER BY attempt_index
@@ -3350,12 +3394,71 @@ def _minimal_ocr_response_from_text(*, text: str, page_number: int, image_path: 
     )
 
 
+def _retry_feedback_from_attempts(
+    attempts: Sequence[JsonObject],
+    *,
+    max_items: int = 2,
+    max_chars: int = 1200,
+) -> tuple[str, ...]:
+    """Return bounded prior OCR failures suitable for the next prompt."""
+
+    feedback: list[str] = []
+    for attempt in reversed(attempts):
+        message = attempt.get("retry_feedback")
+        if not isinstance(message, str) or not message.strip():
+            continue
+        model = attempt.get("model_name")
+        label = model if isinstance(model, str) and model else "previous provider"
+        feedback.append(f"{label}: {message.strip()[:max_chars]}")
+        if len(feedback) >= max_items:
+            break
+    return tuple(reversed(feedback))
+
+
+def _safe_ocr_retry_feedback(error: Exception, *, max_chars: int = 1200) -> str | None:
+    """Extract only bounded OCR validation details, excluding provider errors."""
+
+    current: BaseException | None = error
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, ValidationError) and current.title in {
+            "OCRClusterResponse",
+            "RawOCRResponse",
+            "OCRClusterResponseMetaless",
+        }:
+            details: list[str] = []
+            for item in current.errors(include_input=False, include_context=False):
+                location = item.get("loc", ())
+                field_path = ".".join(str(part) for part in location)
+                message = str(item.get("msg", "OCR output failed schema validation"))
+                if not field_path and "meaningful_ordering must be" in message:
+                    field_path = "meaningful_ordering"
+                    message = message.removeprefix("Value error, ")
+                details.append(f"{field_path}: {message}" if field_path else message)
+            return "; ".join(details)[:max_chars] or "OCR output failed schema validation"
+        if isinstance(current, _OCRQualityPolicyRejection):
+            safe_codes = [
+                code
+                for code in current.codes
+                if code.replace("_", "").isalnum()
+            ]
+            if safe_codes:
+                return (
+                    "OCR quality checks rejected the response; address these "
+                    f"diagnostic codes: {', '.join(safe_codes)}"
+                )[:max_chars]
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def _run_live_ocr_page(
     image_path: Path,
     page_number: int,
     provider_settings: WorkflowProviderSettings,
     *,
     provider_diagnostics_sink: ProviderDiagnosticsSink | None = None,
+    retry_feedback: Sequence[str] = (),
 ) -> OCRClusterResponse:
     """Run one page image through the configured OCR provider.
 
@@ -3398,9 +3501,18 @@ def _run_live_ocr_page(
     prompt = (
         "You are an OCR model for workflow ingest.\n"
         "Return structured OCR for one page image.\n"
-        "Preserve reading order, cluster numbering, and non-text regions.\n"
+        "Set meaningful_ordering to the authoritative reading order from first "
+        "to last meaningful text or non-text region; include every cluster "
+        "number exactly once and no others. Preserve cluster numbering and "
+        "non-text regions.\n"
         "Do not invent missing text. If the page is empty, mark it as empty."
     )
+    if retry_feedback:
+        prompt += (
+            "\nA previous attempt was rejected. Correct these bounded validation "
+            "diagnostics without omitting any source region:\n"
+            + "\n".join(f"- {message}" for message in retry_feedback)
+        )
     call_diagnostics: ProviderDiagnostics = {}
     try:
         response = invoke_with_timeout(
@@ -3429,6 +3541,7 @@ def _run_live_ocr_page(
                 "success": False,
                 "failure_type": call_diagnostics.get("failure_type", "transport/provider_exception"),
                 "error_type": type(exc).__name__,
+                "error": str(exc),
             }
         )
         if provider_diagnostics_sink is not None:
@@ -3470,6 +3583,7 @@ def _run_live_ocr_page(
                 "success": False,
                 "failure_type": "structured_output_parse_failure",
                 "error_type": type(exc).__name__,
+                "error": str(exc),
             }
         )
         if provider_diagnostics_sink is not None:

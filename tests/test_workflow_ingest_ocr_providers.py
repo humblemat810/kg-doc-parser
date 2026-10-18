@@ -8,8 +8,10 @@ from types import ModuleType
 from typing import ClassVar, Self
 
 import pytest
+from pydantic import BaseModel
 
 from kg_doc_parser.models import NonTextCluster, OCRClusterResponse, TextCluster
+from kg_doc_parser.ocr import RawOCRResponse, RawOCRResponseMetaless, TextBoxResponse
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
@@ -111,6 +113,82 @@ def test_ocr_response_accepts_unified_text_and_nontext_reading_order() -> None:
     assert response.meaningful_ordering == [0, 1]
 
 
+@pytest.mark.ci
+def test_ocr_response_rejects_cluster_id_shared_across_modalities() -> None:
+    with pytest.raises(ValueError, match="Overlapped ids: \\[0\\]"):
+        OCRClusterResponse(
+            OCR_text_clusters=[
+                TextCluster(
+                    text="text",
+                    bb_x_min=0,
+                    bb_x_max=10,
+                    bb_y_min=0,
+                    bb_y_max=10,
+                    cluster_number=0,
+                )
+            ],
+            non_text_objects=[
+                NonTextCluster(
+                    description="figure",
+                    bb_x_min=0,
+                    bb_x_max=10,
+                    bb_y_min=10,
+                    bb_y_max=20,
+                    cluster_number=0,
+                )
+            ],
+            is_empty_page=False,
+            printed_page_number=None,
+            meaningful_ordering=[0],
+            page_x_min=0,
+            page_x_max=100,
+            page_y_min=0,
+            page_y_max=100,
+            estimated_rotation_degrees=0,
+            incomplete_words_on_edge=False,
+            incomplete_text=False,
+            data_loss_likelihood=0,
+            scan_quality="high",
+            contains_table=False,
+        )
+
+
+@pytest.mark.ci
+def test_ocr_response_accepts_large_unique_reading_order() -> None:
+    cluster_count = 256
+    response = OCRClusterResponse(
+        OCR_text_clusters=[
+            TextCluster(
+                text=f"region {cluster_number}",
+                bb_x_min=0,
+                bb_x_max=10,
+                bb_y_min=cluster_number,
+                bb_y_max=cluster_number + 1,
+                cluster_number=cluster_number,
+            )
+            for cluster_number in range(cluster_count)
+        ],
+        non_text_objects=[],
+        is_empty_page=False,
+        printed_page_number=None,
+        meaningful_ordering=list(reversed(range(cluster_count))),
+        page_x_min=0,
+        page_x_max=10,
+        page_y_min=0,
+        page_y_max=cluster_count,
+        estimated_rotation_degrees=0,
+        incomplete_words_on_edge=False,
+        incomplete_text=False,
+        data_loss_likelihood=0,
+        scan_quality="high",
+        contains_table=False,
+    )
+
+    assert len(response.meaningful_ordering) == cluster_count
+    assert response.meaningful_ordering[0] == cluster_count - 1
+    assert response.meaningful_ordering[-1] == 0
+
+
 def test_normalize_ocr_pages_preserves_caption_and_nontext_permutation() -> None:
     """Keep a declared figure/caption/table/text traversal as one sequence."""
     page = {
@@ -168,6 +246,21 @@ def test_normalize_ocr_pages_preserves_caption_and_nontext_permutation() -> None
         "image_region",
         "ocr_text",
     ]
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize(
+    "response_model",
+    [RawOCRResponse, RawOCRResponseMetaless, TextBoxResponse],
+)
+def test_legacy_ocr_schemas_describe_meaningful_ordering_as_reading_order(
+    response_model: type[BaseModel],
+) -> None:
+    description = response_model.model_fields["meaningful_ordering"].description
+
+    assert description is not None
+    assert "authoritative reading order" in description
+    assert "exactly once" in description
 
 
 @pytest.mark.parametrize(

@@ -79,6 +79,24 @@ def _ground_truth() -> OCRGroundTruth:
     )
 
 
+@pytest.mark.parametrize(
+    ("ordering", "diagnostic"),
+    [
+        ([1, 1], "missing_cluster_ids=[2]"),
+        ([1, 2, 9], "unknown_cluster_ids=[9]"),
+        ([1, 2, 2], "duplicate_ordering_ids=[2]"),
+    ],
+)
+def test_invalid_reading_order_reports_retry_action_details(
+    ordering: list[int], diagnostic: str
+) -> None:
+    payload = _response().model_dump(dump_format="python")
+    payload["meaningful_ordering"] = ordering
+
+    with pytest.raises(ValueError, match=diagnostic.replace("[", r"\[").replace("]", r"\]")):
+        OCRClusterResponse.model_validate(payload)
+
+
 def test_ground_truth_report_detects_recall_and_text_loss_independently() -> None:
     report = evaluate_ocr_ground_truth(
         _response(include_beta=False),

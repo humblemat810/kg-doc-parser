@@ -200,6 +200,27 @@ def test_normalize_ocr_pages_preserves_declared_order_and_provider_metadata() ->
     assert tree.source_items[0].ocr_metadata.model == "rapidocr-v1"
 
 
+@pytest.mark.parametrize("cluster_number", [None, True, "0"])
+def test_normalize_ocr_pages_rejects_non_integer_cluster_number_in_declared_order(
+    cluster_number: object,
+) -> None:
+    with pytest.raises(ValueError, match="requires every OCR cluster to have an integer number"):
+        normalize_ocr_pages(
+            document_id="invalid-cluster-number",
+            title="Invalid cluster number",
+            pages=[
+                {
+                    "pdf_page_num": 1,
+                    "meaningful_ordering": [0],
+                    "OCR_text_clusters": [
+                        {"cluster_number": cluster_number, "text": "text"}
+                    ],
+                    "non_text_objects": [],
+                }
+            ],
+        )
+
+
 def test_normalize_ocr_pages_preserves_unified_text_and_nontext_order() -> None:
     inp = normalize_ocr_pages(
         document_id="mixed-order-doc",

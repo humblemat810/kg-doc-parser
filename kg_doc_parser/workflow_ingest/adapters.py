@@ -4,6 +4,7 @@ import math
 from collections.abc import Mapping
 from typing import NotRequired, TypedDict, cast
 
+from ..models import _meaningful_ordering_error
 from .models import (
     BoundingBox,
     GroundedSourceRecord,
@@ -271,26 +272,35 @@ def normalize_ocr_pages(
         if ordering is not None:
             if not isinstance(ordering, list) or any(type(value) is not int for value in ordering):
                 raise TypeError("meaningful_ordering must be a list of integer cluster numbers")
-            all_clusters = [*text_clusters, *non_text_objects]
-            cluster_by_number = {
-                cluster.get("cluster_number"): cluster
-                for cluster in all_clusters
-                if isinstance(cluster, dict) and cluster.get("cluster_number") is not None
-            }
-            if len(cluster_by_number) != len(all_clusters):
-                raise ValueError("meaningful_ordering requires every OCR cluster to have a unique number")
-            if len(ordering) != len(all_clusters) or set(ordering) != set(cluster_by_number):
-                raise ValueError("meaningful_ordering must cover each OCR text and non-text cluster exactly once")
-            text_numbers = {
-                cluster.get("cluster_number")
-                for cluster in text_clusters
-                if isinstance(cluster, dict)
-            }
-            non_text_numbers = {
-                cluster.get("cluster_number")
-                for cluster in non_text_objects
-                if isinstance(cluster, dict)
-            }
+            cluster_by_number: dict[
+                int, OCRTextClusterJSON | OCRNonTextObjectJSON
+            ] = {}
+            expected_cluster_count = len(text_clusters) + len(non_text_objects)
+            text_numbers: set[int] = set()
+            non_text_numbers: set[int] = set()
+            for clusters, numbers in (
+                (text_clusters, text_numbers),
+                (non_text_objects, non_text_numbers),
+            ):
+                for cluster in clusters:
+                    cluster_number = cluster.get("cluster_number")
+                    if type(cluster_number) is not int:
+                        raise ValueError(
+                            "meaningful_ordering requires every OCR cluster to have "
+                            "an integer number"
+                        )
+                    if cluster_number in cluster_by_number:
+                        raise ValueError(
+                            "meaningful_ordering requires every OCR cluster to have "
+                            "a unique number"
+                        )
+                    cluster_by_number[cluster_number] = cluster
+                    numbers.add(cluster_number)
+            if (
+                len(ordering) != expected_cluster_count
+                or set(ordering) != set(cluster_by_number)
+            ):
+                raise ValueError(_meaningful_ordering_error(set(cluster_by_number), ordering))
             ordered_text_clusters = [
                 cluster_by_number[cluster_number]
                 for cluster_number in ordering

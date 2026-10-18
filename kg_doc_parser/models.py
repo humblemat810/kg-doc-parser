@@ -45,6 +45,8 @@ Edges (Relationships):
   - relation: "HAS_CHILD"
   - type: "relationship"
 """
+from collections import Counter
+
 if True:
     import logging
     logger = logging.getLogger(__name__)
@@ -58,6 +60,27 @@ from pydantic_extension.model_slicing import (
     ModeSlicingMixin,
 )
 from pydantic_extension.model_slicing.mixin import DtoField
+
+
+def _meaningful_ordering_error(expected_ids: set[int], ordering: list[int]) -> str:
+    """Describe an invalid reading-order permutation for retry feedback."""
+
+    missing_ids = sorted(expected_ids - set(ordering))
+    unknown_ids = sorted(set(ordering) - expected_ids)
+    duplicate_ids = sorted(
+        cluster_id
+        for cluster_id, count in Counter(ordering).items()
+        if count > 1
+    )
+    return (
+        "meaningful_ordering must be the authoritative reading-order permutation "
+        "of every text and non-text cluster exactly once; "
+        f"expected_cluster_ids={sorted(expected_ids)!r}; "
+        f"returned_ordering={ordering!r}; "
+        f"missing_cluster_ids={missing_ids!r}; "
+        f"unknown_cluster_ids={unknown_ids!r}; "
+        f"duplicate_ordering_ids={duplicate_ids!r}"
+    )
 
 JsonPrimitive = str | int | float | bool | None
 JsonValue: TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]  # noqa: UP040 - PyPy 3.11 support
@@ -109,7 +132,7 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
                     'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
                     'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
                     r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
-    meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of all text and non-text clusters. Must cover every cluster once and only once. ")
+    meaningful_ordering : DtoType[list[int]] = Field(description="The authoritative reading order of all text and non-text clusters, from first to last meaningful item. Must contain every cluster number exactly once and no others. ")
     page_x_min : DtoType[float]=Field(description='the page x min in pixel coordinate. ')
     page_x_max : DtoType[float]=Field(description='the page x max in pixel coordinate. ')
     page_y_min : DtoType[float]=Field(description='the page y min in pixel coordinate. ')
@@ -157,12 +180,16 @@ class OCRClusterResponse(ModeSlicingMixin, BaseModel):
                 f"len={len(all_clusters)}"
             )
         all_ids = [item.cluster_number for item in all_clusters]
-        overlap_id = {cluster_id for cluster_id in all_ids if all_ids.count(cluster_id) > 1}
+        overlap_id = {
+            cluster_id
+            for cluster_id, count in Counter(all_ids).items()
+            if count > 1
+        }
         if overlap_id:
             raise ValueError(f"cluster number from non_text_objects block and ocr text blocks must be ALL distinct. Overlapped ids: {list(overlap_id)}")
         all_ids_set = set(all_ids)
         if len(self.meaningful_ordering) != len(all_ids_set) or set(self.meaningful_ordering) != all_ids_set:
-            raise ValueError("meaningful_ordering must cover each text and non-text cluster exactly once")
+            raise ValueError(_meaningful_ordering_error(all_ids_set, self.meaningful_ordering))
         if self.source_item_count is not None:
             accounted_item_count = len(all_clusters) + self.unresolved_item_count
             if self.source_item_count != accounted_item_count:
@@ -260,64 +287,14 @@ class SplitPage(OCRClusterResponseBc):
             c_return['contains_table'] = self.contains_table
             return c_return
         else:
-            # isSorted = True
-            expected_next = 0
-            i_ocr = 0
-            # i_sig = 0
-            i_non_ocr = 0
-            ocr_clus_nums = sorted([i.cluster_number for i in ocr_cluster])
-            non_clus_nums = sorted([i.cluster_number for i in non_ocr_cluster])
-            # sig_clus_nums = sorted([i.cluster_number for i in target.signature_blocks])
-            # expected_next = min(ocr_clus_nums + sig_clus_nums)
-            if ocr_clus_nums:
-                start_num = min(ocr_clus_nums + non_clus_nums)
-                if start_num not in [0, 1]:
-                    raise ValueError("only allow 0-indexed based or 1-indexed based cluster numbers")
-                expected_next = start_num
-                while expected_next < start_num + (len(ocr_clus_nums) + len(non_clus_nums)):
-                    if (i_ocr <len(ocr_cluster)) and expected_next == ocr_cluster[i_ocr].cluster_number:
-                        i_ocr += 1
-                    # elif (i_sig < len(target.signature_blocks)) and expected_next == target.signature_blocks[i_sig].cluster_number:
-                        # i_sig += 1
-                    elif (i_non_ocr < len(non_ocr_cluster)) and expected_next == non_ocr_cluster[i_non_ocr].cluster_number:
-                        i_non_ocr += 1
-                    else:
-                        raise ModelInvariantError(
-                            f"expected index {expected_next} not found in both "
-                            "ocr_cluster nor signature_blocks"
-                        )
-                    expected_next += 1
-
-            
-            id_sorted_text_cluster = sorted(ocr_cluster, key=lambda x : x.cluster_number )
-            if len(id_sorted_text_cluster) != len({i.cluster_number for i in id_sorted_text_cluster}):
-                raise ValueError("OCR cluster numbers must be unique")
-            is_normal = True
-            shift = 0 # try zero indexing sanity
-            c : TextCluster #| TextCluster_yolo_bb
-            for i, c in enumerate(id_sorted_text_cluster):
-                
-                if c.cluster_number != i:
-                    is_normal = False
-                    break
-            c2: TextCluster #| TextCluster_yolo_bb
-            if not is_normal:
-                is_normal = True
-                shift = -1 # try one-indexing sanity
-                for i, c2 in enumerate(id_sorted_text_cluster):
-                    if c2.cluster_number != i+1:
-                        is_normal = False
-                        break
-            # sig_num = set([i.cluster_number for i in self.signature_blocks])
-            if not set(self.meaningful_ordering) <= {i.cluster_number for i in self.OCR_text_clusters}:
-                raise ValueError("meaningful_ordering references an unknown OCR cluster")
-            if is_normal:
-                # is sorted list where index is order + shift
-                texts = '\n'.join(id_sorted_text_cluster[i+shift].text for i in self.meaningful_ordering)
-            else:
-                # general case
-                tcd = {x.cluster_number:x   for x in id_sorted_text_cluster}
-                texts = '\n'.join(tcd[i].text for i in self.meaningful_ordering)
+            # This legacy projection contains text only. The raw SplitPage
+            # retains every modality and its full authoritative ordering.
+            text_by_number = {cluster.cluster_number: cluster for cluster in ocr_cluster}
+            texts = '\n'.join(
+                text_by_number[cluster_number].text
+                for cluster_number in self.meaningful_ordering
+                if cluster_number in text_by_number
+            )
             c_return: JsonObject = {}
             c_return['pdf_page_num'] = self.pdf_page_num
             c_return['printed_page_number'] = self.printed_page_number
