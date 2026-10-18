@@ -124,7 +124,9 @@ def test_media_source_items_project_to_ordered_kogwistar_multimodal_graph_eviden
     original_nodes = list(original_payload["nodes"])
     original_edges = list(original_payload["edges"])
 
-    payload = project_multimodal_source_evidence(original_payload, tree)
+    payload = project_multimodal_source_evidence(
+        original_payload, tree, source_namespace="workspace-a"
+    )
 
     graph_nodes = payload["nodes"]
     graph_edges = payload["edges"]
@@ -141,7 +143,7 @@ def test_media_source_items_project_to_ordered_kogwistar_multimodal_graph_eviden
     assert [node["metadata"]["reading_order"] for node in evidence_nodes] == [0, 1]
     first_mention = evidence_nodes[0]["mentions"][0]
     first_span = first_mention["multimodal_spans"][0]
-    assert first_span["source_namespace"] == doc_id
+    assert first_span["source_namespace"] == "workspace-a"
     assert first_span["resource_revision_id"] == "revision:source-a"
     assert first_span["content_sha256"] == source_hash
     assert first_span["locator"] == {
@@ -190,7 +192,53 @@ def test_media_source_items_project_to_ordered_kogwistar_multimodal_graph_eviden
     )
     unsupported_tree = tree.model_copy(update={"source_items": unsupported_items})
     with pytest.raises(ValueError, match="unsupported multimodal source MIME type"):
-        project_multimodal_source_evidence(original_payload, unsupported_tree)
+        project_multimodal_source_evidence(
+            original_payload, unsupported_tree, source_namespace="workspace-a"
+        )
+
+
+def test_multimodal_projection_requires_explicit_graph_namespace() -> None:
+    doc_id = "multimodal-namespace-required"
+    inp = WorkflowIngestInput(
+        request_id=doc_id,
+        collections=[
+            {
+                "collection_id": doc_id,
+                "title": "Namespace required",
+                "modality": "multimodal",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "units": [
+                            {
+                                "modality": "image_region",
+                                "page_number": 1,
+                                "description": "Figure",
+                                "source_uri": "media://namespace-required/figure",
+                                "metadata": {
+                                    "mime_type": "image/png",
+                                    "media_sha256": "d" * 64,
+                                    "media_byte_length": 10,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+    tree = build_document_tree(inp, source_revision="revision:1")
+    assert tree is not None
+    semantic_root = SemanticNode(node_id="semantic-root", title="Document")
+    payload = semantic_tree_to_kge_payload(
+        semantic_root,
+        doc_id=doc_id,
+        parser_source_map={},
+        source_revision=tree.source_revision,
+    )
+
+    with pytest.raises(ValueError, match="requires an explicit source namespace"):
+        project_multimodal_source_evidence(payload, tree)
 
 
 def test_repeated_identical_ocr_text_keeps_distinct_source_identity() -> None:

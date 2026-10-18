@@ -1044,8 +1044,14 @@ an adapter-only test, or a source-checkout-only runtime test.
   the OCR-root grouping callback receives text A, figure, caption, text B and
   that the semantic graph's text projection retains text order. The graph now
   additionally preserves non-text evidence as ordered Kogwistar multimodal
-  source records with digest/revision and spatial or temporal grounding. A real
-  multi-object provider fixture with independent ground truth remains open.
+  source records with digest/revision and spatial or temporal grounding. The
+  source scope is supplied by the host as `source_namespace`; media export
+  rejects a missing or whitespace-padded scope rather than substituting a
+  document ID. Regression coverage is in
+  `test_multimodal_projection_requires_explicit_graph_namespace` and
+  `test_export_projects_grouped_media_into_kogwistar_multimodal_evidence`. A
+  real multi-object provider fixture with independent ground truth remains
+  open.
 - [x] Represent ambiguous provider order explicitly instead of silently
   appending non-text objects after text. When `meaningful_ordering` is absent
   for a mixed page, normalized page metadata records

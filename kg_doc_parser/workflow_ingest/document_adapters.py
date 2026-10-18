@@ -256,6 +256,8 @@ def build_document_tree(
 def project_multimodal_source_evidence(
     graph_payload: dict[str, JsonValue],
     tree: DocumentTree,
+    *,
+    source_namespace: str | None = None,
 ) -> dict[str, JsonValue]:
     """Add first-class, source-grounded media evidence to a semantic graph.
 
@@ -278,6 +280,14 @@ def project_multimodal_source_evidence(
             pending.extend(child.node_id for child in reversed(node.children))
     if not ordered_media:
         return graph_payload
+    if (
+        not isinstance(source_namespace, str)
+        or not source_namespace.strip()
+        or source_namespace != source_namespace.strip()
+    ):
+        raise ValueError(
+            "multimodal graph projection requires an explicit source namespace"
+        )
 
     raw_nodes = graph_payload.get("nodes")
     raw_edges = graph_payload.get("edges")
@@ -396,7 +406,7 @@ def project_multimodal_source_evidence(
                 }
             )
         span = MultimodalSpan(
-            source_namespace=tree.document_id,
+            source_namespace=source_namespace,
             resource_id=media.uri,
             resource_revision_id=tree.source_revision,
             content_sha256=media.sha256_hex,

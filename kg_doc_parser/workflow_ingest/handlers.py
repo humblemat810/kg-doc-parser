@@ -293,6 +293,7 @@ def _build_export_bundle(
         graph_payload = project_multimodal_source_evidence(
             graph_payload,
             grouping_document,
+            source_namespace=collection.source_namespace,
         )
     deps = runtime_deps or {}
     grouping_contract: Literal["optional", "required"] = (

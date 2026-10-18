@@ -228,6 +228,7 @@ PageListKey = Literal["completed_pages", "reused_pages"]
 StateStringKey = Literal[
     "document_id",
     "source_fingerprint",
+    "source_namespace",
     "grouping_policy_version",
     "parse_generation",
     "legacy_dir",
@@ -254,6 +255,7 @@ ResumeIdentityKey = Literal[
     "ocr_page_state_version",
     "document_id",
     "source_fingerprint",
+    "source_namespace",
     "ocr_configuration_fingerprints",
     "grouping_policy_version",
     "parse_generation",
@@ -265,6 +267,7 @@ class _OCRWorkflowState(TypedDict, total=False):
     ocr_root_state_version: str
     document_id: str
     source_fingerprint: str
+    source_namespace: str
     ocr_configuration_fingerprints: list[str]
     grouping_policy_version: str
     parse_generation: str
@@ -326,6 +329,7 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
         "ocr_root_state_version",
         "document_id",
         "source_fingerprint",
+        "source_namespace",
         "grouping_policy_version",
         "parse_generation",
         "legacy_dir",
@@ -630,6 +634,7 @@ def _validate_root_resume_identity(
     *,
     document_id: str,
     source_fingerprint: str,
+    source_namespace: str,
     configuration_fingerprints: Sequence[str],
     grouping_policy_version: str,
     parse_generation: str,
@@ -642,6 +647,7 @@ def _validate_root_resume_identity(
         "ocr_root_state_version": _OCR_ROOT_STATE_VERSION,
         "document_id": document_id,
         "source_fingerprint": source_fingerprint,
+        "source_namespace": source_namespace,
         "ocr_configuration_fingerprints": list(configuration_fingerprints),
         "grouping_policy_version": grouping_policy_version,
         "parse_generation": parse_generation,
@@ -1538,6 +1544,7 @@ def run_grouping_workflow(
     """Run grouping as a persisted Kogwistar workflow and return its tree."""
     if grouping_proposals and grouping_passes:
         raise ValueError("provide grouping_proposals or grouping_passes, not both")
+
     explicit_passes = list(grouping_passes)
     if grouping_proposals:
         explicit_passes = [tuple(grouping_proposals)]
@@ -1637,6 +1644,7 @@ def run_ocr_root_workflow(
     document_id: str,
     title: str,
     grouping_policy_version: str,
+    source_namespace: str | None = None,
     grouping_proposals: Sequence[GroupProposal] = (),
     grouping_passes: Sequence[Sequence[GroupProposal]] = (),
     summary_policy: SummaryPolicy | None = None,
@@ -1658,6 +1666,15 @@ def run_ocr_root_workflow(
     """
     if grouping_proposals and grouping_passes:
         raise ValueError("provide grouping_proposals or grouping_passes, not both")
+
+    if source_namespace is not None and (
+        not source_namespace.strip()
+        or source_namespace != source_namespace.strip()
+    ):
+        raise ValueError(
+            "OCR source_namespace must be non-empty and have no outer whitespace"
+        )
+    source_namespace_identity = source_namespace or ""
 
     from .clients import DirectRuntimeIngestClient
     from .providers import WorkflowProviderSettings
@@ -1778,6 +1795,7 @@ def run_ocr_root_workflow(
             "ocr_root_state_version": "u",
             "ocr_root_lineage_id": "u",
             "source_fingerprint": "u",
+            "source_namespace": "u",
             "ocr_configuration_fingerprints": "u",
             "parse_generation": "u",
             "checkpoint_revision": "u",
@@ -1952,6 +1970,17 @@ def run_ocr_root_workflow(
         if not isinstance(workflow_input_payload, dict):
             raise TypeError("OCR root has no persisted semantic workflow input")
         workflow_input = WorkflowIngestInput.model_validate(workflow_input_payload)
+        primary_collection = workflow_input.collections[0]
+        workflow_input = workflow_input.model_copy(
+            update={
+                "collections": [
+                    collection.model_copy(update={"source_namespace": source_namespace})
+                    if collection.collection_id == primary_collection.collection_id
+                    else collection
+                    for collection in workflow_input.collections
+                ]
+            }
+        )
         attach_document_tree_metadata(workflow_input, grouped_tree)
         _write_document_tree(preparation.source_plan.legacy_dir / "document-tree.json", grouped_tree)
         return _success(
@@ -2058,6 +2087,7 @@ def run_ocr_root_workflow(
                     _typed_state(ctx.state_view),
                     document_id=document_id,
                     source_fingerprint=preparation.source_plan.input_fingerprint,
+                    source_namespace=source_namespace_identity,
                     configuration_fingerprints=preparation.page_context.configuration_fingerprints,
                     grouping_policy_version=grouping_policy_version,
                     parse_generation=_semantic_parse_generation(recovery_generation),
@@ -2116,6 +2146,7 @@ def run_ocr_root_workflow(
                 "title": title,
                 "ocr_root_state_version": _OCR_ROOT_STATE_VERSION,
                 "source_fingerprint": preparation.source_plan.input_fingerprint,
+                "source_namespace": source_namespace_identity,
                 "ocr_configuration_fingerprints": list(
                     preparation.page_context.configuration_fingerprints
                 ),
@@ -2141,6 +2172,7 @@ def run_ocr_root_workflow(
         final_state,
         document_id=document_id,
         source_fingerprint=preparation.source_plan.input_fingerprint,
+        source_namespace=source_namespace_identity,
         configuration_fingerprints=preparation.page_context.configuration_fingerprints,
         grouping_policy_version=grouping_policy_version,
         parse_generation=_semantic_parse_generation(_recovery_generation(final_state)),

@@ -178,6 +178,13 @@ class NormalizedSourceCollection(ModeSlicingMixin, BaseModel):
     title: Annotated[str, DtoField(), BackendField(), FrontendField(), LLMField()]
     modality: Annotated[Literal["text", "ocr", "multimodal"], DtoField(), BackendField(), FrontendField(), LLMField()]
     pages: Annotated[list[NormalizedPage], DtoField(), BackendField(), FrontendField(), LLMField()] = Field(default_factory=list)
+    source_namespace: Annotated[
+        str | None,
+        DtoField(),
+        BackendField(),
+        FrontendField(),
+        ExcludeMode("llm"),
+    ] = None
     embedding_spaces: Annotated[
         list[str],
         DtoField(),
@@ -197,6 +204,11 @@ class NormalizedSourceCollection(ModeSlicingMixin, BaseModel):
     def _check_pages(self) -> NormalizedSourceCollection:
         if not self.collection_id.strip():
             raise ValueError("collection_id must be non-empty")
+        if self.source_namespace is not None and (
+            not self.source_namespace.strip()
+            or self.source_namespace != self.source_namespace.strip()
+        ):
+            raise ValueError("source_namespace must be non-empty and have no outer whitespace")
         if not self.embedding_spaces or any(not space.strip() for space in self.embedding_spaces):
             raise ValueError("embedding_spaces must contain non-empty labels")
         if len(self.embedding_spaces) != len(set(self.embedding_spaces)):

@@ -340,6 +340,34 @@ def test_normalized_collection_rejects_ambiguous_identity_and_embedding_labels()
 
 
 @pytest.mark.ci
+def test_normalized_collection_preserves_graph_namespace_outside_llm_view() -> None:
+    page = NormalizedPage(
+        page_number=1,
+        units=[SourceUnit(modality="text", text="Alpha", page_number=1, cluster_number=0)],
+    )
+    collection = NormalizedSourceCollection(
+        collection_id="doc",
+        title="Doc",
+        modality="multimodal",
+        pages=[page],
+        source_namespace="workspace-a",
+    )
+
+    assert collection.model_dump(field_mode="backend")["source_namespace"] == "workspace-a"
+    assert collection.model_dump(field_mode="frontend")["source_namespace"] == "workspace-a"
+    assert "source_namespace" not in collection.model_dump(field_mode="llm")
+
+    with pytest.raises(ValueError, match="source_namespace must be non-empty"):
+        NormalizedSourceCollection(
+            collection_id="doc",
+            title="Doc",
+            modality="multimodal",
+            pages=[page],
+            source_namespace="  ",
+        )
+
+
+@pytest.mark.ci
 def test_workflow_input_rejects_duplicate_collection_ids() -> None:
     page = NormalizedPage(
         page_number=1,
@@ -947,7 +975,10 @@ def test_export_projects_grouped_media_into_kogwistar_multimodal_evidence() -> N
     tree = build_document_tree(inp, source_revision="ocr-v1:media-source")
     assert tree is not None
     collection = collection.model_copy(
-        update={"metadata": {"document_tree": tree.model_dump(mode="json")}}
+        update={
+            "source_namespace": "workspace-a",
+            "metadata": {"document_tree": tree.model_dump(mode="json")},
+        }
     )
     inp = inp.model_copy(update={"collections": [collection]})
     ctx = SimpleNamespace(
@@ -981,7 +1012,9 @@ def test_export_projects_grouped_media_into_kogwistar_multimodal_evidence() -> N
     assert len(evidence_nodes) == 1
     evidence_node = evidence_nodes[0]
     assert evidence_node["label"] == "Architecture figure"
-    assert evidence_node["mentions"][0]["multimodal_spans"][0]["content_sha256"] == "c" * 64
+    span = evidence_node["mentions"][0]["multimodal_spans"][0]
+    assert span["source_namespace"] == "workspace-a"
+    assert span["content_sha256"] == "c" * 64
     evidence_edges = [
         edge
         for edge in graph_edges
@@ -989,7 +1022,6 @@ def test_export_projects_grouped_media_into_kogwistar_multimodal_evidence() -> N
     ]
     assert len(evidence_edges) == 1
     assert evidence_edges[0]["target_ids"] == [evidence_node["id"]]
-
 
 @pytest.mark.ci
 def test_source_map_preserves_explicit_unit_ids_and_cluster_identity():

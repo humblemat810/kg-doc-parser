@@ -2838,6 +2838,7 @@ def test_ocr_root_resume_rejects_changed_provider_before_replaying_pages() -> No
             conversation_engine=engines[1],
             knowledge_engine=engines[2],
             ocr_runner=_interrupting_runner,
+            source_namespace="workspace-a",
             run_id="ocr|ocr-root-identity",
         )
     assert calls == ["v1:1", "v1:2"]
@@ -2860,10 +2861,10 @@ def test_ocr_root_resume_rejects_changed_provider_before_replaying_pages() -> No
             conversation_engine=engines[1],
             knowledge_engine=engines[2],
             ocr_runner=_unexpected_runner,
+            source_namespace="workspace-a",
             run_id="ocr|ocr-root-identity",
             resume_from_checkpoint=True,
         )
-
 
 @pytest.mark.ci
 def test_ocr_root_resume_rebuilds_after_same_path_source_change() -> None:
