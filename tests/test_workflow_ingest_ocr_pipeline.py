@@ -6926,6 +6926,66 @@ def test_grouping_checkpoint_rejects_stale_writer_after_source_revision_changes(
 
 
 @pytest.mark.ci
+def test_grouping_checkpoint_load_rejects_mismatched_companion_records() -> None:
+    scratch = _scratch("ocr_grouping_checkpoint_companion_mismatch")
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    tree = DocumentTree(
+        document_id="checkpoint-companion-doc",
+        source_revision="ocr-v1:source-v1",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="item",
+                kind="text",
+                text="checkpoint",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                parts=(SourceSlice(item_id="item", start=0, end=10),),
+            ),
+        ),
+    )
+    store.ensure_document(
+        document_id=tree.document_id,
+        title="Checkpoint companion validation",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-v1",
+    )
+    revision = store.save_document_tree(
+        document_id=tree.document_id,
+        tree=tree,
+        require_no_existing_tree=True,
+    )
+    assert store.load_document_tree(document_id=tree.document_id) == tree
+
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE grouping_checkpoint_metadata SET tree_revision = ? WHERE document_id = ?",
+            ("stale-revision", tree.document_id),
+        )
+    with pytest.raises(ValueError, match="checkpoint records disagree"):
+        store.load_document_tree(document_id=tree.document_id)
+
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE grouping_checkpoint_metadata SET tree_revision = ? WHERE document_id = ?",
+            (revision, tree.document_id),
+        )
+        conn.execute(
+            "UPDATE grouping_frontier_state SET frontier_json = ? WHERE document_id = ?",
+            (json.dumps(["foreign-frontier"]), tree.document_id),
+        )
+    with pytest.raises(ValueError, match="frontier does not match"):
+        store.load_document_tree(document_id=tree.document_id)
+
+
+@pytest.mark.ci
 def test_ocr_completion_requires_exact_expected_page_numbers() -> None:
     scratch = _scratch("ocr_completion_page_set")
     store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")

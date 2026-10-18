@@ -2234,12 +2234,30 @@ class OCRWorkflowStateStore:
         source_fingerprint: str | None = None,
         grouping_policy_version: str | None = None,
     ) -> DocumentTree | None:
-        """Load only a validated tree matching the current source identity."""
+        """Load a tree only when its atomically persisted checkpoint agrees."""
         with self._session() as conn:
+            conn.execute("BEGIN")
             row = conn.execute(
                 """
                 SELECT source_fingerprint, grouping_policy_version, tree_json
                 FROM document_tree_state
+                WHERE document_id = ?
+                """,
+                (document_id,),
+            ).fetchone()
+            frontier = conn.execute(
+                """
+                SELECT source_fingerprint, grouping_policy_version, frontier_json
+                FROM grouping_frontier_state
+                WHERE document_id = ?
+                """,
+                (document_id,),
+            ).fetchone()
+            metadata = conn.execute(
+                """
+                SELECT source_fingerprint, grouping_policy_version,
+                       accepted_page_frontier_json, tree_revision, last_runtime_step
+                FROM grouping_checkpoint_metadata
                 WHERE document_id = ?
                 """,
                 (document_id,),
@@ -2253,7 +2271,49 @@ class OCRWorkflowStateStore:
             )
         ):
             return None
-        return DocumentTree.model_validate_json(str(row["tree_json"]))
+        if frontier is None or metadata is None:
+            raise ValueError("persisted grouping checkpoint is missing a companion record")
+        stored_source = str(row["source_fingerprint"])
+        stored_policy = str(row["grouping_policy_version"])
+        stored_revision = hashlib.sha256(
+            str(row["tree_json"]).encode("utf-8")
+        ).hexdigest()
+        if (
+            str(frontier["source_fingerprint"]) != stored_source
+            or str(frontier["grouping_policy_version"]) != stored_policy
+            or str(metadata["source_fingerprint"]) != stored_source
+            or str(metadata["grouping_policy_version"]) != stored_policy
+            or str(metadata["tree_revision"]) != stored_revision
+            or not str(metadata["last_runtime_step"])
+        ):
+            raise ValueError("persisted grouping checkpoint records disagree")
+
+        tree = DocumentTree.model_validate_json(str(row["tree_json"]))
+        if tree.source_fingerprint() != stored_source:
+            raise ValueError("persisted grouping tree source fingerprint is inconsistent")
+        root = next((node for node in tree.nodes if node.node_id == tree.root_id), None)
+        if root is None:
+            raise ValueError("persisted grouping tree root is missing")
+        expected_frontier = (
+            tuple(child.node_id for child in root.children)
+            if root.children
+            else (root.node_id,)
+        )
+        frontier_payload = json.loads(str(frontier["frontier_json"]))
+        if (
+            not isinstance(frontier_payload, list)
+            or not all(isinstance(item, str) and item for item in frontier_payload)
+            or tuple(frontier_payload) != expected_frontier
+        ):
+            raise ValueError("persisted grouping frontier does not match its tree")
+        accepted_pages = json.loads(str(metadata["accepted_page_frontier_json"]))
+        if (
+            not isinstance(accepted_pages, list)
+            or any(type(page) is not int or page < 1 for page in accepted_pages)
+            or accepted_pages != sorted(set(accepted_pages))
+        ):
+            raise ValueError("persisted grouping accepted-page frontier is malformed")
+        return tree
 
     def load_grouping_frontier(
         self,

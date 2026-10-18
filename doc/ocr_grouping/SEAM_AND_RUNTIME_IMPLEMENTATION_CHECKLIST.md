@@ -502,7 +502,11 @@ cannot close A-6.
   against the active document fingerprint inside the write transaction;
   `test_grouping_checkpoint_rejects_stale_writer_after_source_revision_changes`
   proves an old worker cannot recreate a cleared checkpoint after source
-  invalidation. The broader writer/generation audit remains open. The
+  invalidation. `load_document_tree()` now verifies the tree digest, source and
+  policy identities, persisted frontier, and companion metadata in one SQLite
+  read snapshot; `test_grouping_checkpoint_load_rejects_mismatched_companion_records`
+  rejects a stale metadata digest and a frontier that disagrees with the tree.
+  The broader writer/generation audit remains open. The
   default non-fake OCR root runs an iterative proposer over bounded,
   multimodal-aware frontier windows, resolves overlaps deterministically, and
   checkpoints per-window proposal progress in Kogwistar. It also constructs
