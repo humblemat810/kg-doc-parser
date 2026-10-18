@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -342,6 +343,7 @@ def main() -> int:
         return 17
 
     if mode not in {
+        "durable-reference",
         "resume",
         "long-resume",
         "durable-long-resume",
@@ -405,6 +407,24 @@ def main() -> int:
         raise AssertionError("accepted OCR graph contains duplicate node IDs")
     if len(graph_edge_ids) != len(set(graph_edge_ids)):
         raise AssertionError("accepted OCR graph contains duplicate edge IDs")
+    graph_payload_digest = hashlib.sha256(
+        json.dumps(
+            bundle.graph_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    if not isinstance(bundle.grouping_tree, dict):
+        raise AssertionError("accepted OCR result is missing its grouping tree")
+    grouping_tree_digest = hashlib.sha256(
+        json.dumps(
+            bundle.grouping_tree,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
     persisted_graph_node_ids = [
         node_id
         for node_id in graph_node_ids
@@ -416,6 +436,8 @@ def main() -> int:
                 "lineage": lineage,
                 "graph_node_ids": graph_node_ids,
                 "graph_edge_ids": graph_edge_ids,
+                "graph_payload_sha256": graph_payload_digest,
+                "grouping_tree_sha256": grouping_tree_digest,
                 "persisted_graph_node_ids": persisted_graph_node_ids,
                 "persisted_graph_edge_ids": [
                     edge_id

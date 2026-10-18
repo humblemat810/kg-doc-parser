@@ -3700,7 +3700,7 @@ def test_ocr_root_graph_publication_survives_durable_engine_reopen() -> None:
 
 @pytest.mark.ci_full
 def test_ocr_root_fresh_process_resume_publishes_durable_graph() -> None:
-    """A fresh resumed root publishes one canonical graph to persistent storage."""
+    """Durable fresh-process recovery matches an uninterrupted canonical run."""
     pytest.importorskip("chromadb")
     scratch = _scratch("ocr_fresh_resume_durable_graph")
     for page_number in (1, 2):
@@ -3787,6 +3787,35 @@ def test_ocr_root_fresh_process_resume_publishes_durable_graph() -> None:
         } == expected_edge_ids
     finally:
         reopened_knowledge.close()
+
+    reference = scratch / "uninterrupted-reference"
+    for page_number in (1, 2):
+        _draw_test_image(
+            reference / "source" / f"page-{page_number}.png",
+            lines=[f"durable resumed page {page_number}"],
+        )
+    baseline = subprocess.run(
+        [sys.executable, str(worker), str(reference), "durable-reference"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=120,
+    )
+    assert baseline.returncode == 0, baseline.stderr
+    reference_publication = json.loads(
+        (reference / "durable-reference-lineage.json").read_text(encoding="utf-8")
+    )
+    assert set(reference_publication["graph_node_ids"]) == expected_node_ids
+    assert set(reference_publication["graph_edge_ids"]) == expected_edge_ids
+    assert (
+        reference_publication["graph_payload_sha256"]
+        == publication["graph_payload_sha256"]
+    )
+    assert (
+        reference_publication["grouping_tree_sha256"]
+        == publication["grouping_tree_sha256"]
+    )
 
 
 @pytest.mark.ci_full
