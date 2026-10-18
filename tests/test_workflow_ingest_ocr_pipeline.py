@@ -8600,6 +8600,103 @@ def test_atomic_json_publication_uses_distinct_temporary_files_for_concurrent_wr
 
 
 @pytest.mark.ci
+def test_ocr_configuration_fingerprint_covers_provider_output_settings() -> None:
+    scratch = _scratch("ocr_output_fingerprint_identity")
+    base = ProviderEndpointConfig(
+        provider="openai",
+        model="vision-model",
+        api_key_env="OCR_API_KEY",
+        base_url="https://ocr.example.test/v1",
+        temperature=0.0,
+        max_output_tokens=1024,
+    )
+    settings = WorkflowProviderSettings(ocr=base)
+    original = _ocr_configuration_fingerprint(settings)
+    variants = (
+        base.model_copy(update={"temperature": 0.2}),
+        base.model_copy(update={"reasoning_effort": "high"}),
+        base.model_copy(update={"location": "region-b"}),
+        base.model_copy(update={"max_output_tokens": 2048}),
+        base.model_copy(update={"ocr_engine": "easyocr"}),
+        base.model_copy(update={"ocr_language": "fr"}),
+        base.model_copy(update={"max_retries": base.max_retries + 1}),
+        base.model_copy(update={"timeout_seconds": base.timeout_seconds + 1}),
+        base.model_copy(
+            update={
+                "fallback_specs": [
+                    ProviderEndpointConfig(
+                        provider="openai",
+                        model="fallback-vision-model",
+                        api_key_env="OCR_API_KEY",
+                    )
+                ]
+            }
+        ),
+    )
+    changed_fingerprints = tuple(
+        _ocr_configuration_fingerprint(settings.model_copy(update={"ocr": variant}))
+        for variant in variants
+    )
+
+    assert all(fingerprint != original for fingerprint in changed_fingerprints)
+
+    image_digest = "a" * 64
+    artifact = scratch / "page-1.json"
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=image_digest,
+        ocr_configuration_fingerprint=original,
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="provider-fingerprint-doc",
+        title="Provider Fingerprint",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="stable-source",
+    )
+    attempt = store.record_attempt(
+        document_id="provider-fingerprint-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=image_digest,
+        model_name="vision-model",
+        artifact_path=artifact,
+        config_fingerprint=original,
+    )
+    store.record_page_completed(
+        document_id="provider-fingerprint-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=image_digest,
+        artifact_path=artifact,
+        model_name="vision-model",
+        attempt_index=attempt,
+        config_fingerprint=original,
+    )
+
+    assert store.should_skip_page(
+        document_id="provider-fingerprint-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=image_digest,
+        artifact_path=artifact,
+        config_fingerprint=original,
+    )
+    assert all(
+        not store.should_skip_page(
+            document_id="provider-fingerprint-doc",
+            page_number=1,
+            stage="ocr",
+            content_hash=image_digest,
+            artifact_path=artifact,
+            config_fingerprint=fingerprint,
+        )
+        for fingerprint in changed_fingerprints
+    )
+
+
+@pytest.mark.ci
 def test_ocr_state_adopts_valid_artifact_left_before_completion_commit() -> None:
     scratch = _scratch("ocr_orphan_artifact")
     image = scratch / "page-1.png"

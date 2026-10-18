@@ -170,14 +170,9 @@ def _ocr_configuration_fingerprint(
 ) -> str:
     """Return the non-secret identity of an OCR execution configuration."""
     config = {
-        "provider": settings.ocr.provider,
-        "model": settings.ocr.model,
-        "base_url": settings.ocr.base_url,
-        "api_version": settings.ocr.api_version,
-        "project": settings.ocr.project,
-        "ocr_engine": settings.ocr.ocr_engine,
-        "pdf_text_mode": settings.ocr.pdf_text_mode,
-        "ocr_language": settings.ocr.ocr_language,
+        "provider_configuration": _provider_endpoint_configuration_identity(
+            settings.ocr
+        ),
         "candidate_models": list(candidate_models),
         "quality_policy": (quality_policy or OCRQualityPolicy()).model_dump(mode="json"),
     }
