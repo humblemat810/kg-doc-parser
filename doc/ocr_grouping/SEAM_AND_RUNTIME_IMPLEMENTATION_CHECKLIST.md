@@ -961,8 +961,12 @@ an adapter-only test, or a source-checkout-only runtime test.
   regression reopens and verifies them before adoption. The focused regression
   `test_rebuild_rejects_legacy_ocr_when_page_40_changes_in_new_source_revision`
   also proves that a same-numbered page's legacy OCR is invalidated when its
-  rendered bytes change across source revisions. CI run `39114954960` passed
-  this regression on all four supported interpreter jobs.
+  rendered bytes change across source revisions. The additional
+  `test_rebuild_does_not_trust_legacy_image_as_current_source` proves the
+  legacy artifact directory cannot authenticate its own stale image when the
+  authoritative current render is absent. CI run `39114954960` passed the
+  changed-page regression on all four supported interpreter jobs; the new
+  no-fallback regression is pending CI.
 - [x] Fence the legacy `record_page_completed()` writer as well as the primary
   OCR publication path. It now accepts only a pending row with matching source
   and configuration identity, and treats an identical completed delivery as

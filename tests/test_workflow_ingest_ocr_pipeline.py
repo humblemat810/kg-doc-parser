@@ -7429,6 +7429,45 @@ def test_rebuild_rejects_legacy_ocr_when_page_40_changes_in_new_source_revision(
 
 
 @pytest.mark.ci
+def test_rebuild_does_not_trust_legacy_image_as_current_source() -> None:
+    scratch = _scratch("ocr_legacy_image_not_authoritative")
+    rendered_dir = scratch / "rendered"
+    legacy_dir = scratch / "legacy"
+    rendered_dir.mkdir(parents=True)
+    legacy_dir.mkdir(parents=True)
+    stale_legacy_image = legacy_dir / "page_1.png"
+    stale_legacy_image.write_bytes(b"stale legacy image")
+    artifact = legacy_dir / "page_1.json"
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=hashlib.sha256(stale_legacy_image.read_bytes()).hexdigest(),
+        ocr_configuration_fingerprint="provider/model",
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+
+    assert store.rebuild_from_artifacts(
+        document_id="ocr-legacy-source-not-authoritative-doc",
+        title="Legacy Source Not Authoritative",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="current-source-without-render",
+        rendered_dir=rendered_dir,
+        legacy_dir=legacy_dir,
+        progress_path=scratch / "progress.json",
+    )
+
+    state = store.get_page_state(
+        document_id="ocr-legacy-source-not-authoritative-doc",
+        page_number=1,
+        stage="ocr",
+    )
+    assert state is not None
+    assert state.status == "pending"
+    assert state.content_hash is None
+    assert state.last_error == "OCR artifact has no authoritative source-image digest"
+
+
+@pytest.mark.ci
 def test_ocr_state_rejects_stale_provider_config_or_tampered_artifact() -> None:
     scratch = _scratch("ocr_config_identity")
     artifact = scratch / "page-1.json"

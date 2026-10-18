@@ -2263,9 +2263,7 @@ class OCRWorkflowStateStore:
             # The rendered artifact is the only authoritative source for the
             # current page identity. Progress JSON is advisory and must never
             # resurrect an OCR result after a same-path image replacement.
-            content_hash = _find_matching_render_hash(
-                rendered_dir, legacy_dir, page_number
-            )
+            content_hash = _find_matching_render_hash(rendered_dir, page_number)
             config_fingerprint: str | None = None
             artifact_valid = False
             artifact_error: str | None = None
@@ -2280,7 +2278,11 @@ class OCRWorkflowStateStore:
                     artifact_valid = False
                 config_fingerprint = metadata.get("ocr_configuration_fingerprint")
                 source_digest = metadata.get("source_image_sha256")
-                if artifact_valid and source_digest != content_hash:
+                if (
+                    artifact_valid
+                    and content_hash is not None
+                    and source_digest != content_hash
+                ):
                     artifact_valid = False
                     artifact_error = (
                         "OCR artifact source-image digest does not match the "
@@ -3087,8 +3089,10 @@ def _scan_legacy_json_pages(legacy_dir: Path) -> list[tuple[int, Path]]:
     return pairs
 
 
-def _find_matching_render_hash(rendered_dir: Path, legacy_dir: Path, page_number: int) -> str | None:
-    candidates = list(rendered_dir.glob(f"page_{page_number}.*")) + list(legacy_dir.glob(f"page_{page_number}.*"))
+def _find_matching_render_hash(rendered_dir: Path, page_number: int) -> str | None:
+    """Return the hash only from the current revision's authoritative render."""
+
+    candidates = list(rendered_dir.glob(f"page_{page_number}.*"))
     for candidate in candidates:
         if candidate.suffix.lower() == ".json" or not candidate.exists():
             continue
