@@ -29,6 +29,7 @@ from kg_doc_parser.workflow_ingest.clients import (
     _jsonable_payload,
 )
 from kg_doc_parser.workflow_ingest.design import build_ingest_workflow_design
+from kg_doc_parser.workflow_ingest.document_adapters import build_document_tree
 from kg_doc_parser.workflow_ingest.handlers import (
     _build_export_bundle,
     _parser_payload,
@@ -896,6 +897,98 @@ def test_export_carries_authoritative_source_revision() -> None:
     bundle = _build_export_bundle(ctx=ctx)
 
     assert bundle.graph_payload["source_revision"] == "ocr-v1:source-digest"
+
+
+@pytest.mark.ci
+def test_export_projects_grouped_media_into_kogwistar_multimodal_evidence() -> None:
+    doc_id = "export-multimodal-evidence"
+    base = WorkflowIngestInput.from_text(
+        document_id=doc_id,
+        text="Figure caption",
+        title="Multimodal evidence",
+    )
+    collection = base.collections[0].model_copy(
+        update={
+            "modality": "multimodal",
+            "pages": [
+                NormalizedPage(
+                    page_number=1,
+                    units=[
+                        SourceUnit(
+                            modality="ocr_text",
+                            page_number=1,
+                            text="Figure caption",
+                        ),
+                        SourceUnit(
+                            modality="image_region",
+                            page_number=1,
+                            description="Architecture figure",
+                            source_uri="media://export-multimodal-evidence/figure-1",
+                            bbox=BoundingBox(
+                                x_min=0.125,
+                                y_min=0.25,
+                                x_max=0.5,
+                                y_max=0.75,
+                            ),
+                            metadata={
+                                "mime_type": "image/png",
+                                "media_sha256": "c" * 64,
+                                "media_byte_length": 128,
+                                "coordinate_system": "relative",
+                                "spatial_accuracy": "region",
+                            },
+                        ),
+                    ],
+                )
+            ],
+        }
+    )
+    inp = base.model_copy(update={"collections": [collection]})
+    tree = build_document_tree(inp, source_revision="ocr-v1:media-source")
+    assert tree is not None
+    collection = collection.model_copy(
+        update={"metadata": {"document_tree": tree.model_dump(mode="json")}}
+    )
+    inp = inp.model_copy(update={"collections": [collection]})
+    ctx = SimpleNamespace(
+        state_view={
+            "normalized_input": inp,
+            "semantic_tree": SemanticNode(
+                title="Multimodal evidence",
+                node_type="DOCUMENT_ROOT",
+                total_content_pointers=[],
+                child_nodes=[],
+                level_from_root=0,
+            ),
+            "parser_source_map": {},
+            "authoritative_source_map": {},
+        }
+    )
+
+    bundle = _build_export_bundle(ctx=ctx)
+
+    graph_nodes = bundle.graph_payload["nodes"]
+    graph_edges = bundle.graph_payload["edges"]
+    assert isinstance(graph_nodes, list)
+    assert isinstance(graph_edges, list)
+    evidence_nodes = [
+        node
+        for node in graph_nodes
+        if isinstance(node, dict)
+        and isinstance(node.get("metadata"), dict)
+        and node["metadata"].get("entity_type") == "multimodal_source_evidence"
+    ]
+    assert len(evidence_nodes) == 1
+    evidence_node = evidence_nodes[0]
+    assert evidence_node["label"] == "Architecture figure"
+    assert evidence_node["mentions"][0]["multimodal_spans"][0]["content_sha256"] == "c" * 64
+    evidence_edges = [
+        edge
+        for edge in graph_edges
+        if isinstance(edge, dict) and edge.get("relation") == "HAS_SOURCE_EVIDENCE"
+    ]
+    assert len(evidence_edges) == 1
+    assert evidence_edges[0]["target_ids"] == [evidence_node["id"]]
 
 
 @pytest.mark.ci

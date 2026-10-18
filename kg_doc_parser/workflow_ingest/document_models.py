@@ -9,6 +9,7 @@ import json
 import re
 from collections import defaultdict
 from hashlib import sha256
+from math import isfinite
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -37,6 +38,8 @@ class BoundingBox(FrozenModel):
 
     @model_validator(mode="after")
     def valid(self) -> BoundingBox:
+        if not all(isfinite(value) for value in (self.x0, self.y0, self.x1, self.y1)):
+            raise ValueError("bounding-box coordinates must be finite")
         if not (self.x0 < self.x1 and self.y0 < self.y1):
             raise ValueError("bounding box must have positive area")
         if self.coordinate_system == "relative" and not all(0 <= v <= 1 for v in (self.x0, self.y0, self.x1, self.y1)):
@@ -56,6 +59,11 @@ class SourceLocation(FrozenModel):
     @model_validator(mode="after")
     def valid(self) -> SourceLocation:
         has_time = self.start_seconds is not None or self.end_seconds is not None
+        if any(
+            value is not None and not isfinite(value)
+            for value in (self.start_seconds, self.end_seconds)
+        ):
+            raise ValueError("time coordinates must be finite")
         if has_time and (self.start_seconds is None or self.end_seconds is None or self.end_seconds <= self.start_seconds):
             raise ValueError("time range must have positive endpoints")
         if self.bbox is not None and self.page_index is None:

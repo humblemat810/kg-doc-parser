@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from kogwistar.engine_core.models import Edge, Node
 from PIL import Image
 
 from kg_doc_parser.models import OCRClusterResponse, TextCluster
@@ -21,9 +22,20 @@ from kg_doc_parser.workflow_ingest import (
     prepare_ocr_workflow_input,
     suggest_cross_page_continuations,
 )
+from kg_doc_parser.workflow_ingest.document_adapters import (
+    project_multimodal_source_evidence,
+)
 from kg_doc_parser.workflow_ingest.document_grouping import group_node_id
-from kg_doc_parser.workflow_ingest.document_models import Summary
-from kg_doc_parser.workflow_ingest.models import BoundingBox, SourceUnit, WorkflowIngestInput
+from kg_doc_parser.workflow_ingest.document_models import DocumentTree, Summary
+from kg_doc_parser.workflow_ingest.models import (
+    BoundingBox,
+    SourceUnit,
+    WorkflowIngestInput,
+)
+from kg_doc_parser.workflow_ingest.semantics import (
+    SemanticNode,
+    semantic_tree_to_kge_payload,
+)
 
 
 def test_build_document_tree_preserves_two_pages_and_exact_text() -> None:
@@ -32,6 +44,153 @@ def test_build_document_tree_preserves_two_pages_and_exact_text() -> None:
     assert tree is not None
     assert tree.render_preview() == "first\nsecond"
     assert {item.location.page_index for item in tree.source_items} == {0}
+
+
+def test_media_source_items_project_to_ordered_kogwistar_multimodal_graph_evidence() -> None:
+    doc_id = "multimodal-projection-doc"
+    source_hash = "a" * 64
+    inp = WorkflowIngestInput(
+        request_id=doc_id,
+        collections=[
+            {
+                "collection_id": doc_id,
+                "title": "Multimodal source evidence",
+                "modality": "multimodal",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "units": [
+                            SourceUnit(
+                                modality="text",
+                                page_number=1,
+                                text="Figure caption",
+                            ),
+                            SourceUnit(
+                                modality="image_region",
+                                page_number=1,
+                                description="Architecture figure",
+                                source_uri="media://multimodal-projection-doc/figure-1",
+                                bbox=BoundingBox(
+                                    x_min=0.125,
+                                    y_min=0.25,
+                                    x_max=0.5,
+                                    y_max=0.75,
+                                ),
+                                metadata={
+                                    "mime_type": "image/png",
+                                    "media_sha256": source_hash,
+                                    "media_byte_length": 128,
+                                    "coordinate_system": "relative",
+                                    "spatial_accuracy": "region",
+                                },
+                            ),
+                            SourceUnit(
+                                modality="pure_image",
+                                page_number=1,
+                                description="Second image without a trusted box",
+                                source_uri="media://multimodal-projection-doc/figure-2",
+                                metadata={
+                                    "mime_type": "image/jpeg",
+                                    "media_sha256": "b" * 64,
+                                    "media_byte_length": 256,
+                                },
+                            ),
+                        ],
+                    }
+                ],
+            }
+        ],
+    )
+    tree = build_document_tree(inp, source_revision="revision:source-a")
+    assert tree is not None
+    # Tuple order in the source manifest is not a substitute for the accepted
+    # hierarchy's traversal order.
+    tree = DocumentTree.model_validate(
+        {
+            **tree.model_dump(mode="json"),
+            "source_items": [
+                item.model_dump(mode="json")
+                for item in reversed(tree.source_items)
+            ],
+        }
+    )
+    semantic_root = SemanticNode(node_id="semantic-root", title="Document")
+    original_payload = semantic_tree_to_kge_payload(
+        semantic_root,
+        doc_id=doc_id,
+        parser_source_map={},
+        source_revision=tree.source_revision,
+    )
+    original_nodes = list(original_payload["nodes"])
+    original_edges = list(original_payload["edges"])
+
+    payload = project_multimodal_source_evidence(original_payload, tree)
+
+    graph_nodes = payload["nodes"]
+    graph_edges = payload["edges"]
+    assert isinstance(graph_nodes, list)
+    assert isinstance(graph_edges, list)
+    evidence_nodes = [
+        record
+        for record in graph_nodes
+        if isinstance(record, dict)
+        and record.get("metadata", {}).get("entity_type")
+        == "multimodal_source_evidence"
+    ]
+    assert len(evidence_nodes) == 2
+    assert [node["metadata"]["reading_order"] for node in evidence_nodes] == [0, 1]
+    first_mention = evidence_nodes[0]["mentions"][0]
+    first_span = first_mention["multimodal_spans"][0]
+    assert first_span["source_namespace"] == doc_id
+    assert first_span["resource_revision_id"] == "revision:source-a"
+    assert first_span["content_sha256"] == source_hash
+    assert first_span["locator"] == {
+        "kind": "spatial_region",
+        "coordinate_system": "normalized_0_1",
+        "x": 0.125,
+        "y": 0.25,
+        "width": 0.375,
+        "height": 0.5,
+        "page_number": 1,
+        "frame_index": None,
+        "timestamp_ms": None,
+    }
+    second_span = evidence_nodes[1]["mentions"][0]["multimodal_spans"][0]
+    assert second_span["locator"]["kind"] == "legacy"
+    assert second_span["locator"]["payload"]["location"]["accuracy"] == "page"
+
+    evidence_edges = [
+        edge
+        for edge in graph_edges
+        if isinstance(edge, dict) and edge.get("relation") == "HAS_SOURCE_EVIDENCE"
+    ]
+    assert len(evidence_edges) == 2
+    assert [edge["target_ids"][0] for edge in evidence_edges] == [
+        node["id"] for node in evidence_nodes
+    ]
+    for record in (*evidence_nodes, *evidence_edges):
+        if record["type"] == "entity":
+            Node.model_validate(record)
+        else:
+            Edge.model_validate(record)
+    assert original_payload["nodes"] == original_nodes
+    assert original_payload["edges"] == original_edges
+
+    unsupported_items = tuple(
+        item.model_copy(
+            update={
+                "media": item.media.model_copy(
+                    update={"mime_type": "application/octet-stream"}
+                )
+            }
+        )
+        if index == 0 and item.media is not None
+        else item
+        for index, item in enumerate(tree.source_items)
+    )
+    unsupported_tree = tree.model_copy(update={"source_items": unsupported_items})
+    with pytest.raises(ValueError, match="unsupported multimodal source MIME type"):
+        project_multimodal_source_evidence(original_payload, unsupported_tree)
 
 
 def test_repeated_identical_ocr_text_keeps_distinct_source_identity() -> None:

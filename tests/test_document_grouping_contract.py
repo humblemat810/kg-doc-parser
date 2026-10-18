@@ -786,6 +786,24 @@ def test_multimodal_media_and_time_ranges_round_trip_without_fabricated_geometry
     assert round_tripped.source_items[-1].location.end_seconds == 8.0
 
 
+@pytest.mark.ci
+def test_source_locations_reject_non_finite_spatial_and_temporal_coordinates() -> None:
+    with pytest.raises(ValueError, match="coordinates must be finite"):
+        BoundingBox(
+            x0=0.0,
+            y0=0.0,
+            x1=float("inf"),
+            y1=1.0,
+            coordinate_system="pixels",
+        )
+    with pytest.raises(ValueError, match="time coordinates must be finite"):
+        SourceLocation(
+            start_seconds=0.0,
+            end_seconds=float("inf"),
+            accuracy="time",
+        )
+
+
 def test_source_fingerprint_includes_authoritative_reading_order() -> None:
     first = DocumentTree(
         document_id="order-doc",
