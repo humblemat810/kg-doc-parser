@@ -39,12 +39,16 @@ from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, Semanti
 from kg_doc_parser.workflow_ingest.service import _TinyEmbeddingFunction
 
 
-def _response(page_number: int, *, rich: bool = False) -> OCRClusterResponse:
+def _response(
+    page_number: int, *, rich: bool = False, revision_two: bool = False
+) -> OCRClusterResponse:
     if rich and page_number in {1, 40, 62, 63, 100}:
         continuation = {
             62: "This paragraph starts on page 62 and continues",
             63: "on page 63 with a cross-page reference to page 40.",
         }.get(page_number, "This page contains the table and figure described below.")
+        if revision_two and page_number == 40:
+            continuation = "SOURCE REVISION TWO: page 40 changed."
         table_text = (
             "| Period | Value |\n| --- | --- |\n"
             + "".join(f"| row-{row} | {row * 10} |\n" for row in range(1, 16))
@@ -314,7 +318,11 @@ def main() -> int:
             }
         ) and page_number <= 63:
             raise AssertionError("page before the termination boundary was replayed")
-        return _response(page_number, rich=rich_pdf_mode)
+        return _response(
+            page_number,
+            rich=rich_pdf_mode,
+            revision_two=mode == "durable-rich-revision-two",
+        )
 
     def pdf_rasterizer(source: Path, rendered_dir: Path) -> list[Path]:
         rendered_dir.mkdir(parents=True, exist_ok=True)
@@ -361,6 +369,7 @@ def main() -> int:
             "durable-summary-long-resume",
             "durable-rich-summary-long-publish-hold",
             "durable-rich-summary-long-resume",
+            "durable-rich-revision-two",
             "durable-resume",
             "durable-summary-publish-hold",
             "durable-summary-resume",
@@ -372,6 +381,11 @@ def main() -> int:
             # keeps the subprocess test bounded without bypassing ownership.
             time.sleep((lease_ms + 200) / 1000)
 
+        root_run_id = (
+            "ocr|fresh-root-document|source-revision-two"
+            if mode == "durable-rich-revision-two"
+            else "ocr|fresh-root-document"
+        )
         summary_mode = mode.startswith(("durable-summary-", "durable-rich-summary-"))
         long_summary_mode = mode in {
             "durable-summary-long-hold",
@@ -478,7 +492,7 @@ def main() -> int:
                 if summary_mode
                 else None
             ),
-            run_id="ocr|fresh-root-document",
+            run_id=root_run_id,
             resume_from_checkpoint=mode
             in {
                 "resume",
@@ -492,6 +506,7 @@ def main() -> int:
                 "race-b",
                 "durable-rich-summary-long-publish-hold",
                 "durable-rich-summary-long-resume",
+                "durable-rich-revision-two",
             },
             run_ownership_lease_ms=lease_ms,
         )
@@ -520,6 +535,7 @@ def main() -> int:
         "durable-summary-resume",
         "durable-summary-long-resume",
         "durable-rich-summary-long-resume",
+        "durable-rich-revision-two",
         "resume-missing-artifact",
         "race-a",
         "race-b",
@@ -527,7 +543,12 @@ def main() -> int:
         raise AssertionError("fresh root resume did not produce one accepted result")
     result_name = (
         f"{mode}-result.json"
-        if mode.startswith("race-") or mode == "resume-missing-artifact"
+        if mode.startswith("race-")
+        or mode
+        in {
+            "resume-missing-artifact",
+            "durable-rich-revision-two",
+        }
         else "resume-result.json"
     )
     (scratch / result_name).write_text(

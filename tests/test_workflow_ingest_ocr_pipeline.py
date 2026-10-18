@@ -418,6 +418,7 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
         "ocr_root_state_version": "ocr-root-v3",
         "document_id": "doc",
         "source_fingerprint": "source-a",
+        "source_namespace": "",
         "ocr_configuration_fingerprints": ["ocr-a"],
         "grouping_policy_version": "group-a",
         "parse_generation": "semantic-v1",
@@ -427,6 +428,7 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
         expected,
         document_id="doc",
         source_fingerprint="source-a",
+        source_namespace="",
         configuration_fingerprints=("ocr-a",),
         grouping_policy_version="group-a",
         parse_generation="semantic-v1",
@@ -437,6 +439,7 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
             {"document_id": "doc"},
             document_id="doc",
             source_fingerprint="source-a",
+            source_namespace="",
             configuration_fingerprints=("ocr-a",),
             grouping_policy_version="group-a",
             parse_generation="semantic-v1",
@@ -448,6 +451,19 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
             changed,
             document_id="doc",
             source_fingerprint="source-a",
+            source_namespace="",
+            configuration_fingerprints=("ocr-a",),
+            grouping_policy_version="group-a",
+            parse_generation="semantic-v1",
+            require_match=True,
+        )
+    changed_namespace = dict(expected, source_namespace="tenant-b")
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        _validate_root_resume_identity(
+            changed_namespace,
+            document_id="doc",
+            source_fingerprint="source-a",
+            source_namespace="",
             configuration_fingerprints=("ocr-a",),
             grouping_policy_version="group-a",
             parse_generation="semantic-v1",
@@ -461,6 +477,7 @@ def test_ocr_root_resume_rejects_a_different_parse_generation() -> None:
         "ocr_root_state_version": "ocr-root-v3",
         "document_id": "doc",
         "source_fingerprint": "source-a",
+        "source_namespace": "",
         "ocr_configuration_fingerprints": ["ocr-a"],
         "grouping_policy_version": "group-a",
         "parse_generation": "semantic-v1",
@@ -471,6 +488,7 @@ def test_ocr_root_resume_rejects_a_different_parse_generation() -> None:
             state,
             document_id="doc",
             source_fingerprint="source-a",
+            source_namespace="",
             configuration_fingerprints=("ocr-a",),
             grouping_policy_version="group-a",
             parse_generation="semantic-recovery-v1",
@@ -2171,7 +2189,8 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
     page_count = 100
     child_env = dict(os.environ)
     child_env["OCR_TEST_LEASE_MS"] = "1000"
-    def _write_pdf_case(directory: Path) -> None:
+    def _write_pdf_case(directory: Path, *, change_page_40: bool = False) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
         (directory / "page-count.txt").write_text(str(page_count), encoding="utf-8")
         source = directory / "source"
         source.mkdir(parents=True, exist_ok=True)
@@ -2196,6 +2215,8 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
                 63: "on page 63 with a cross-page reference to page 40.",
             }.get(page_number, "This page contains the table and figure described below.")
             draw.text((10, 120), cross_page_text, fill=0)
+            if change_page_40 and page_number == 40:
+                draw.text((10, 150), "SOURCE REVISION TWO: page 40 changed.", fill=0)
 
             # This plotted region is deliberately non-text and has no OCR labels.
             draw.rectangle((20, 180, 300, 360), outline=0, width=3)
@@ -2456,6 +2477,90 @@ def test_ocr_root_fresh_process_resume_after_page_63() -> None:
         and item.get("kind") == "non_text:description"
         and "line chart" in str(item.get("text", ""))
         for item in source_items
+    )
+
+    revision_one_pdf = scratch / "source" / "acceptance.pdf"
+    revision_one_bytes = revision_one_pdf.read_bytes()
+    revision_two_dir = scratch / "source-revision-two"
+    _write_pdf_case(revision_two_dir, change_page_40=True)
+    revision_two_pdf = revision_two_dir / "source" / "acceptance.pdf"
+    revision_one_pages = PdfReader(BytesIO(revision_one_bytes)).pages
+    revision_two_pages = PdfReader(str(revision_two_pdf)).pages
+    assert len(revision_one_pages) == len(revision_two_pages) == page_count
+    changed_pages = tuple(
+        page_number
+        for page_number, (old_page, new_page) in enumerate(
+            zip(revision_one_pages, revision_two_pages, strict=True), start=1
+        )
+        if hashlib.sha256(old_page.images[0].data).digest()
+        != hashlib.sha256(new_page.images[0].data).digest()
+    )
+    assert changed_pages == (40,)
+
+    page_40_artifact = next((scratch / "artifacts").rglob("page_40.json"))
+    accepted_page_40_digest = hashlib.sha256(page_40_artifact.read_bytes()).digest()
+    revision_one_pdf.write_bytes(revision_two_pdf.read_bytes())
+    changed_revision_resume = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "durable-rich-revision-two"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=900,
+    )
+    assert changed_revision_resume.returncode == 0, changed_revision_resume.stderr
+    revision_two_result = json.loads(
+        (scratch / "durable-rich-revision-two-result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert revision_two_result["run_id"] == (
+        "ocr|fresh-root-document|source-revision-two"
+    )
+    assert revision_two_result["calls"] == list(range(1, page_count + 1))
+    revision_two_rendered_page_40 = max(
+        (scratch / "artifacts" / "rendered_pages").rglob("page_40.png"),
+        key=lambda path: path.stat().st_mtime_ns,
+    )
+    revision_two_image_digest = hashlib.sha256(
+        revision_two_rendered_page_40.read_bytes()
+    ).hexdigest()
+    revision_two_page_40_artifacts: list[Path] = []
+    for candidate in (scratch / "artifacts").rglob("page_40.json"):
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        metadata = payload.get("metadata")
+        if (
+            isinstance(metadata, dict)
+            and metadata.get("source_image_sha256") == revision_two_image_digest
+        ):
+            revision_two_page_40_artifacts.append(candidate)
+    assert len(revision_two_page_40_artifacts) == 1
+    revision_two_page_40_artifact = revision_two_page_40_artifacts[0]
+    assert revision_two_page_40_artifact != page_40_artifact
+    assert hashlib.sha256(page_40_artifact.read_bytes()).digest() == accepted_page_40_digest
+    assert (
+        hashlib.sha256(revision_two_page_40_artifact.read_bytes()).digest()
+        != accepted_page_40_digest
+    )
+    revision_two_lineage = json.loads(
+        (scratch / "durable-rich-revision-two-lineage.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    revision_two_page_40_items = [
+        item
+        for item in revision_two_lineage["source_items"]
+        if isinstance(item, dict)
+        and isinstance(item.get("location"), dict)
+        and item["location"].get("page_index") == 39
+    ]
+    assert any(
+        item.get("text") == "SOURCE REVISION TWO: page 40 changed."
+        for item in revision_two_page_40_items
+    )
+    assert all(
+        item.get("text") != "This page contains the table and figure described below."
+        for item in revision_two_page_40_items
     )
 
 

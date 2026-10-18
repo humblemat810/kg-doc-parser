@@ -288,8 +288,10 @@ def test_recorded_codex_layout_fixture_has_independent_spatial_coverage() -> Non
 
     report = evaluate_ocr_ground_truth(response, ground_truth)
 
-    assert len(ground_truth.items) == 16
-    assert report.item_recall == pytest.approx(1.0)
+    assert len(ground_truth.items) == 17
+    assert report.item_recall == pytest.approx(16 / 17)
+    assert report.item_recall_by_modality == {"text": 1.0, "non_text": 0.0}
+    assert report.missing_item_ids == ("table-region",)
     assert report.mean_spatial_iou >= report.minimum_iou
     assert report.text_mismatch_item_ids == ()
     assert report.extra_cluster_numbers == ()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterator
 from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
@@ -346,6 +347,87 @@ def test_direct_rapidocr_adapter_normalizes_boxes_without_docling(
     assert response.source_item_count == 1
 
 
+def test_direct_rapidocr_adapter_accepts_numpy_style_iterables(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """NumPy arrays from RapidOCR must not be mistaken for empty sequences."""
+    from PIL import Image
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+
+    class ArrayLike:
+        def __init__(self, values: tuple[object, ...]) -> None:
+            self.values = values
+
+        def __iter__(self) -> Iterator[object]:
+            return iter(self.values)
+
+    class Output:
+        boxes: ClassVar[ArrayLike] = ArrayLike(
+            (
+                ArrayLike(
+                    (
+                        ArrayLike((10, 20)),
+                        ArrayLike((50, 20)),
+                        ArrayLike((50, 30)),
+                        ArrayLike((10, 30)),
+                    )
+                ),
+            )
+        )
+        txts: ClassVar[ArrayLike] = ArrayLike(("hello",))
+
+    class FakeRapidOCR:
+        def __call__(self, path: str) -> Output:
+            assert path == str(image_path)
+            return Output()
+
+    module = ModuleType("rapidocr")
+    module.RapidOCR = FakeRapidOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidocr", module)
+    response = run_rapidocr_page(image_path, 1, ProviderEndpointConfig(provider="rapidocr"))
+
+    assert [cluster.text for cluster in response.OCR_text_clusters] == ["hello"]
+    assert response.OCR_text_clusters[0].bb_x_min == 10
+    assert response.OCR_text_clusters[0].bb_y_max == 30
+    assert response.source_item_count == 1
+    assert response.unresolved_item_count == 0
+
+
+def test_direct_rapidocr_adapter_accounts_for_mismatched_result_arrays(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unpaired provider boxes/text are visible instead of truncated by zip."""
+    from PIL import Image
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+
+    class Output:
+        boxes: ClassVar[tuple[tuple[tuple[int, int], ...], ...]] = (
+            ((10, 20), (50, 20), (50, 30), (10, 30)),
+            ((55, 20), (75, 20), (75, 30), (55, 30)),
+        )
+        txts: ClassVar[tuple[str, ...]] = ("hello",)
+
+    class FakeRapidOCR:
+        def __call__(self, _path: str) -> Output:
+            return Output()
+
+    module = ModuleType("rapidocr")
+    module.RapidOCR = FakeRapidOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidocr", module)
+
+    response = run_rapidocr_page(
+        image_path, 1, ProviderEndpointConfig(provider="rapidocr")
+    )
+
+    assert [cluster.text for cluster in response.OCR_text_clusters] == ["hello"]
+    assert response.source_item_count == 2
+    assert response.unresolved_item_count == 1
+
+
 def test_direct_rapidocr_adapter_rejects_boolean_polygon_coordinates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -446,17 +528,30 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Docling item provenance remains distinct and is clipped to page bounds."""
+    from enum import Enum
+
     from PIL import Image
 
     image_path = tmp_path / "page.png"
     Image.new("RGB", (100, 80), "white").save(image_path)
 
     class BBox:
-        def __init__(self, left: float, right: float, top: float, bottom: float) -> None:
+        def __init__(
+            self,
+            left: float,
+            right: float,
+            top: float,
+            bottom: float,
+            coord_origin: object | None = None,
+        ) -> None:
             self.l = left
             self.r = right
             self.t = top
             self.b = bottom
+            self.coord_origin = coord_origin
+
+    class CoordinateOrigin(Enum):
+        BOTTOMLEFT = "BOTTOMLEFT"
 
     class Provenance:
         def __init__(self, bbox: BBox) -> None:
@@ -478,7 +573,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
             ]
 
     class Conversion:
-        document = Document()
+        document: object = Document()
 
     class InputFormat:
         IMAGE = "image"
@@ -493,6 +588,11 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
 
         def convert(self, _path: str) -> Conversion:
             return Conversion()
+
+    class PictureItem(Item):
+        def export_to_markdown(self, document: object) -> str:
+            assert document is Conversion.document
+            return "<!-- image -->"
 
     docling = ModuleType("docling")
     datamodel = ModuleType("docling.datamodel")
@@ -551,6 +651,71 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     assert placeholder_response.non_text_objects == []
     assert placeholder_response.unresolved_item_count == 1
     assert placeholder_response.source_item_count == 2
+
+    class BottomLeftDocument:
+        def iterate_items(self) -> Iterator[Item]:
+            yield Item(
+                "text",
+                "OCR Layout Evaluation",
+                BBox(
+                    76.6129,
+                    186.2903,
+                    1143.3511,
+                    1125.7979,
+                    "BOTTOMLEFT",
+                ),
+            )
+            yield PictureItem(
+                "picture",
+                "",
+                BBox(
+                    698.7095,
+                    1450.9932,
+                    1060.4846,
+                    768.4368,
+                    CoordinateOrigin.BOTTOMLEFT,
+                ),
+            )
+
+    Conversion.document = BottomLeftDocument()
+    recorded_source_image = (
+        Path(__file__).parent
+        / "fixtures"
+        / "ocr_ground_truth"
+        / "codex_ocr_layout_page.png"
+    )
+    bottom_left_response = run_docling_ocr_page(
+        recorded_source_image,
+        1,
+        WorkflowProviderSettings(ocr=ProviderEndpointConfig(provider="docling", model="docling")),
+        engine="rapidocr",
+    )
+    assert bottom_left_response.OCR_text_clusters[0].text == "OCR Layout Evaluation"
+    assert (
+        bottom_left_response.OCR_text_clusters[0].bb_y_min,
+        bottom_left_response.OCR_text_clusters[0].bb_y_max,
+    ) == pytest.approx((56.6489, 74.2021))
+    assert len(bottom_left_response.non_text_objects) == 1
+    assert (
+        bottom_left_response.non_text_objects[0].bb_y_min,
+        bottom_left_response.non_text_objects[0].bb_y_max,
+    ) == pytest.approx((139.5154, 431.5632))
+    assert bottom_left_response.unresolved_item_count == 0
+    assert bottom_left_response.spatial_accuracy == "region"
+
+    class UnknownOriginDocument:
+        def iterate_items(self) -> list[Item]:
+            return [Item("picture", "", BBox(10, 50, 70, 60, "CENTER"))]
+
+    Conversion.document = UnknownOriginDocument()
+    unknown_origin_response = run_docling_ocr_page(
+        image_path,
+        1,
+        WorkflowProviderSettings(ocr=ProviderEndpointConfig(provider="docling", model="docling")),
+        engine="rapidocr",
+    )
+    assert unknown_origin_response.non_text_objects == []
+    assert unknown_origin_response.unresolved_item_count == 1
 
     class UnboxedPlaceholderDocument:
         def iterate_items(self) -> list[Item]:

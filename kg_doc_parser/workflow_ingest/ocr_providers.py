@@ -14,10 +14,10 @@ import json
 import os
 import platform
 import shutil
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, SupportsFloat, cast
 
 from ..models import NonTextCluster, OCRClusterResponse, TextCluster
 from .providers import ProviderEndpointConfig, WorkflowProviderSettings
@@ -84,6 +84,14 @@ def _as_external_sequence(value: object) -> Sequence[object]:
     return value
 
 
+def _as_external_items(value: object) -> tuple[object, ...]:
+    """Materialize finite vendor item iterables, including generators."""
+
+    if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Iterable):
+        return ()
+    return tuple(value)
+
+
 def _external_sequence(value: object, name: str) -> Sequence[object]:
     return _as_external_sequence(_external_attribute(value, name))
 
@@ -93,7 +101,7 @@ def _external_text(value: object, name: str, default: str = "") -> str:
     return candidate if isinstance(candidate, str) else default
 
 
-def _external_callable(value: object, name: str) -> Callable[[], object] | None:
+def _external_callable(value: object, name: str) -> Callable[..., object] | None:
     candidate = _external_attribute(value, name)
     return candidate if callable(candidate) else None
 
@@ -101,6 +109,30 @@ def _external_callable(value: object, name: str) -> Callable[[], object] | None:
 def _external_number(value: object, name: str) -> int | float | None:
     candidate = _external_attribute(value, name)
     return candidate if isinstance(candidate, (int, float)) else None
+
+
+def _external_coordinate_origin(
+    value: object,
+) -> Literal["bottomleft", "topleft", "unknown"] | None:
+    """Normalize a vendor coordinate-origin enum without trusting its repr."""
+
+    raw_origin = _external_attribute(value, "coord_origin")
+    if raw_origin is None:
+        return None
+    candidates = (
+        raw_origin,
+        _external_attribute(raw_origin, "name"),
+        _external_attribute(raw_origin, "value"),
+    )
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        normalized = candidate.rsplit(".", 1)[-1].replace("_", "").strip().lower()
+        if normalized == "bottomleft":
+            return "bottomleft"
+        if normalized == "topleft":
+            return "topleft"
+    return "unknown"
 
 
 def register_ocr_provider(name: str, provider: OCRPageProvider) -> None:
@@ -299,18 +331,23 @@ def _box_to_bounds(box: object) -> tuple[float, float, float, float]:
     """Convert a four-point OCR polygon into an axis-aligned pixel box."""
 
     try:
-        if isinstance(box, (str, bytes)) or not isinstance(box, Sequence):
-            raise TypeError
         points: list[tuple[float, float]] = []
-        for point in box:
-            if isinstance(point, (str, bytes)) or not isinstance(point, Sequence):
-                raise TypeError
-            if len(point) < 2:
+        raw_points = _as_external_items(box)
+        if not raw_points:
+            raise TypeError
+        for point in raw_points:
+            coordinates = _as_external_items(point)
+            if len(coordinates) < 2:
                 raise ValueError
-            x, y = point[0], point[1]
+            x, y = coordinates[0], coordinates[1]
             if isinstance(x, bool) or isinstance(y, bool):
                 raise TypeError
-            points.append((float(x), float(y)))
+            points.append(
+                (
+                    float(cast(SupportsFloat | str | bytes | bytearray, x)),
+                    float(cast(SupportsFloat | str | bytes | bytearray, y)),
+                )
+            )
         coordinates = tuple(value for point in points for value in point)
         if len(points) < 4 or len(coordinates) < 8:
             raise ValueError
@@ -324,10 +361,12 @@ def _box_to_bounds(box: object) -> tuple[float, float, float, float]:
 def _direct_response(
     image_path: Path,
     detections: Sequence[tuple[object, str]],
+    *,
+    unpaired_item_count: int = 0,
 ) -> OCRClusterResponse:
     width, height = _image_size(image_path)
     normalized: list[tuple[float, float, float, float, str]] = []
-    unresolved_item_count = 0
+    unresolved_item_count = unpaired_item_count
     for box, text in detections:
         value = text.strip()
         if not value:
@@ -378,10 +417,14 @@ def run_rapidocr_page(image_path: Path, page_number: int, provider_settings: Pro
     except ImportError as exc:
         raise RuntimeError("RapidOCR selected but rapidocr-onnxruntime is not installed") from exc
     result = RapidOCR()(str(image_path))
-    texts = _external_sequence(result, "txts")
-    boxes = _external_sequence(result, "boxes")
+    texts = _as_external_items(_external_attribute(result, "txts"))
+    boxes = _as_external_items(_external_attribute(result, "boxes"))
     detections = [(box, str(text)) for box, text in zip(boxes, texts, strict=False)]
-    return _direct_response(image_path, detections)
+    return _direct_response(
+        image_path,
+        detections,
+        unpaired_item_count=abs(len(boxes) - len(texts)),
+    )
 
 
 def run_easyocr_page(image_path: Path, page_number: int, provider_settings: ProviderEndpointConfig) -> OCRClusterResponse:
@@ -522,6 +565,12 @@ def run_docling_ocr_page(
             if len(numeric_values) != 4:
                 continue
             left_value, right_value, top_value, bottom_value = numeric_values
+            origin = _external_coordinate_origin(bbox)
+            if origin == "unknown":
+                continue
+            if origin == "bottomleft":
+                top_value = float(height) - top_value
+                bottom_value = float(height) - bottom_value
             left = max(0.0, left_value)
             right = min(float(width), right_value)
             top = max(0.0, top_value)
@@ -532,7 +581,7 @@ def run_docling_ocr_page(
 
     iterate_items = _external_callable(document, "iterate_items")
     raw_items = iterate_items() if iterate_items is not None else ()
-    items = list(_as_external_sequence(raw_items))
+    items = _as_external_items(raw_items)
     unresolved_markers = 0
     observed_visual_items = 0
     for item_record in items:
@@ -547,7 +596,7 @@ def run_docling_ocr_page(
         text_value = _external_text(item, "text")
         if not text_value:
             export_item = _external_callable(item, "export_to_markdown")
-            text_value = export_item() if export_item is not None else ""
+            text_value = export_item(document) if export_item is not None else ""
         text = str(text_value or "").strip()
         for marker in ("<!-- image -->", "<!-- table -->"):
             marker_count = text.count(marker)
