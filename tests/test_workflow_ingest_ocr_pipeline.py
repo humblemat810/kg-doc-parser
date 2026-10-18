@@ -6999,6 +6999,25 @@ def test_grouping_checkpoint_load_rejects_mismatched_companion_records() -> None
             "UPDATE grouping_frontier_state SET frontier_json = ? WHERE document_id = ?",
             (json.dumps(["root"]), tree.document_id),
         )
+        conn.execute(
+            "UPDATE grouping_checkpoint_metadata "
+            "SET accepted_page_frontier_json = ? WHERE document_id = ?",
+            (json.dumps([1]), tree.document_id),
+        )
+    with pytest.raises(GroupingCheckpointConflict, match="idempotent grouping checkpoint replay"):
+        store.save_document_tree(
+            document_id=tree.document_id,
+            tree=tree,
+        )
+    with pytest.raises(ValueError, match="accepted-page frontier"):
+        store.load_document_tree(document_id=tree.document_id)
+
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE grouping_checkpoint_metadata "
+            "SET accepted_page_frontier_json = ? WHERE document_id = ?",
+            (json.dumps([]), tree.document_id),
+        )
         tree_row = conn.execute(
             "SELECT tree_json FROM document_tree_state WHERE document_id = ?",
             (tree.document_id,),

@@ -2039,6 +2039,16 @@ class OCRWorkflowStateStore:
                 """,
                 (document_id,),
             ).fetchone()
+            completed_page_rows = conn.execute(
+                """
+                SELECT page_number
+                FROM page_state
+                WHERE document_id = ? AND stage = 'ocr' AND status = 'completed'
+                ORDER BY page_number
+                """,
+                (document_id,),
+            ).fetchall()
+            accepted_pages = tuple(int(row["page_number"]) for row in completed_page_rows)
             current_revision = None if current is None else str(current["tree_revision"])
             has_frontier = current_frontier is not None
             root = next(node for node in tree.nodes if node.node_id == tree.root_id)
@@ -2084,6 +2094,7 @@ class OCRWorkflowStateStore:
                     )
                     and accepted_pages_payload
                     == sorted(set(accepted_pages_payload))
+                    and accepted_pages_payload == list(accepted_pages)
                     and int(current_metadata["merge_revision"]) >= 0
                     and bool(str(current_metadata["last_runtime_step"]))
                 )
@@ -2094,9 +2105,16 @@ class OCRWorkflowStateStore:
             # exact tree is safe to acknowledge only when every companion
             # record still describes that exact commit.
             if current_revision == tree_revision:
+                if not has_frontier:
+                    raise GroupingCheckpointConflict(
+                        f"grouping checkpoint frontier is missing for {document_id!r}"
+                    )
+                if current_metadata is None:
+                    raise GroupingCheckpointConflict(
+                        f"grouping checkpoint metadata is missing for {document_id!r}"
+                    )
                 if (
-                    has_frontier
-                    and current is not None
+                    current is not None
                     and str(current["source_fingerprint"]) == tree.source_fingerprint()
                     and str(current["grouping_policy_version"]) == grouping_policy_version
                     and frontier_matches
@@ -2183,18 +2201,6 @@ class OCRWorkflowStateStore:
                     json.dumps(expected_frontier, separators=(",", ":")),
                     time.time(),
                 ),
-            )
-            accepted_pages = tuple(
-                int(row["page_number"])
-                for row in conn.execute(
-                    """
-                    SELECT page_number
-                    FROM page_state
-                    WHERE document_id = ? AND stage = 'ocr' AND status = 'completed'
-                    ORDER BY page_number
-                    """,
-                    (document_id,),
-                ).fetchall()
             )
             conn.execute(
                 """
@@ -2313,6 +2319,15 @@ class OCRWorkflowStateStore:
                 """,
                 (document_id,),
             ).fetchone()
+            completed_page_rows = conn.execute(
+                """
+                SELECT page_number
+                FROM page_state
+                WHERE document_id = ? AND stage = 'ocr' AND status = 'completed'
+                ORDER BY page_number
+                """,
+                (document_id,),
+            ).fetchall()
         if (
             row is None
             or (source_fingerprint is not None and str(row["source_fingerprint"]) != source_fingerprint)
@@ -2362,8 +2377,13 @@ class OCRWorkflowStateStore:
             not isinstance(accepted_pages, list)
             or any(type(page) is not int or page < 1 for page in accepted_pages)
             or accepted_pages != sorted(set(accepted_pages))
+            or accepted_pages
+            != [int(row["page_number"]) for row in completed_page_rows]
         ):
-            raise ValueError("persisted grouping accepted-page frontier is malformed")
+            raise ValueError(
+                "persisted grouping accepted-page frontier does not match "
+                "completed OCR pages"
+            )
         return tree
 
     def load_grouping_frontier(
