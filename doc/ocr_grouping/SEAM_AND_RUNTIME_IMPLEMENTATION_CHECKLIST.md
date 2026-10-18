@@ -500,9 +500,10 @@ cannot close A-6.
   `test_ocr_root_graph_publication_survives_durable_engine_reopen` now keeps
   workflow/conversation engines in memory and exercises a real persistent
   Chroma knowledge engine. It passed locally on pinned Kogwistar `0.6.12`
-  (`1 passed, 46.53s`) including exact node/edge-set checks after reopen. The
+  (`1 passed, 46.53s`) including exact node/edge-set checks after reopen, and
+  its dedicated durable-publication job passed in CI run `39096834736`. The
   earlier Chroma CI failure in run `39091524022` came from persisting unrelated
-  workflow-design graphs; rerun remote CI against this narrowed fixture.
+  workflow-design graphs and is superseded.
   Fresh-process publication after recovery remains open and Kogwistar-owned.
 - [x] **B-5 / S09-S10 runtime and identity:** verify the persisted root/checkpoint
   boundary and separate document, source revision, OCR configuration, grouping

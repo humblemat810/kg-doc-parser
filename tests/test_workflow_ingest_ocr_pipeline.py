@@ -119,10 +119,12 @@ from kg_doc_parser.workflow_ingest.document_grouping import (
 )
 from kg_doc_parser.workflow_ingest.document_models import (
     AdaptiveGroupingPolicy,
+    BoundingBox,
     ChildRef,
     DocumentNode,
     DocumentTree,
     EvidenceSlice,
+    MediaRef,
     SourceItem,
     SourceLocation,
     SourceSlice,
@@ -894,9 +896,25 @@ def test_production_group_proposer_uses_typed_structured_output_payload() -> Non
             ),
             SourceItem(
                 item_id="item-b",
-                kind="text",
-                text="beta",
-                location=SourceLocation(page_index=0, accuracy="page"),
+                kind="figure",
+                media=MediaRef(
+                    uri="memory://adaptive-provider-figure",
+                    mime_type="image/png",
+                    sha256_hex="a" * 64,
+                    byte_length=12,
+                ),
+                location=SourceLocation(
+                    page_index=1,
+                    printed_page_label="2",
+                    bbox=BoundingBox(
+                        x0=0.1,
+                        y0=0.2,
+                        x1=0.8,
+                        y1=0.9,
+                        coordinate_system="relative",
+                    ),
+                    accuracy="region",
+                ),
             ),
         ),
         nodes=(
@@ -908,7 +926,7 @@ def test_production_group_proposer_uses_typed_structured_output_payload() -> Non
             DocumentNode(
                 node_id="leaf-b",
                 kind="paragraph",
-                parts=(SourceSlice(item_id="item-b", start=0, end=4),),
+                parts=(SourceSlice(item_id="item-b"),),
             ),
             DocumentNode(
                 node_id="root",
@@ -969,7 +987,12 @@ def test_production_group_proposer_uses_typed_structured_output_payload() -> Non
     messages = captured["messages"]
     assert isinstance(messages, list)
     assert "untrusted data" in messages[0].content
+    assert "do not claim unseen visual or audio content" in messages[0].content
     assert "leaf-a" in messages[1].content
+    assert '"modality":"image"' in messages[1].content
+    assert '"media_mime_type":"image/png"' in messages[1].content
+    assert '"printed_page_label":"2"' in messages[1].content
+    assert '"coordinate_system":"relative"' in messages[1].content
 
 
 @pytest.mark.ci
