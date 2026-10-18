@@ -112,7 +112,7 @@ def _assign_matches(
             for candidate_index, candidate in enumerate(candidates)
             if candidate[0] == expected.modality
             for iou in (_intersection_over_union(expected, candidate[2]),)
-            if iou >= minimum_iou
+            if iou > 0.0 and iou >= minimum_iou
         ]
         eligible[expected_index] = sorted(options, key=lambda value: (-value[1], value[0]))
 

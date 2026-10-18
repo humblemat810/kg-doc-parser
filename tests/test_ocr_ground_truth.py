@@ -124,6 +124,17 @@ def test_ground_truth_report_detects_spatial_and_transcription_errors() -> None:
     assert report.text_mismatch_item_ids == ("beta",)
 
 
+def test_zero_iou_threshold_does_not_match_spatially_disjoint_items() -> None:
+    response = _response(include_beta=False)
+    response.OCR_text_clusters[0].bb_x_min = 200.0
+    response.OCR_text_clusters[0].bb_x_max = 250.0
+
+    report = evaluate_ocr_ground_truth(response, _ground_truth(), minimum_iou=0.0)
+
+    assert report.item_recall == pytest.approx(0.0)
+    assert report.missing_item_ids == ("alpha", "beta")
+
+
 def test_ground_truth_matching_can_reassign_an_overlapping_candidate() -> None:
     """A valid one-to-one assignment must not depend on greedy item order."""
     ground_truth = OCRGroundTruth(
