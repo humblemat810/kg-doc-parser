@@ -12,9 +12,9 @@ response captured from the real Codex bridge run; the test does not call a live
 provider. CI verifies the source image digest and dimensions, then checks
 one-to-one item recall, spatial IoU, transcription, and extra detections.
 
-This is a controlled fixture, not a representative OCR benchmark. It contains
-no figure or other non-text object, so it does not close the independent
-completeness gate for visual regions.
+This is a controlled fixture, not a representative OCR benchmark. Its table
+region is annotated as one non-text item, but it has no separate figure or
+illustration; it does not close the broader visual-completeness gate.
 
 The real Docling+EasyOCR and Docling+RapidOCR runs on this exact image are
 preserved as `docling_easyocr_layout_page_response.json` and
@@ -26,5 +26,15 @@ the independent 17-item annotations, neither has a spatially matched item
 region-level grounding. EasyOCR's text contains "First ordered item" while
 RapidOCR's contains "Firstordered item". These captured-response tests are
 reproducibility checks, not fresh live provider calls.
+
+`docling_rapidocr_provenance_response.json` is a separate fresh run of the
+current `run_docling_ocr_page` adapter on this fixture using local Docling
+2.139.0 and RapidOCR ONNX models. It preserves four text regions and the
+table/picture region with source coordinates. Against the independent
+annotations it matches 5/17 items: 4/16 text regions (including one
+transcription mismatch) and 1/1 non-text region. This is a captured provider
+result, not a CI provider call. It demonstrates successful spatial provenance
+for the table/picture region while the selected OCR engine still misses most
+table-cell text; it does not close the figure or corpus-wide completeness gate.
 
 SHA-256: `5f55174cf5cfddd227c5833c07de0c56563fd5850817f7ae518f25cbceecfc3c`

@@ -325,3 +325,39 @@ def test_recorded_docling_full_page_fallback_does_not_claim_region_grounding(
     assert report.item_recall_by_modality == {"text": 0.0, "non_text": 0.0}
     assert report.missing_item_ids == tuple(item.item_id for item in ground_truth.items)
     assert report.extra_cluster_numbers == (0,)
+
+
+@pytest.mark.ci
+def test_recorded_live_docling_provenance_exposes_text_loss_and_region_recall() -> None:
+    fixture_dir = Path(__file__).parent / "fixtures" / "ocr_ground_truth"
+    ground_truth = OCRGroundTruth.model_validate_json(
+        (fixture_dir / "codex_ocr_layout_page_ground_truth.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    response = OCRClusterResponse.model_validate_json(
+        (fixture_dir / "docling_rapidocr_provenance_response.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    report = evaluate_ocr_ground_truth(response, ground_truth)
+
+    assert report.matched_item_count == 5
+    assert report.item_recall == pytest.approx(5 / 17)
+    assert report.item_recall_by_modality == {"text": 0.25, "non_text": 1.0}
+    assert report.missing_item_ids == (
+        "header-name",
+        "header-value",
+        "header-status",
+        "alpha",
+        "42",
+        "ready",
+        "beta",
+        "17",
+        "review",
+        "gamma",
+        "8",
+        "done",
+    )
+    assert report.text_mismatch_item_ids == ("list-1",)
