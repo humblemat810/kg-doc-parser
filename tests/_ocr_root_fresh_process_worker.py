@@ -281,6 +281,17 @@ def main() -> int:
         calls.append(page_number)
         if mode == "interrupt" and page_number == 2:
             raise RuntimeError("fresh root interruption")
+        if mode in {
+            "durable-rich-summary-long-hold",
+            "durable-rich-summary-long-publish-hold",
+            "durable-rich-summary-long-resume",
+        }:
+            with (scratch / "ocr-page-call-ledger.jsonl").open(
+                "a", encoding="utf-8"
+            ) as stream:
+                stream.write(
+                    json.dumps({"mode": mode, "page_number": page_number}) + "\n"
+                )
         hold_page = 64 if mode.endswith("long-hold") else 2
         if mode in {
             "hold",
@@ -318,17 +329,6 @@ def main() -> int:
             }
         ) and page_number <= 63:
             raise AssertionError("page before the termination boundary was replayed")
-        if mode in {
-            "durable-rich-summary-long-hold",
-            "durable-rich-summary-long-publish-hold",
-            "durable-rich-summary-long-resume",
-        }:
-            with (scratch / "ocr-page-call-ledger.jsonl").open(
-                "a", encoding="utf-8"
-            ) as stream:
-                stream.write(
-                    json.dumps({"mode": mode, "page_number": page_number}) + "\n"
-                )
         return _response(
             page_number,
             rich=rich_pdf_mode,

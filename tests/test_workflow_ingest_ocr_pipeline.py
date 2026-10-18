@@ -4219,7 +4219,7 @@ def test_ocr_root_fresh_process_resume_publishes_durable_graph() -> None:
         "kg_doc_parser.ingest.v1",
     }
     assert {entry["parent_run_id"] for entry in lineage} == {
-        "ocr|fresh-root-document|recovery-1"
+        "ocr|fresh-root-document"
     }
     assert len({entry["child_run_id"] for entry in lineage}) == 3
     assert len({entry["id"] for entry in lineage}) == 3
