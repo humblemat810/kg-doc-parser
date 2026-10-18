@@ -3214,6 +3214,239 @@ def test_legacy_ocr_completion_rejects_malformed_artifact() -> None:
 
 
 @pytest.mark.ci
+def test_legacy_ocr_completion_rejects_quality_rejected_artifact() -> None:
+    """Compatibility completion cannot accept a strict-policy rejection."""
+    scratch = _scratch("ocr_legacy_quality_rejected_completion")
+    artifact = scratch / "page-1.json"
+    source_image_sha256 = "image-hash"
+    config_fingerprint = "strict-quality-config"
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=source_image_sha256,
+        ocr_configuration_fingerprint=config_fingerprint,
+    )
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["metadata"]["ocr_quality_status"] = "rejected"
+    payload["metadata"]["ocr_quality_diagnostics"] = [
+        {
+            "code": "unresolved_items",
+            "severity": "error",
+            "message": "provider could not ground one observed item",
+        }
+    ]
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="legacy-quality-rejected-doc",
+        title="Legacy Quality Rejected",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="legacy-quality-rejected-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_image_sha256,
+        model_name="model",
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+
+    assert not store.record_page_completed(
+        document_id="legacy-quality-rejected-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_image_sha256,
+        artifact_path=artifact,
+        model_name="model",
+        attempt_index=attempt,
+        config_fingerprint=config_fingerprint,
+    )
+    state = store.get_page_state(
+        document_id="legacy-quality-rejected-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None and state.status == "pending"
+    assert not store.should_skip_page(
+        document_id="legacy-quality-rejected-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_image_sha256,
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+    # Older state databases may already claim completion for a payload that
+    # predates the quality gate. Reuse and orphan recovery must revalidate it.
+    store._upsert_page_state(
+        document_id="legacy-quality-rejected-doc",
+        page_number=1,
+        stage="ocr",
+        attempt_count=attempt,
+        status="completed",
+        content_hash=source_image_sha256,
+        artifact_path=str(artifact),
+        last_error=None,
+        last_model="model",
+        config_fingerprint=config_fingerprint,
+        artifact_sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+    )
+    assert not store.should_skip_page(
+        document_id="legacy-quality-rejected-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_image_sha256,
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+    store._upsert_page_state(
+        document_id="legacy-quality-rejected-doc",
+        page_number=1,
+        stage="ocr",
+        attempt_count=attempt,
+        status="pending",
+        content_hash=source_image_sha256,
+        artifact_path=str(artifact),
+        last_error=None,
+        last_model="model",
+        config_fingerprint=config_fingerprint,
+    )
+    assert not store.reconcile_orphan_artifact(
+        document_id="legacy-quality-rejected-doc",
+        page_number=1,
+        content_hash=source_image_sha256,
+        artifact_path=artifact,
+        config_fingerprints=[config_fingerprint],
+    )
+
+
+@pytest.mark.ci
+def test_direct_ocr_publication_rejects_quality_rejected_artifact() -> None:
+    """The state-store publication boundary also rejects errored diagnostics."""
+    scratch = _scratch("ocr_direct_quality_rejected_publish")
+    artifact = scratch / "page-1.json"
+    source_image_sha256 = "image-hash"
+    config_fingerprint = "strict-quality-config"
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=source_image_sha256,
+        ocr_configuration_fingerprint=config_fingerprint,
+    )
+    original_artifact = artifact.read_bytes()
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["metadata"]["ocr_quality_status"] = "flagged"
+    payload["metadata"]["ocr_quality_diagnostics"] = [
+        {
+            "code": "unresolved_items",
+            "severity": "error",
+            "message": "provider could not ground one observed item",
+        }
+    ]
+
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="direct-quality-rejected-doc",
+        title="Direct Quality Rejected",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="direct-quality-rejected-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_image_sha256,
+        model_name="model",
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+
+    assert not store.publish_ocr_page(
+        document_id="direct-quality-rejected-doc",
+        page_number=1,
+        content_hash=source_image_sha256,
+        artifact_path=artifact,
+        payload=payload,
+        model_name="model",
+        attempt_index=attempt,
+        config_fingerprint=config_fingerprint,
+    )
+    state = store.get_page_state(
+        document_id="direct-quality-rejected-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None and state.status == "pending"
+    assert artifact.read_bytes() == original_artifact
+
+
+@pytest.mark.ci
+def test_direct_ocr_publication_commits_the_validated_payload_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller mutation after validation cannot change the committed bytes."""
+    scratch = _scratch("ocr_publish_validated_payload_snapshot")
+    artifact = scratch / "page-1.json"
+    source_image_sha256 = "image-hash"
+    config_fingerprint = "provider-config"
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=source_image_sha256,
+        ocr_configuration_fingerprint=config_fingerprint,
+    )
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    artifact.unlink()
+
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    store.ensure_document(
+        document_id="publish-snapshot-doc",
+        title="Publish Snapshot",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="fingerprint",
+    )
+    attempt = store.record_attempt(
+        document_id="publish-snapshot-doc",
+        page_number=1,
+        stage="ocr",
+        content_hash=source_image_sha256,
+        model_name="model",
+        artifact_path=artifact,
+        config_fingerprint=config_fingerprint,
+    )
+    write_bytes_atomic = ocr_pipeline_module._write_bytes_atomic
+
+    def mutate_then_write(path: Path, artifact_bytes: bytes) -> None:
+        payload["metadata"]["ocr_quality_status"] = "rejected"
+        payload["metadata"]["ocr_quality_diagnostics"] = [
+            {
+                "code": "unresolved_items",
+                "severity": "error",
+                "message": "late caller mutation",
+            }
+        ]
+        write_bytes_atomic(path, artifact_bytes)
+
+    monkeypatch.setattr(
+        ocr_pipeline_module, "_write_bytes_atomic", mutate_then_write
+    )
+    assert store.publish_ocr_page(
+        document_id="publish-snapshot-doc",
+        page_number=1,
+        content_hash=source_image_sha256,
+        artifact_path=artifact,
+        payload=payload,
+        model_name="model",
+        attempt_index=attempt,
+        config_fingerprint=config_fingerprint,
+    )
+    persisted = json.loads(artifact.read_text(encoding="utf-8"))
+    assert "ocr_quality_status" not in persisted["metadata"]
+    state = store.get_page_state(
+        document_id="publish-snapshot-doc", page_number=1, stage="ocr"
+    )
+    assert state is not None and state.status == "completed"
+
+
+@pytest.mark.ci
 def test_legacy_ocr_completion_rejects_wrong_page_artifact() -> None:
     """A valid artifact for another page cannot satisfy this page's row."""
     scratch = _scratch("ocr_legacy_wrong_page_completion")
@@ -8426,6 +8659,53 @@ def test_artifact_rebuild_accepts_known_ocr_schemas_only(
 
 
 @pytest.mark.ci
+def test_artifact_rebuild_does_not_resurrect_quality_rejected_ocr() -> None:
+    scratch = _scratch("ocr_quality_rejected_rebuild")
+    rendered_dir = scratch / "rendered"
+    legacy_dir = scratch / "legacy"
+    rendered_dir.mkdir(parents=True)
+    legacy_dir.mkdir(parents=True)
+    image = rendered_dir / "page_1.png"
+    image.write_bytes(b"source-image")
+    artifact = legacy_dir / "page_1.json"
+    source_digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    _write_valid_ocr_artifact(
+        artifact,
+        source_image_sha256=source_digest,
+        ocr_configuration_fingerprint="provider/model",
+    )
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    payload["metadata"]["ocr_quality_status"] = "rejected"
+    payload["metadata"]["ocr_quality_diagnostics"] = [
+        {
+            "code": "unresolved_items",
+            "severity": "error",
+            "message": "provider could not ground one observed item",
+        }
+    ]
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    assert store.rebuild_from_artifacts(
+        document_id="ocr-quality-rejected-rebuild-doc",
+        title="OCR Quality Rejected Rebuild",
+        source_kind="image",
+        total_pages=1,
+        input_fingerprint="source-revision",
+        rendered_dir=rendered_dir,
+        legacy_dir=legacy_dir,
+        progress_path=scratch / "progress.json",
+    )
+    state = store.get_page_state(
+        document_id="ocr-quality-rejected-rebuild-doc",
+        page_number=1,
+        stage="ocr",
+    )
+    assert state is not None and state.status == "pending"
+    assert state.last_error == "OCR quality status is rejected"
+
+
+@pytest.mark.ci
 def test_ocr_page_reuse_requires_artifact_path_and_supported_schema() -> None:
     scratch = _scratch("ocr_schema_reuse")
     artifact = scratch / "page-1.json"
@@ -9306,18 +9586,20 @@ def test_ocr_page_artifact_publish_crash_is_recoverable() -> None:
         configuration_fingerprints=(config_fingerprint,),
     )
     image_sha256 = hashlib.sha256(image_path.read_bytes()).hexdigest()
-    original_write = ocr_pipeline_module._write_json_atomic
+    original_write = ocr_pipeline_module._write_bytes_atomic
     interrupted = True
 
-    def _publish_then_interrupt(path: Path, payload: object) -> None:
+    def _publish_then_interrupt(path: Path, artifact_bytes: bytes) -> None:
         nonlocal interrupted
-        original_write(path, payload)
+        original_write(path, artifact_bytes)
         if interrupted and path == page_json_path:
             interrupted = False
             raise KeyboardInterrupt("simulated process termination after artifact publish")
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(ocr_pipeline_module, "_write_json_atomic", _publish_then_interrupt)
+    monkeypatch.setattr(
+        ocr_pipeline_module, "_write_bytes_atomic", _publish_then_interrupt
+    )
     try:
         with pytest.raises(KeyboardInterrupt, match="after artifact publish"):
             _process_ocr_page(

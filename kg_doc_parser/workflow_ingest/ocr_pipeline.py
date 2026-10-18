@@ -641,6 +641,51 @@ class OCRQualityDiagnostic(BaseModel):
     message: str
 
 
+def _ocr_artifact_quality_error(payload: Mapping[str, object]) -> str | None:
+    """Reject persisted quality metadata that does not describe an accepted page.
+
+    Artifacts written before quality metadata was introduced remain readable.
+    Once either quality field is present, however, it must be well-formed and
+    must not contain a policy rejection or an error-severity diagnostic.
+    """
+    raw_metadata = payload.get("metadata")
+    if not isinstance(raw_metadata, Mapping):
+        return None
+
+    has_status = "ocr_quality_status" in raw_metadata
+    has_diagnostics = "ocr_quality_diagnostics" in raw_metadata
+    if not has_status and not has_diagnostics:
+        return None
+
+    status = raw_metadata.get("ocr_quality_status")
+    if has_status and (
+        not isinstance(status, str)
+        or status not in {"accepted", "flagged", "rejected"}
+    ):
+        return "invalid OCR quality status"
+    if status == "rejected":
+        return "OCR quality status is rejected"
+
+    if not has_diagnostics:
+        return None
+    raw_diagnostics = raw_metadata.get("ocr_quality_diagnostics")
+    if not isinstance(raw_diagnostics, list):
+        return "OCR quality diagnostics must be a list"
+    try:
+        diagnostics = [
+            OCRQualityDiagnostic.model_validate(item) for item in raw_diagnostics
+        ]
+    except (TypeError, ValidationError):
+        return "OCR quality diagnostics are malformed"
+    if any(item.severity == "error" for item in diagnostics):
+        return "OCR artifact contains error-severity quality diagnostics"
+    if status == "accepted" and diagnostics:
+        return "accepted OCR quality status cannot include diagnostics"
+    if status == "flagged" and not diagnostics:
+        return "flagged OCR quality status requires diagnostics"
+    return None
+
+
 class _OCRQualityPolicyRejection(Exception):
     """Internal failure carrying only parser-generated quality diagnostic codes."""
 
@@ -2489,6 +2534,10 @@ class OCRWorkflowStateStore:
                 artifact_error = _ocr_artifact_schema_error(persisted)
                 if artifact_error is not None:
                     artifact_valid = False
+                quality_error = _ocr_artifact_quality_error(persisted)
+                if quality_error is not None:
+                    artifact_valid = False
+                    artifact_error = quality_error
                 config_fingerprint = metadata.get("ocr_configuration_fingerprint")
                 source_digest = metadata.get("source_image_sha256")
                 if (
@@ -2649,6 +2698,7 @@ class OCRWorkflowStateStore:
         return (
             split_page.pdf_page_num == page_number
             and _ocr_artifact_schema_error(persisted) is None
+            and _ocr_artifact_quality_error(persisted) is None
             and metadata.get("source_image_sha256") == content_hash
             and metadata.get("ocr_configuration_fingerprint")
             == state.config_fingerprint
@@ -2685,6 +2735,8 @@ class OCRWorkflowStateStore:
         if split_page.pdf_page_num != page_number:
             return False
         if _ocr_artifact_schema_error(persisted) is not None:
+            return False
+        if _ocr_artifact_quality_error(persisted) is not None:
             return False
         metadata = _ocr_artifact_metadata(persisted)
         source_digest = metadata.get("source_image_sha256")
@@ -2808,6 +2860,32 @@ class OCRWorkflowStateStore:
         delivery observes the completed row and must reuse the winner rather
         than replacing its artifact.
         """
+        if not isinstance(payload, Mapping):
+            return False
+        try:
+            artifact_bytes = json.dumps(
+                payload, indent=2, ensure_ascii=False
+            ).encode("utf-8")
+            snapshot = json.loads(artifact_bytes)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(snapshot, Mapping):
+            return False
+        try:
+            split_page = SplitPage.model_validate(snapshot)
+        except (TypeError, ValidationError):
+            return False
+        artifact_metadata = _ocr_artifact_metadata(snapshot)
+        if (
+            split_page.pdf_page_num != page_number
+            or _ocr_artifact_schema_error(snapshot) is not None
+            or _ocr_artifact_quality_error(snapshot) is not None
+            or artifact_metadata.get("source_image_sha256") != content_hash
+            or artifact_metadata.get("ocr_configuration_fingerprint")
+            != config_fingerprint
+        ):
+            return False
+
         with self._session() as conn:
             conn.execute("BEGIN IMMEDIATE")
             state = conn.execute(
@@ -2826,7 +2904,7 @@ class OCRWorkflowStateStore:
             ):
                 return False
 
-            _write_json_atomic(artifact_path, payload)
+            _write_bytes_atomic(artifact_path, artifact_bytes)
             artifact_digest = _sha256_file(artifact_path)
             updated = conn.execute(
                 """
@@ -2904,6 +2982,8 @@ class OCRWorkflowStateStore:
                 split_page = SplitPage.model_validate(persisted)
                 metadata = _ocr_artifact_metadata(persisted)
                 if _ocr_artifact_schema_error(persisted) is not None:
+                    return False
+                if _ocr_artifact_quality_error(persisted) is not None:
                     return False
                 if split_page.pdf_page_num != page_number:
                     return False
