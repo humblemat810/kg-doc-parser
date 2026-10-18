@@ -616,6 +616,52 @@ def test_direct_easyocr_adapter_normalizes_boxes_without_docling(
 
 
 @pytest.mark.ci
+def test_direct_easyocr_adapter_accounts_for_malformed_detection_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from PIL import Image
+
+    from kg_doc_parser.workflow_ingest.ocr_pipeline import (
+        OCRQualityPolicy,
+        _evaluate_ocr_quality,
+    )
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+    valid_box = [(10, 20), (50, 20), (50, 30), (10, 30)]
+
+    class FakeReader:
+        def __init__(self, languages: list[str], *, gpu: bool, verbose: bool) -> None:
+            del languages
+            assert gpu is False and verbose is False
+
+        def readtext(self, path: str, *, detail: int) -> list[object]:
+            assert path == str(image_path) and detail == 1
+            return [[valid_box, "visible", 0.99], [valid_box], [valid_box, None, 0.5]]
+
+    module = ModuleType("easyocr")
+    module.Reader = FakeReader  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "easyocr", module)
+
+    response = run_easyocr_page(
+        image_path,
+        1,
+        ProviderEndpointConfig(provider="easyocr"),
+    )
+
+    assert [cluster.text for cluster in response.OCR_text_clusters] == ["visible"]
+    assert response.unresolved_item_count == 2
+    assert response.source_item_count == 3
+    diagnostics = _evaluate_ocr_quality(
+        response,
+        OCRQualityPolicy(reject_unresolved_items=True),
+    )
+    assert [(item.code, item.severity) for item in diagnostics] == [
+        ("unresolved_items", "error")
+    ]
+
+
+@pytest.mark.ci
 def test_direct_rapidocr_adapter_accounts_for_empty_detections(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

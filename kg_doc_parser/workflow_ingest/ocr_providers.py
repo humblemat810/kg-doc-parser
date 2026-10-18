@@ -408,6 +408,28 @@ def _direct_response(
     )
 
 
+def _easyocr_detections(
+    raw_results: object,
+) -> tuple[list[tuple[object, str]], int]:
+    """Keep malformed EasyOCR rows visible as unresolved source items."""
+
+    if isinstance(raw_results, (str, bytes)) or not isinstance(raw_results, Sequence):
+        raise TypeError("EasyOCR returned detections in an invalid container")
+
+    detections: list[tuple[object, str]] = []
+    unresolved_item_count = 0
+    for item in raw_results:
+        if (
+            not isinstance(item, (list, tuple))
+            or len(item) < 2
+            or not isinstance(item[1], str)
+        ):
+            unresolved_item_count += 1
+            continue
+        detections.append((item[0], item[1]))
+    return detections, unresolved_item_count
+
+
 def run_rapidocr_page(image_path: Path, page_number: int, provider_settings: ProviderEndpointConfig) -> OCRClusterResponse:
     """Run RapidOCR directly, without importing or invoking Docling."""
 
@@ -442,11 +464,12 @@ def run_easyocr_page(image_path: Path, page_number: int, provider_settings: Prov
     ) or ("en",)
     reader = Reader(list(languages), gpu=False, verbose=False)
     raw_results = reader.readtext(str(image_path), detail=1)
-    detections: list[tuple[object, str]] = []
-    for item in _as_external_sequence(raw_results):
-        if isinstance(item, (list, tuple)) and len(item) >= 2:
-            detections.append((item[0], str(item[1])))
-    return _direct_response(image_path, detections)
+    detections, unresolved_item_count = _easyocr_detections(raw_results)
+    return _direct_response(
+        image_path,
+        detections,
+        unpaired_item_count=unresolved_item_count,
+    )
 
 
 def _docling_pipeline_options(engine: str) -> object:
