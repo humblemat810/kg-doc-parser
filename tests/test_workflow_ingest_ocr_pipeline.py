@@ -80,9 +80,11 @@ import pytest
 from _kogwistar_test_helpers import (
     build_workflow_engine_triplet,
     drain_phase1_indexes_until_idle,
+    load_kogwistar_fake_backend,
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime.runtime import apply_state_update_inplace
+from kogwistar.typing_interfaces import EmbeddingFunctionLike
 from PIL import Image, ImageDraw
 from pypdf import PdfReader, PdfWriter
 
@@ -164,10 +166,13 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     _write_png_atomic,
 )
 from kg_doc_parser.workflow_ingest.ocr_runtime import (
+    _OCR_PAGE_STATE_VERSION,
     _checkpoint_repair_cursor,
     _json_pages,
+    _OCRWorkflowState,
     _page_workflow_initial_state,
     _reconcile_page_checkpoint,
+    _reused_pages_from_trace,
     _semantic_parse_generation,
     _validate_root_resume_identity,
     run_grouping_workflow,
@@ -178,6 +183,7 @@ from kg_doc_parser.workflow_ingest.sdk_boundary import ContentCarrier, raw_conte
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 from kg_doc_parser.workflow_ingest.service import (
     _TinyEmbeddingFunction,
+    build_default_engines,
 )
 
 pytestmark = [pytest.mark.workflow]
@@ -1793,7 +1799,7 @@ def test_ocr_pages_run_as_persisted_steps_and_terminal_resume_does_not_recall_pr
         if not key.startswith("_")
     }
     assert initial_state == snapshot_state
-    assert _json_pages(initial_state) == raw_pages
+    assert _json_pages(initial_state, source_plan=source_plan) == raw_pages
 
     # The reconciliation helper can resume verification at the already-checked
     # prefix boundary instead of re-reading every earlier source artifact.
@@ -1862,10 +1868,10 @@ def test_new_page_checkpoint_rehydrates_pages_from_artifacts_without_raw_payload
         input_fingerprint="compact-checkpoint-source",
     )
     state = _page_workflow_initial_state(source_plan)
-    state.update({"page_cursor": 2, "completed_pages": [1, 2], "reused_pages": []})
+    state.update({"page_cursor": 2})
 
     assert "raw_pages" not in state
-    pages = _json_pages(state)
+    pages = _json_pages(state, source_plan=source_plan)
     assert [page["printed_page_number"] for page in pages] == ["1", "2"]
 
 
@@ -1886,14 +1892,11 @@ def test_large_page_checkpoint_stays_artifact_backed_and_linearly_bounded() -> N
             input_fingerprint=f"checkpoint-{page_count}",
         )
         state = _page_workflow_initial_state(source_plan)
-        state.update(
-            {
-                "page_cursor": page_count,
-                "completed_pages": list(range(1, page_count + 1)),
-                "reused_pages": list(range(1, page_count + 1)),
-            }
-        )
+        state.update({"page_cursor": page_count})
         assert "raw_pages" not in state
+        assert "page_sources" not in state
+        assert "completed_pages" not in state
+        assert "reused_pages" not in state
         return len(json.dumps(state, sort_keys=True, separators=(",", ":")))
 
     size_100 = _checkpoint_size(100)
@@ -1905,6 +1908,575 @@ def test_large_page_checkpoint_stays_artifact_backed_and_linearly_bounded() -> N
     assert size_500 < size_100 * 6
     assert size_1000 < size_100 * 12
     assert size_1000 < size_500 * 3
+
+
+@pytest.mark.slow
+def test_ocr_page_workflow_scaling_is_linear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Measure the real resolver/store/checkpoint path at fixed payload size."""
+    telemetry_logger = logging.getLogger("workflow.telemetry")
+    pipeline_logger = logging.getLogger(ocr_pipeline_module.__name__)
+    previous_telemetry_level = telemetry_logger.level
+    previous_pipeline_level = pipeline_logger.level
+    previous_global_disable = logging.root.manager.disable
+    telemetry_logger.setLevel(logging.WARNING)
+    pipeline_logger.setLevel(logging.WARNING)
+    logging.disable(logging.CRITICAL)
+    request.addfinalizer(lambda: logging.disable(previous_global_disable))
+    request.addfinalizer(lambda: telemetry_logger.setLevel(previous_telemetry_level))
+    request.addfinalizer(lambda: pipeline_logger.setLevel(previous_pipeline_level))
+    monkeypatch.setenv("KG_DOC_DISABLE_PHASE1_INDEX_JOBS", "1")
+    measurements: list[dict[str, int]] = []
+    original_json_pages = ocr_runtime_module._json_pages
+    original_progress_sync = ocr_runtime_module._sync_progress_from_state
+    original_read_bytes = Path.read_bytes
+
+    for page_count in (100, 500, 1000):
+        scratch = tmp_path / str(page_count)
+        source_dir = scratch / "source"
+        source_dir.mkdir(parents=True)
+        sources = [
+            (page_number, source_dir / f"page-{page_number}.png")
+            for page_number in range(1, page_count + 1)
+        ]
+        for _page_number, image_path in sources:
+            image_path.write_bytes(b"fixed-page-image-payload")
+        source_plan = OCRSourcePlan(
+            pdf_source=None,
+            rendered_dir=scratch / "rendered",
+            legacy_dir=scratch / "legacy",
+            page_sources=sources,
+            source_kind="image",
+            input_fingerprint=f"scaling-{page_count}",
+        )
+        source_plan.legacy_dir.mkdir(parents=True)
+        settings = WorkflowProviderSettings(
+            ocr=ProviderEndpointConfig(provider="fake", model="scaling-ocr"),
+            parser=ProviderEndpointConfig(provider="fake", model="scaling-parser"),
+            embedding=EmbeddingProviderConfig(
+                provider="fake", model="scaling-embed", dimension=1
+            ),
+        )
+        store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+        provider_calls = 0
+        accepted_writes = 0
+        acceptance_lookups = 0
+        source_reads = 0
+        source_bytes = 0
+        decoded_pages = 0
+        decoded_json_bytes = 0
+        progress_calls = 0
+        progress_bytes = 0
+
+        def _runner(
+            image_path: Path,
+            page_number: int,
+            provider_settings: WorkflowProviderSettings,
+        ) -> OCRClusterResponse:
+            nonlocal provider_calls
+            del image_path, provider_settings
+            provider_calls += 1
+            return _fake_ocr_response(page_number, "x")
+
+        original_publish = store.publish_ocr_page
+        original_should_skip = store.should_skip_page
+
+        def _count_publish(_original_publish=original_publish, **kwargs):
+            nonlocal accepted_writes
+            accepted_writes += 1
+            return _original_publish(**kwargs)
+
+        def _count_should_skip(_original_should_skip=original_should_skip, **kwargs):
+            nonlocal acceptance_lookups
+            acceptance_lookups += 1
+            return _original_should_skip(**kwargs)
+
+        context = OCRPageProcessingContext(
+            document_id=f"scaling-document-{page_count}",
+            title="Scaling fixture",
+            source_kind="image",
+            total_pages=page_count,
+            input_fingerprint=source_plan.input_fingerprint,
+            candidate_models=["scaling-ocr"],
+            provider_settings=settings,
+            ocr_page_runner=_runner,
+            state_store=store,
+            probe=None,
+            configuration_fingerprints=(
+                _ocr_configuration_fingerprint(
+                    settings, candidate_models=["scaling-ocr"]
+                ),
+            ),
+        )
+
+        def _count_json_pages(
+            state: _OCRWorkflowState,
+            *,
+            source_plan: OCRSourcePlan | None = None,
+            _current_plan: OCRSourcePlan | None = source_plan,
+        ) -> list[OCRPageJSON]:
+            nonlocal decoded_pages, decoded_json_bytes
+            cursor = ocr_runtime_module._page_cursor(state)
+            decoded_pages += cursor
+            legacy_dir = state.get("legacy_dir")
+            if isinstance(legacy_dir, str):
+                decoded_json_bytes += sum(
+                    (Path(legacy_dir) / f"page_{page_number}.json").stat().st_size
+                    for page_number in range(1, cursor + 1)
+                )
+            return original_json_pages(
+                state,
+                source_plan=source_plan or _current_plan,
+            )
+
+        def _count_progress_sync(**kwargs):
+            nonlocal progress_calls, progress_bytes
+            progress_calls += 1
+            result = original_progress_sync(**kwargs)
+            progress_bytes += len(
+                json.dumps(result.model_dump(mode="json"), separators=(",", ":"))
+            )
+            return result
+
+        source_paths = {path.resolve() for _number, path in sources}
+
+        def _count_source_reads(
+            path: Path, _source_paths: set[Path] = source_paths
+        ) -> bytes:
+            nonlocal source_reads, source_bytes
+            payload = original_read_bytes(path)
+            if path.resolve() in _source_paths:
+                source_reads += 1
+                source_bytes += len(payload)
+            return payload
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(ocr_runtime_module, "_json_pages", _count_json_pages)
+            scoped.setattr(
+                ocr_runtime_module,
+                "_sync_progress_from_state",
+                _count_progress_sync,
+            )
+            scoped.setattr(Path, "read_bytes", _count_source_reads)
+            scoped.setattr(store, "publish_ocr_page", _count_publish)
+            scoped.setattr(store, "should_skip_page", _count_should_skip)
+            workflow_engine, conversation_engine, _knowledge_engine = build_default_engines(
+                scratch / "engines",
+                backend_factory=load_kogwistar_fake_backend(),
+                embedding_function=cast(
+                    EmbeddingFunctionLike, _TinyEmbeddingFunction()
+                ),
+            )
+            # Keep real Kogwistar step/checkpoint persistence, but omit its
+            # optional observer-only SQLite event mirror from this algorithmic
+            # measurement so log volume does not dominate the page counters.
+            workflow_engine.persist_directory = None
+            pages, completed, reused, run_id = run_ocr_page_workflow(
+                workflow_engine=workflow_engine,
+                conversation_engine=conversation_engine,
+                context=context,
+                source_plan=source_plan,
+                progress_path=scratch / "ocr-progress.json",
+                run_id=f"scaling-run-{page_count}",
+            )
+            step_nodes = list(
+                conversation_engine.read.get_nodes(
+                    where={
+                        "$and": [
+                            {"entity_type": "workflow_step_exec"},
+                            {"run_id": run_id},
+                        ]
+                    },
+                    limit=None,
+                )
+            )
+            checkpoint_nodes = list(
+                conversation_engine.read.get_nodes(
+                    where={
+                        "$and": [
+                            {"entity_type": "workflow_checkpoint"},
+                            {"run_id": run_id},
+                        ]
+                    },
+                    limit=None,
+                )
+            )
+
+        checkpoint_bytes = sum(
+            len(str((node.metadata or {}).get("state_json", "")))
+            for node in checkpoint_nodes
+        )
+        update_bytes = 0
+        for node in step_nodes:
+            result_json = str((node.metadata or {}).get("result_json", "{}"))
+            result_payload = json.loads(result_json)
+            update_bytes += len(
+                json.dumps(
+                    result_payload.get("state_update", []),
+                    separators=(",", ":"),
+                )
+            )
+        assert len(pages) == len(completed) == page_count
+        assert not reused
+        assert provider_calls == page_count
+        measurements.append(
+            {
+                "pages": page_count,
+                "page_decodes": decoded_pages,
+                "provider_calls": provider_calls,
+                "accepted_page_writes": accepted_writes,
+                "acceptance_lookups": acceptance_lookups,
+                "decoded_json_bytes": decoded_json_bytes,
+                "source_image_reads": source_reads,
+                "source_image_bytes": source_bytes,
+                "progress_writes": progress_calls,
+                "progress_bytes": progress_bytes,
+                "step_update_bytes": update_bytes,
+                "checkpoint_bytes": checkpoint_bytes,
+                "step_count": len(step_nodes),
+                "checkpoint_count": len(checkpoint_nodes),
+            }
+        )
+
+    print(f"OCR scaling measurements: {json.dumps(measurements, sort_keys=True)}")
+    for measurement in measurements:
+        page_count = measurement["pages"]
+        assert measurement["page_decodes"] == page_count
+        assert measurement["provider_calls"] == page_count
+        assert measurement["accepted_page_writes"] == page_count
+        assert measurement["progress_writes"] == 1
+        assert measurement["source_image_reads"] <= page_count * 2
+        assert measurement["acceptance_lookups"] <= page_count * 3
+    for key in (
+        "decoded_json_bytes",
+        "progress_bytes",
+        "step_update_bytes",
+        "checkpoint_bytes",
+    ):
+        assert measurements[1][key] < measurements[0][key] * 6, key
+        assert measurements[2][key] < measurements[0][key] * 12, key
+
+    # Negative control: repeat the old accepted-prefix materialization using
+    # the same JSON decoder over real accepted artifacts. Its exact
+    # triangular operation count must fail the linear scaling budget.
+    control_plan = OCRSourcePlan(
+        pdf_source=None,
+        rendered_dir=tmp_path / "100" / "rendered",
+        legacy_dir=tmp_path / "100" / "legacy",
+        page_sources=[
+            (
+                page_number,
+                tmp_path / "100" / "source" / f"page-{page_number}.png",
+            )
+            for page_number in range(1, 101)
+        ],
+        source_kind="image",
+        input_fingerprint="scaling-100",
+    )
+    quadratic_decodes = 0
+    for cursor in range(1, 101):
+        prefix_state: _OCRWorkflowState = {
+            "legacy_dir": str(control_plan.legacy_dir),
+            "page_cursor": cursor,
+            "raw_pages": None,
+            "page_sources": [
+                {"page_number": page, "image_path": str(path)}
+                for page, path in control_plan.page_sources
+            ],
+        }
+        quadratic_decodes += len(original_json_pages(prefix_state))
+    assert quadratic_decodes == 100 * 101 // 2
+    with pytest.raises(AssertionError):
+        assert quadratic_decodes <= measurements[0]["page_decodes"] * 2
+    telemetry_logger.setLevel(previous_telemetry_level)
+    pipeline_logger.setLevel(previous_pipeline_level)
+
+
+@pytest.mark.ci
+def test_standalone_ocr_publishes_progress_mirror_once_per_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image_payloads: list[OCRImagePayload] = []
+    for page_number in (1, 2):
+        image_path = tmp_path / "source" / f"page-{page_number}.png"
+        _draw_test_image(image_path, lines=[f"progress page {page_number}"])
+        image_payloads.append(
+            OCRImagePayload(page_number=page_number, image_path=str(image_path))
+        )
+    progress_sync_calls = 0
+    original_sync = ocr_pipeline_module._sync_progress_from_state
+
+    def _count_progress_sync(**kwargs):
+        nonlocal progress_sync_calls
+        progress_sync_calls += 1
+        return original_sync(**kwargs)
+
+    monkeypatch.setattr(
+        ocr_pipeline_module, "_sync_progress_from_state", _count_progress_sync
+    )
+    artifacts = prepare_ocr_workflow_input(
+        document_id="standalone-progress-once",
+        title="Standalone progress",
+        output_dir=tmp_path / "artifacts",
+        image_payloads=image_payloads,
+        provider_settings=WorkflowProviderSettings(
+            ocr=ProviderEndpointConfig(provider="fake", model="fake-ocr"),
+            embedding=EmbeddingProviderConfig(
+                provider="fake", model="fake-embedding", dimension=1
+            ),
+        ),
+        ocr_runner=lambda image_path, page_number, provider_settings: _fake_ocr_response(
+            page_number, f"progress page {page_number}"
+        ),
+    )
+
+    assert artifacts.completed_pages == [1, 2]
+    assert progress_sync_calls == 1
+    assert len(json.loads(artifacts.progress_path.read_text(encoding="utf-8"))["pages"]) == 2
+
+
+@pytest.mark.ci
+def test_ocr_scaling_artifact_reads_and_checkpoint_state_bytes_are_linear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise old and compact state shapes at 100/500/1000 deterministic pages."""
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir()
+    page_payload_sizes: dict[int, int] = {}
+    page_payloads: dict[int, str] = {}
+    payload_template = _fake_ocr_response(1, "fixed page").model_dump(
+        dump_format="json"
+    )
+    for page_number in range(1, 1001):
+        payload_template["printed_page_number"] = str(page_number)
+        serialized_payload = json.dumps(payload_template, separators=(",", ":"))
+        page_payloads[page_number] = serialized_payload
+        page_payload_sizes[page_number] = len(serialized_payload.encode("utf-8"))
+
+    read_count = 0
+    read_bytes = 0
+    original_read_text = Path.read_text
+
+    def _count_reads(path: Path, *args, **kwargs) -> str:
+        nonlocal read_count, read_bytes
+        if path.parent == legacy_dir:
+            page_number = int(path.stem.removeprefix("page_"))
+            content = page_payloads[page_number]
+            read_count += 1
+            read_bytes += len(content.encode("utf-8"))
+            return content
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _count_reads)
+
+    # Execute a small legacy prefix replay, then scale its exact triangular
+    # operation/byte formula to the requested document sizes.
+    old_plan = OCRSourcePlan(
+        pdf_source=None,
+        rendered_dir=tmp_path / "rendered",
+        legacy_dir=legacy_dir,
+        page_sources=[
+            (page_number, tmp_path / "source" / f"page-{page_number}.png")
+            for page_number in range(1, 21)
+        ],
+        source_kind="image",
+        input_fingerprint="quadratic-control",
+    )
+    read_count = read_bytes = 0
+    baseline_page_decodes = 0
+    for cursor in range(1, 21):
+        old_state: _OCRWorkflowState = {
+            "legacy_dir": str(legacy_dir),
+            "page_sources": [
+                {"page_number": number, "image_path": str(path)}
+                for number, path in old_plan.page_sources
+            ],
+            "page_cursor": cursor,
+            "raw_pages": None,
+        }
+        baseline_page_decodes += len(ocr_runtime_module._json_pages(old_state))
+    baseline_read_count = read_count
+    baseline_read_bytes = read_bytes
+    assert baseline_page_decodes == baseline_read_count == 20 * 21 // 2
+    assert baseline_read_bytes == sum(
+        (21 - page_number) * page_payload_sizes[page_number]
+        for page_number in range(1, 21)
+    )
+
+    measurements: list[dict[str, int]] = []
+    compact_state_bytes: dict[int, int] = {}
+    baseline_state_bytes: dict[int, int] = {}
+    baseline_prefix_bytes: dict[int, int] = {}
+    for page_count in (100, 500, 1000):
+        plan = OCRSourcePlan(
+            pdf_source=None,
+            rendered_dir=tmp_path / "rendered",
+            legacy_dir=legacy_dir,
+            page_sources=[
+                (page_number, tmp_path / "source" / f"page-{page_number}.png")
+                for page_number in range(1, page_count + 1)
+            ],
+            source_kind="image",
+            input_fingerprint=f"linear-{page_count}",
+        )
+        compact_state = _page_workflow_initial_state(plan)
+        compact_state.update(
+            {
+                "document_id": "scaling-document",
+                "ocr_configuration_fingerprints": ["fixed-config"],
+            }
+        )
+        current_read_count = current_read_bytes = 0
+        read_count = read_bytes = 0
+        accepted_pages = ocr_runtime_module._json_pages(
+            {**compact_state, "page_cursor": page_count}, source_plan=plan
+        )
+        current_read_count, current_read_bytes = read_count, read_bytes
+        assert len(accepted_pages) == page_count
+        assert current_read_count == page_count
+        assert current_read_bytes == sum(
+            page_payload_sizes[number] for number in range(1, page_count + 1)
+        )
+
+        old_state: _OCRWorkflowState = {
+            "ocr_page_state_version": _OCR_PAGE_STATE_VERSION,
+            "source_fingerprint": plan.input_fingerprint,
+            "page_sources": [
+                {"page_number": number, "image_path": str(path)}
+                for number, path in plan.page_sources
+            ],
+            "legacy_dir": str(legacy_dir),
+            "page_cursor": 0,
+            "completed_pages": [],
+            "reused_pages": [],
+            "document_id": "scaling-document",
+            "ocr_configuration_fingerprints": ["fixed-config"],
+        }
+        current_state = dict(compact_state)
+        current_state["last_reused_page"] = None
+        current_total = 0
+        compact_base_bytes = len(
+            json.dumps(
+                current_state, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        )
+        old_base_bytes = len(
+            json.dumps(old_state, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        )
+        old_completed_json_bytes = 2
+        old_total = 0
+        for page_number in range(1, page_count + 1):
+            if page_number > 1:
+                old_completed_json_bytes += 1
+            old_completed_json_bytes += len(str(page_number))
+            old_total += (
+                old_base_bytes
+                - 3  # empty completed_pages plus one-digit page_cursor
+                + old_completed_json_bytes
+                + len(str(page_number))
+            )
+            current_total += (
+                compact_base_bytes - 1 + len(str(page_number))
+            )
+        baseline_state_bytes[page_count] = old_total
+        compact_state_bytes[page_count] = current_total
+        baseline_prefix_bytes[page_count] = sum(
+            (page_count - page_number + 1) * page_payload_sizes[page_number]
+            for page_number in range(1, page_count + 1)
+        )
+        measurements.append(
+            {
+                "pages": page_count,
+                "accepted_page_reads": current_read_count,
+                "accepted_json_bytes": current_read_bytes,
+                "baseline_prefix_decodes": page_count * (page_count + 1) // 2,
+                "baseline_prefix_bytes": baseline_prefix_bytes[page_count],
+                "baseline_checkpoint_state_bytes": old_total,
+                "compact_checkpoint_state_bytes": current_total,
+            }
+        )
+
+    assert compact_state_bytes[500] < compact_state_bytes[100] * 6
+    assert compact_state_bytes[1000] < compact_state_bytes[100] * 12
+    assert baseline_state_bytes[500] > baseline_state_bytes[100] * 10
+    assert baseline_state_bytes[1000] > baseline_state_bytes[100] * 30
+    assert compact_state_bytes[1000] < baseline_state_bytes[1000]
+    assert read_count == 1000
+    print(
+        "OCR deterministic scaling measurements: "
+        + json.dumps(
+            {
+                "baseline_20_prefix_reads": baseline_read_count,
+                "baseline_20_prefix_bytes": baseline_read_bytes,
+                "baseline_100_prefix_reads": 100 * 101 // 2,
+                "baseline_100_prefix_bytes": baseline_prefix_bytes[100],
+                "measurements": measurements,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+@pytest.mark.ci
+def test_reused_page_trace_query_is_not_truncated_at_default_read_limit() -> None:
+    class _Read:
+        def get_nodes(
+            self, *, where: object, limit: int | None
+        ) -> list[SimpleNamespace]:
+            del where
+            assert limit is None
+            nodes = [
+                SimpleNamespace(
+                    metadata={
+                        "step_seq": page_number,
+                        "result_json": json.dumps(
+                            {
+                                "state_update": [
+                                    [
+                                        "u",
+                                        {
+                                            "page_cursor": page_number,
+                                            "last_reused_page": page_number,
+                                        },
+                                    ]
+                                ]
+                            }
+                        ),
+                    }
+                )
+                for page_number in range(1, 251)
+            ]
+            nodes.append(
+                SimpleNamespace(
+                    metadata={
+                        "step_seq": 251,
+                        "result_json": json.dumps(
+                            {
+                                "state_update": [
+                                    [
+                                        "u",
+                                        {
+                                            "page_cursor": 250,
+                                            "last_reused_page": None,
+                                        },
+                                    ]
+                                ]
+                            }
+                        ),
+                    }
+                )
+            )
+            return nodes
+
+    conversation_engine = cast(
+        GraphKnowledgeEngine, SimpleNamespace(read=_Read())
+    )
+    assert _reused_pages_from_trace(conversation_engine, "large-resume") == [
+        *range(1, 250),
+    ]
 
 
 def test_raw_ocr_content_narrows_sdk_content_without_stringifying_other_values() -> None:
@@ -2141,6 +2713,77 @@ def test_ocr_root_resume_replays_checkpointed_page_when_artifact_is_missing() ->
         "calls": [1, 2],
         "has_grouping_tree": True,
     }
+
+
+@pytest.mark.ci
+def test_ocr_root_resume_replays_checkpointed_page_when_artifact_digest_is_tampered() -> None:
+    """A valid-looking edited artifact cannot supersede its accepted digest."""
+    scratch = _scratch("ocr_root_checkpoint_with_tampered_artifact")
+    for page_number in (1, 2):
+        _draw_test_image(
+            scratch / "source" / f"page-{page_number}.png",
+            lines=[f"checkpoint page {page_number}"],
+        )
+    worker = Path(__file__).with_name("_ocr_root_fresh_process_worker.py")
+    repo_root = Path(__file__).resolve().parents[1]
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = os.pathsep.join(
+        path
+        for path in (
+            str(repo_root),
+            str(repo_root.parent / "kogwistar"),
+            child_env.get("PYTHONPATH", ""),
+        )
+        if path
+    )
+
+    interrupted = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "interrupt"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=120,
+    )
+    assert interrupted.returncode == 17, interrupted.stderr
+    accepted_page = (
+        scratch
+        / "artifacts"
+        / "legacy_split_pages"
+        / "fresh-root-document"
+        / "page_1.json"
+    )
+    payload = json.loads(accepted_page.read_text(encoding="utf-8"))
+    clusters = payload["OCR_text_clusters"]
+    assert isinstance(clusters, list) and clusters
+    clusters[0]["text"] = "tampered but structurally valid text"
+    SplitPage.model_validate(payload)
+    accepted_page.write_text(json.dumps(payload), encoding="utf-8")
+
+    resumed = subprocess.run(
+        [sys.executable, str(worker), str(scratch), "resume-missing-artifact"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=child_env,
+        timeout=120,
+    )
+    assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+    result = json.loads(
+        (scratch / "resume-missing-artifact-result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result == {
+        "status": "succeeded",
+        "run_id": "ocr|fresh-root-document",
+        "calls": [1, 2],
+        "has_grouping_tree": True,
+    }
+    accepted_after_resume = json.loads(accepted_page.read_text(encoding="utf-8"))
+    assert accepted_after_resume["OCR_text_clusters"][0]["text"] == (
+        "root page 1"
+    )
 
 
 @pytest.mark.ci

@@ -600,23 +600,26 @@ S01-S12 and C01-C06 rows in
 
 - [x] S01-S02 source/render/provider/config/artifact identities are persisted,
   checked on reuse, and protected by atomic single-file publication.
-- [~] S02 has tamper, stale-config, orphan-adoption, late-writer, and both
+- [~] S02 has stale-config, orphan-adoption, late-writer, and both
   parser-side crash-order tests. Unknown OCR schema versions now fail closed at
   rebuild, completion, orphan-adoption, and reuse boundaries, while legacy
   `0.1` and current `workflow_ingest_v1` remain accepted. The schema and
   artifact-disappearance regressions pass locally (7 focused tests, Ruff,
-  Pyright); CI for this new pipeline slice is pending. Durable graph
+  Pyright). The fresh-process valid-JSON tamper regression
+  `test_ocr_root_resume_replays_checkpointed_page_when_artifact_digest_is_tampered`
+  also passes locally; CI for this pipeline slice is pending. Durable graph
   publication remains a separate Kogwistar backend gate.
-- [~] S03-S04 preserve declared spatial precision, media provenance, and
+- [x] S03-S04 preserve declared spatial precision, media provenance, and
   deterministic mixed-object ordering. Mixed pages without declared ordering
   record `ordering_status="ambiguous_provider_order"`; caption/text/table
   permutation is covered by the provider-normalization and OCR-root tests.
-  Graph export now emits ordered Kogwistar multimodal evidence records with
-  source digest/revision and validated spatial/temporal grounding, covered by
-  `test_media_source_items_project_to_ordered_kogwistar_multimodal_graph_evidence`
-  and `test_export_projects_grouped_media_into_kogwistar_multimodal_evidence`.
-  A real multi-object provider run with independent visual ground truth remains
-  open under C06.
+  Graph export emits ordered Kogwistar multimodal evidence with source
+  digest/revision and validated spatial grounding. Tracked table and chart
+  fixtures contain independent visual annotations and captured live results
+  for Codex, direct RapidOCR/EasyOCR, and Docling-backed paths; the regressions
+  report their missed text and visual regions rather than hiding them. This
+  satisfies the minimum multi-object provider-evidence gate, not corpus-wide
+  OCR completeness, which remains partial under C06.
 - [x] S05 proves accepted hierarchy reaches semantic parsing and graph export,
   rather than surviving only as ignored metadata. The export metamorphic test
   proves parent-child structure is consumed, and the local 100-page fresh-
@@ -627,11 +630,15 @@ S01-S12 and C01-C06 rows in
   invalidate summaries; S08's final-group identity loss is fixed and covered,
   while monotonic generation and the complete writer audit are now covered by
   the fenced writer regression and bounded frontier tests.
-- [~] S09-S10 verify runtime checkpoint ownership and collision-safe identity
+- [x] S09-S10 verify runtime checkpoint ownership and collision-safe identity
   separation for same-stem, changed-path, changed-content, and parse-generation
-  inputs. The root now persists and fences `parse_generation`, covered by
-  `test_ocr_root_resume_rejects_a_different_parse_generation`; same-stem,
-  cross-path, and complete downstream revision evidence remain open.
+  inputs. The root persists and fences `parse_generation`, covered by
+  `test_ocr_root_resume_rejects_a_different_parse_generation`. Same-stem
+  artifact directories, identical content across paths, changed source bytes at
+  the same path, and authoritative revision propagation to graph export are
+  covered by the tests listed under S10 in the implementation checklist. The
+  expanded 100-page recovery/publication gate passed Parser CI run
+  `39135756441`.
 - [~] S11-S12 cover cross-page references, preserve references outside the
   primary coverage partition, and reject conflicting public versus
   internal policy values. Multiple reference slices round-trip and validate at

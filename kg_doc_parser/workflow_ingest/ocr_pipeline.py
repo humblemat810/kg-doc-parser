@@ -4132,7 +4132,7 @@ def _write_summary(
         "page_count": len(artifacts.ocr_pages),
         "document_tree_path": str(artifacts.document_tree_path) if artifacts.document_tree is not None else None,
     }
-    artifacts.summary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _write_json_atomic(artifacts.summary_path, payload)
 
 
 def _emit_ocr_event(probe: WorkflowProbe | None, kind: str, /, **payload: object) -> None:
@@ -4271,14 +4271,6 @@ def prepare_ocr_workflow_input(
                 completed_pages=completed_pages,
                 reused_pages=reused_pages,
                 page_failures=page_failures,
-            )
-            _sync_progress_from_state(
-                state_store=state_store,
-                document_id=document_id,
-                title=title,
-                source_kind=source_plan.source_kind,
-                total_pages=len(source_plan.page_sources),
-                progress_path=progress_path,
             )
 
     # Mark the whole document complete once every page has been processed.

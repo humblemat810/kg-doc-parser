@@ -275,6 +275,7 @@ class _OCRWorkflowState(TypedDict, total=False):
     pass_index: int
     ocr_page_recovery_generation: int
     page_cursor: int
+    last_reused_page: int | None
     page_sources: list[_PageSourceState]
     legacy_dir: str
     raw_pages: list[OCRPageJSON] | None
@@ -583,7 +584,11 @@ def _page_sources(state: _OCRWorkflowState) -> list[tuple[int, Path]]:
     return sources
 
 
-def _json_pages(state: _OCRWorkflowState) -> list[OCRPageJSON]:
+def _json_pages(
+    state: _OCRWorkflowState,
+    *,
+    source_plan: OCRSourcePlan | None = None,
+) -> list[OCRPageJSON]:
     """Load accepted pages without copying their payload into every checkpoint.
 
     ``raw_pages`` is retained as a compatibility path for checkpoints created
@@ -605,7 +610,12 @@ def _json_pages(state: _OCRWorkflowState) -> list[OCRPageJSON]:
         raise ValueError("OCR page runtime state has no legacy artifact directory")
     cursor = _page_cursor(state)
     pages: list[OCRPageJSON] = []
-    for page_number, _image_path in _page_sources(state)[:cursor]:
+    page_sources = (
+        source_plan.page_sources
+        if source_plan is not None
+        else _page_sources(state)
+    )
+    for page_number, _image_path in page_sources[:cursor]:
         page_path = Path(legacy_dir_value) / f"page_{page_number}.json"
         try:
             payload = json.loads(page_path.read_text(encoding="utf-8"))
@@ -735,18 +745,94 @@ def _validate_root_invocation_lineage(
         )
 
 
+def _reused_pages_from_trace(
+    conversation_engine: GraphKnowledgeEngine, run_id: str
+) -> list[int]:
+    """Rebuild the compatibility reuse summary from compact per-step deltas."""
+    nodes = list(
+        conversation_engine.read.get_nodes(
+            where={
+                "$and": [
+                    {"entity_type": "workflow_step_exec"},
+                    {"run_id": run_id},
+                ]
+            },
+            limit=None,
+        )
+    )
+    outcomes: dict[int, tuple[int, int, int, bool]] = {}
+    for node in nodes:
+        metadata = node.metadata or {}
+        result_raw = metadata.get("result_json")
+        if not isinstance(result_raw, str):
+            continue
+        try:
+            result = json.loads(result_raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(result, dict):
+            continue
+        updates = result.get("state_update", [])
+        if not isinstance(updates, list):
+            continue
+        step_sequence = metadata.get("step_seq", 0)
+        if type(step_sequence) is not int:
+            step_sequence = 0
+        attempt = metadata.get("attempt", 0)
+        if type(attempt) is not int:
+            attempt = 0
+        for update_index, update in enumerate(updates):
+            if not isinstance(update, (list, tuple)) or len(update) != 2:
+                continue
+            operation, payload = update
+            if not isinstance(payload, dict):
+                continue
+            page_cursor = payload.get("page_cursor")
+            if (
+                type(page_cursor) is int
+                and page_cursor >= 1
+                and "last_reused_page" in payload
+            ):
+                reused_page = payload.get("last_reused_page")
+                outcomes[page_cursor] = (
+                    step_sequence,
+                    attempt,
+                    update_index,
+                    reused_page == page_cursor,
+                )
+            reused_page = payload.get("last_reused_page")
+            if type(reused_page) is int and reused_page >= 1:
+                outcomes[reused_page] = (
+                    step_sequence,
+                    attempt,
+                    update_index,
+                    True,
+                )
+            # Read pre-compaction append deltas when resuming an old run.
+            if operation == "a":
+                legacy_page = payload.get("reused_pages")
+                if type(legacy_page) is int and legacy_page >= 1:
+                    outcomes[legacy_page] = (
+                        step_sequence,
+                        attempt,
+                        update_index,
+                        True,
+                    )
+    return [
+        page_number
+        for page_number, (_step, _attempt, _update, was_reused) in sorted(
+            outcomes.items(), key=lambda item: item[1][:3]
+        )
+        if was_reused
+    ]
+
+
 def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> _OCRWorkflowState:
     return {
         "ocr_page_state_version": _OCR_PAGE_STATE_VERSION,
         "source_fingerprint": source_plan.input_fingerprint,
-        "page_sources": [
-            {"page_number": page_number, "image_path": str(image_path)}
-            for page_number, image_path in source_plan.page_sources
-        ],
         "legacy_dir": str(source_plan.legacy_dir),
         "page_cursor": 0,
-        "completed_pages": [],
-        "reused_pages": [],
     }
 
 
@@ -798,9 +884,16 @@ def _reconcile_page_checkpoint(
     normal page step replay the first unaccepted page.
     """
     cursor = _page_cursor(state)
-    sources = _page_sources(state)
-    completed = _int_list(state, "completed_pages")
-    reused = _int_list(state, "reused_pages")
+    # New checkpoints keep the immutable source manifest in the invocation
+    # context, not in every Kogwistar state snapshot. Older checkpoints remain
+    # readable through their persisted page_sources field.
+    sources = (
+        _page_sources(state)
+        if "page_sources" in state
+        else source_plan.page_sources
+    )
+    completed = _int_list(state, "completed_pages") if "completed_pages" in state else []
+    reused = _int_list(state, "reused_pages") if "reused_pages" in state else []
     if start_index < 0 or start_index > cursor:
         raise ValueError("OCR checkpoint reconciliation start index is out of range")
     for index in range(start_index, cursor):
@@ -824,15 +917,19 @@ def _reconcile_page_checkpoint(
             config_fingerprint=context.configuration_fingerprints,
         ):
             continue
-        repair: _OCRCheckpointPatch = {
-            "page_cursor": index,
-            "completed_pages": completed[:index],
-            "reused_pages": [number for number in reused[:index] if number in completed[:index]],
-        }
+        repair: _OCRCheckpointPatch = {"page_cursor": index}
+        if "completed_pages" in state:
+            repair["completed_pages"] = completed[:index]
+        if "reused_pages" in state:
+            repair["reused_pages"] = [
+                number for number in reused[:index] if number in completed[:index]
+            ]
         # Preserve the old in-checkpoint payload only when repairing a legacy
         # checkpoint. New checkpoints stay artifact-backed and compact.
         if "raw_pages" in state:
-            repair["raw_pages"] = _json_pages(state)[:index]
+            repair["raw_pages"] = _json_pages(
+                state, source_plan=source_plan
+            )[:index]
         return repair
     return None
 
@@ -850,12 +947,16 @@ def _validate_root_page_result(
     accepted output; otherwise a deleted or tampered page artifact could be
     replaced by stale checkpoint data without rerunning OCR.
     """
-    sources = _page_sources(page_result)
+    sources = source_plan.page_sources
     cursor = _page_cursor(page_result)
-    completed = _int_list(page_result, "completed_pages")
-    raw_pages = _json_pages(page_result)
     expected_pages = [page_number for page_number, _image_path in sources]
-    if cursor != len(sources) or completed != expected_pages or len(raw_pages) != len(sources):
+    legacy_completed = (
+        _int_list(page_result, "completed_pages")
+        if "completed_pages" in page_result
+        else []
+    )
+    completed = legacy_completed or expected_pages[:cursor]
+    if cursor != len(sources) or completed != expected_pages:
         raise RuntimeError("OCR root page child completed with an incomplete page checkpoint")
     repair = _reconcile_page_checkpoint(
         state=page_result,
@@ -884,12 +985,17 @@ def _page_result_needs_recovery(
     source_plan: OCRSourcePlan,
 ) -> bool:
     """Report whether a terminal page child must be regenerated."""
-    sources = _page_sources(page_result)
+    sources = source_plan.page_sources
     expected_pages = [page_number for page_number, _image_path in sources]
+    legacy_completed = (
+        _int_list(page_result, "completed_pages")
+        if "completed_pages" in page_result
+        else []
+    )
+    completed = legacy_completed or expected_pages[: _page_cursor(page_result)]
     if (
         _page_cursor(page_result) != len(sources)
-        or _int_list(page_result, "completed_pages") != expected_pages
-        or len(_json_pages(page_result)) != len(sources)
+        or completed != expected_pages
     ):
         return True
     return _reconcile_page_checkpoint(
@@ -1010,6 +1116,7 @@ def _build_page_resolver(
             "completed_pages": "u",
             "reused_pages": "u",
             "last_failed_page": "u",
+            "last_reused_page": "u",
         }
     )
 
@@ -1037,17 +1144,22 @@ def _build_page_resolver(
             verified_prefix_cursor = _checkpoint_repair_cursor(repair)
             repair_update: StateUpdate = ("u", dict(repair))
             return _success("process_ocr_page", state_update=[repair_update])
-        sources = _page_sources(state)
+        sources = source_plan.page_sources
         cursor = _page_cursor(state)
         verified_prefix_cursor = cursor
         if cursor >= len(sources):
             return _success("finalize_ocr_pages")
         page_number, image_path = sources[cursor]
-        raw_pages = _json_pages(state)
-        completed_pages = _int_list(state, "completed_pages")
-        reused_pages = _int_list(state, "reused_pages")
-        completed_count = len(completed_pages)
-        reused_count = len(reused_pages)
+        # Legacy checkpoints may still embed their raw prefix. Read that
+        # payload only for the one-time compatibility migration; all current
+        # checkpoints pass an empty list and rehydrate once in finalization.
+        raw_pages = (
+            _json_pages(state, source_plan=source_plan)
+            if state.get("raw_pages") is not None
+            else []
+        )
+        completed_pages: list[int] = []
+        reused_pages: list[int] = []
         failures: list[int] = []
         _process_ocr_page(
             context=context,
@@ -1068,32 +1180,31 @@ def _build_page_resolver(
                 state_update=[("u", {"last_failed_page": page_number})],
                 errors=[f"OCR page {page_number} failed after all candidates"],
             )
-        _sync_progress_from_state(
-            state_store=context.state_store,
-            document_id=context.document_id,
-            title=context.title,
-            source_kind=context.source_kind,
-            total_pages=context.total_pages,
-            progress_path=progress_path,
-        )
-        new_completed = completed_pages[completed_count:]
-        new_reused = reused_pages[reused_count:]
-        if new_completed != [page_number] or len(new_reused) > 1 or any(
-            reused_page != page_number for reused_page in new_reused
+        if completed_pages != [page_number] or len(reused_pages) > 1 or any(
+            reused_page != page_number for reused_page in reused_pages
         ):
             raise RuntimeError("OCR page processing produced inconsistent progress deltas")
 
         updates: list[StateUpdate] = [
-            ("u", {"page_cursor": cursor + 1}),
-            ("a", {"completed_pages": page_number}),
+            (
+                "u",
+                {
+                    "page_cursor": cursor + 1,
+                    "last_reused_page": page_number if reused_pages else None,
+                },
+            ),
         ]
-        if new_reused:
-            updates.append(("a", {"reused_pages": page_number}))
+        # Stop carrying historical cumulative page lists in the new runtime
+        # state. Older list deltas remain in Kogwistar's step trace and can be
+        # interpreted when returning compatibility summaries.
+        if "completed_pages" in state or "reused_pages" in state:
+            updates.append(("u", {"completed_pages": [], "reused_pages": []}))
         # Old checkpoints may contain cumulative raw_pages. Once the page
         # artifact has been accepted, drop that payload and use the artifact
         # directory for subsequent reads and checkpoints.
         if state.get("raw_pages") is not None:
             updates.append(("u", {"raw_pages": None}))
+        verified_prefix_cursor = cursor + 1
         return _success("process_ocr_page", state_update=updates)
 
     @resolver.register("finalize_ocr_pages")
@@ -1109,6 +1220,8 @@ def _build_page_resolver(
             verified_prefix_cursor = _checkpoint_repair_cursor(repair)
             return _success("process_ocr_page", state_update=[("u", dict(repair))])
         context.state_store.refresh_document_completion(document_id=context.document_id)
+        # SQLite is the live page-status source; the full JSON mirror is an
+        # O(page-count) snapshot, so publish it once after the page loop.
         _sync_progress_from_state(
             state_store=context.state_store,
             document_id=context.document_id,
@@ -1181,10 +1294,11 @@ def run_ocr_page_workflow(
     )
     if result.status != "succeeded":
         raise RuntimeError(f"OCR page workflow {result.status}: {result.errors}")
+    final_state = _typed_state(result.final_state)
     return (
-        _json_pages(_typed_state(result.final_state)),
-        _int_list(_typed_state(result.final_state), "completed_pages"),
-        _int_list(_typed_state(result.final_state), "reused_pages"),
+        _json_pages(final_state, source_plan=source_plan),
+        [page_number for page_number, _path in source_plan.page_sources],
+        _reused_pages_from_trace(conversation_engine, result.run_id),
         result.run_id,
     )
 
@@ -1789,6 +1903,8 @@ def run_ocr_root_workflow(
     semantic_resolver = build_ingest_step_resolver(deps=semantic_deps)
 
     root_resolver = MappingStepResolver()
+    prepared_page_payloads: list[OCRPageJSON] | None = None
+    prepared_reused_pages: list[int] | None = None
     root_resolver.set_state_schema(
         {
             "ocr_page_result": "u",
@@ -1860,6 +1976,7 @@ def run_ocr_root_workflow(
 
     @root_resolver.register("ocr_root_prepare_grouping_input")
     def _root_prepare_grouping(ctx: StepContext) -> StepRunResult:
+        nonlocal prepared_page_payloads, prepared_reused_pages
         state = _typed_state(ctx.state_view)
         page_result = _typed_child_state(
             state.get("ocr_page_result"),
@@ -1875,9 +1992,29 @@ def run_ocr_root_workflow(
                 "ocr_root_invoke_pages",
                 state_update=[("u", {"ocr_page_recovery_generation": generation})],
             )
-        raw_pages = _json_pages(page_result)
-        completed_pages = _int_list(page_result, "completed_pages")
-        reused_pages = _int_list(page_result, "reused_pages")
+        raw_pages = _json_pages(
+            page_result, source_plan=preparation.source_plan
+        )
+        prepared_page_payloads = raw_pages
+        completed_pages = [
+            page_number
+            for page_number, _image_path in preparation.source_plan.page_sources
+        ]
+        if "completed_pages" in page_result:
+            legacy_completed = _int_list(page_result, "completed_pages")
+            if legacy_completed:
+                completed_pages = legacy_completed
+        recovery_generation = _recovery_generation(state)
+        recovery_suffix = (
+            f"|recovery-{recovery_generation}" if recovery_generation else ""
+        )
+        page_run_id = f"{ctx.run_id}|ocr-pages{recovery_suffix}"
+        reused_pages = _reused_pages_from_trace(conversation_engine, page_run_id)
+        prepared_reused_pages = reused_pages
+        if "reused_pages" in page_result:
+            legacy_reused = _int_list(page_result, "reused_pages")
+            if legacy_reused:
+                reused_pages = legacy_reused
         artifacts = _finalize_ocr_workflow_artifacts(
             document_id=document_id,
             title=title,
@@ -2194,14 +2331,41 @@ def run_ocr_root_workflow(
         final_state.get("ocr_page_result"),
         label="OCR root page child",
     )
-    _validate_root_page_result(
-        page_result=page_result,
-        context=preparation.page_context,
-        source_plan=preparation.source_plan,
+    if prepared_page_payloads is None:
+        # A terminal root resume skips its resolver steps. Revalidate and
+        # materialize that accepted generation once here; normal execution
+        # reuses the exact page snapshot already consumed by grouping.
+        _validate_root_page_result(
+            page_result=page_result,
+            context=preparation.page_context,
+            source_plan=preparation.source_plan,
+        )
+        raw_pages = _json_pages(
+            page_result, source_plan=preparation.source_plan
+        )
+    else:
+        raw_pages = prepared_page_payloads
+    completed_pages = [
+        page_number
+        for page_number, _image_path in preparation.source_plan.page_sources
+    ]
+    if "completed_pages" in page_result:
+        legacy_completed = _int_list(page_result, "completed_pages")
+        if legacy_completed:
+            completed_pages = legacy_completed
+    recovery_generation = _recovery_generation(final_state)
+    recovery_suffix = (
+        f"|recovery-{recovery_generation}" if recovery_generation else ""
     )
-    raw_pages = _json_pages(page_result)
-    completed_pages = _int_list(page_result, "completed_pages")
-    reused_pages = _int_list(page_result, "reused_pages")
+    if prepared_page_payloads is not None:
+        reused_pages = prepared_reused_pages or []
+    else:
+        page_run_id = f"{effective_run_id}|ocr-pages{recovery_suffix}"
+        reused_pages = _reused_pages_from_trace(conversation_engine, page_run_id)
+    if "reused_pages" in page_result:
+        legacy_reused = _int_list(page_result, "reused_pages")
+        if legacy_reused:
+            reused_pages = legacy_reused
     # A terminal child invocation is not executed again during parent resume,
     # so its prior reuse list is not regenerated in the child result state.
     # Reconcile the parent-facing artifact summary from the accepted page set;
