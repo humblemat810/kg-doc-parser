@@ -33,7 +33,7 @@ from .document_models import (
     SummaryPolicy,
     extract_reference_mentions,
 )
-from .models import WorkflowIngestInput
+from .models import SourceUnit, WorkflowIngestInput
 from .serialization import JsonObject, JsonValue, decode_json_object
 
 
@@ -101,7 +101,9 @@ def build_document_tree(
     seen_unit_ids: set[str] = set()
     for page in collection.pages:
         allocated = _allocated_cluster_numbers(page.units)
-        for unit, cluster_number in zip(page.units, allocated, strict=True):
+        for unit_index, (unit, cluster_number) in enumerate(
+            zip(page.units, allocated, strict=True)
+        ):
             if unit.unit_id is not None:
                 if unit.unit_id in seen_unit_ids:
                     raise ValueError(f"duplicate OCR source unit id: {unit.unit_id}")
@@ -178,6 +180,22 @@ def build_document_tree(
             )
             ocr_metadata = _ocr_metadata(unit.metadata)
             page_annotations = _page_annotations(page.metadata)
+            unit_annotations = dict(page_annotations)
+            if unit.modality in {"text", "ocr_text"}:
+                incomplete_tail = (
+                    page_annotations.get("ocr:incomplete_text") == "True"
+                    or page_annotations.get("ocr:incomplete_words_on_edge") == "True"
+                )
+                if (
+                    unit_index == len(page.units) - 1
+                    and incomplete_tail
+                    and _unit_near_page_y_edge(unit, page.metadata, edge="bottom")
+                ):
+                    unit_annotations["ocr:continuation_tail_evidence"] = "True"
+                if unit_index == 0 and _unit_near_page_y_edge(
+                    unit, page.metadata, edge="top"
+                ):
+                    unit_annotations["ocr:continuation_head_evidence"] = "True"
             kind = "text" if unit.modality in {"text", "ocr_text"} else "non_text:description"
             if has_media:
                 assert unit.source_uri is not None
@@ -197,7 +215,7 @@ def build_document_tree(
                         ),
                         ocr_metadata=ocr_metadata,
                         annotations={
-                            **page_annotations,
+                            **unit_annotations,
                             **({"description": unit.description} if unit.description else {}),
                         },
                     )
@@ -216,7 +234,7 @@ def build_document_tree(
                         text=text,
                         location=location,
                         ocr_metadata=ocr_metadata,
-                        annotations=page_annotations,
+                        annotations=unit_annotations,
                     )
                 )
             leaves.append(
@@ -546,6 +564,32 @@ def _page_annotations(metadata: Mapping[str, object]) -> dict[str, str]:
     return annotations
 
 
+def _unit_near_page_y_edge(
+    unit: SourceUnit,
+    page_metadata: Mapping[str, object],
+    *,
+    edge: Literal["top", "bottom"],
+) -> bool:
+    """Require pixel coordinates and explicit page bounds for edge evidence."""
+    if unit.bbox is None or unit.metadata.get("coordinate_system") != "pixels":
+        return False
+    page_y_min = page_metadata.get("page_y_min")
+    page_y_max = page_metadata.get("page_y_max")
+    if (
+        isinstance(page_y_min, bool)
+        or not isinstance(page_y_min, (int, float))
+        or isinstance(page_y_max, bool)
+        or not isinstance(page_y_max, (int, float))
+        or page_y_max <= page_y_min
+    ):
+        return False
+    page_height = float(page_y_max - page_y_min)
+    edge_margin = max(8.0, page_height * 0.025)
+    if edge == "top":
+        return unit.bbox.y_min <= page_y_min + edge_margin
+    return unit.bbox.y_max >= page_y_max - edge_margin
+
+
 def suggest_cross_page_continuations(tree: DocumentTree) -> tuple[GroupProposal, ...]:
     """Suggest only OCR-signaled cross-page joins; never infer semantic links."""
     nodes = {node.node_id: node for node in tree.nodes}
@@ -583,9 +627,29 @@ def suggest_cross_page_continuations(tree: DocumentTree) -> tuple[GroupProposal,
         if not previous_pages or not current_pages or max(previous_pages) + 1 != min(current_pages):
             continue
         previous_item = items[previous.parts[-1].item_id]
-        if previous_item.annotations.get("ocr:incomplete_text") != "True" and previous_item.annotations.get(
-            "ocr:incomplete_words_on_edge"
-        ) != "True":
+        current_item = items[current.parts[0].item_id]
+        if (
+            previous_item.annotations.get("ocr:continuation_tail_evidence") != "True"
+            or current_item.annotations.get("ocr:continuation_head_evidence") != "True"
+        ):
+            continue
+        previous_text = (previous_item.text or "").rstrip()
+        current_text = (current_item.text or "").lstrip()
+        previous_bbox = previous_item.location.bbox
+        current_bbox = current_item.location.bbox
+        if (
+            not previous_text
+            or not current_text
+            or previous_text[-1] in ".?!:;。！？"
+            or (
+                not current_text[0].islower()
+                and not previous_text.endswith(("-", "\u2010", "\u2011"))
+            )
+            or previous_bbox is None
+            or current_bbox is None
+            or previous_bbox.coordinate_system != current_bbox.coordinate_system
+            or abs(previous_bbox.x0 - current_bbox.x0) > 8.0
+        ):
             continue
         proposals.append(
             GroupProposal(

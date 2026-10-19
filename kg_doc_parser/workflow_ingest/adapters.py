@@ -17,46 +17,50 @@ from .serialization import JsonObject, JsonValue
 
 
 class OCRTextClusterJSON(TypedDict, total=False):
-    bb_y_min: float
-    bb_x_min: float
-    bb_y_max: float
-    bb_x_max: float
-    cluster_number: int
-    text: str
-    coordinate_system: str
-    spatial_accuracy: str
+    bb_y_min: float | None
+    bb_x_min: float | None
+    bb_y_max: float | None
+    bb_x_max: float | None
+    cluster_number: int | None
+    text: str | None
+    coordinate_system: str | None
+    spatial_accuracy: str | None
 
 
 class OCRNonTextObjectJSON(TypedDict, total=False):
-    bb_y_min: float
-    bb_x_min: float
-    bb_y_max: float
-    bb_x_max: float
-    cluster_number: int
-    description: str
-    source_uri: str
-    mime_type: str
-    media_sha256: str
-    media_byte_length: int
-    coordinate_system: str
-    spatial_accuracy: str
+    bb_y_min: float | None
+    bb_x_min: float | None
+    bb_y_max: float | None
+    bb_x_max: float | None
+    cluster_number: int | None
+    description: str | None
+    source_uri: str | None
+    mime_type: str | None
+    media_sha256: str | None
+    media_byte_length: int | None
+    coordinate_system: str | None
+    spatial_accuracy: str | None
 
 
 class OCRPageJSON(TypedDict):
     """Serialized OCR page payload produced by the OCR preparation layer."""
 
     pdf_page_num: int | str
-    printed_page_number: NotRequired[str]
-    contains_table: NotRequired[bool]
-    unresolved_item_count: NotRequired[int]
-    is_blank_page: NotRequired[bool]
-    meaningful_ordering: NotRequired[list[int]]
-    source_item_count: NotRequired[int]
-    metadata: NotRequired[dict[str, JsonValue]]
-    OCR_text_clusters: NotRequired[list[OCRTextClusterJSON]]
-    non_text_objects: NotRequired[list[OCRNonTextObjectJSON]]
-    text: NotRequired[str]
-    spatial_accuracy: NotRequired[str]
+    printed_page_number: NotRequired[str | None]
+    contains_table: NotRequired[bool | None]
+    unresolved_item_count: NotRequired[int | None]
+    is_blank_page: NotRequired[bool | None]
+    meaningful_ordering: NotRequired[list[int] | None]
+    source_item_count: NotRequired[int | None]
+    page_x_min: NotRequired[float | None]
+    page_x_max: NotRequired[float | None]
+    page_y_min: NotRequired[float | None]
+    page_y_max: NotRequired[float | None]
+    metadata: NotRequired[dict[str, JsonValue] | None]
+    OCR_text_clusters: NotRequired[list[OCRTextClusterJSON] | None]
+    non_text_objects: NotRequired[list[OCRNonTextObjectJSON] | None]
+    text: NotRequired[str | None]
+    spatial_accuracy: NotRequired[str | None]
 
 
 def _validated_ocr_page_json(
@@ -100,6 +104,14 @@ def _validated_ocr_page_json(
         type(source_item_count) is not int or source_item_count < 0
     ):
         raise TypeError("OCR page field 'source_item_count' must be a non-negative integer")
+    for key in ("page_x_min", "page_x_max", "page_y_min", "page_y_max"):
+        coordinate = value.get(key)
+        if coordinate is not None and (
+            isinstance(coordinate, bool)
+            or not isinstance(coordinate, (int, float))
+            or not math.isfinite(float(coordinate))
+        ):
+            raise TypeError(f"OCR page field {key!r} must be a finite number")
     for key in ("meaningful_ordering",):
         field = value.get(key)
         if field is not None and (
@@ -240,6 +252,8 @@ def normalize_ocr_pages(
             raise TypeError("OCR cluster collections must be lists")
         source_item_count = raw_page.get("source_item_count")
         unresolved_item_count = raw_page.get("unresolved_item_count", 0)
+        if unresolved_item_count is None:
+            unresolved_item_count = 0
         if source_item_count is not None:
             represented_item_count = len(text_clusters) + len(non_text_objects)
             accounted_item_count = represented_item_count + unresolved_item_count
@@ -264,6 +278,10 @@ def normalize_ocr_pages(
             "scan_quality",
             "unresolved_item_count",
             "source_item_count",
+            "page_x_min",
+            "page_x_max",
+            "page_y_min",
+            "page_y_max",
         ):
             value = raw_page.get(key)
             if value is not None:
@@ -487,8 +505,8 @@ def build_parser_input_dict(
 ) -> JsonObject:
     pages: list[JsonObject] = []
     for page in collection.pages:
-        text_clusters: list[JsonObject] = []
-        non_text_objects: list[JsonObject] = []
+        text_clusters: list[JsonValue] = []
+        non_text_objects: list[JsonValue] = []
         allocated_clusters = _allocated_cluster_numbers(page.units)
         for unit, cluster_number in zip(page.units, allocated_clusters, strict=True):
             bbox = unit.bbox

@@ -90,6 +90,7 @@ from pypdf import PdfReader, PdfWriter
 
 import kg_doc_parser.workflow_ingest.ocr_pipeline as ocr_pipeline_module
 import kg_doc_parser.workflow_ingest.ocr_runtime as ocr_runtime_module
+import kg_doc_parser.workflow_ingest.strategy as strategy_module
 from kg_doc_parser.models import (
     NonTextCluster,
     OCRClusterResponse,
@@ -145,9 +146,11 @@ from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     GroundedChatGroupProposalGenerator,
     GroundedChatSummaryGenerator,
     GroupingCheckpointConflict,
+    OCRPageOutcome,
     OCRPageProcessingContext,
     OCRQualityPolicy,
     OCRSourcePlan,
+    OCRWorkflowArtifacts,
     OCRWorkflowStateStore,
     PDFRasterizer,
     _compute_input_fingerprint,
@@ -187,6 +190,18 @@ from kg_doc_parser.workflow_ingest.service import (
 )
 
 pytestmark = [pytest.mark.workflow]
+
+
+@pytest.mark.ci
+def test_ocr_page_outcome_enforces_accepted_and_failed_shapes() -> None:
+    page: OCRPageJSON = {"pdf_page_num": 1}
+    accepted = OCRPageOutcome(page_number=1, status="completed", page=page)
+    assert accepted.page_number == 1 and accepted.page == page
+    assert OCRPageOutcome(page_number=1, status="failed", error="provider failed").error
+    with pytest.raises(ValueError, match="accepted page outcomes require a page"):
+        OCRPageOutcome(page_number=1, status="reused")
+    with pytest.raises(ValueError, match="failed page outcomes require an error"):
+        OCRPageOutcome(page_number=1, status="failed")
 
 
 @pytest.mark.ci
@@ -4261,6 +4276,51 @@ def test_ocr_quality_policy_can_reject_empty_provider_output() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_quality_independently_flags_empty_output_on_visible_source_ink() -> None:
+    scratch = _scratch("ocr_quality_visible_source")
+    source_image = Image.new("RGB", (240, 80), "white")
+    ImageDraw.Draw(source_image).text((12, 24), "Visible source text", fill="black")
+    image_path = scratch / "text-heavy.png"
+    source_image.save(image_path)
+    payload = _fake_ocr_response(1, "placeholder").model_dump()
+    payload.update(
+        {
+            "OCR_text_clusters": [],
+            "non_text_objects": [],
+            "is_empty_page": True,
+            "meaningful_ordering": [],
+            "source_item_count": 0,
+        }
+    )
+    response = OCRClusterResponse.model_validate(payload)
+
+    warning = _evaluate_ocr_quality(
+        response,
+        OCRQualityPolicy(),
+        source_image_path=image_path,
+    )
+    warning_by_code = {item.code: item for item in warning}
+    assert warning_by_code["empty_ocr_output_on_nonblank_image"].severity == "warning"
+
+    rejected = _evaluate_ocr_quality(
+        response,
+        OCRQualityPolicy(reject_empty_output_on_nonblank_image=True),
+        source_image_path=image_path,
+    )
+    rejected_by_code = {item.code: item for item in rejected}
+    assert rejected_by_code["empty_ocr_output_on_nonblank_image"].severity == "error"
+
+    blank_path = scratch / "blank.png"
+    Image.new("RGB", (240, 80), "white").save(blank_path)
+    blank_diagnostics = _evaluate_ocr_quality(
+        response, OCRQualityPolicy(), source_image_path=blank_path
+    )
+    assert "empty_ocr_output_on_nonblank_image" not in {
+        item.code for item in blank_diagnostics
+    }
+
+
+@pytest.mark.ci
 def test_ocr_quality_policy_records_unresolved_provider_items() -> None:
     response = _fake_ocr_response(1, "quality signal").model_copy(
         update={"unresolved_item_count": 2}
@@ -4921,6 +4981,7 @@ def test_default_adaptive_root_wires_grounded_summary_and_semantic_export(
         embedding=EmbeddingProviderConfig(
             provider="fake", model="root-adaptive-embed", dimension=1
         ),
+        triage_enabled=False,
     )
     workflow_engine, conversation_engine, knowledge_engine = build_workflow_engine_triplet(
         scratch / "engines", "in_memory"
@@ -4928,6 +4989,40 @@ def test_default_adaptive_root_wires_grounded_summary_and_semantic_export(
     proposal_calls: list[GroupingPassContext] = []
     summary_calls: list[tuple[str, tuple[str, ...]]] = []
     semantic_group_summaries: list[str] = []
+    tree_publications: list[Path] = []
+    summary_publications: list[str] = []
+    original_write_tree = ocr_pipeline_module._write_document_tree
+    original_write_summary = ocr_pipeline_module._write_summary
+
+    def _write_tree_once(path: Path, tree: DocumentTree) -> None:
+        tree_publications.append(path)
+        original_write_tree(path, tree)
+
+    def _write_summary_once(
+        artifacts: OCRWorkflowArtifacts,
+        *,
+        document_id: str,
+        provider_settings: WorkflowProviderSettings,
+        state_store: OCRWorkflowStateStore,
+    ) -> None:
+        summary_publications.append("summary")
+        original_write_summary(
+            artifacts,
+            document_id=document_id,
+            provider_settings=provider_settings,
+            state_store=state_store,
+        )
+
+    monkeypatch.setattr(ocr_pipeline_module, "_write_document_tree", _write_tree_once)
+    monkeypatch.setattr(ocr_pipeline_module, "_write_summary", _write_summary_once)
+    monkeypatch.setattr(ocr_runtime_module, "_write_document_tree", _write_tree_once)
+    monkeypatch.setattr(ocr_runtime_module, "_write_summary", _write_summary_once)
+
+    def _unexpected_chat_model(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("provider-free OCR test attempted to build a chat model")
+
+    monkeypatch.setattr(strategy_module, "build_chat_model_for_role", _unexpected_chat_model)
 
     class _Proposer:
         configuration_fingerprint = "root-adaptive-proposer-v1"
@@ -5083,6 +5178,8 @@ def test_default_adaptive_root_wires_grounded_summary_and_semantic_export(
     )
 
     assert run.status == "succeeded"
+    assert len(tree_publications) == 1
+    assert summary_publications == ["summary"]
     assert bundle is not None
     assert artifacts.document_tree is not None
     assert proposal_calls
@@ -9882,6 +9979,34 @@ def test_builtin_pdf_render_identity_includes_poppler_selection(
 
 
 @pytest.mark.ci
+def test_builtin_pdf_render_identity_includes_poppler_binary_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POPPLER_PATH", "")
+    monkeypatch.setattr(
+        ocr_pipeline_module.shutil,
+        "which",
+        lambda _name: "C:/tools/poppler/bin/pdfinfo.exe",
+    )
+    versions = ["pdfinfo version 24.02.0", "pdfinfo version 25.01.0"]
+
+    def probe(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["pdfinfo", "-v"],
+            returncode=0,
+            stdout="",
+            stderr=versions[0],
+        )
+
+    monkeypatch.setattr(ocr_pipeline_module.subprocess, "run", probe)
+    first = ocr_pipeline_module._builtin_pdf_rasterizer_configuration()
+    versions[0] = versions[1]
+    second = ocr_pipeline_module._builtin_pdf_rasterizer_configuration()
+
+    assert first != second
+
+
+@pytest.mark.ci
 def test_png_publication_failure_keeps_previous_artifact_and_cleans_temp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -10323,10 +10448,6 @@ def test_ocr_page_artifact_publish_crash_is_recoverable() -> None:
                 image_sha256=image_sha256,
                 page_json_path=page_json_path,
                 page_image_path=page_image_path,
-                raw_pages=[],
-                completed_pages=[],
-                reused_pages=[],
-                page_failures=[],
             )
     finally:
         monkeypatch.undo()
@@ -10408,11 +10529,8 @@ def test_duplicate_ocr_page_workers_accept_only_one_artifact() -> None:
         )
     image_sha256 = hashlib.sha256(image_path.read_bytes()).hexdigest()
 
-    def _process(context: OCRPageProcessingContext) -> tuple[list[OCRPageJSON], list[int], list[int]]:
-        raw_pages: list[OCRPageJSON] = []
-        completed_pages: list[int] = []
-        reused_pages: list[int] = []
-        _process_ocr_page(
+    def _process(context: OCRPageProcessingContext) -> OCRPageOutcome:
+        return _process_ocr_page(
             context=context,
             done_count=0,
             page_number=1,
@@ -10420,18 +10538,13 @@ def test_duplicate_ocr_page_workers_accept_only_one_artifact() -> None:
             image_sha256=image_sha256,
             page_json_path=page_json_path,
             page_image_path=page_image_path,
-            raw_pages=raw_pages,
-            completed_pages=completed_pages,
-            reused_pages=reused_pages,
-            page_failures=[],
         )
-        return raw_pages, completed_pages, reused_pages
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(_process, contexts))
 
-    assert all(result[1] == [1] for result in results)
-    assert sum(bool(result[2]) for result in results) == 1
+    assert all(result.page_number == 1 and result.page is not None for result in results)
+    assert sorted(result.status for result in results) == ["completed", "reused"]
     persisted = json.loads(page_json_path.read_text(encoding="utf-8"))
     assert persisted["OCR_text_clusters"][0]["text"] in {"worker-1", "worker-2"}
     with sqlite3.connect(store_path) as connection:

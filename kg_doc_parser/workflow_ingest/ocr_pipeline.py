@@ -42,6 +42,7 @@ import math
 import os
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
@@ -54,7 +55,7 @@ from typing import Literal, NotRequired, Protocol, TypedDict, cast, runtime_chec
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from langchain_core.messages import HumanMessage, SystemMessage
 from PIL import Image
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError, PdfStreamError
 
@@ -628,6 +629,7 @@ class OCRQualityPolicy(BaseModel):
     reject_incomplete_text: bool = False
     reject_incomplete_words_on_edge: bool = False
     reject_empty_page: bool = False
+    reject_empty_output_on_nonblank_image: bool = False
     reject_unresolved_items: bool = False
     reject_source_item_loss: bool = False
     reject_invalid_spatial_coordinates: bool = True
@@ -701,8 +703,34 @@ class _OCRQualityPolicyRejection(Exception):
 def _evaluate_ocr_quality(
     response: OCRClusterResponse,
     policy: OCRQualityPolicy,
+    *,
+    source_image_path: Path | None = None,
 ) -> tuple[OCRQualityDiagnostic, ...]:
     diagnostics: list[OCRQualityDiagnostic] = []
+    has_any_evidence = bool(response.OCR_text_clusters or response.non_text_objects)
+    if not has_any_evidence and source_image_path is not None:
+        with Image.open(source_image_path) as source_image:
+            grayscale = source_image.convert("L")
+            grayscale.thumbnail((256, 256))
+            pixels = list(grayscale.getdata())
+        dark_pixel_count = sum(pixel < 245 for pixel in pixels)
+        minimum_ink_pixels = max(5, int(len(pixels) * 0.002))
+        if dark_pixel_count >= minimum_ink_pixels:
+            diagnostics.append(
+                OCRQualityDiagnostic(
+                    code="empty_ocr_output_on_nonblank_image",
+                    severity=(
+                        "error"
+                        if policy.reject_empty_output_on_nonblank_image
+                        else "warning"
+                    ),
+                    message=(
+                        "the source image contains visible ink but OCR returned no "
+                        "text or non-text evidence; this screening signal is not a "
+                        "completeness measurement"
+                    ),
+                )
+            )
     if response.is_empty_page:
         diagnostics.append(
             OCRQualityDiagnostic(
@@ -1167,6 +1195,26 @@ class OCRPageProcessingContext:
     quality_policy: OCRQualityPolicy = field(default_factory=OCRQualityPolicy)
 
 
+class OCRPageOutcome(BaseModel):
+    """Validated result of processing one page, including reuse and failure."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page_number: int = Field(ge=1)
+    status: Literal["completed", "reused", "failed"]
+    page: OCRPageJSON | None = None
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def validate_status_payload(self) -> OCRPageOutcome:
+        if self.status == "failed":
+            if self.page is not None or not self.error:
+                raise ValueError("failed page outcomes require an error and no page")
+        elif self.page is None or self.error is not None:
+            raise ValueError("accepted page outcomes require a page and no error")
+        return self
+
+
 @dataclass(slots=True)
 class OCRPagePreparation:
     """Durable inputs and injected dependencies for the page workflow.
@@ -1256,17 +1304,33 @@ def _build_ocr_page_preparation(
             page_number: int,
             settings: WorkflowProviderSettings,
         ) -> OCRClusterResponse:
-            from .pdf_native import extract_native_pdf_page
+            from .pdf_native import (
+                extract_native_pdf_page,
+                merge_native_and_ocr_page,
+                pdf_page_has_embedded_images,
+            )
 
             native = extract_native_pdf_page(native_pdf_path, page_number)
-            if native is not None:
-                return native
             if settings.ocr.pdf_text_mode == "native_only":
-                raise ValueError(
-                    f"native PDF text is unavailable for page {page_number}; "
-                    "native_only mode refuses an ungrounded fallback"
-                )
-            return configured_runner(image_path, page_number, settings)
+                has_images = pdf_page_has_embedded_images(native_pdf_path, page_number)
+                if native is None or has_images is not False:
+                    reason = (
+                        "native PDF text is unavailable"
+                        if native is None
+                        else "native PDF image inventory is incomplete"
+                    )
+                    raise ValueError(
+                        f"{reason} for page {page_number}; "
+                        "native_only mode refuses an ungrounded fallback"
+                    )
+                return native
+
+            ocr = configured_runner(image_path, page_number, settings)
+            if native is not None:
+                # Native text cannot prove coverage of vector or raster content.
+                # Keep OCR's unmatched evidence and merge only verified duplicates.
+                return merge_native_and_ocr_page(native, ocr)
+            return ocr
 
         effective_runner = _pdf_aware_runner
     page_context = OCRPageProcessingContext(
@@ -1387,11 +1451,7 @@ def _process_ocr_page(
     image_sha256: str,
     page_json_path: Path,
     page_image_path: Path,
-    raw_pages: list[OCRPageJSON],
-    completed_pages: list[int],
-    reused_pages: list[int],
-    page_failures: list[int],
-) -> None:
+) -> OCRPageOutcome:
     """Process one page image, either by resuming or by running OCR models."""
 
     state_store = context.state_store
@@ -1482,9 +1542,9 @@ def _process_ocr_page(
             if persisted_metadata is not None
             else split_page.metadata.model_dump(mode="json")
         )
-        raw_pages.append(_validated_ocr_page_json(raw_page, default_page_number=page_number))
-        completed_pages.append(page_number)
-        reused_pages.append(page_number)
+        hydrated_page = _validated_ocr_page_json(
+            raw_page, default_page_number=page_number
+        )
         _emit_ocr_event(
             probe,
             "ocr.page_reused",
@@ -1499,10 +1559,9 @@ def _process_ocr_page(
             _progress_bar(done_count, total_pages),
             page_number,
         )
-        return
+        return OCRPageOutcome(page_number=page_number, status="reused", page=hydrated_page)
 
     last_exc: Exception | None = None
-    page_completed = False
     _emit_ocr_event(
         probe,
         "ocr.page_started",
@@ -1547,7 +1606,11 @@ def _process_ocr_page(
         )
         try:
             response = context.ocr_page_runner(image_path, page_number, candidate_settings)
-            quality_diagnostics = _evaluate_ocr_quality(response, context.quality_policy)
+            quality_diagnostics = _evaluate_ocr_quality(
+                response,
+                context.quality_policy,
+                source_image_path=image_path,
+            )
             if any(item.severity == "error" for item in quality_diagnostics):
                 raise _OCRQualityPolicyRejection(
                     page_number,
@@ -1620,21 +1683,20 @@ def _process_ocr_page(
                 raw_page["metadata"] = persisted_page.get(
                     "metadata", split_page.metadata.model_dump(mode="json")
                 )
-                raw_pages.append(
-                    _validated_ocr_page_json(raw_page, default_page_number=page_number)
+                hydrated_page = _validated_ocr_page_json(
+                    raw_page, default_page_number=page_number
                 )
-                completed_pages.append(page_number)
-                reused_pages.append(page_number)
-                page_completed = True
-                break
+                return OCRPageOutcome(
+                    page_number=page_number, status="reused", page=hydrated_page
+                )
             # The adapter consumes plain dict pages, not the Pydantic page
             # model, so we serialize the page into the legacy-compatible shape here.
             raw_page = split_page.dump_supercede_parse()
             raw_page["meaningful_ordering"] = list(split_page.meaningful_ordering)
             raw_page["metadata"] = page_payload["metadata"]
-            raw_pages.append(_validated_ocr_page_json(raw_page, default_page_number=page_number))
-            completed_pages.append(page_number)
-            page_completed = True
+            accepted_page = _validated_ocr_page_json(
+                raw_page, default_page_number=page_number
+            )
             _emit_ocr_event(
                 probe,
                 "ocr.candidate_completed",
@@ -1651,7 +1713,9 @@ def _process_ocr_page(
                 page_number,
                 candidate_model,
             )
-            break
+            return OCRPageOutcome(
+                page_number=page_number, status="completed", page=accepted_page
+            )
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
             retry_feedback = _safe_ocr_retry_feedback(exc)
@@ -1686,25 +1750,28 @@ def _process_ocr_page(
                 attempt_index=attempt_index,
                 error=str(exc),
             )
-    if not page_completed:
-        page_failures.append(page_number)
-        _emit_ocr_event(
-            probe,
-            "ocr.page_failed",
-            document_id=document_id,
-            page_number=page_number,
-            candidate_models=list(context.candidate_models),
-        )
-        _LOGGER.warning(
-            "ocr progress | %s/%s | %s | failed page %s after %s candidate(s)",
-            done_count,
-            total_pages,
-            _progress_bar(done_count, total_pages),
-            page_number,
-            len(context.candidate_models),
-        )
-        if last_exc is not None:
-            _LOGGER.warning("last ocr error for page %s: %s", page_number, last_exc)
+    _emit_ocr_event(
+        probe,
+        "ocr.page_failed",
+        document_id=document_id,
+        page_number=page_number,
+        candidate_models=list(context.candidate_models),
+    )
+    _LOGGER.warning(
+        "ocr progress | %s/%s | %s | failed page %s after %s candidate(s)",
+        done_count,
+        total_pages,
+        _progress_bar(done_count, total_pages),
+        page_number,
+        len(context.candidate_models),
+    )
+    if last_exc is not None:
+        _LOGGER.warning("last ocr error for page %s: %s", page_number, last_exc)
+    return OCRPageOutcome(
+        page_number=page_number,
+        status="failed",
+        error=str(last_exc) if last_exc is not None else "all OCR candidates failed",
+    )
 
 
 def _finalize_ocr_workflow_artifacts(
@@ -1723,6 +1790,7 @@ def _finalize_ocr_workflow_artifacts(
     state_store: OCRWorkflowStateStore,
     restore_grouping_checkpoint: bool = True,
     persist_grouping_checkpoint: bool = True,
+    publish_artifacts: bool = True,
     grouping_policy_version: str = "baseline-v1",
     summary_policy: SummaryPolicy | None = None,
     summary_generator: SummaryGenerator | None = None,
@@ -1790,14 +1858,15 @@ def _finalize_ocr_workflow_artifacts(
         reused_pages=reused_pages,
         document_tree=document_tree,
     )
-    if document_tree is not None:
-        _write_document_tree(legacy_dir / "document-tree.json", document_tree)
-    _write_summary(
-        artifacts,
-        document_id=document_id,
-        provider_settings=provider_settings,
-        state_store=state_store,
-    )
+    if publish_artifacts:
+        if document_tree is not None:
+            _write_document_tree(legacy_dir / "document-tree.json", document_tree)
+        _write_summary(
+            artifacts,
+            document_id=document_id,
+            provider_settings=provider_settings,
+            state_store=state_store,
+        )
     return artifacts
 
 
@@ -3617,6 +3686,30 @@ def _builtin_pdf_rasterizer_configuration() -> str:
     except metadata.PackageNotFoundError:
         pdf2image_version = "unknown"
     poppler_path = os.environ.get("POPPLER_PATH", "")
+    executable_name = "pdfinfo.exe" if os.name == "nt" else "pdfinfo"
+    executable = (
+        str(Path(poppler_path) / executable_name)
+        if poppler_path
+        else shutil.which(executable_name)
+    )
+    poppler_identity = "unavailable"
+    if executable is not None:
+        try:
+            version_probe = subprocess.run(
+                [executable, "-v"],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=3,
+            )
+            output = f"{version_probe.stdout}\n{version_probe.stderr}"
+            version_line = next(
+                (line.strip() for line in output.splitlines() if line.strip()),
+                "unknown-version",
+            )
+            poppler_identity = f"{Path(executable).resolve()}|{version_line}"
+        except (OSError, subprocess.TimeoutExpired):
+            poppler_identity = f"{Path(executable).resolve()}|unavailable"
     return json.dumps(
         {
             "dpi": 200,
@@ -3624,6 +3717,7 @@ def _builtin_pdf_rasterizer_configuration() -> str:
             "rotation": 0,
             "pdf2image": pdf2image_version,
             "poppler_path": poppler_path,
+            "poppler_identity": poppler_identity,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -4229,7 +4323,7 @@ def prepare_ocr_workflow_input(
         legacy_dir=str(source_plan.legacy_dir),
     )
 
-    # Accumulate the serialized OCR pages that will later be normalized into workflow input.
+    # Accumulate the validated page outcomes for the standalone compatibility path.
     raw_pages: list[OCRPageJSON] = []
 
     # Track which pages completed, were reused, or still failed after retries.
@@ -4259,7 +4353,7 @@ def prepare_ocr_workflow_input(
             image_sha256 = _sha256_file(image_path)
             page_json_path = source_plan.legacy_dir / f"page_{page_number}.json"
             page_image_path = source_plan.legacy_dir / f"page_{page_number}{image_path.suffix or '.png'}"
-            _process_ocr_page(
+            outcome = _process_ocr_page(
                 context=page_context,
                 done_count=done_count,
                 page_number=page_number,
@@ -4267,11 +4361,16 @@ def prepare_ocr_workflow_input(
                 image_sha256=image_sha256,
                 page_json_path=page_json_path,
                 page_image_path=page_image_path,
-                raw_pages=raw_pages,
-                completed_pages=completed_pages,
-                reused_pages=reused_pages,
-                page_failures=page_failures,
             )
+            if outcome.status == "failed":
+                page_failures.append(outcome.page_number)
+            else:
+                if outcome.page is None:
+                    raise RuntimeError("accepted OCR page outcome has no page payload")
+                raw_pages.append(outcome.page)
+                completed_pages.append(outcome.page_number)
+                if outcome.status == "reused":
+                    reused_pages.append(outcome.page_number)
 
     # Mark the whole document complete once every page has been processed.
     state_store.refresh_document_completion(document_id=document_id)

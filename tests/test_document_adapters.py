@@ -318,10 +318,38 @@ def test_cross_page_continuation_suggestion_requires_ocr_boundary_signal() -> No
                 "pages": [
                     {
                         "page_number": 1,
-                        "metadata": {"incomplete_text": True},
-                        "units": [SourceUnit(modality="text", page_number=1, text="head")],
+                        "metadata": {
+                            "incomplete_text": True,
+                            "page_y_min": 0,
+                            "page_y_max": 800,
+                        },
+                        "units": [
+                            SourceUnit(
+                                modality="text",
+                                page_number=1,
+                                text="head",
+                                bbox=BoundingBox(
+                                    x_min=20, y_min=760, x_max=180, y_max=790
+                                ),
+                                metadata={"coordinate_system": "pixels"},
+                            )
+                        ],
                     },
-                    {"page_number": 2, "units": [SourceUnit(modality="text", page_number=2, text="tail")]},
+                    {
+                        "page_number": 2,
+                        "metadata": {"page_y_min": 0, "page_y_max": 800},
+                        "units": [
+                            SourceUnit(
+                                modality="text",
+                                page_number=2,
+                                text="tail",
+                                bbox=BoundingBox(
+                                    x_min=20, y_min=10, x_max=180, y_max=40
+                                ),
+                                metadata={"coordinate_system": "pixels"},
+                            )
+                        ],
+                    },
                 ],
             }
         ],
@@ -331,6 +359,112 @@ def test_cross_page_continuation_suggestion_requires_ocr_boundary_signal() -> No
     proposals = suggest_cross_page_continuations(tree)
     assert len(proposals) == 1
     assert proposals[0].kind == "layout:cross-page-continuation"
+
+
+def test_cross_page_continuation_requires_item_specific_edge_geometry() -> None:
+    inp = WorkflowIngestInput(
+        request_id="continuation-not-at-edges",
+        collections=[
+            {
+                "collection_id": "continuation-not-at-edges",
+                "title": "Continuation candidate away from page edges",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "metadata": {
+                            "incomplete_text": True,
+                            "page_y_min": 0,
+                            "page_y_max": 800,
+                        },
+                        "units": [
+                            SourceUnit(
+                                modality="text",
+                                page_number=1,
+                                text="complete paragraph",
+                                bbox=BoundingBox(
+                                    x_min=20, y_min=200, x_max=300, y_max=240
+                                ),
+                                metadata={"coordinate_system": "pixels"},
+                            )
+                        ],
+                    },
+                    {
+                        "page_number": 2,
+                        "metadata": {"page_y_min": 0, "page_y_max": 800},
+                        "units": [
+                            SourceUnit(
+                                modality="text",
+                                page_number=2,
+                                text="unrelated heading",
+                                bbox=BoundingBox(
+                                    x_min=20, y_min=200, x_max=300, y_max=240
+                                ),
+                                metadata={"coordinate_system": "pixels"},
+                            )
+                        ],
+                    },
+                ],
+            }
+        ],
+    )
+    tree = build_document_tree(inp)
+    assert tree is not None
+
+    assert suggest_cross_page_continuations(tree) == ()
+
+
+def test_cross_page_continuation_does_not_join_a_new_heading() -> None:
+    inp = WorkflowIngestInput(
+        request_id="continuation-heading",
+        collections=[
+            {
+                "collection_id": "continuation-heading",
+                "title": "Continuation heading guard",
+                "modality": "ocr",
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "metadata": {
+                            "incomplete_text": True,
+                            "page_y_min": 0,
+                            "page_y_max": 800,
+                        },
+                        "units": [
+                            SourceUnit(
+                                modality="text",
+                                page_number=1,
+                                text="unfinished paragraph",
+                                bbox=BoundingBox(
+                                    x_min=20, y_min=760, x_max=300, y_max=790
+                                ),
+                                metadata={"coordinate_system": "pixels"},
+                            )
+                        ],
+                    },
+                    {
+                        "page_number": 2,
+                        "metadata": {"page_y_min": 0, "page_y_max": 800},
+                        "units": [
+                            SourceUnit(
+                                modality="text",
+                                page_number=2,
+                                text="New Section Heading",
+                                bbox=BoundingBox(
+                                    x_min=20, y_min=10, x_max=300, y_max=40
+                                ),
+                                metadata={"coordinate_system": "pixels"},
+                            )
+                        ],
+                    },
+                ],
+            }
+        ],
+    )
+    tree = build_document_tree(inp)
+    assert tree is not None
+
+    assert suggest_cross_page_continuations(tree) == ()
 
 
 def test_cross_page_continuation_never_merges_text_into_nontext() -> None:

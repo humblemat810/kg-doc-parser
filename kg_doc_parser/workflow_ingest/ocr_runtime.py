@@ -25,7 +25,7 @@ from typing import (
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver
-from kogwistar.runtime.design import Predicate as RuntimeDesignPredicate
+from kogwistar.runtime.contract import Predicate as RuntimeDesignPredicate
 from kogwistar.runtime.models import (
     RunFailure,
     RunSuccess,
@@ -1150,18 +1150,7 @@ def _build_page_resolver(
         if cursor >= len(sources):
             return _success("finalize_ocr_pages")
         page_number, image_path = sources[cursor]
-        # Legacy checkpoints may still embed their raw prefix. Read that
-        # payload only for the one-time compatibility migration; all current
-        # checkpoints pass an empty list and rehydrate once in finalization.
-        raw_pages = (
-            _json_pages(state, source_plan=source_plan)
-            if state.get("raw_pages") is not None
-            else []
-        )
-        completed_pages: list[int] = []
-        reused_pages: list[int] = []
-        failures: list[int] = []
-        _process_ocr_page(
+        outcome = _process_ocr_page(
             context=context,
             done_count=cursor + 1,
             page_number=page_number,
@@ -1169,28 +1158,24 @@ def _build_page_resolver(
             image_sha256=hashlib.sha256(image_path.read_bytes()).hexdigest(),
             page_json_path=source_plan.legacy_dir / f"page_{page_number}.json",
             page_image_path=source_plan.legacy_dir / f"page_{page_number}{image_path.suffix or '.png'}",
-            raw_pages=raw_pages,
-            completed_pages=completed_pages,
-            reused_pages=reused_pages,
-            page_failures=failures,
         )
-        if failures:
+        if outcome.status == "failed":
             return RunFailure(
                 conversation_node_id=None,
                 state_update=[("u", {"last_failed_page": page_number})],
                 errors=[f"OCR page {page_number} failed after all candidates"],
             )
-        if completed_pages != [page_number] or len(reused_pages) > 1 or any(
-            reused_page != page_number for reused_page in reused_pages
-        ):
-            raise RuntimeError("OCR page processing produced inconsistent progress deltas")
+        if outcome.page_number != page_number or outcome.page is None:
+            raise RuntimeError("OCR page processing produced an inconsistent outcome")
 
         updates: list[StateUpdate] = [
             (
                 "u",
                 {
                     "page_cursor": cursor + 1,
-                    "last_reused_page": page_number if reused_pages else None,
+                    "last_reused_page": (
+                        page_number if outcome.status == "reused" else None
+                    ),
                 },
             ),
         ]
@@ -2030,6 +2015,7 @@ def run_ocr_root_workflow(
             state_store=preparation.state_store,
             restore_grouping_checkpoint=False,
             persist_grouping_checkpoint=False,
+            publish_artifacts=False,
             grouping_policy_version=grouping_policy_version,
         )
         if artifacts.document_tree is None:
@@ -2126,7 +2112,6 @@ def run_ocr_root_workflow(
             }
         )
         attach_document_tree_metadata(workflow_input, grouped_tree)
-        _write_document_tree(preparation.source_plan.legacy_dir / "document-tree.json", grouped_tree)
         return _success(
             "ocr_root_invoke_semantic",
             state_update=[
@@ -2388,6 +2373,7 @@ def run_ocr_root_workflow(
         state_store=preparation.state_store,
         restore_grouping_checkpoint=False,
         persist_grouping_checkpoint=False,
+        publish_artifacts=False,
         grouping_policy_version=grouping_policy_version,
     )
     workflow_input_payload = final_state.get("workflow_input")
