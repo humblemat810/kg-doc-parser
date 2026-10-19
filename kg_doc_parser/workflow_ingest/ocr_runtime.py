@@ -37,7 +37,6 @@ from kogwistar.runtime.runtime import (
     WorkflowRuntime,
 )
 
-from .adapters import _validated_ocr_page_json
 from .design import (
     DEFAULT_OCR_GROUPING_WORKFLOW_ID,
     DEFAULT_OCR_PAGE_WORKFLOW_ID,
@@ -92,14 +91,32 @@ from .ocr_runtime_contracts import (
     OCRWorkflowState as _OCRWorkflowState,
 )
 from .ocr_runtime_contracts import (
-    PageListKey,
     ResumeIdentityKey,
     ResumeIdentityValue,
-    StateBoolKey,
-    StateStringKey,
 )
 from .ocr_runtime_state import (
-    page_source_state as _page_source_state,
+    int_list as _int_list,
+)
+from .ocr_runtime_state import (
+    json_pages as _json_pages,
+)
+from .ocr_runtime_state import (
+    page_cursor as _page_cursor,
+)
+from .ocr_runtime_state import (
+    page_sources as _page_sources,
+)
+from .ocr_runtime_state import (
+    resume_identity_value as _resume_identity_value,
+)
+from .ocr_runtime_state import (
+    state_bool as _state_bool,
+)
+from .ocr_runtime_state import (
+    state_optional_string as _state_optional_string,
+)
+from .ocr_runtime_state import (
+    state_string as _state_string,
 )
 from .ocr_runtime_state import (
     typed_child_state as _typed_child_state,
@@ -191,51 +208,6 @@ def _checkpoint_repair_cursor(patch: Mapping[str, object]) -> int:
     return cursor
 
 
-def _resume_identity_value(
-    state: _OCRWorkflowState,
-    key: ResumeIdentityKey,
-) -> ResumeIdentityValue | None:
-    """Read an immutable resume identity field without widening it to object."""
-    value = state.get(key)
-    if value is None or isinstance(value, str):
-        return value
-    if key == "ocr_configuration_fingerprints" and isinstance(value, list) and all(
-        isinstance(item, str) for item in value
-    ):
-        return list(value)
-    raise TypeError(f"OCR checkpoint identity field {key!r} has an invalid type")
-
-
-def _state_string(
-    state: _OCRWorkflowState,
-    key: StateStringKey,
-    default: str,
-) -> str:
-    value = state.get(key)
-    return value if isinstance(value, str) else default
-
-
-def _state_optional_string(
-    state: _OCRWorkflowState,
-    key: StateStringKey,
-) -> str | None:
-    value = state.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise TypeError(f"OCR workflow state field {key!r} must be a string")
-    return value
-
-
-def _state_bool(
-    state: _OCRWorkflowState,
-    key: StateBoolKey,
-    default: bool = False,
-) -> bool:
-    value = state.get(key)
-    return value if type(value) is bool else default
-
-
 def _success(
     next_step: str | None,
     *,
@@ -312,81 +284,6 @@ def _recovery_generation(state: _OCRWorkflowState) -> int:
             "OCR page recovery generation must be a non-negative integer"
         )
     return value
-
-
-def _page_cursor(state: _OCRWorkflowState) -> int:
-    value = state.get("page_cursor", 0)
-    return value if type(value) is int and value >= 0 else 0
-
-
-def _page_sources(state: _OCRWorkflowState) -> list[tuple[int, Path]]:
-    value = state.get("page_sources", [])
-    if not isinstance(value, list):
-        raise TypeError("OCR page runtime state has no page source list")
-    sources: list[tuple[int, Path]] = []
-    for item in value:
-        source = _page_source_state(item)
-        page_number = source["page_number"]
-        image_path = source["image_path"]
-        if page_number < 1:
-            raise ValueError("OCR page runtime source page number is malformed")
-        sources.append((page_number, Path(image_path)))
-    return sources
-
-
-def _json_pages(
-    state: _OCRWorkflowState,
-    *,
-    source_plan: OCRSourcePlan | None = None,
-) -> list[OCRPageJSON]:
-    """Load accepted pages without copying their payload into every checkpoint.
-
-    ``raw_pages`` is retained as a compatibility path for checkpoints created
-    before artifact-backed page state was introduced. New checkpoints persist
-    only the artifact directory and cursor, then reload the accepted JSON
-    artifacts when a downstream step needs the page payloads.
-    """
-    value = state.get("raw_pages")
-    if value is not None:
-        if not isinstance(value, list):
-            raise ValueError("OCR page runtime raw page state is malformed")
-        return [
-            _validated_ocr_page_json(item, strict_page_number_types=True)
-            for item in value
-        ]
-
-    legacy_dir_value = state.get("legacy_dir")
-    if not isinstance(legacy_dir_value, str) or not legacy_dir_value:
-        raise ValueError("OCR page runtime state has no legacy artifact directory")
-    cursor = _page_cursor(state)
-    pages: list[OCRPageJSON] = []
-    page_sources = (
-        source_plan.page_sources
-        if source_plan is not None
-        else _page_sources(state)
-    )
-    for page_number, _image_path in page_sources[:cursor]:
-        page_path = Path(legacy_dir_value) / f"page_{page_number}.json"
-        try:
-            payload = json.loads(page_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"OCR page artifact is not readable: {page_path}") from exc
-        if not isinstance(payload, dict):
-            raise TypeError(f"OCR page artifact is not a JSON object: {page_path}")
-        pages.append(
-            _validated_ocr_page_json(payload, default_page_number=page_number)
-        )
-    return pages
-
-
-def _int_list(state: _OCRWorkflowState, key: PageListKey) -> list[int]:
-    value = state.get(key, [])
-    if not isinstance(value, list) or any(type(item) is not int for item in value):
-        raise ValueError(f"OCR page runtime state field {key!r} is malformed")
-    result: list[int] = [item for item in value if type(item) is int]
-    if len(result) != len(value):
-        raise ValueError(f"OCR page runtime state field {key!r} is malformed")
-    return result
 
 
 def _validate_root_resume_identity(

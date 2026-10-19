@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from kg_doc_parser.workflow_ingest import ocr_runtime as ocr_runtime_module
 from kg_doc_parser.workflow_ingest import ocr_runtime_state
 
 
@@ -19,7 +18,7 @@ def test_ocr_runtime_state_boundary_rejects_wrong_known_field_types() -> None:
         )
 
     with pytest.raises(TypeError, match="page_sources contains a malformed entry"):
-        ocr_runtime_module._page_sources({"page_sources": [{"page_number": 1}]})
+        ocr_runtime_state.page_sources({"page_sources": [{"page_number": 1}]})
 
     with pytest.raises(TypeError, match="grouping_passes.*pass 0 must be a list"):
         ocr_runtime_state.typed_state({"grouping_passes": [{"proposal": 1}]})
@@ -78,3 +77,17 @@ def test_ocr_runtime_child_state_uses_the_same_typed_boundary() -> None:
             {"page_cursor": "not-an-integer"},
             label="grouping child",
         )
+
+
+def test_ocr_runtime_state_readers_reject_malformed_known_values() -> None:
+    with pytest.raises(TypeError, match="identity field.*invalid type"):
+        ocr_runtime_state.resume_identity_value(
+            {"ocr_configuration_fingerprints": ["valid", 1]},
+            "ocr_configuration_fingerprints",
+        )
+
+    with pytest.raises(ValueError, match="completed_pages.*malformed"):
+        ocr_runtime_state.int_list({"completed_pages": [1, True]}, "completed_pages")
+
+    assert ocr_runtime_state.page_cursor({"page_cursor": -1}) == 0
+    assert ocr_runtime_state.state_string({}, "document_id", "fallback") == "fallback"
