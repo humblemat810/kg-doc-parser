@@ -16,19 +16,18 @@ git show <commit> -- doc/ocr_grouping/OCR_STATUS_LEDGER.md
 | Area | Status | Release-blocking remainder |
 | --- | --- | --- |
 | Persisted Kogwistar runtime integration and page scaling | PASS for fixed runtime/recovery gates; current typing work in progress | Previously verified at parser CI `39188130268` and `39135756441`; exact tests and operation counts are retained in Git history. No extra 1000-page graph benchmark is required. Current core typing branch is not yet merged/released; parser remains pinned to released Kogwistar `0.6.13` until core CI/release gates pass. |
-| Artifact/checkpoint crash consistency | PASS for existing recovery gates; current outcome refactor locally verified | Prior parser CI `39135756441` passed artifact-first, checkpoint-first, grouping-commit-before-child-checkpoint, and semantic-graph-before-checkpoint cases. The current working-tree page-outcome slice passes `test_ocr_page_artifact_publish_crash_is_recoverable` and `test_duplicate_ocr_page_workers_accept_only_one_artifact`; it still needs the full interpreter matrix. |
+| Artifact/checkpoint crash consistency | PASS for existing recovery gates; page-outcome refactor locally verified | Prior parser CI `39135756441` passed artifact-first, checkpoint-first, grouping-commit-before-child-checkpoint, and semantic-graph-before-checkpoint cases. Commit `1bdbc11` includes the page-outcome slice; `test_ocr_page_artifact_publish_crash_is_recoverable` and `test_duplicate_ocr_page_workers_accept_only_one_artifact` passed locally. The full interpreter matrix remains outstanding. |
 | Adaptive grouping and summary durability | IMPLEMENTED; live-provider quality PARTIAL | Iterative grouping, grounded summaries, resume, and tree/frontier CAS have deterministic coverage. Live-provider grouping quality remains unverified. |
 | Semantic hierarchy publication | PASS in prior CI; root artifact deduplication locally verified | Prior parser CI `39188130268` passed durable graph publication. The current root path now writes the accepted grouped tree and summary once; `test_default_adaptive_root_wires_grounded_summary_and_semantic_export` verifies one tree and summary publication. |
 | OCR completeness and positional fidelity | PARTIAL; see B08 below | Cross-page continuation now requires item-specific edge geometry; hybrid PDF mode now merges native text with raster OCR. Structural accounting and the independent blank-output screen do not prove completeness of partially omitted content. Do not claim provider-wide completeness. |
-| Typing and supported interpreters | Standard Pyright baseline passes; strict unknown-type goal remains open | Parser Pyright on the current working tree: 0 errors/warnings (`--pythonversion 3.11`). A diagnostic strict scan reports 2,168 errors in parser production modules; the matching core scan reports 4,421. These scans expose existing unknown/dynamic typing, not introduced regressions. Changed-file Ruff passes. A full typing migration and CPython/PyPy matrix are still required; do not represent the broad typing goal as complete. |
+| Typing and supported interpreters | Standard Pyright baseline passes; strict unknown-type goal remains open | Parser Pyright on the code reviewed for commit `1bdbc11`: 0 errors/warnings (`--pythonversion 3.11`). A prior diagnostic strict scan reports 2,168 errors in parser production modules; the matching core scan reports 4,421. These scans expose existing unknown/dynamic typing, not introduced regressions. Changed-file Ruff passes. A full typing migration and CPython/PyPy matrix are still required; do not represent the broad typing goal as complete. |
 | Release | Parser candidate `0.2.19`; no release action in this work | Kogwistar `0.6.13` remains the released parser dependency. Do not change the pin or publish until the core typing branch is merged/released and parser CI passes. |
 
 ## B01-B14 Audit Reconciliation
 
-Statuses below are checked against parser branch HEAD `0200534` plus the
-current uncommitted working-tree changes. Test names are reusable regression
-evidence; PASS means the existing implementation and test agree, not that a
-provider is universally accurate.
+Statuses below are checked against parser branch HEAD `1bdbc11`. Test names
+are reusable regression evidence; PASS means the implementation and test
+agree, not that a provider is universally accurate.
 
 | ID | Status | Current implementation and regression evidence | Remaining work |
 | --- | --- | --- | --- |
