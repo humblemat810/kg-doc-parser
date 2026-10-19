@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import Literal, NotRequired, TypedDict, cast
+from typing import Literal, NotRequired, cast
+
+from typing_extensions import TypedDict
 
 from ..models import _meaningful_ordering_error
 from .models import (
