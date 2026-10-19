@@ -82,13 +82,10 @@ from .ocr_pipeline import (
     build_production_group_proposal_generator,
 )
 from .ocr_runtime_contracts import (
-    OCR_PAGE_STATE_VERSION as _OCR_PAGE_STATE_VERSION,
+    OCR_PAGE_STATE_VERSION as _OCR_PAGE_STATE_VERSION,  # noqa: F401
 )
 from .ocr_runtime_contracts import (
     OCR_ROOT_STATE_VERSION as _OCR_ROOT_STATE_VERSION,
-)
-from .ocr_runtime_contracts import (
-    OCRCheckpointPatch as _OCRCheckpointPatch,
 )
 from .ocr_runtime_contracts import (
     OCRWorkflowState as _OCRWorkflowState,
@@ -105,17 +102,32 @@ from .ocr_runtime_lineage import (
 from .ocr_runtime_lineage import (
     validate_root_invocation_lineage as _validate_root_invocation_lineage,
 )
+from .ocr_runtime_page_state import (
+    page_result_needs_recovery as _page_result_needs_recovery,
+)
+from .ocr_runtime_page_state import (
+    page_workflow_initial_state as _page_workflow_initial_state,
+)
+from .ocr_runtime_page_state import (
+    reconcile_page_checkpoint as _reconcile_page_checkpoint,  # noqa: F401
+)
+from .ocr_runtime_page_state import (
+    reused_pages_from_trace as _reused_pages_from_trace,
+)
+from .ocr_runtime_page_state import (
+    root_page_artifacts_need_recovery as _root_page_artifacts_need_recovery,
+)
+from .ocr_runtime_page_state import (
+    validate_existing_page_identities as _validate_existing_page_identities,
+)
+from .ocr_runtime_page_state import (
+    validate_root_page_result as _validate_root_page_result,
+)
 from .ocr_runtime_state import (
     int_list as _int_list,
 )
 from .ocr_runtime_state import (
     json_pages as _json_pages,
-)
-from .ocr_runtime_state import (
-    page_cursor as _page_cursor,
-)
-from .ocr_runtime_state import (
-    page_sources as _page_sources,
 )
 from .ocr_runtime_state import (
     state_bool as _state_bool,
@@ -280,289 +292,6 @@ def _mark_adaptive_grouping_complete(
         updated_root if node.node_id == tree.root_id else node for node in tree.nodes
     )
     return tree.model_copy(update={"nodes": nodes})
-
-
-def _reused_pages_from_trace(
-    conversation_engine: GraphKnowledgeEngine, run_id: str
-) -> list[int]:
-    """Rebuild the compatibility reuse summary from compact per-step deltas."""
-    nodes = list(
-        conversation_engine.read.get_nodes(
-            where={
-                "$and": [
-                    {"entity_type": "workflow_step_exec"},
-                    {"run_id": run_id},
-                ]
-            },
-            limit=None,
-        )
-    )
-    outcomes: dict[int, tuple[int, int, int, bool]] = {}
-    for node in nodes:
-        metadata = node.metadata or {}
-        result_raw = metadata.get("result_json")
-        if not isinstance(result_raw, str):
-            continue
-        try:
-            result = json.loads(result_raw)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(result, dict):
-            continue
-        updates = result.get("state_update", [])
-        if not isinstance(updates, list):
-            continue
-        step_sequence = metadata.get("step_seq", 0)
-        if type(step_sequence) is not int:
-            step_sequence = 0
-        attempt = metadata.get("attempt", 0)
-        if type(attempt) is not int:
-            attempt = 0
-        for update_index, update in enumerate(updates):
-            if not isinstance(update, (list, tuple)) or len(update) != 2:
-                continue
-            operation, payload = update
-            if not isinstance(payload, dict):
-                continue
-            page_cursor = payload.get("page_cursor")
-            if (
-                type(page_cursor) is int
-                and page_cursor >= 1
-                and "last_reused_page" in payload
-            ):
-                reused_page = payload.get("last_reused_page")
-                outcomes[page_cursor] = (
-                    step_sequence,
-                    attempt,
-                    update_index,
-                    reused_page == page_cursor,
-                )
-            reused_page = payload.get("last_reused_page")
-            if type(reused_page) is int and reused_page >= 1:
-                outcomes[reused_page] = (
-                    step_sequence,
-                    attempt,
-                    update_index,
-                    True,
-                )
-            # Read pre-compaction append deltas when resuming an old run.
-            if operation == "a":
-                legacy_page = payload.get("reused_pages")
-                if type(legacy_page) is int and legacy_page >= 1:
-                    outcomes[legacy_page] = (
-                        step_sequence,
-                        attempt,
-                        update_index,
-                        True,
-                    )
-    return [
-        page_number
-        for page_number, (_step, _attempt, _update, was_reused) in sorted(
-            outcomes.items(), key=lambda item: item[1][:3]
-        )
-        if was_reused
-    ]
-
-
-def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> _OCRWorkflowState:
-    return {
-        "ocr_page_state_version": _OCR_PAGE_STATE_VERSION,
-        "source_fingerprint": source_plan.input_fingerprint,
-        "legacy_dir": str(source_plan.legacy_dir),
-        "page_cursor": 0,
-    }
-
-
-def _reconcile_page_checkpoint(
-    *,
-    state: _OCRWorkflowState,
-    context: OCRPageProcessingContext,
-    source_plan: OCRSourcePlan,
-    start_index: int = 0,
-) -> _OCRCheckpointPatch | None:
-    """Find the first checkpointed page whose accepted artifact is no longer valid.
-
-    Runtime checkpoints and the SQLite/artifact cache are separate durable
-    stores.  A crash can commit one without the other, or an operator can
-    tamper with an artifact between resumes.  Never advance past that seam:
-    truncate the in-memory checkpoint to the verified prefix and let the
-    normal page step replay the first unaccepted page.
-    """
-    cursor = _page_cursor(state)
-    # New checkpoints keep the immutable source manifest in the invocation
-    # context, not in every Kogwistar state snapshot. Older checkpoints remain
-    # readable through their persisted page_sources field.
-    sources = (
-        _page_sources(state)
-        if "page_sources" in state
-        else source_plan.page_sources
-    )
-    completed = _int_list(state, "completed_pages") if "completed_pages" in state else []
-    reused = _int_list(state, "reused_pages") if "reused_pages" in state else []
-    if start_index < 0 or start_index > cursor:
-        raise ValueError("OCR checkpoint reconciliation start index is out of range")
-    for index in range(start_index, cursor):
-        page_number, image_path = sources[index]
-        image_digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
-        page_path = source_plan.legacy_dir / f"page_{page_number}.json"
-        if context.state_store.reconcile_orphan_artifact(
-            document_id=context.document_id,
-            page_number=page_number,
-            content_hash=image_digest,
-            artifact_path=page_path,
-            config_fingerprints=context.configuration_fingerprints,
-        ):
-            continue
-        if context.state_store.should_skip_page(
-            document_id=context.document_id,
-            page_number=page_number,
-            stage="ocr",
-            content_hash=image_digest,
-            artifact_path=page_path,
-            config_fingerprint=context.configuration_fingerprints,
-        ):
-            continue
-        repair: _OCRCheckpointPatch = {"page_cursor": index}
-        if "completed_pages" in state:
-            repair["completed_pages"] = completed[:index]
-        if "reused_pages" in state:
-            repair["reused_pages"] = [
-                number for number in reused[:index] if number in completed[:index]
-            ]
-        # Preserve the old in-checkpoint payload only when repairing a legacy
-        # checkpoint. New checkpoints stay artifact-backed and compact.
-        if "raw_pages" in state:
-            repair["raw_pages"] = _json_pages(
-                state, source_plan=source_plan
-            )[:index]
-        return repair
-    return None
-
-
-def _validate_root_page_result(
-    *,
-    page_result: _OCRWorkflowState,
-    context: OCRPageProcessingContext,
-    source_plan: OCRSourcePlan,
-) -> None:
-    """Fail closed if a terminal page child no longer owns valid artifacts.
-
-    A parent resume can skip a terminal child invocation.  Recheck the
-    artifact/SQLite seam here before treating the serialized child result as
-    accepted output; otherwise a deleted or tampered page artifact could be
-    replaced by stale checkpoint data without rerunning OCR.
-    """
-    sources = source_plan.page_sources
-    cursor = _page_cursor(page_result)
-    expected_pages = [page_number for page_number, _image_path in sources]
-    legacy_completed = (
-        _int_list(page_result, "completed_pages")
-        if "completed_pages" in page_result
-        else []
-    )
-    completed = legacy_completed or expected_pages[:cursor]
-    if cursor != len(sources) or completed != expected_pages:
-        raise RuntimeError("OCR root page child completed with an incomplete page checkpoint")
-    repair = _reconcile_page_checkpoint(
-        state=page_result,
-        context=context,
-        source_plan=source_plan,
-    )
-    if repair is not None:
-        raise RuntimeError(
-            "OCR root page checkpoint is no longer backed by accepted artifacts; "
-            "resume must retry the page child"
-        )
-
-
-def _page_result_needs_recovery(
-    *,
-    page_result: _OCRWorkflowState,
-    context: OCRPageProcessingContext,
-    source_plan: OCRSourcePlan,
-) -> bool:
-    """Report whether a terminal page child must be regenerated."""
-    sources = source_plan.page_sources
-    expected_pages = [page_number for page_number, _image_path in sources]
-    legacy_completed = (
-        _int_list(page_result, "completed_pages")
-        if "completed_pages" in page_result
-        else []
-    )
-    completed = legacy_completed or expected_pages[: _page_cursor(page_result)]
-    if (
-        _page_cursor(page_result) != len(sources)
-        or completed != expected_pages
-    ):
-        return True
-    return _reconcile_page_checkpoint(
-        state=page_result,
-        context=context,
-        source_plan=source_plan,
-    ) is not None
-
-
-def _root_page_artifacts_need_recovery(
-    *,
-    context: OCRPageProcessingContext,
-    source_plan: OCRSourcePlan,
-) -> bool:
-    """Detect a broken accepted page set before a terminal root resume.
-
-    Kogwistar correctly treats a succeeded run as terminal. When an artifact
-    is lost after that terminal checkpoint, create a new root incarnation
-    rather than asking the runtime to re-execute a completed run.
-    """
-    for page_number, image_path in source_plan.page_sources:
-        image_digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
-        page_path = source_plan.legacy_dir / f"page_{page_number}.json"
-        context.state_store.reconcile_orphan_artifact(
-            document_id=context.document_id,
-            page_number=page_number,
-            content_hash=image_digest,
-            artifact_path=page_path,
-            config_fingerprints=context.configuration_fingerprints,
-        )
-        if not context.state_store.should_skip_page(
-            document_id=context.document_id,
-            page_number=page_number,
-            stage="ocr",
-            content_hash=image_digest,
-            artifact_path=page_path,
-            config_fingerprint=context.configuration_fingerprints,
-        ):
-            return True
-    return False
-
-
-def _validate_existing_page_identities(
-    *,
-    context: OCRPageProcessingContext,
-    source_plan: OCRSourcePlan,
-) -> None:
-    """Reject provider changes before recovery can replay any page.
-
-    An incomplete page child may require a fresh root incarnation because a
-    completed runtime cannot be re-executed.  That recovery path must still
-    honor the original OCR configuration identity before it schedules work.
-    """
-    expected = set(context.configuration_fingerprints)
-    for page_number, _image_path in source_plan.page_sources:
-        state = context.state_store.get_page_state(
-            document_id=context.document_id,
-            page_number=page_number,
-            stage="ocr",
-        )
-        if (
-            state is not None
-            and state.config_fingerprint is not None
-            and state.config_fingerprint not in expected
-        ):
-            raise RuntimeError(
-                "OCR root checkpoint identity mismatch; refusing to mix persisted "
-                "OCR configuration for page "
-                f"{page_number}"
-            )
 
 
 def _next_root_recovery_run_id(

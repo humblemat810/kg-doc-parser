@@ -20,14 +20,23 @@ from .ocr_pipeline import (
 )
 from .ocr_runtime import (
     _checkpoint_repair_cursor,
-    _page_cursor,
     _page_workflow_initial_state,
-    _reconcile_page_checkpoint,
-    _reused_pages_from_trace,
     _success,
     _typed_state,
 )
-from .ocr_runtime_state import json_pages, validate_page_resume_identity
+from .ocr_runtime_page_state import (
+    reconcile_page_checkpoint as _reconcile_page_checkpoint,
+)
+from .ocr_runtime_page_state import (
+    reused_pages_from_trace as _reused_pages_from_trace,
+)
+from .ocr_runtime_state import (
+    json_pages,
+    validate_page_resume_identity,
+)
+from .ocr_runtime_state import (
+    page_cursor as _page_cursor,
+)
 
 
 def build_page_resolver(
