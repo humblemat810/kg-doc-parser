@@ -94,6 +94,9 @@ from .ocr_runtime_grouping_state import (
     validated_grouping_checkpoint as _validated_grouping_checkpoint,
 )
 from .ocr_runtime_lineage import (
+    next_root_recovery_run_id as _next_root_recovery_run_id,
+)
+from .ocr_runtime_lineage import (
     recovery_generation as _recovery_generation,
 )
 from .ocr_runtime_lineage import (
@@ -292,29 +295,6 @@ def _mark_adaptive_grouping_complete(
         updated_root if node.node_id == tree.root_id else node for node in tree.nodes
     )
     return tree.model_copy(update={"nodes": nodes})
-
-
-def _next_root_recovery_run_id(
-    *,
-    conversation_engine: GraphKnowledgeEngine,
-    base_run_id: str,
-) -> tuple[str, int]:
-    """Choose an unused deterministic root recovery incarnation."""
-    generation = 1
-    while True:
-        candidate = f"{base_run_id}|recovery-{generation}"
-        completed = conversation_engine.read.get_nodes(
-            where={
-                "$and": [
-                    {"entity_type": "workflow_completed"},
-                    {"run_id": candidate},
-                ]
-            },
-            limit=1,
-        )
-        if not completed:
-            return candidate, generation
-        generation += 1
 
 
 def run_ocr_page_workflow(

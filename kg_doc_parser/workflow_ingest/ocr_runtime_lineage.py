@@ -26,6 +26,27 @@ def semantic_parse_generation(recovery_generation: int) -> str:
     )
 
 
+def next_root_recovery_run_id(
+    *, conversation_engine: GraphKnowledgeEngine, base_run_id: str
+) -> tuple[str, int]:
+    """Choose the first unused deterministic root recovery incarnation."""
+    generation = 1
+    while True:
+        candidate = f"{base_run_id}|recovery-{generation}"
+        completed = conversation_engine.read.get_nodes(
+            where={
+                "$and": [
+                    {"entity_type": "workflow_completed"},
+                    {"run_id": candidate},
+                ]
+            },
+            limit=1,
+        )
+        if not completed:
+            return candidate, generation
+        generation += 1
+
+
 def validate_root_invocation_lineage(
     conversation_engine: GraphKnowledgeEngine,
     *,
