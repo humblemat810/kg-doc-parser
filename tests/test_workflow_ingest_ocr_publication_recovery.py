@@ -1006,5 +1006,3 @@ def test_ocr_root_retries_after_semantic_graph_commit_before_checkpoint(
     assert bundle.canonical_write_result.nodes_written == 0
     assert bundle.canonical_write_result.edges_written == 0
 
-
-

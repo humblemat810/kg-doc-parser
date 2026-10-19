@@ -445,4 +445,3 @@ def build_ocr_root_step_resolver(
         step_resolver=dispatch,
         artifacts=prepared_state,
     )
-

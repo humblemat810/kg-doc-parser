@@ -258,8 +258,6 @@ def refine_page_index_block_excerpts(
             f"rejected={diagnostics['refine_excerpts_rejected']}"
         )
     return refined, diagnostics
-
-
 def refine_page_index_summaries_hierarchically(
     *,
     block_specs: list[PageIndexBlockSpec],

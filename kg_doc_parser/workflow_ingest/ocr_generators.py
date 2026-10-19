@@ -294,4 +294,3 @@ def _effective_summary_policy(
     fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return policy.model_copy(update={"generation_fingerprint": fingerprint})
 
-

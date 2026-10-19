@@ -1282,4 +1282,3 @@ def test_failed_summary_is_retryable_without_replaying_ocr() -> None:
     assert statuses.count("failed") == 1
     assert statuses.count("generated") == 1
 
-

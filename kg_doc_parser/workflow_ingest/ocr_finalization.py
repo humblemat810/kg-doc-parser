@@ -215,4 +215,3 @@ def _write_summary(
     }
     _write_json_atomic(artifacts.summary_path, payload)
 
-

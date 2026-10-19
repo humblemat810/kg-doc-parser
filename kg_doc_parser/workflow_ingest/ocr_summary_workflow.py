@@ -216,4 +216,3 @@ def _generate_tree_summaries(
                 error_message=str(exc),
             )
     return current
-

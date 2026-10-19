@@ -439,4 +439,3 @@ def test_page_index_nested_validation_reports_only_the_failing_descendant() -> N
     assert "block 1.1 has empty excerpt" in validation.errors
     assert "block 1 has empty excerpt" not in validation.errors
 
-

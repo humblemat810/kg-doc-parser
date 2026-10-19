@@ -170,4 +170,3 @@ def _resolve_ocr_source_plan(
         render_configuration_fingerprint=render_configuration_fingerprint,
     )
 
-

@@ -151,8 +151,6 @@ def test_prepare_ocr_workflow_input_accepts_pdf_with_injected_rasterizer() -> No
         artifacts.workflow_input.collections[0].pages[0].units[0].text
         == "Injected raster page"
     )
-
-
 @pytest.mark.ci
 def test_prepare_ocr_workflow_input_retries_failed_pages_and_tracks_attempts() -> None:
     scratch = _scratch("ocr_retry")

@@ -210,7 +210,6 @@ def _process_ocr_page(
         artifact_path=page_json_path,
         config_fingerprints=context.configuration_fingerprints,
     )
-
     # Resume boundary: if the OCR page artifact already matches the image,
     # reuse the serialized page instead of calling the model again.
     if state_store.should_skip_page(
