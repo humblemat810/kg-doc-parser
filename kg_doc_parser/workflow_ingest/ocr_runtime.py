@@ -96,6 +96,15 @@ from .ocr_runtime_contracts import (
 from .ocr_runtime_grouping_state import (
     validated_grouping_checkpoint as _validated_grouping_checkpoint,
 )
+from .ocr_runtime_lineage import (
+    recovery_generation as _recovery_generation,
+)
+from .ocr_runtime_lineage import (
+    semantic_parse_generation as _semantic_parse_generation,
+)
+from .ocr_runtime_lineage import (
+    validate_root_invocation_lineage as _validate_root_invocation_lineage,
+)
 from .ocr_runtime_state import (
     int_list as _int_list,
 )
@@ -271,82 +280,6 @@ def _mark_adaptive_grouping_complete(
         updated_root if node.node_id == tree.root_id else node for node in tree.nodes
     )
     return tree.model_copy(update={"nodes": nodes})
-
-
-def _recovery_generation(state: _OCRWorkflowState) -> int:
-    value = state.get("ocr_page_recovery_generation", 0)
-    if value is None:
-        return 0
-    if type(value) is not int or value < 0:
-        raise ValueError(
-            "OCR page recovery generation must be a non-negative integer"
-        )
-    return value
-
-
-def _validate_root_invocation_lineage(
-    conversation_engine: GraphKnowledgeEngine,
-    *,
-    root_run_id: str,
-    recovery_generation: int,
-) -> None:
-    """Require one persisted edge for each accepted root child workflow.
-
-    The workflow result and artifact bundle prove that outputs exist, but not
-    that page, grouping, and semantic execution belonged to this persisted
-    root.  The runtime's ``wf_invoked`` edges are the durable lineage record;
-    duplicate or missing edges must fail closed before graph publication.
-    """
-    suffix = f"|recovery-{recovery_generation}" if recovery_generation else ""
-    expected = {
-        (
-            "kg_doc_parser.ocr_pages.v1",
-            "ocr-pages-v1" if not recovery_generation else f"ocr-pages-recovery-v{recovery_generation}",
-            f"{root_run_id}|ocr-pages{suffix}",
-        ),
-        (
-            "kg_doc_parser.ocr_grouping.v1",
-            "grouping-v1" if not recovery_generation else f"grouping-recovery-v{recovery_generation}",
-            f"{root_run_id}|grouping{suffix}",
-        ),
-        (
-            "kg_doc_parser.ingest.v1",
-            "semantic-v1" if not recovery_generation else f"semantic-recovery-v{recovery_generation}",
-            f"{root_run_id}|semantic{suffix}",
-        ),
-    }
-    expected_edge_ids = [
-        f"wf_invoked|{root_run_id}|{child_run_id}"
-        for _workflow_id, _invocation_key, child_run_id in expected
-    ]
-    counts: dict[tuple[str, str, str], int] = {}
-    for edge in conversation_engine.read.get_edges(
-        ids=expected_edge_ids,
-        limit=len(expected_edge_ids),
-    ):
-        metadata = edge.metadata or {}
-        if metadata.get("relation") != "wf_invoked":
-            continue
-        if metadata.get("parent_run_id") != root_run_id:
-            continue
-        key = (
-            str(metadata.get("workflow_id")),
-            str(metadata.get("invocation_key")),
-            str(metadata.get("child_run_id")),
-        )
-        counts[key] = counts.get(key, 0) + 1
-    missing = expected - counts.keys()
-    duplicate = sorted(key for key, count in counts.items() if key in expected and count != 1)
-    if missing or duplicate:
-        details: list[str] = []
-        if missing:
-            details.append(f"missing={sorted(missing)!r}")
-        if duplicate:
-            details.append(f"duplicate={duplicate!r}")
-        raise RuntimeError(
-            f"OCR root persisted invocation lineage is invalid for {root_run_id!r}: "
-            + "; ".join(details)
-        )
 
 
 def _reused_pages_from_trace(
@@ -542,14 +475,6 @@ def _validate_root_page_result(
         )
 
 
-def _semantic_parse_generation(recovery_generation: int) -> str:
-    """Return the immutable semantic-parser generation for one root run."""
-
-    return (
-        "semantic-v1"
-        if recovery_generation == 0
-        else f"semantic-recovery-v{recovery_generation}"
-    )
 def _page_result_needs_recovery(
     *,
     page_result: _OCRWorkflowState,
