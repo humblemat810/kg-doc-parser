@@ -85,12 +85,6 @@ from .ocr_pipeline import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
-from .ocr_quality import (
-    OCRGroundTruth,
-    OCRGroundTruthItem,
-    OCRGroundTruthReport,
-    evaluate_ocr_ground_truth,
-)
 from .ocr_providers import (
     DoclingEngine,
     OCRPageProvider,
@@ -104,6 +98,12 @@ from .ocr_providers import (
     run_rapidocr_page,
     run_registered_ocr_page,
     unregister_ocr_provider,
+)
+from .ocr_quality import (
+    OCRGroundTruth,
+    OCRGroundTruthItem,
+    OCRGroundTruthReport,
+    evaluate_ocr_ground_truth,
 )
 from .page_index import (
     BlockAssignment,
@@ -227,10 +227,10 @@ __all__ = [
     "MediaRef",
     "NormalizedPage",
     "NormalizedSourceCollection",
-    "OCRImagePayload",
     "OCRGroundTruth",
     "OCRGroundTruthItem",
     "OCRGroundTruthReport",
+    "OCRImagePayload",
     "OCRMetadata",
     "OCRPageProvider",
     "OCRParseRequest",
@@ -298,8 +298,8 @@ __all__ = [
     "default_parse_semantic_fn",
     "discover_input_files",
     "emit_probe_event",
-    "evaluate_ocr_ground_truth",
     "ensure_ingest_workflow_design",
+    "evaluate_ocr_ground_truth",
     "extract_reference_mentions",
     "finalize_semantic_tree",
     "generate_ocr_smoke_assets",

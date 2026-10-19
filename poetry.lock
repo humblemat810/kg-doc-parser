@@ -1511,17 +1511,17 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.13"
+version = "0.6.14"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "kogwistar-0.6.13-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:c4de48caef4ac8d10edd120cc8bb51fd7a7f0f3babcefc4e222b432381e40858"},
-    {file = "kogwistar-0.6.13-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:0444b1f4f84599928163ac8185deee1b06f5c74740242a97160674b41f381619"},
-    {file = "kogwistar-0.6.13-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:487d3c8b5ebbf1ee4d8b36463a1d0be08ad42e2b84abfa4763443baf800d8006"},
-    {file = "kogwistar-0.6.13-cp312-abi3-win_amd64.whl", hash = "sha256:1e2f7362787b4cc4eb720316a06885a3b170f0da3fc64717cf6079eb721f3762"},
-    {file = "kogwistar-0.6.13.tar.gz", hash = "sha256:a91b4024dd6189ce8ae019bba58aabf713099428bc7fc1b7bda52e7e9d14ef96"},
+    {file = "kogwistar-0.6.14-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:22ca7e2d243d2c69bc7ba843d7a1485a5fee496c3ecd5288103eaefc1c066ade"},
+    {file = "kogwistar-0.6.14-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:576b3334a18bec3f4c65134b2d08f651810948e0c60bb30bd072d5fd2de94598"},
+    {file = "kogwistar-0.6.14-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:16ce9c98c38ef6bb3326bbc86002a1ead20453d2e0fe927c214efe070696b63f"},
+    {file = "kogwistar-0.6.14-cp312-abi3-win_amd64.whl", hash = "sha256:1ed603f97e5c197c086c0ebc3c53148ea135791032981e712428f4ac318361d9"},
+    {file = "kogwistar-0.6.14.tar.gz", hash = "sha256:b3d22a9a5e79f6d83b97418a209de07fb4a5c9bb747bfc1029e74774f6998a59"},
 ]
 
 [package.dependencies]
@@ -1559,7 +1559,7 @@ pgvector = ["pgvector (>=0.3.6)", "psycopg[binary] (>=3.1)", "sqlalchemy[asyncio
 rust = ["maturin (>=1.7,<2)"]
 server = ["mcp (>=2.2.0,<3)", "uvicorn[standard] (>=0.30)"]
 test = ["numpy (>=1.26)", "pytest (>=8)", "pytest-asyncio (>=1.1.0)", "pytest-dotenv (>=0.5.2)", "pytest-xdist (>=3.8,<4)", "testcontainers (>=4.0)"]
-typecheck = ["mypy (>=1.8)"]
+typecheck = ["mypy (>=1.8)", "pyright (==1.1.411)"]
 viz = ["pygraphviz (>=1.14)"]
 
 [[package]]
@@ -4404,4 +4404,4 @@ vertex = ["langchain-google-vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "e8dc85c415aa43786a1b8a404d79296527386fb1d6d54ec0f9709f3a8ec2b1c8"
+content-hash = "deae3f55a17c8d65b452b83bd61c0f4b3cf37ebda625e83a8f1240336d1cd013"
