@@ -9,11 +9,118 @@ from typing import cast
 
 from pydantic_extension.model_slicing import DtoType
 from pypdf import PdfReader
-from pypdf.errors import PdfReadError
+from pypdf.errors import PdfReadError, PdfStreamError
+from pypdf.generic import ContentStream
 
 from ..models import NonTextCluster, OCRClusterResponse, TextCluster
 
 _TextVisitor = Callable[[str, Sequence[float], Sequence[float], object, float], None]
+
+
+def direct_pdf_image_regions(
+    pdf_path: Path, page_number: int
+) -> tuple[tuple[float, float, float, float], ...] | None:
+    """Return direct image XObject bounds in PDF points when page content is simple.
+
+    ``None`` means the page contains constructs whose visual coverage cannot
+    be established safely (for example Form XObjects, inline images, or vector
+    drawing operators). Callers must then use full-page OCR.
+    """
+    if page_number < 1:
+        raise ValueError("page_number must be positive")
+    try:
+        reader = PdfReader(str(pdf_path))
+        if page_number > len(reader.pages):
+            raise ValueError("page_number exceeds PDF page count")
+        page = reader.pages[page_number - 1]
+        media_box = page.mediabox
+        crop_box = page.cropbox
+        if int(page.rotation) % 360 != 0 or any(
+            abs(float(media_coordinate) - float(crop_coordinate)) > 1e-6
+            for media_coordinate, crop_coordinate in zip(
+                media_box, crop_box, strict=True
+            )
+        ):
+            return None
+        if abs(float(media_box.left)) > 1e-6 or abs(float(media_box.bottom)) > 1e-6:
+            return None
+        contents = page.get_contents()
+        if contents is None:
+            return ()
+        resources = page.get("/Resources")
+        xobjects = resources.get("/XObject") if resources is not None else None
+        operations = ContentStream(contents, reader).operations
+    except (AttributeError, OSError, PdfReadError, PdfStreamError, TypeError, ValueError):
+        return None
+
+    identity = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    matrix = identity
+    stack: list[tuple[float, float, float, float, float, float]] = []
+    regions: list[tuple[float, float, float, float]] = []
+    text_and_graphics_operators = {
+        b"BT", b"ET", b"Tf", b"Tm", b"Td", b"TD", b"T*", b"Tc", b"Tw",
+        b"Tz", b"TL", b"Tr", b"Ts", b"Tj", b"TJ", b"'", b'"', b"w",
+        b"J", b"j", b"M", b"d", b"ri", b"i", b"gs", b"G", b"g", b"RG",
+        b"rg", b"K", b"k", b"cs", b"CS", b"sc", b"SC", b"scn", b"SCN",
+    }
+
+    def transform_point(
+        current: tuple[float, float, float, float, float, float], x: float, y: float
+    ) -> tuple[float, float]:
+        a, b, c, d, e, f = current
+        return x * a + y * c + e, x * b + y * d + f
+
+    for operands, operator in operations:
+        if operator == b"q":
+            stack.append(matrix)
+        elif operator == b"Q":
+            if not stack:
+                return None
+            matrix = stack.pop()
+        elif operator == b"cm":
+            if len(operands) != 6:
+                return None
+            try:
+                a, b, c, d, e, f = (float(value) for value in operands)
+            except (TypeError, ValueError):
+                return None
+            old_a, old_b, old_c, old_d, old_e, old_f = matrix
+            matrix = (
+                old_a * a + old_b * c,
+                old_a * b + old_b * d,
+                old_c * a + old_d * c,
+                old_c * b + old_d * d,
+                old_e * a + old_f * c + e,
+                old_e * b + old_f * d + f,
+            )
+        elif operator == b"Do":
+            if len(operands) != 1 or xobjects is None:
+                return None
+            xobject = xobjects.get(operands[0])
+            if xobject is None:
+                return None
+            try:
+                image = xobject.get_object()
+                subtype = str(image.get("/Subtype"))
+            except (AttributeError, TypeError, ValueError):
+                return None
+            if subtype != "/Image":
+                return None
+            corners = tuple(
+                transform_point(matrix, x, y)
+                for x, y in ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0))
+            )
+            xs = [point[0] for point in corners]
+            ys = [point[1] for point in corners]
+            region = (min(xs), min(ys), max(xs), max(ys))
+            if region[2] <= region[0] or region[3] <= region[1]:
+                return None
+            regions.append(region)
+        elif operator not in text_and_graphics_operators:
+            return None
+    if stack:
+        return None
+    return tuple(regions)
 
 
 def extract_native_pdf_page(
@@ -229,6 +336,7 @@ def merge_native_and_ocr_page(
 
 
 __all__ = [
+    "direct_pdf_image_regions",
     "extract_native_pdf_page",
     "merge_native_and_ocr_page",
     "pdf_page_has_embedded_images",

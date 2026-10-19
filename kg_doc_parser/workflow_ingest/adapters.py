@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import NotRequired, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast
 
 from ..models import _meaningful_ordering_error
 from .models import (
@@ -25,6 +25,7 @@ class OCRTextClusterJSON(TypedDict, total=False):
     text: str | None
     coordinate_system: str | None
     spatial_accuracy: str | None
+    continuation_id: str | None
 
 
 class OCRNonTextObjectJSON(TypedDict, total=False):
@@ -48,6 +49,10 @@ class OCRPageJSON(TypedDict):
     pdf_page_num: int | str
     printed_page_number: NotRequired[str | None]
     contains_table: NotRequired[bool | None]
+    incomplete_text: NotRequired[bool | None]
+    incomplete_words_on_edge: NotRequired[bool | None]
+    data_loss_likelihood: NotRequired[float | None]
+    scan_quality: NotRequired[Literal["low", "medium", "high"] | None]
     unresolved_item_count: NotRequired[int | None]
     is_blank_page: NotRequired[bool | None]
     meaningful_ordering: NotRequired[list[int] | None]
@@ -56,6 +61,7 @@ class OCRPageJSON(TypedDict):
     page_x_max: NotRequired[float | None]
     page_y_min: NotRequired[float | None]
     page_y_max: NotRequired[float | None]
+    estimated_rotation_degrees: NotRequired[float | None]
     metadata: NotRequired[dict[str, JsonValue] | None]
     OCR_text_clusters: NotRequired[list[OCRTextClusterJSON] | None]
     non_text_objects: NotRequired[list[OCRNonTextObjectJSON] | None]
@@ -341,6 +347,11 @@ def normalize_ocr_pages(
         for cluster in ordered_text_clusters:
             if not isinstance(cluster, dict):
                 raise TypeError("each OCR text cluster must be an object")
+            continuation_id = cluster.get("continuation_id")
+            if continuation_id is not None and (
+                not isinstance(continuation_id, str) or not continuation_id.strip()
+            ):
+                raise ValueError("OCR continuation_id must be a non-empty string")
             cluster_number = _ocr_cluster_number(cluster.get("cluster_number"))
             if cluster_number is not None and cluster_number in seen_clusters:
                 raise ValueError(f"duplicate OCR text cluster_number: {cluster_number}")
@@ -358,6 +369,11 @@ def normalize_ocr_pages(
                         "coordinate_system": cluster.get("coordinate_system", "pixels"),
                         "spatial_accuracy": cluster.get(
                             "spatial_accuracy", page_metadata.get("spatial_accuracy", "page")
+                        ),
+                        **(
+                            {"continuation_id": continuation_id}
+                            if continuation_id is not None
+                            else {}
                         ),
                     },
                 )

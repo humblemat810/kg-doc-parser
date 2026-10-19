@@ -3783,6 +3783,7 @@ def test_ocr_root_resume_rebuilds_after_same_path_source_change() -> None:
             conversation_engine=engines[1],
             knowledge_engine=engines[2],
             ocr_runner=_interrupting_runner,
+            quality_policy=OCRQualityPolicy(mode="permissive"),
             deps={"parse_semantic_fn": _grounded_semantic_tree},
             run_id="ocr|ocr-root-source-revision",
         )
@@ -3819,6 +3820,7 @@ def test_ocr_root_resume_rebuilds_after_same_path_source_change() -> None:
         conversation_engine=engines[1],
         knowledge_engine=engines[2],
         ocr_runner=_revision_two_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
         deps={"parse_semantic_fn": _grounded_semantic_tree},
         run_id="ocr|ocr-root-source-revision",
         resume_from_checkpoint=True,
@@ -4296,7 +4298,7 @@ def test_ocr_quality_independently_flags_empty_output_on_visible_source_ink() ->
 
     warning = _evaluate_ocr_quality(
         response,
-        OCRQualityPolicy(),
+        OCRQualityPolicy(mode="permissive"),
         source_image_path=image_path,
     )
     warning_by_code = {item.code: item for item in warning}
@@ -4304,7 +4306,7 @@ def test_ocr_quality_independently_flags_empty_output_on_visible_source_ink() ->
 
     rejected = _evaluate_ocr_quality(
         response,
-        OCRQualityPolicy(reject_empty_output_on_nonblank_image=True),
+        OCRQualityPolicy(),
         source_image_path=image_path,
     )
     rejected_by_code = {item.code: item for item in rejected}
@@ -4318,6 +4320,49 @@ def test_ocr_quality_independently_flags_empty_output_on_visible_source_ink() ->
     assert "empty_ocr_output_on_nonblank_image" not in {
         item.code for item in blank_diagnostics
     }
+
+
+@pytest.mark.ci
+def test_ocr_quality_strict_mode_flags_unexplained_image_regions() -> None:
+    scratch = _scratch("ocr_quality_unexplained_regions")
+    image = Image.new("RGB", (240, 120), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((12, 12), "recognized", fill="black")
+    draw.text((12, 92), "omitted", fill="black")
+    image_path = scratch / "partial-ocr.png"
+    image.save(image_path)
+    response = OCRClusterResponse.model_validate(
+        {
+            **_fake_ocr_response(1, "recognized").model_dump(),
+            "page_x_min": 0,
+            "page_x_max": 240,
+            "page_y_min": 0,
+            "page_y_max": 120,
+            "OCR_text_clusters": [
+                {
+                    "text": "recognized",
+                    "bb_x_min": 10,
+                    "bb_x_max": 100,
+                    "bb_y_min": 8,
+                    "bb_y_max": 32,
+                    "cluster_number": 0,
+                }
+            ],
+            "non_text_objects": [],
+            "is_empty_page": False,
+            "meaningful_ordering": [0],
+            "source_item_count": 1,
+        }
+    )
+
+    diagnostics = _evaluate_ocr_quality(
+        response, OCRQualityPolicy(), source_image_path=image_path
+    )
+    diagnostic = next(
+        item for item in diagnostics if item.code == "unexplained_visual_ink_regions"
+    )
+    assert diagnostic.severity == "error"
+    assert "not proof of recognition completeness" in diagnostic.message
 
 
 @pytest.mark.ci
@@ -4859,6 +4904,7 @@ def test_custom_grouping_policy_reaches_checkpoint_cache_and_export() -> None:
         conversation_engine=conversation_engine,
         knowledge_engine=knowledge_engine,
         ocr_runner=_four_cluster_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
         grouping_policy_version=policy_version,
         grouping_proposals=(
             GroupProposal(
@@ -5173,6 +5219,7 @@ def test_default_adaptive_root_wires_grounded_summary_and_semantic_export(
         conversation_engine=conversation_engine,
         knowledge_engine=knowledge_engine,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
         deps={"parse_semantic_fn": _parse, "propose_layer_fn": None, "max_depth": 1},
         run_id="ocr-default-adaptive-root-run",
     )
@@ -5710,6 +5757,7 @@ def test_ocr_grouping_and_semantic_graph_preserve_mixed_reading_order() -> None:
         conversation_engine=conversation_engine,
         knowledge_engine=knowledge_engine,
         ocr_runner=_mixed_ocr_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
         grouping_proposals=(
             GroupProposal(
                 kind="section",
@@ -6291,6 +6339,7 @@ def test_failed_ocr_candidate_passes_sanitized_validation_into_next_prompt(
             embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
         ),
         ocr_candidate_models=["primary-model", "backup-model"],
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
 
     assert len(captured_prompts) == 2
@@ -6444,6 +6493,7 @@ def test_prepare_ocr_workflow_input_resumes_completed_pages() -> None:
         image_payloads=payloads,
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
     second = prepare_ocr_workflow_input(
         document_id="ocr-resume-doc",
@@ -6452,6 +6502,7 @@ def test_prepare_ocr_workflow_input_resumes_completed_pages() -> None:
         image_payloads=payloads,
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
 
     assert calls["count"] == 2
@@ -6490,6 +6541,7 @@ def test_prepare_ocr_workflow_retries_checkpoint_without_artifact() -> None:
         image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
     artifact = first.legacy_dir / "page_1.json"
     assert artifact.is_file()
@@ -6502,6 +6554,7 @@ def test_prepare_ocr_workflow_retries_checkpoint_without_artifact() -> None:
         image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
 
     assert calls == [1, 1]
@@ -6517,6 +6570,7 @@ def test_prepare_ocr_workflow_retries_checkpoint_without_artifact() -> None:
         config_fingerprint=ocr_pipeline_module._ocr_configuration_fingerprint(
             settings,
             candidate_models=["fake-ocr"],
+            quality_policy=OCRQualityPolicy(mode="permissive"),
         ),
     )
 
@@ -6560,6 +6614,7 @@ def test_prepare_ocr_workflow_input_resumes_after_mid_document_interruption() ->
             image_payloads=payloads,
             provider_settings=settings,
             ocr_runner=_runner,
+            quality_policy=OCRQualityPolicy(mode="permissive"),
         )
 
     resumed = prepare_ocr_workflow_input(
@@ -6569,6 +6624,7 @@ def test_prepare_ocr_workflow_input_resumes_after_mid_document_interruption() ->
         image_payloads=payloads,
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
 
     assert resumed.completed_pages == list(range(1, 7))
@@ -6645,7 +6701,28 @@ def test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping() -> None:
     ]
 
     def _runner(image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings):
-        response = _fake_ocr_response(page_number, f"Continuation page {page_number}")
+        page_text = (
+            "this sentence continues"
+            if page_number == 1
+            else "on the next page"
+            if page_number == 2
+            else "independent final page"
+        )
+        response = _fake_ocr_response(page_number, page_text)
+        response = response.model_copy(
+            update={
+                "OCR_text_clusters": [
+                    cluster.model_copy(
+                        update={
+                            "continuation_id": "paragraph-1",
+                            "bb_y_min": 740 if page_number == 1 else 10,
+                            "bb_y_max": 790 if page_number == 1 else 60,
+                        }
+                    )
+                    for cluster in response.OCR_text_clusters
+                ]
+            }
+        )
         if page_number == 1:
             response = response.model_copy(update={"incomplete_text": True})
         return response
@@ -6661,8 +6738,10 @@ def test_prepare_ocr_workflow_input_checkpoints_cross_page_grouping() -> None:
         image_payloads=payloads,
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
 
+    assert artifacts.ocr_pages[0].get("incomplete_text") is True
     assert artifacts.document_tree is not None
     continuation_nodes = [
         node
@@ -6898,6 +6977,104 @@ def test_grounded_summary_generator_receives_only_owned_source_slices() -> None:
         for node in second_updated.nodes
         if node.kind == "section"
     )
+
+
+@pytest.mark.ci
+def test_legacy_summary_generator_rejects_partial_source_ownership() -> None:
+    scratch = _scratch("legacy_summary_partial_ownership")
+    tree = DocumentTree(
+        document_id="legacy-summary-partial-doc",
+        source_revision="ocr-v1:legacy-summary-partial",
+        tree_revision=1,
+        root_id="root",
+        source_items=(
+            SourceItem(
+                item_id="shared-text",
+                kind="text",
+                text="first section; second section",
+                location=SourceLocation(page_index=0, accuracy="page"),
+            ),
+        ),
+        nodes=(
+            DocumentNode(
+                node_id="section:first",
+                kind="section",
+                children=(
+                    ChildRef(node_id="leaf:first-a"),
+                    ChildRef(node_id="leaf:first-b", separator_before=" "),
+                ),
+            ),
+            DocumentNode(
+                node_id="section:second",
+                kind="section",
+                children=(
+                    ChildRef(node_id="leaf:second-a"),
+                    ChildRef(node_id="leaf:second-b", separator_before=" "),
+                ),
+            ),
+            DocumentNode(
+                node_id="leaf:first-a",
+                kind="text",
+                parts=(SourceSlice(item_id="shared-text", start=0, end=5),),
+            ),
+            DocumentNode(
+                node_id="leaf:first-b",
+                kind="text",
+                parts=(SourceSlice(item_id="shared-text", start=5, end=14),),
+            ),
+            DocumentNode(
+                node_id="leaf:second-a",
+                kind="text",
+                parts=(SourceSlice(item_id="shared-text", start=14, end=20),),
+            ),
+            DocumentNode(
+                node_id="leaf:second-b",
+                kind="text",
+                parts=(SourceSlice(item_id="shared-text", start=20, end=29),),
+            ),
+            DocumentNode(
+                node_id="root",
+                kind="document",
+                children=(
+                    ChildRef(node_id="section:first"),
+                    ChildRef(node_id="section:second", separator_before=" "),
+                ),
+            ),
+        ),
+    )
+    store = OCRWorkflowStateStore(scratch / "ocr-state.sqlite")
+    calls = 0
+
+    def legacy_generator(
+        *,
+        tree: DocumentTree,
+        node_id: str,
+        source_items: tuple[SourceItem, ...],
+        input_fingerprint: str,
+    ) -> Summary:
+        nonlocal calls
+        del tree, node_id, source_items, input_fingerprint
+        calls += 1
+        raise AssertionError("partial text must not reach the legacy callback")
+
+    with pytest.raises(ValueError, match="migrate to GroundedSummaryGenerator"):
+        _generate_tree_summaries(
+            tree,
+            document_id=tree.document_id,
+            state_store=store,
+            policy=SummaryPolicy(
+                eligible_kinds=("section",),
+                minimum_source_items=1,
+                minimum_source_chars=1,
+                minimum_information_gain_chars=0,
+                generation_fingerprint="legacy-summary-partial-v1",
+            ),
+            generator=legacy_generator,
+            grouping_policy_version="legacy-summary-partial-v1",
+        )
+
+    assert calls == 0
+    assert store.list_summary_attempts(document_id=tree.document_id) == []
 
 
 def test_summary_cache_reuses_exact_generation_and_slice_identity() -> None:
@@ -7648,6 +7825,7 @@ def test_summary_failure_is_journaled_without_failing_ocr_ingestion() -> None:
         ocr_runner=lambda image_path, page_number, provider_settings: _fake_ocr_response(
             page_number, f"Summary failure page {page_number}"
         ),
+        quality_policy=OCRQualityPolicy(mode="permissive"),
         summary_policy=SummaryPolicy(
             eligible_kinds=("document",),
             minimum_source_items=1,
@@ -7714,6 +7892,7 @@ def test_failed_summary_is_retryable_without_replaying_ocr() -> None:
         ],
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
         summary_policy=policy,
         summary_generator=_failed_generator,
     )
@@ -7745,6 +7924,7 @@ def test_failed_summary_is_retryable_without_replaying_ocr() -> None:
         ],
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
         summary_policy=policy,
         summary_generator=_successful_generator,
     )
@@ -8529,6 +8709,7 @@ def test_prepare_ocr_workflow_input_accepts_pdf_with_injected_rasterizer() -> No
         provider_settings=settings,
         ocr_runner=lambda image_path, page_number, provider_settings: _fake_ocr_response(page_number, "Injected raster page"),
         pdf_rasterizer=_rasterizer,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
 
     assert len(artifacts.ocr_pages) == 1
@@ -8569,6 +8750,7 @@ def test_prepare_ocr_workflow_input_retries_failed_pages_and_tracks_attempts() -
             image_payloads=payloads,
             provider_settings=settings,
             ocr_runner=_runner,
+            quality_policy=OCRQualityPolicy(mode="permissive"),
         )
 
     second = prepare_ocr_workflow_input(
@@ -8578,6 +8760,7 @@ def test_prepare_ocr_workflow_input_retries_failed_pages_and_tracks_attempts() -
         image_payloads=payloads,
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
 
     with sqlite3.connect(second.state_db_path) as conn:
@@ -8635,6 +8818,65 @@ def test_prepare_ocr_workflow_input_exhausts_candidate_models_until_success() ->
         ("backup-model", "completed"),
     ]
     assert artifacts.workflow_input.collections[0].pages[0].units[0].text == "winner:backup-model"
+
+
+@pytest.mark.ci
+def test_strict_empty_ocr_result_uses_next_candidate_model() -> None:
+    scratch = _scratch("ocr_strict_empty_fallback")
+    image_path = scratch / "images" / "page_1.png"
+    _draw_test_image(image_path, lines=["Visible content omitted by primary"])
+    settings = WorkflowProviderSettings(
+        ocr=ProviderEndpointConfig(provider="fake", model="primary-model"),
+        embedding=EmbeddingProviderConfig(provider="fake", model="fake-embed", dimension=1),
+    )
+    empty = _fake_ocr_response(1, "placeholder").model_copy(
+        update={
+            "OCR_text_clusters": [],
+            "non_text_objects": [],
+            "is_empty_page": True,
+            "meaningful_ordering": [],
+            "source_item_count": 0,
+        }
+    )
+    calls: list[str] = []
+
+    def runner(
+        image_path: Path, page_number: int, provider_settings: WorkflowProviderSettings
+    ) -> OCRClusterResponse:
+        del image_path
+        calls.append(provider_settings.ocr.model)
+        if provider_settings.ocr.model == "primary-model":
+            return empty.model_copy(update={"printed_page_number": str(page_number)})
+        backup = _fake_ocr_response(page_number, "backup recognized the page")
+        return backup.model_copy(
+            update={
+                "OCR_text_clusters": [
+                    backup.OCR_text_clusters[0].model_copy(
+                        update={
+                            "bb_x_min": 0,
+                            "bb_x_max": 1200,
+                            "bb_y_min": 0,
+                            "bb_y_max": 800,
+                        }
+                    )
+                ]
+            }
+        )
+
+    artifacts = prepare_ocr_workflow_input(
+        document_id="strict-empty-fallback-doc",
+        title="Strict Empty Fallback",
+        output_dir=scratch / "artifacts",
+        image_payloads=[OCRImagePayload(page_number=1, image_path=str(image_path))],
+        provider_settings=settings,
+        ocr_runner=runner,
+        ocr_candidate_models=["primary-model", "backup-model"],
+    )
+
+    assert calls == ["primary-model", "backup-model"]
+    assert artifacts.workflow_input.collections[0].pages[0].units[0].text == (
+        "backup recognized the page"
+    )
 
 
 @pytest.mark.ci
@@ -8766,6 +9008,7 @@ def test_prepare_ocr_workflow_input_keeps_document_fingerprint_stable_in_state_d
         image_payloads=payloads,
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
 
     expected_fingerprint = _compute_input_fingerprint(page_sources=[(1, page_1), (2, page_2)])
@@ -8791,6 +9034,7 @@ def test_prepare_ocr_workflow_input_keeps_document_fingerprint_stable_in_state_d
         image_payloads=payloads,
         provider_settings=settings,
         ocr_runner=_runner,
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
     assert second.reused_pages == [1, 2]
     with sqlite3.connect(second.state_db_path) as conn:
@@ -10007,6 +10251,44 @@ def test_builtin_pdf_render_identity_includes_poppler_binary_version(
 
 
 @pytest.mark.ci
+def test_builtin_pdf_render_does_not_reuse_cache_when_poppler_version_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "unknown-poppler.pdf"
+    source.write_bytes(b"%PDF-1.4\nunknown-poppler\n")
+    rendered = tmp_path / "rendered"
+    calls = 0
+
+    def render(_pdf_path: Path, rendered_dir: Path) -> list[Path]:
+        nonlocal calls
+        calls += 1
+        rendered_dir.mkdir(parents=True, exist_ok=True)
+        page = rendered_dir / "page_1.png"
+        Image.new("RGB", (12, 8), "white").save(page, "PNG")
+        return [page]
+
+    monkeypatch.setattr(ocr_pipeline_module, "_render_pdf_to_images", render)
+    monkeypatch.setattr(
+        ocr_pipeline_module,
+        "_builtin_pdf_rasterizer_configuration",
+        lambda: json.dumps({"poppler_identity": "C:/tools/pdfinfo.exe|unavailable"}),
+    )
+
+    ocr_pipeline_module._render_pdf_with_identity(
+        pdf_path=source,
+        rendered_dir=rendered,
+        rasterizer=ocr_pipeline_module._render_pdf_to_images,
+    )
+    ocr_pipeline_module._render_pdf_with_identity(
+        pdf_path=source,
+        rendered_dir=rendered,
+        rasterizer=ocr_pipeline_module._render_pdf_to_images,
+    )
+
+    assert calls == 2
+
+
+@pytest.mark.ci
 def test_png_publication_failure_keeps_previous_artifact_and_cleans_temp(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -10407,6 +10689,7 @@ def test_ocr_page_artifact_publish_crash_is_recoverable() -> None:
     config_fingerprint = ocr_pipeline_module._ocr_configuration_fingerprint(
         settings,
         candidate_models=["fake-ocr"],
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
     context = OCRPageProcessingContext(
         document_id="ocr-artifact-crash-doc",
@@ -10496,6 +10779,7 @@ def test_duplicate_ocr_page_workers_accept_only_one_artifact() -> None:
     config_fingerprint = ocr_pipeline_module._ocr_configuration_fingerprint(
         settings,
         candidate_models=["fake-ocr"],
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
     barrier = threading.Barrier(2)
     contexts: list[OCRPageProcessingContext] = []
@@ -10525,6 +10809,7 @@ def test_duplicate_ocr_page_workers_accept_only_one_artifact() -> None:
                 state_store=worker_store,
                 probe=None,
                 configuration_fingerprints=(config_fingerprint,),
+                quality_policy=OCRQualityPolicy(mode="permissive"),
             )
         )
     image_sha256 = hashlib.sha256(image_path.read_bytes()).hexdigest()

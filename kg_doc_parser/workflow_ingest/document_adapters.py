@@ -181,6 +181,11 @@ def build_document_tree(
             ocr_metadata = _ocr_metadata(unit.metadata)
             page_annotations = _page_annotations(page.metadata)
             unit_annotations = dict(page_annotations)
+            continuation_id = unit.metadata.get("continuation_id")
+            if continuation_id is not None:
+                if not isinstance(continuation_id, str) or not continuation_id.strip():
+                    raise ValueError("OCR continuation_id must be a non-empty string")
+                unit_annotations["ocr:continuation_id"] = continuation_id
             if unit.modality in {"text", "ocr_text"}:
                 incomplete_tail = (
                     page_annotations.get("ocr:incomplete_text") == "True"
@@ -196,6 +201,16 @@ def build_document_tree(
                     unit, page.metadata, edge="top"
                 ):
                     unit_annotations["ocr:continuation_head_evidence"] = "True"
+                if (
+                    continuation_id is None
+                    and (
+                        unit_annotations.get("ocr:continuation_tail_evidence") == "True"
+                        or unit_annotations.get("ocr:continuation_head_evidence") == "True"
+                    )
+                ):
+                    unit_annotations["ocr:continuation_review_required"] = (
+                        "missing_item_level_continuation_id"
+                    )
             kind = "text" if unit.modality in {"text", "ocr_text"} else "non_text:description"
             if has_media:
                 assert unit.source_uri is not None
@@ -631,6 +646,12 @@ def suggest_cross_page_continuations(tree: DocumentTree) -> tuple[GroupProposal,
         if (
             previous_item.annotations.get("ocr:continuation_tail_evidence") != "True"
             or current_item.annotations.get("ocr:continuation_head_evidence") != "True"
+        ):
+            continue
+        continuation_id = previous_item.annotations.get("ocr:continuation_id")
+        if (
+            continuation_id is None
+            or continuation_id != current_item.annotations.get("ocr:continuation_id")
         ):
             continue
         previous_text = (previous_item.text or "").rstrip()

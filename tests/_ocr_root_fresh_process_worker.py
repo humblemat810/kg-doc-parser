@@ -35,6 +35,7 @@ from kg_doc_parser.workflow_ingest.document_models import (
     DocumentTree,
     EvidenceSlice,
 )
+from kg_doc_parser.workflow_ingest.ocr_pipeline import OCRQualityPolicy
 from kg_doc_parser.workflow_ingest.semantics import HydratedTextPointer, SemanticNode
 from kg_doc_parser.workflow_ingest.service import _TinyEmbeddingFunction
 
@@ -498,6 +499,7 @@ def main() -> int:
             pdf_rasterizer=pdf_rasterizer if rich_pdf_mode else None,
             provider_settings=settings,
             ocr_runner=runner,
+            quality_policy=OCRQualityPolicy(mode="permissive"),
             deps={"parse_semantic_fn": parse_semantic_fn},
             adaptive_grouping_policy=(
                 AdaptiveGroupingPolicy(

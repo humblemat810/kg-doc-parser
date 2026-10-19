@@ -63,7 +63,13 @@ from ..llm_structured_output import (
     StructuredOutputRunnable,
     build_structured_output_runnable,
 )
-from ..models import OCRClusterResponse, SplitPage, SplitPageMeta, TextCluster
+from ..models import (
+    NonTextCluster,
+    OCRClusterResponse,
+    SplitPage,
+    SplitPageMeta,
+    TextCluster,
+)
 from .adapters import OCRPageJSON, _validated_ocr_page_json, normalize_ocr_pages
 from .document_adapters import (
     apply_grouping_proposals,
@@ -623,13 +629,33 @@ def _effective_summary_policy(
 
 
 class OCRQualityPolicy(BaseModel):
-    """Policy for turning provider quality signals into acceptance decisions."""
+    """Policy for turning provider and source-image checks into acceptance decisions.
 
+    Strict mode rejects visible source ink with no OCR evidence and substantial
+    ink regions outside reported boxes. These are conservative screening gates,
+    not guarantees that the provider recognized every semantic item.
+    """
+
+    mode: Literal["strict", "permissive"] = Field(
+        default="strict",
+        description="Strict rejects source-image evidence loss; permissive records warnings.",
+    )
     max_data_loss_likelihood: float = Field(default=1.0, ge=0.0, le=1.0)
     reject_incomplete_text: bool = False
     reject_incomplete_words_on_edge: bool = False
     reject_empty_page: bool = False
     reject_empty_output_on_nonblank_image: bool = False
+    minimum_uncovered_ink_tiles: int = Field(
+        default=3,
+        ge=1,
+        description="Minimum coarse ink tiles outside all provider boxes before flagging.",
+    )
+    minimum_uncovered_ink_tile_ratio: float = Field(
+        default=0.25,
+        ge=0.0,
+        le=1.0,
+        description="Minimum fraction of ink-bearing tiles outside provider boxes.",
+    )
     reject_unresolved_items: bool = False
     reject_source_item_loss: bool = False
     reject_invalid_spatial_coordinates: bool = True
@@ -708,29 +734,84 @@ def _evaluate_ocr_quality(
 ) -> tuple[OCRQualityDiagnostic, ...]:
     diagnostics: list[OCRQualityDiagnostic] = []
     has_any_evidence = bool(response.OCR_text_clusters or response.non_text_objects)
-    if not has_any_evidence and source_image_path is not None:
+    if source_image_path is not None:
         with Image.open(source_image_path) as source_image:
             grayscale = source_image.convert("L")
             grayscale.thumbnail((256, 256))
             pixels = list(grayscale.getdata())
-        dark_pixel_count = sum(pixel < 245 for pixel in pixels)
-        minimum_ink_pixels = max(5, int(len(pixels) * 0.002))
-        if dark_pixel_count >= minimum_ink_pixels:
+            sample_width, sample_height = grayscale.size
+        dark_pixel_count = sum(pixel < 252 for pixel in pixels)
+        minimum_ink_pixels = max(5, int(len(pixels) * 0.0002))
+        if dark_pixel_count >= minimum_ink_pixels and not has_any_evidence:
             diagnostics.append(
                 OCRQualityDiagnostic(
                     code="empty_ocr_output_on_nonblank_image",
                     severity=(
                         "error"
-                        if policy.reject_empty_output_on_nonblank_image
+                        if policy.mode == "strict"
+                        or policy.reject_empty_output_on_nonblank_image
                         else "warning"
                     ),
                     message=(
-                        "the source image contains visible ink but OCR returned no "
+                        f"the source image contains {dark_pixel_count} of {len(pixels)} "
+                        "sampled pixels below the ink threshold but OCR returned no "
                         "text or non-text evidence; this screening signal is not a "
                         "completeness measurement"
                     ),
                 )
             )
+        elif dark_pixel_count >= minimum_ink_pixels and has_any_evidence:
+            page_width = response.page_x_max - response.page_x_min
+            page_height = response.page_y_max - response.page_y_min
+            if page_width > 0 and page_height > 0 and sample_width and sample_height:
+                tile_columns = 16
+                tile_rows = 16
+                ink_tiles: set[tuple[int, int]] = set()
+                for pixel_index, pixel in enumerate(pixels):
+                    if pixel >= 252:
+                        continue
+                    x = pixel_index % sample_width
+                    y = pixel_index // sample_width
+                    ink_tiles.add(
+                        (
+                            min(tile_columns - 1, x * tile_columns // sample_width),
+                            min(tile_rows - 1, y * tile_rows // sample_height),
+                        )
+                    )
+                boxes = [
+                    (item.bb_x_min, item.bb_y_min, item.bb_x_max, item.bb_y_max)
+                    for item in (*response.OCR_text_clusters, *response.non_text_objects)
+                ]
+                covered_tiles: set[tuple[int, int]] = set()
+                for tile_x, tile_y in ink_tiles:
+                    image_x = (tile_x + 0.5) * sample_width / tile_columns
+                    image_y = (tile_y + 0.5) * sample_height / tile_rows
+                    page_x = response.page_x_min + image_x * page_width / sample_width
+                    page_y = response.page_y_min + image_y * page_height / sample_height
+                    if any(
+                        x_min - page_width * 0.015 <= page_x <= x_max + page_width * 0.015
+                        and y_min - page_height * 0.015 <= page_y <= y_max + page_height * 0.015
+                        for x_min, y_min, x_max, y_max in boxes
+                    ):
+                        covered_tiles.add((tile_x, tile_y))
+                uncovered_tiles = len(ink_tiles - covered_tiles)
+                uncovered_ratio = uncovered_tiles / max(1, len(ink_tiles))
+                if (
+                    uncovered_tiles >= policy.minimum_uncovered_ink_tiles
+                    and uncovered_ratio >= policy.minimum_uncovered_ink_tile_ratio
+                ):
+                    diagnostics.append(
+                        OCRQualityDiagnostic(
+                            code="unexplained_visual_ink_regions",
+                            severity="error" if policy.mode == "strict" else "warning",
+                            message=(
+                                f"{uncovered_tiles} of {len(ink_tiles)} coarse ink tiles "
+                                f"({uncovered_ratio:.1%}) do not overlap reported OCR "
+                                "evidence boxes; this is a conservative review signal, "
+                                "not proof of recognition completeness"
+                            ),
+                        )
+                    )
     if response.is_empty_page:
         diagnostics.append(
             OCRQualityDiagnostic(
@@ -1026,7 +1107,42 @@ def _generate_tree_summaries(
                 collect(child.node_id)
 
         collect(node_id)
-        evidence_ids = tuple(sorted(covered))
+        evidence_slices = current.evidence_slices(node_id, tuple(covered))
+        evidence_ids = tuple(dict.fromkeys(item.item_id for item in evidence_slices))
+        if grounded_generator is None:
+            # The compatibility callback receives whole SourceItem objects. It
+            # must not see text outside the exact interval owned by this node.
+            intervals: dict[str, list[tuple[int, int]]] = {}
+            for evidence_slice in evidence_slices:
+                if evidence_slice.text is None:
+                    continue
+                if evidence_slice.start is None or evidence_slice.end is None:
+                    raise ValueError(
+                        "legacy SummaryGenerator cannot receive text evidence "
+                        "without explicit source bounds; migrate to "
+                        "GroundedSummaryGenerator"
+                    )
+                intervals.setdefault(evidence_slice.item_id, []).append(
+                    (evidence_slice.start, evidence_slice.end)
+                )
+            for item_id, item_intervals in intervals.items():
+                source_text = items[item_id].text
+                if source_text is None:
+                    raise ValueError("text evidence resolved to a non-text source item")
+                cursor = 0
+                for start, end in sorted(item_intervals):
+                    if start != cursor:
+                        raise ValueError(
+                            "legacy SummaryGenerator cannot receive partial or "
+                            "discontiguous source ownership; migrate to "
+                            "GroundedSummaryGenerator"
+                        )
+                    cursor = end
+                if cursor != len(source_text):
+                    raise ValueError(
+                        "legacy SummaryGenerator cannot receive partial source "
+                        "ownership; migrate to GroundedSummaryGenerator"
+                    )
         summary = state_store.load_completed_summary(
             document_id=document_id,
             node_id=node_id,
@@ -1066,7 +1182,7 @@ def _generate_tree_summaries(
                 summary = grounded_generator(
                     tree=current,
                     node_id=node_id,
-                    evidence_slices=current.evidence_slices(node_id, evidence_ids),
+                    evidence_slices=evidence_slices,
                     input_fingerprint=evidence_fingerprint,
                 )
             else:
@@ -1305,6 +1421,7 @@ def _build_ocr_page_preparation(
             settings: WorkflowProviderSettings,
         ) -> OCRClusterResponse:
             from .pdf_native import (
+                direct_pdf_image_regions,
                 extract_native_pdf_page,
                 merge_native_and_ocr_page,
                 pdf_page_has_embedded_images,
@@ -1324,6 +1441,28 @@ def _build_ocr_page_preparation(
                         "native_only mode refuses an ungrounded fallback"
                     )
                 return native
+
+            image_regions = direct_pdf_image_regions(native_pdf_path, page_number)
+            if image_regions is not None:
+                if image_regions:
+                    region_ocr = _ocr_direct_pdf_image_regions(
+                        pdf_path=native_pdf_path,
+                        image_regions=image_regions,
+                        source_image_path=image_path,
+                        page_number=page_number,
+                        runner=configured_runner,
+                        settings=settings,
+                    )
+                    if region_ocr is not None:
+                        return (
+                            merge_native_and_ocr_page(native, region_ocr)
+                            if native is not None
+                            else region_ocr
+                        )
+                elif native is not None:
+                    # A known text-only content stream has no image region or
+                    # unsupported visual operators requiring OCR coverage.
+                    return native
 
             ocr = configured_runner(image_path, page_number, settings)
             if native is not None:
@@ -1677,25 +1816,14 @@ def _process_ocr_page(
                 ):
                     raise RuntimeError("OCR page acceptance lost without a reusable winner")
                 persisted_page = json.loads(page_json_path.read_text(encoding="utf-8"))
-                split_page = SplitPage.model_validate(persisted_page)
-                raw_page = split_page.dump_supercede_parse()
-                raw_page["meaningful_ordering"] = list(split_page.meaningful_ordering)
-                raw_page["metadata"] = persisted_page.get(
-                    "metadata", split_page.metadata.model_dump(mode="json")
-                )
                 hydrated_page = _validated_ocr_page_json(
-                    raw_page, default_page_number=page_number
+                    persisted_page, default_page_number=page_number
                 )
                 return OCRPageOutcome(
                     page_number=page_number, status="reused", page=hydrated_page
                 )
-            # The adapter consumes plain dict pages, not the Pydantic page
-            # model, so we serialize the page into the legacy-compatible shape here.
-            raw_page = split_page.dump_supercede_parse()
-            raw_page["meaningful_ordering"] = list(split_page.meaningful_ordering)
-            raw_page["metadata"] = page_payload["metadata"]
             accepted_page = _validated_ocr_page_json(
-                raw_page, default_page_number=page_number
+                page_payload, default_page_number=page_number
             )
             _emit_ocr_event(
                 probe,
@@ -3588,9 +3716,27 @@ def _pdf_render_manifest_payload(
 
 def _rasterizer_has_stable_identity(rasterizer: PDFRasterizer) -> bool:
     """Return whether rendered pages may be safely reused across runs."""
-    return rasterizer is _render_pdf_to_images or isinstance(
+    stable = rasterizer is _render_pdf_to_images or isinstance(
         rasterizer, PDFRasterizerWithIdentity
     )
+    if not stable:
+        return False
+    if rasterizer is _render_pdf_to_images:
+        try:
+            configuration = json.loads(_builtin_pdf_rasterizer_configuration())
+        except (TypeError, ValueError):
+            return False
+        poppler_identity = configuration.get("poppler_identity")
+        pdf2image_identity = configuration.get("pdf2image")
+        if (
+            not isinstance(poppler_identity, str)
+            or "unavailable" in poppler_identity.casefold()
+            or "unknown" in poppler_identity.casefold()
+            or not isinstance(pdf2image_identity, str)
+            or "unknown" in pdf2image_identity.casefold()
+        ):
+            return False
+    return True
 
 
 def _decode_pdf_render_manifest(value: object) -> _PDFRenderManifest | None:
@@ -3703,10 +3849,13 @@ def _builtin_pdf_rasterizer_configuration() -> str:
                 timeout=3,
             )
             output = f"{version_probe.stdout}\n{version_probe.stderr}"
-            version_line = next(
-                (line.strip() for line in output.splitlines() if line.strip()),
-                "unknown-version",
+            version_line = (
+                next((line.strip() for line in output.splitlines() if line.strip()), "")
+                if version_probe.returncode == 0
+                else ""
             )
+            if not version_line:
+                version_line = "unavailable"
             poppler_identity = f"{Path(executable).resolve()}|{version_line}"
         except (OSError, subprocess.TimeoutExpired):
             poppler_identity = f"{Path(executable).resolve()}|unavailable"
@@ -4014,6 +4163,152 @@ def _safe_ocr_retry_feedback(error: Exception, *, max_chars: int = 1200) -> str 
                 )[:max_chars]
         current = current.__cause__ or current.__context__
     return None
+
+
+def _ocr_direct_pdf_image_regions(
+    *,
+    pdf_path: Path,
+    image_regions: tuple[tuple[float, float, float, float], ...],
+    source_image_path: Path,
+    page_number: int,
+    runner: OCRRunner,
+    settings: WorkflowProviderSettings,
+) -> OCRClusterResponse | None:
+    """OCR only placed PDF image regions when page content is fully accounted for."""
+    if not image_regions:
+        return None
+    reader = PdfReader(str(pdf_path))
+    page = reader.pages[page_number - 1]
+    pdf_width = float(page.mediabox.width)
+    pdf_height = float(page.mediabox.height)
+    if pdf_width <= 0 or pdf_height <= 0:
+        return None
+
+    with Image.open(source_image_path) as source_image:
+        page_width, page_height = source_image.size
+        text_clusters: list[TextCluster] = []
+        non_text_objects: list[NonTextCluster] = []
+        responses: list[OCRClusterResponse] = []
+        with tempfile.TemporaryDirectory(prefix="kgdoc-pdf-image-region-") as temp_dir:
+            for index, (x_min, y_min, x_max, y_max) in enumerate(image_regions):
+                left = max(0, min(page_width, round(x_min * page_width / pdf_width)))
+                right = max(0, min(page_width, round(x_max * page_width / pdf_width)))
+                top = max(
+                    0,
+                    min(page_height, round((pdf_height - y_max) * page_height / pdf_height)),
+                )
+                bottom = max(
+                    0,
+                    min(page_height, round((pdf_height - y_min) * page_height / pdf_height)),
+                )
+                if right <= left or bottom <= top:
+                    return None
+                crop = source_image.crop((left, top, right, bottom))
+                crop_path = Path(temp_dir) / f"region-{index}.png"
+                crop.save(crop_path, "PNG")
+                response = runner(crop_path, page_number, settings)
+                local_width = response.page_x_max - response.page_x_min
+                local_height = response.page_y_max - response.page_y_min
+                if local_width <= 0 or local_height <= 0:
+                    return None
+                responses.append(response)
+
+                def rebase(
+                    item: TextCluster | NonTextCluster,
+                    *,
+                    page_left: int = left,
+                    page_top: int = top,
+                    page_right: int = right,
+                    page_bottom: int = bottom,
+                    local_page: OCRClusterResponse = response,
+                    local_width_px: float = local_width,
+                    local_height_px: float = local_height,
+                ) -> dict[str, float | int]:
+                    return {
+                        "bb_x_min": page_left
+                        + (item.bb_x_min - local_page.page_x_min)
+                        * (page_right - page_left)
+                        / local_width_px,
+                        "bb_x_max": page_left
+                        + (item.bb_x_max - local_page.page_x_min)
+                        * (page_right - page_left)
+                        / local_width_px,
+                        "bb_y_min": page_top
+                        + (item.bb_y_min - local_page.page_y_min)
+                        * (page_bottom - page_top)
+                        / local_height_px,
+                        "bb_y_max": page_top
+                        + (item.bb_y_max - local_page.page_y_min)
+                        * (page_bottom - page_top)
+                        / local_height_px,
+                        "cluster_number": len(text_clusters) + len(non_text_objects),
+                    }
+
+                text_clusters.extend(
+                    item.model_copy(update=rebase(item))
+                    for item in response.OCR_text_clusters
+                )
+                non_text_objects.extend(
+                    item.model_copy(update=rebase(item))
+                    for item in response.non_text_objects
+                )
+
+    clusters: list[TextCluster | NonTextCluster] = [*text_clusters, *non_text_objects]
+    clusters.sort(key=lambda item: (item.bb_y_min, item.bb_x_min, item.cluster_number))
+    text_clusters = []
+    non_text_objects = []
+    for cluster_number, item in enumerate(clusters):
+        item = item.model_copy(update={"cluster_number": cluster_number})
+        if isinstance(item, TextCluster):
+            text_clusters.append(item)
+        else:
+            non_text_objects.append(item)
+
+    if not responses:
+        return None
+    first = responses[0]
+    accuracy_rank = {"page": 0, "region": 1, "line": 2, "word": 3, "character": 4}
+    accuracy = min(
+        (response.spatial_accuracy for response in responses),
+        key=lambda value: accuracy_rank[value],
+    )
+    sorted_items: list[TextCluster | NonTextCluster] = sorted(
+        [*text_clusters, *non_text_objects],
+        key=lambda item: (item.bb_y_min, item.bb_x_min, item.cluster_number),
+    )
+    payload = first.model_dump()
+    payload.update(
+        {
+            "OCR_text_clusters": text_clusters,
+            "non_text_objects": non_text_objects,
+            "is_empty_page": not sorted_items,
+            "meaningful_ordering": [item.cluster_number for item in sorted_items],
+            "page_x_min": 0,
+            "page_x_max": page_width,
+            "page_y_min": 0,
+            "page_y_max": page_height,
+            "estimated_rotation_degrees": 0,
+            "incomplete_words_on_edge": any(
+                response.incomplete_words_on_edge for response in responses
+            ),
+            "incomplete_text": any(response.incomplete_text for response in responses),
+            "data_loss_likelihood": max(
+                response.data_loss_likelihood for response in responses
+            ),
+            "scan_quality": min(
+                (response.scan_quality for response in responses),
+                key=lambda value: {"low": 0, "medium": 1, "high": 2}[value],
+            ),
+            "contains_table": any(response.contains_table for response in responses),
+            "unresolved_item_count": sum(
+                response.unresolved_item_count for response in responses
+            ),
+            "source_item_count": len(sorted_items)
+            + sum(response.unresolved_item_count for response in responses),
+            "spatial_accuracy": accuracy,
+        }
+    )
+    return OCRClusterResponse.model_validate(payload)
 
 
 def _run_live_ocr_page(
