@@ -16,8 +16,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
-    Literal,
-    NotRequired,
     Protocol,
     TypedDict,
     cast,
@@ -87,8 +85,29 @@ from .ocr_pipeline import (
     build_production_grounded_summary_generator,
     build_production_group_proposal_generator,
 )
+from .ocr_runtime_contracts import (
+    OCRCheckpointPatch as _OCRCheckpointPatch,
+)
+from .ocr_runtime_contracts import (
+    OCRWorkflowState as _OCRWorkflowState,
+)
+from .ocr_runtime_contracts import (
+    PageListKey,
+    ResumeIdentityKey,
+    ResumeIdentityValue,
+    StateBoolKey,
+    StateStringKey,
+)
+from .ocr_runtime_state import (
+    page_source_state as _page_source_state,
+)
+from .ocr_runtime_state import (
+    typed_child_state as _typed_child_state,
+)
+from .ocr_runtime_state import (
+    typed_state as _typed_state,
+)
 from .runtime_contracts import WorkflowRuntimeDeps
-from .serialization import JsonObject, decode_json_object, decode_json_value
 from .service import workflow_predicates
 
 if TYPE_CHECKING:
@@ -163,20 +182,6 @@ def _workflow_runtime(
     return cast(Callable[..., WorkflowRuntime], WorkflowRuntime)(**runtime_args)
 
 
-class _PageSourceState(TypedDict):
-    page_number: int
-    image_path: str
-
-
-class _OCRCheckpointPatch(TypedDict):
-    """Validated partial state used to rewind an accepted page prefix."""
-
-    page_cursor: int
-    completed_pages: NotRequired[list[int]]
-    reused_pages: NotRequired[list[int]]
-    raw_pages: NotRequired[list[OCRPageJSON] | None]
-
-
 def _checkpoint_repair_cursor(patch: Mapping[str, object]) -> int:
     """Read the required rewind cursor and fail closed on malformed state."""
 
@@ -184,283 +189,6 @@ def _checkpoint_repair_cursor(patch: Mapping[str, object]) -> int:
     if type(cursor) is not int or cursor < 0:
         raise ValueError("OCR checkpoint repair requires a non-negative page_cursor")
     return cursor
-
-
-def _page_source_state(value: object) -> _PageSourceState:
-    """Decode one persisted page source without widening known fields."""
-
-    if not isinstance(value, Mapping):
-        raise TypeError("OCR workflow state page_sources contains a malformed entry")
-    page_number = value.get("page_number")
-    image_path = value.get("image_path")
-    if type(page_number) is not int or not isinstance(image_path, str) or not image_path:
-        raise TypeError("OCR workflow state page_sources contains a malformed entry")
-    return {"page_number": page_number, "image_path": image_path}
-
-
-def _json_object(value: object, *, label: str) -> JsonObject:
-    """Validate one persisted JSON object without widening its values."""
-
-    return decode_json_object(value, label=f"OCR workflow state field {label!r}")
-
-
-def _json_object_passes(value: object, *, label: str) -> list[list[JsonObject]]:
-    """Decode grouping passes at the checkpoint boundary."""
-
-    if not isinstance(value, list):
-        raise TypeError(f"OCR workflow state field {label!r} must be a list of passes")
-    passes: list[list[JsonObject]] = []
-    for pass_index, raw_pass in enumerate(value):
-        if not isinstance(raw_pass, list):
-            raise TypeError(
-                f"OCR workflow state field {label!r} pass {pass_index} must be a list"
-            )
-        passes.append(
-            [
-                _json_object(item, label=f"{label}[{pass_index}]")
-                for item in raw_pass
-            ]
-        )
-    return passes
-
-
-def _checkpoint_ocr_page(value: object, *, index: int) -> OCRPageJSON:
-    try:
-        return _validated_ocr_page_json(value, strict_page_number_types=True)
-    except TypeError as exc:
-        raise TypeError(f"OCR workflow state raw_pages[{index}]: {exc}") from exc
-    except ValueError as exc:
-        raise ValueError(f"OCR workflow state raw_pages[{index}]: {exc}") from exc
-
-
-PageListKey = Literal["completed_pages", "reused_pages"]
-StateStringKey = Literal[
-    "document_id",
-    "source_fingerprint",
-    "source_namespace",
-    "grouping_policy_version",
-    "parse_generation",
-    "legacy_dir",
-    "checkpoint_revision",
-]
-StateBoolKey = Literal[
-    "adaptive_grouping_complete",
-    "checkpoint_absent",
-    "checkpoint_restored",
-    "summaries_generated",
-]
-StateObjectKey = Literal[
-    "tree",
-    "workflow_input",
-    "grouping_result",
-    "semantic_result",
-    "semantic_tree",
-    "ocr_page_result",
-    "export_bundle",
-]
-ResumeIdentityValue = str | list[str]
-ResumeIdentityKey = Literal[
-    "ocr_root_state_version",
-    "ocr_page_state_version",
-    "document_id",
-    "source_fingerprint",
-    "source_namespace",
-    "ocr_configuration_fingerprints",
-    "grouping_policy_version",
-    "parse_generation",
-]
-
-
-class _OCRWorkflowState(TypedDict, total=False):
-    ocr_page_state_version: str
-    ocr_root_state_version: str
-    document_id: str
-    source_fingerprint: str
-    source_namespace: str
-    ocr_configuration_fingerprints: list[str]
-    grouping_policy_version: str
-    parse_generation: str
-    tree: JsonObject
-    pass_index: int
-    ocr_page_recovery_generation: int
-    page_cursor: int
-    last_reused_page: int | None
-    page_sources: list[_PageSourceState]
-    legacy_dir: str
-    raw_pages: list[OCRPageJSON] | None
-    completed_pages: list[int]
-    reused_pages: list[int]
-    last_failed_page: int
-    checkpoint_revision: str
-    grouping_passes: list[list[JsonObject]]
-    adaptive_grouping_round: int
-    adaptive_grouping_history: list[JsonObject]
-    adaptive_grouping_complete: bool
-    adaptive_grouping_window: int
-    adaptive_grouping_window_proposals: list[JsonObject]
-    workflow_input: JsonObject
-    grouping_result: JsonObject
-    semantic_result: JsonObject
-    semantic_tree: JsonObject
-    ocr_page_result: JsonObject
-    export_bundle: JsonObject
-    checkpoint_restored: bool
-    checkpoint_absent: bool
-    summaries_generated: bool
-
-
-def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
-    """Narrow persisted workflow state once at the runtime boundary.
-
-    Checkpoint payloads are decoded from JSON, so the runtime still validates
-    values at each use.  The TypedDict keeps known keys from degrading to
-    ``object`` after the boundary has been crossed.
-    """
-    if not all(isinstance(key, str) for key in value):
-        raise TypeError("OCR workflow state keys must be strings")
-
-    # Decode application state before narrowing its known fields. Kogwistar
-    # also injects reserved underscore-prefixed runtime plumbing keys (for
-    # example, invocation paths) that are deliberately not JSON checkpoint
-    # state and may use opaque mapping-proxy values. Unknown application keys
-    # still cross the same JSON boundary as known keys.
-    decoded_state: dict[str, object] = {}
-    for key, field in value.items():
-        if key.startswith("_"):
-            decoded_state[key] = field
-        else:
-            decoded_state[key] = decode_json_value(
-                field, label=f"OCR workflow state.{key}"
-            )
-    state = cast(_OCRWorkflowState, decoded_state)
-
-    string_keys = (
-        "ocr_page_state_version",
-        "ocr_root_state_version",
-        "document_id",
-        "source_fingerprint",
-        "source_namespace",
-        "grouping_policy_version",
-        "parse_generation",
-        "legacy_dir",
-        "checkpoint_revision",
-    )
-    for key in string_keys:
-        field = value.get(key)
-        if field is not None and not isinstance(field, str):
-            raise TypeError(f"OCR workflow state field {key!r} must be a string")
-
-    integer_keys = (
-        "pass_index",
-        "adaptive_grouping_round",
-        "adaptive_grouping_window",
-        "ocr_page_recovery_generation",
-        "page_cursor",
-        "last_failed_page",
-    )
-    for key in integer_keys:
-        field = value.get(key)
-        if field is not None and type(field) is not int:
-            raise TypeError(f"OCR workflow state field {key!r} must be an integer")
-
-    last_reused_page = value.get("last_reused_page")
-    if last_reused_page is not None and type(last_reused_page) is not int:
-        raise TypeError("OCR workflow state field 'last_reused_page' must be an integer or null")
-
-    boolean_keys = (
-        "checkpoint_restored",
-        "checkpoint_absent",
-        "summaries_generated",
-        "adaptive_grouping_complete",
-    )
-    for key in boolean_keys:
-        field = value.get(key)
-        if field is not None and type(field) is not bool:
-            raise TypeError(f"OCR workflow state field {key!r} must be a boolean")
-
-    object_keys: tuple[StateObjectKey, ...] = (
-        "tree",
-        "workflow_input",
-        "grouping_result",
-        "semantic_result",
-        "semantic_tree",
-        "ocr_page_result",
-        "export_bundle",
-    )
-    for key in object_keys:
-        field = value.get(key)
-        if field is not None:
-            state[key] = _json_object(field, label=key)
-
-    grouping_passes = value.get("grouping_passes")
-    if grouping_passes is not None:
-        state["grouping_passes"] = _json_object_passes(
-            grouping_passes, label="grouping_passes"
-        )
-
-    adaptive_history = value.get("adaptive_grouping_history")
-    if adaptive_history is not None:
-        if not isinstance(adaptive_history, list):
-            raise TypeError("OCR workflow state adaptive_grouping_history must be a list")
-        state["adaptive_grouping_history"] = [
-            decode_json_object(item, label=f"adaptive_grouping_history[{index}]")
-            for index, item in enumerate(adaptive_history)
-        ]
-    window_proposals = value.get("adaptive_grouping_window_proposals")
-    if window_proposals is not None:
-        if not isinstance(window_proposals, list):
-            raise TypeError(
-                "OCR workflow state adaptive_grouping_window_proposals must be a list"
-            )
-        state["adaptive_grouping_window_proposals"] = [
-            decode_json_object(
-                item,
-                label=f"adaptive_grouping_window_proposals[{index}]",
-            )
-            for index, item in enumerate(window_proposals)
-        ]
-
-    for key in ("completed_pages", "reused_pages"):
-        field = value.get(key)
-        if field is not None and (
-            not isinstance(field, list) or any(type(item) is not int for item in field)
-        ):
-            raise TypeError(f"OCR workflow state field {key!r} must be a list of integers")
-        if field is not None:
-            normalized_pages = cast(list[int], list(field))
-            if key == "completed_pages":
-                state["completed_pages"] = normalized_pages
-            else:
-                state["reused_pages"] = normalized_pages
-
-    raw_pages = value.get("raw_pages")
-    if raw_pages is not None:
-        if not isinstance(raw_pages, list):
-            raise TypeError("OCR workflow state field 'raw_pages' must be a list or null")
-        state["raw_pages"] = [
-            _checkpoint_ocr_page(page, index=index)
-            for index, page in enumerate(raw_pages)
-        ]
-
-    page_sources = value.get("page_sources")
-    if page_sources is not None:
-        if not isinstance(page_sources, list):
-            raise TypeError("OCR workflow state field 'page_sources' must be a list")
-        state["page_sources"] = [_page_source_state(item) for item in page_sources]
-
-    return state
-
-
-def _typed_child_state(value: object, *, label: str) -> _OCRWorkflowState:
-    """Validate and narrow a JSON child-state payload at a workflow seam."""
-    if not isinstance(value, dict) or not all(
-        isinstance(key, str) for key in value
-    ):
-        raise TypeError(f"{label} did not return a JSON object state")
-    try:
-        return _typed_state(value)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{label} returned invalid typed state: {exc}") from exc
 
 
 def _resume_identity_value(
