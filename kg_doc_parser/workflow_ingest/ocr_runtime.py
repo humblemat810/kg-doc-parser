@@ -174,7 +174,7 @@ class _OCRCheckpointPatch(TypedDict):
     page_cursor: int
     completed_pages: NotRequired[list[int]]
     reused_pages: NotRequired[list[int]]
-    raw_pages: NotRequired[list[OCRPageJSON]]
+    raw_pages: NotRequired[list[OCRPageJSON] | None]
 
 
 def _checkpoint_repair_cursor(patch: Mapping[str, object]) -> int:
@@ -222,6 +222,15 @@ def _json_object_passes(value: object, *, label: str) -> list[list[JsonObject]]:
             ]
         )
     return passes
+
+
+def _checkpoint_ocr_page(value: object, *, index: int) -> OCRPageJSON:
+    try:
+        return _validated_ocr_page_json(value, strict_page_number_types=True)
+    except TypeError as exc:
+        raise TypeError(f"OCR workflow state raw_pages[{index}]: {exc}") from exc
+    except ValueError as exc:
+        raise ValueError(f"OCR workflow state raw_pages[{index}]: {exc}") from exc
 
 
 PageListKey = Literal["completed_pages", "reused_pages"]
@@ -354,6 +363,10 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
         if field is not None and type(field) is not int:
             raise TypeError(f"OCR workflow state field {key!r} must be an integer")
 
+    last_reused_page = value.get("last_reused_page")
+    if last_reused_page is not None and type(last_reused_page) is not int:
+        raise TypeError("OCR workflow state field 'last_reused_page' must be an integer or null")
+
     boolean_keys = (
         "checkpoint_restored",
         "checkpoint_absent",
@@ -419,6 +432,15 @@ def _typed_state(value: Mapping[str, object]) -> _OCRWorkflowState:
                 state["completed_pages"] = normalized_pages
             else:
                 state["reused_pages"] = normalized_pages
+
+    raw_pages = value.get("raw_pages")
+    if raw_pages is not None:
+        if not isinstance(raw_pages, list):
+            raise TypeError("OCR workflow state field 'raw_pages' must be a list or null")
+        state["raw_pages"] = [
+            _checkpoint_ocr_page(page, index=index)
+            for index, page in enumerate(raw_pages)
+        ]
 
     page_sources = value.get("page_sources")
     if page_sources is not None:
@@ -598,7 +620,7 @@ def _json_pages(
     """
     value = state.get("raw_pages")
     if value is not None:
-        if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        if not isinstance(value, list):
             raise ValueError("OCR page runtime raw page state is malformed")
         return [
             _validated_ocr_page_json(item, strict_page_number_types=True)
@@ -653,7 +675,7 @@ def _validate_root_resume_identity(
     """Reject a root checkpoint built from a different immutable input set."""
     if not require_match:
         return
-    expected: dict[str, ResumeIdentityValue] = {
+    expected: dict[ResumeIdentityKey, ResumeIdentityValue] = {
         "ocr_root_state_version": _OCR_ROOT_STATE_VERSION,
         "document_id": document_id,
         "source_fingerprint": source_fingerprint,
@@ -671,7 +693,7 @@ def _validate_root_resume_identity(
     mismatches = [
         key
         for key, expected_value in expected.items()
-        if _resume_identity_value(state, cast(ResumeIdentityKey, key)) != expected_value
+        if _resume_identity_value(state, key) != expected_value
     ]
     if mismatches:
         raise RuntimeError(
@@ -844,7 +866,7 @@ def _validate_page_resume_identity(
     configuration_fingerprints: Sequence[str],
 ) -> None:
     """Reject a page checkpoint built from a different immutable input set."""
-    expected: dict[str, ResumeIdentityValue] = {
+    expected: dict[ResumeIdentityKey, ResumeIdentityValue] = {
         "ocr_page_state_version": _OCR_PAGE_STATE_VERSION,
         "document_id": document_id,
         "source_fingerprint": source_fingerprint,
@@ -859,7 +881,7 @@ def _validate_page_resume_identity(
     mismatches = [
         key
         for key, expected_value in expected.items()
-        if _resume_identity_value(state, cast(ResumeIdentityKey, key)) != expected_value
+        if _resume_identity_value(state, key) != expected_value
     ]
     if mismatches:
         raise RuntimeError(
