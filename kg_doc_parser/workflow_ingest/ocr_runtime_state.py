@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
 from .adapters import _validated_ocr_page_json
 from .ocr_pipeline import OCRPageJSON, OCRSourcePlan
 from .ocr_runtime_contracts import (
+    OCR_PAGE_STATE_VERSION,
+    OCR_ROOT_STATE_VERSION,
     OCRWorkflowState,
     PageListKey,
     PageSourceState,
@@ -210,6 +212,73 @@ def resume_identity_value(
     ):
         return list(value)
     raise TypeError(f"OCR checkpoint identity field {key!r} has an invalid type")
+
+
+def _validate_resume_identity(
+    state: OCRWorkflowState,
+    expected: Mapping[ResumeIdentityKey, ResumeIdentityValue],
+    *,
+    workflow_kind: str,
+) -> None:
+    missing = [key for key in expected if key not in state]
+    if missing:
+        raise RuntimeError(
+            f"cannot resume OCR {workflow_kind} checkpoint without immutable identity fields: "
+            + ", ".join(sorted(missing))
+        )
+    mismatches = [
+        key
+        for key, expected_value in expected.items()
+        if resume_identity_value(state, key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            f"OCR {workflow_kind} checkpoint identity mismatch; refusing to mix persisted state for: "
+            + ", ".join(sorted(mismatches))
+        )
+
+
+def validate_root_resume_identity(
+    state: OCRWorkflowState,
+    *,
+    document_id: str,
+    source_fingerprint: str,
+    source_namespace: str,
+    configuration_fingerprints: Sequence[str],
+    grouping_policy_version: str,
+    parse_generation: str,
+    require_match: bool,
+) -> None:
+    """Reject a root checkpoint built from a different immutable input set."""
+    if not require_match:
+        return
+    expected: dict[ResumeIdentityKey, ResumeIdentityValue] = {
+        "ocr_root_state_version": OCR_ROOT_STATE_VERSION,
+        "document_id": document_id,
+        "source_fingerprint": source_fingerprint,
+        "source_namespace": source_namespace,
+        "ocr_configuration_fingerprints": list(configuration_fingerprints),
+        "grouping_policy_version": grouping_policy_version,
+        "parse_generation": parse_generation,
+    }
+    _validate_resume_identity(state, expected, workflow_kind="root")
+
+
+def validate_page_resume_identity(
+    state: OCRWorkflowState,
+    *,
+    document_id: str,
+    source_fingerprint: str,
+    configuration_fingerprints: Sequence[str],
+) -> None:
+    """Reject a page checkpoint built from a different immutable input set."""
+    expected: dict[ResumeIdentityKey, ResumeIdentityValue] = {
+        "ocr_page_state_version": OCR_PAGE_STATE_VERSION,
+        "document_id": document_id,
+        "source_fingerprint": source_fingerprint,
+        "ocr_configuration_fingerprints": list(configuration_fingerprints),
+    }
+    _validate_resume_identity(state, expected, workflow_kind="page")
 
 
 def state_string(state: OCRWorkflowState, key: StateStringKey, default: str) -> str:

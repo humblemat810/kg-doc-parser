@@ -85,14 +85,16 @@ from .ocr_pipeline import (
     build_production_group_proposal_generator,
 )
 from .ocr_runtime_contracts import (
+    OCR_PAGE_STATE_VERSION as _OCR_PAGE_STATE_VERSION,
+)
+from .ocr_runtime_contracts import (
+    OCR_ROOT_STATE_VERSION as _OCR_ROOT_STATE_VERSION,
+)
+from .ocr_runtime_contracts import (
     OCRCheckpointPatch as _OCRCheckpointPatch,
 )
 from .ocr_runtime_contracts import (
     OCRWorkflowState as _OCRWorkflowState,
-)
-from .ocr_runtime_contracts import (
-    ResumeIdentityKey,
-    ResumeIdentityValue,
 )
 from .ocr_runtime_state import (
     int_list as _int_list,
@@ -105,9 +107,6 @@ from .ocr_runtime_state import (
 )
 from .ocr_runtime_state import (
     page_sources as _page_sources,
-)
-from .ocr_runtime_state import (
-    resume_identity_value as _resume_identity_value,
 )
 from .ocr_runtime_state import (
     state_bool as _state_bool,
@@ -124,6 +123,12 @@ from .ocr_runtime_state import (
 from .ocr_runtime_state import (
     typed_state as _typed_state,
 )
+from .ocr_runtime_state import (
+    validate_page_resume_identity as _validate_page_resume_identity,
+)
+from .ocr_runtime_state import (
+    validate_root_resume_identity as _validate_root_resume_identity,
+)
 from .runtime_contracts import WorkflowRuntimeDeps
 from .service import workflow_predicates
 
@@ -133,10 +138,6 @@ if TYPE_CHECKING:
 
 class StepResolver(Protocol):
     def __call__(self, op: str) -> Callable[[StepContext], StepRunResult]: ...
-
-_OCR_ROOT_STATE_VERSION = "ocr-root-v3"
-_OCR_PAGE_STATE_VERSION = "ocr-page-v2"
-
 
 class KogwistarRuntimeCompatibilityError(RuntimeError):
     """Raised when a requested OCR recovery contract is not available."""
@@ -284,47 +285,6 @@ def _recovery_generation(state: _OCRWorkflowState) -> int:
             "OCR page recovery generation must be a non-negative integer"
         )
     return value
-
-
-def _validate_root_resume_identity(
-    state: _OCRWorkflowState,
-    *,
-    document_id: str,
-    source_fingerprint: str,
-    source_namespace: str,
-    configuration_fingerprints: Sequence[str],
-    grouping_policy_version: str,
-    parse_generation: str,
-    require_match: bool,
-) -> None:
-    """Reject a root checkpoint built from a different immutable input set."""
-    if not require_match:
-        return
-    expected: dict[ResumeIdentityKey, ResumeIdentityValue] = {
-        "ocr_root_state_version": _OCR_ROOT_STATE_VERSION,
-        "document_id": document_id,
-        "source_fingerprint": source_fingerprint,
-        "source_namespace": source_namespace,
-        "ocr_configuration_fingerprints": list(configuration_fingerprints),
-        "grouping_policy_version": grouping_policy_version,
-        "parse_generation": parse_generation,
-    }
-    missing = [key for key in expected if key not in state]
-    if missing:
-        raise RuntimeError(
-            "cannot resume OCR root checkpoint without immutable identity fields: "
-            + ", ".join(sorted(missing))
-        )
-    mismatches = [
-        key
-        for key, expected_value in expected.items()
-        if _resume_identity_value(state, key) != expected_value
-    ]
-    if mismatches:
-        raise RuntimeError(
-            "OCR root checkpoint identity mismatch; refusing to mix persisted state for: "
-            + ", ".join(sorted(mismatches))
-        )
 
 
 def _validate_root_invocation_lineage(
@@ -481,38 +441,6 @@ def _page_workflow_initial_state(source_plan: OCRSourcePlan) -> _OCRWorkflowStat
         "legacy_dir": str(source_plan.legacy_dir),
         "page_cursor": 0,
     }
-
-
-def _validate_page_resume_identity(
-    state: _OCRWorkflowState,
-    *,
-    document_id: str,
-    source_fingerprint: str,
-    configuration_fingerprints: Sequence[str],
-) -> None:
-    """Reject a page checkpoint built from a different immutable input set."""
-    expected: dict[ResumeIdentityKey, ResumeIdentityValue] = {
-        "ocr_page_state_version": _OCR_PAGE_STATE_VERSION,
-        "document_id": document_id,
-        "source_fingerprint": source_fingerprint,
-        "ocr_configuration_fingerprints": list(configuration_fingerprints),
-    }
-    missing = [key for key in expected if key not in state]
-    if missing:
-        raise RuntimeError(
-            "cannot resume OCR page checkpoint without immutable identity fields: "
-            + ", ".join(sorted(missing))
-        )
-    mismatches = [
-        key
-        for key, expected_value in expected.items()
-        if _resume_identity_value(state, key) != expected_value
-    ]
-    if mismatches:
-        raise RuntimeError(
-            "OCR page checkpoint identity mismatch; refusing to mix persisted state for: "
-            + ", ".join(sorted(mismatches))
-        )
 
 
 def _reconcile_page_checkpoint(

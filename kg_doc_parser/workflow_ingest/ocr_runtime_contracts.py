@@ -7,6 +7,9 @@ from typing import Literal, NotRequired, TypedDict
 from .ocr_pipeline import OCRPageJSON
 from .serialization import JsonObject
 
+OCR_ROOT_STATE_VERSION = "ocr-root-v3"
+OCR_PAGE_STATE_VERSION = "ocr-page-v2"
+
 
 class PageSourceState(TypedDict):
     page_number: int

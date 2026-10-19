@@ -113,6 +113,7 @@ from kg_doc_parser.workflow_ingest import (
     prepare_ocr_workflow_input,
     run_ocr_ingest_workflow,
 )
+from kg_doc_parser.workflow_ingest import ocr_runtime_state as ocr_runtime_state_module
 from kg_doc_parser.workflow_ingest.adapters import OCRPageJSON
 from kg_doc_parser.workflow_ingest.document_adapters import apply_grouping_proposals
 from kg_doc_parser.workflow_ingest.document_grouping import (
@@ -177,7 +178,6 @@ from kg_doc_parser.workflow_ingest.ocr_runtime import (
     _reconcile_page_checkpoint,
     _reused_pages_from_trace,
     _semantic_parse_generation,
-    _validate_root_resume_identity,
     run_grouping_workflow,
     run_ocr_page_workflow,
 )
@@ -380,7 +380,7 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
         "parse_generation": "semantic-v1",
     }
 
-    _validate_root_resume_identity(
+    ocr_runtime_state_module.validate_root_resume_identity(
         expected,
         document_id="doc",
         source_fingerprint="source-a",
@@ -391,7 +391,7 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
         require_match=True,
     )
     with pytest.raises(RuntimeError, match="immutable identity fields"):
-        _validate_root_resume_identity(
+        ocr_runtime_state_module.validate_root_resume_identity(
             {"document_id": "doc"},
             document_id="doc",
             source_fingerprint="source-a",
@@ -403,7 +403,7 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
         )
     changed = dict(expected, source_fingerprint="source-b")
     with pytest.raises(RuntimeError, match="identity mismatch"):
-        _validate_root_resume_identity(
+        ocr_runtime_state_module.validate_root_resume_identity(
             changed,
             document_id="doc",
             source_fingerprint="source-a",
@@ -415,7 +415,7 @@ def test_ocr_root_resume_rejects_missing_or_changed_immutable_identity() -> None
         )
     changed_namespace = dict(expected, source_namespace="tenant-b")
     with pytest.raises(RuntimeError, match="identity mismatch"):
-        _validate_root_resume_identity(
+        ocr_runtime_state_module.validate_root_resume_identity(
             changed_namespace,
             document_id="doc",
             source_fingerprint="source-a",
@@ -440,7 +440,7 @@ def test_ocr_root_resume_rejects_a_different_parse_generation() -> None:
     }
 
     with pytest.raises(RuntimeError, match="identity mismatch"):
-        _validate_root_resume_identity(
+        ocr_runtime_state_module.validate_root_resume_identity(
             state,
             document_id="doc",
             source_fingerprint="source-a",
