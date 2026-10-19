@@ -34,5 +34,7 @@ keeps the release evidence explicit about measured OCR limitations.
   SQLite/artifact-first and checkpoint-first commit orderings.
 - Pyright: `0 errors, 0 warnings`; configured Ruff target passes; Poetry lock
   verification passes.
-- Supported CPython 3.12-3.14 and PyPy 3.11 GitHub CI matrix: pending for this
-  release candidate.
+- Supported CPython 3.12-3.14 and PyPy 3.11 GitHub CI matrix: passed in Parser
+  CI run `39188130268` (12m 24s).
+- Linux recovery release gate and durable OCR graph publication gate: passed
+  in Parser CI run `39188130268`.
