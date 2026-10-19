@@ -10705,6 +10705,7 @@ def test_ocr_page_artifact_publish_crash_is_recoverable() -> None:
         state_store=store,
         probe=None,
         configuration_fingerprints=(config_fingerprint,),
+        quality_policy=OCRQualityPolicy(mode="permissive"),
     )
     image_sha256 = hashlib.sha256(image_path.read_bytes()).hexdigest()
     original_write = ocr_pipeline_module._write_bytes_atomic
