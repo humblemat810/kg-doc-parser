@@ -12,7 +12,6 @@ import hashlib
 import inspect
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -25,10 +24,7 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.contract import Predicate as RuntimeDesignPredicate
 from kogwistar.runtime.models import (
-    RunSuccess,
-    StateUpdate,
     StepRunResult,
-    WorkflowInvocationRequest,
 )
 from kogwistar.runtime.runtime import (
     RunResult,
@@ -37,8 +33,6 @@ from kogwistar.runtime.runtime import (
 )
 
 from .design import (
-    DEFAULT_OCR_GROUPING_WORKFLOW_ID,
-    DEFAULT_OCR_PAGE_WORKFLOW_ID,
     DEFAULT_OCR_WORKFLOW_ID,
     DEFAULT_WORKFLOW_ID,
     ensure_ingest_workflow_design,
@@ -46,24 +40,15 @@ from .design import (
     ensure_ocr_page_workflow_design,
     ensure_ocr_workflow_design,
 )
-from .document_adapters import (
-    apply_grouping_proposals,
-    attach_document_tree_metadata,
-    suggest_cross_page_continuations,
-)
 from .document_grouping import (
     GroupProposal,
-    GroupProposalBatch,
     GroupProposalGenerator,
-    build_grouping_pass_context,
-    grouping_frontier_windows,
     grouping_policy_identity,
-    resolve_grouping_proposals,
-    validate_grouping_window_proposals,
 )
 from .document_models import AdaptiveGroupingPolicy, DocumentTree, SummaryPolicy
 from .handlers import build_ingest_step_resolver
-from .models import WorkflowExportBundle, WorkflowIngestInput
+from .models import WorkflowExportBundle
+from .ocr_generators import build_production_group_proposal_generator
 from .ocr_pipeline import (
     GroundedSummaryGenerator,
     OCRPageJSON,
@@ -73,13 +58,8 @@ from .ocr_pipeline import (
     OCRWorkflowArtifacts,
     OCRWorkflowStateStore,
     SummaryGenerator,
-    _finalize_ocr_workflow_artifacts,
-    _generate_tree_summaries,
     _summary_generator_identity,
-    _write_document_tree,
-    _write_summary,
     build_production_grounded_summary_generator,
-    build_production_group_proposal_generator,
 )
 from .ocr_runtime_contracts import (
     OCR_PAGE_STATE_VERSION as _OCR_PAGE_STATE_VERSION,  # noqa: F401
@@ -88,34 +68,18 @@ from .ocr_runtime_contracts import (
     OCR_ROOT_STATE_VERSION as _OCR_ROOT_STATE_VERSION,
 )
 from .ocr_runtime_contracts import (
-    OCRWorkflowState as _OCRWorkflowState,
+    OCRWorkflowState as _OCRWorkflowState,  # noqa: F401 - compatibility re-export
 )
-from .ocr_runtime_grouping_state import (
-    validated_grouping_checkpoint as _validated_grouping_checkpoint,
-)
+from .ocr_runtime_finalization import finalize_ocr_root_result
+from .ocr_runtime_grouping_steps import _register_grouping_steps
 from .ocr_runtime_lineage import (
     next_root_recovery_run_id as _next_root_recovery_run_id,
 )
 from .ocr_runtime_lineage import (
-    recovery_generation as _recovery_generation,
-)
-from .ocr_runtime_lineage import (
     semantic_parse_generation as _semantic_parse_generation,
-)
-from .ocr_runtime_lineage import (
-    validate_root_invocation_lineage as _validate_root_invocation_lineage,
-)
-from .ocr_runtime_page_state import (
-    page_result_needs_recovery as _page_result_needs_recovery,
-)
-from .ocr_runtime_page_state import (
-    page_workflow_initial_state as _page_workflow_initial_state,
 )
 from .ocr_runtime_page_state import (
     reconcile_page_checkpoint as _reconcile_page_checkpoint,  # noqa: F401
-)
-from .ocr_runtime_page_state import (
-    reused_pages_from_trace as _reused_pages_from_trace,
 )
 from .ocr_runtime_page_state import (
     root_page_artifacts_need_recovery as _root_page_artifacts_need_recovery,
@@ -123,33 +87,7 @@ from .ocr_runtime_page_state import (
 from .ocr_runtime_page_state import (
     validate_existing_page_identities as _validate_existing_page_identities,
 )
-from .ocr_runtime_page_state import (
-    validate_root_page_result as _validate_root_page_result,
-)
-from .ocr_runtime_state import (
-    int_list as _int_list,
-)
-from .ocr_runtime_state import (
-    json_pages as _json_pages,
-)
-from .ocr_runtime_state import (
-    state_bool as _state_bool,
-)
-from .ocr_runtime_state import (
-    state_optional_string as _state_optional_string,
-)
-from .ocr_runtime_state import (
-    state_string as _state_string,
-)
-from .ocr_runtime_state import (
-    typed_child_state as _typed_child_state,
-)
-from .ocr_runtime_state import (
-    typed_state as _typed_state,
-)
-from .ocr_runtime_state import (
-    validate_root_resume_identity as _validate_root_resume_identity,
-)
+from .ocr_runtime_root_steps import build_ocr_root_step_resolver
 from .runtime_contracts import WorkflowRuntimeDeps
 from .service import workflow_predicates
 
@@ -159,6 +97,7 @@ if TYPE_CHECKING:
 
 class StepResolver(Protocol):
     def __call__(self, op: str) -> Callable[[StepContext], StepRunResult]: ...
+
 
 class KogwistarRuntimeCompatibilityError(RuntimeError):
     """Raised when a requested OCR recovery contract is not available."""
@@ -202,9 +141,10 @@ def _workflow_runtime(
     }
     if run_ownership_lease_ms is not None:
         try:
-            supports_lease = "run_ownership_lease_ms" in inspect.signature(
-                WorkflowRuntime
-            ).parameters
+            supports_lease = (
+                "run_ownership_lease_ms"
+                in inspect.signature(WorkflowRuntime).parameters
+            )
         except (TypeError, ValueError):
             supports_lease = False
         if not supports_lease:
@@ -230,73 +170,6 @@ def _checkpoint_repair_cursor(patch: Mapping[str, object]) -> int:
     return cursor
 
 
-def _success(
-    next_step: str | None,
-    *,
-    state_update: list[StateUpdate] | None = None,
-) -> RunSuccess:
-    return RunSuccess(
-        conversation_node_id=None,
-        state_update=state_update or [],
-        _route_next=[] if next_step is None else [next_step],
-    )
-
-
-def _tree(state: _OCRWorkflowState) -> DocumentTree:
-    payload = state.get("tree")
-    if not isinstance(payload, dict) or not all(isinstance(key, str) for key in payload):
-        raise TypeError("OCR grouping runtime state has no tree")
-    return DocumentTree.model_validate(payload)
-
-
-def _proposals(value: object) -> tuple[GroupProposal, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(GroupProposal.model_validate(item) for item in value)
-
-
-def _pass_count(state: _OCRWorkflowState) -> int:
-    value = state.get("pass_index", 0)
-    return value if type(value) is int and value >= 0 else 0
-
-
-def _adaptive_round(state: _OCRWorkflowState) -> int:
-    value = state.get("adaptive_grouping_round", 0)
-    if type(value) is not int or value < 0:
-        raise ValueError("adaptive grouping round must be a non-negative integer")
-    return value
-
-
-def _adaptive_window(state: _OCRWorkflowState) -> int:
-    value = state.get("adaptive_grouping_window", 0)
-    if type(value) is not int or value < 0:
-        raise ValueError("adaptive grouping window cursor must be a non-negative integer")
-    return value
-
-
-def _adaptive_grouping_complete(tree: DocumentTree, *, policy_identity: str) -> bool:
-    root = next(node for node in tree.nodes if node.node_id == tree.root_id)
-    return root.annotations.get("grouping:adaptive_complete") == policy_identity
-
-
-def _mark_adaptive_grouping_complete(
-    tree: DocumentTree, *, policy_identity: str
-) -> DocumentTree:
-    root = next(node for node in tree.nodes if node.node_id == tree.root_id)
-    updated_root = root.model_copy(
-        update={
-            "annotations": {
-                **root.annotations,
-                "grouping:adaptive_complete": policy_identity,
-            }
-        }
-    )
-    nodes = tuple(
-        updated_root if node.node_id == tree.root_id else node for node in tree.nodes
-    )
-    return tree.model_copy(update={"nodes": nodes})
-
-
 def run_ocr_page_workflow(
     *,
     workflow_engine: GraphKnowledgeEngine,
@@ -319,291 +192,6 @@ def run_ocr_page_workflow(
         run_id=run_id,
         resume_from_checkpoint=resume_from_checkpoint,
     )
-
-
-def _register_grouping_steps(
-    resolver: MappingStepResolver,
-    *,
-    state_store: OCRWorkflowStateStore,
-    summary_policy: SummaryPolicy | None,
-    summary_generator: SummaryGenerator | None,
-    grounded_summary_generator: GroundedSummaryGenerator | None,
-    adaptive_grouping_policy: AdaptiveGroupingPolicy,
-    grouping_proposer: GroupProposalGenerator | None,
-) -> None:
-    @resolver.register("start")
-    def _start(ctx: StepContext) -> StepRunResult:
-        return _success("restore_grouping_checkpoint")
-
-    @resolver.register("restore_grouping_checkpoint")
-    def _restore(ctx: StepContext) -> StepRunResult:
-        state = _typed_state(ctx.state_view)
-        tree = _tree(state)
-        document_id = _state_string(state, "document_id", tree.document_id)
-        policy_version = _state_string(state, "grouping_policy_version", "baseline-v1")
-        restored, revision = _validated_grouping_checkpoint(
-            state_store=state_store,
-            document_id=document_id,
-            tree=tree,
-            grouping_policy_version=policy_version,
-        )
-        if restored is not None:
-            payload = restored.model_dump(mode="json")
-            return _success(
-                "apply_grouping_pass",
-                state_update=[
-                    (
-                        "u",
-                        {
-                            "tree": payload,
-                            "checkpoint_restored": True,
-                            "checkpoint_absent": False,
-                            "checkpoint_revision": revision,
-                            "adaptive_grouping_complete": _adaptive_grouping_complete(
-                                restored, policy_identity=policy_version
-                            ),
-                        },
-                    )
-                ],
-            )
-        if state_store.document_tree_revision(document_id=document_id) is not None:
-            raise RuntimeError("grouping checkpoint exists but does not match the current source or policy")
-        return _success("apply_grouping_pass")
-
-    @resolver.register("apply_grouping_pass")
-    def _apply(ctx: StepContext) -> StepRunResult:
-        state = _typed_state(ctx.state_view)
-        tree = _tree(state)
-        pass_index = _pass_count(state)
-        raw_passes = state.get("grouping_passes", [])
-        passes = raw_passes if isinstance(raw_passes, list) else []
-        if pass_index < len(passes):
-            proposals = _proposals(passes[pass_index])
-            policy_version = _state_string(state, "grouping_policy_version", "baseline-v1")
-            tree = apply_grouping_proposals(
-                tree,
-                proposals,
-                grouping_policy_version=f"{policy_version}:{pass_index + 1}",
-            )
-            return _success(
-                "apply_grouping_pass",
-                state_update=[
-                    (
-                        "u",
-                        {"tree": tree.model_dump(mode="json"), "pass_index": pass_index + 1},
-                    )
-                ],
-            )
-        if not adaptive_grouping_policy.enabled or _state_bool(
-            state, "adaptive_grouping_complete"
-        ):
-            return _success("generate_grouping_summaries")
-        if grouping_proposer is None:
-            raise RuntimeError(
-                "adaptive grouping is enabled without a proposal generator"
-            )
-
-        policy_version = _state_string(state, "grouping_policy_version", "baseline-v1")
-        round_index = _adaptive_round(state)
-        history = state.get("adaptive_grouping_history", [])
-        if round_index >= adaptive_grouping_policy.maximum_rounds:
-            completed_tree = _mark_adaptive_grouping_complete(
-                tree, policy_identity=policy_version
-            )
-            history.append(
-                {
-                    "round": round_index,
-                    "outcome": "maximum_rounds_reached",
-                }
-            )
-            return _success(
-                "generate_grouping_summaries",
-                state_update=[
-                    (
-                        "u",
-                        {
-                            "tree": completed_tree.model_dump(mode="json"),
-                            "adaptive_grouping_complete": True,
-                            "adaptive_grouping_history": history,
-                        },
-                    )
-                ],
-            )
-
-        root = next(node for node in tree.nodes if node.node_id == tree.root_id)
-        frontier = tuple(child.node_id for child in root.children)
-        windows = grouping_frontier_windows(frontier, adaptive_grouping_policy)
-        window_index = _adaptive_window(state)
-        pending_window_proposals = state.get("adaptive_grouping_window_proposals", [])
-        if window_index > len(windows):
-            raise ValueError("adaptive grouping window cursor exceeds the current frontier")
-        if window_index < len(windows):
-            window = windows[window_index]
-            context = build_grouping_pass_context(
-                tree,
-                pass_index=round_index,
-                frontier_ids=window,
-                maximum_evidence_items_per_candidate=(
-                    adaptive_grouping_policy.maximum_evidence_items_per_candidate
-                ),
-                maximum_text_chars_per_candidate=(
-                    adaptive_grouping_policy.maximum_text_chars_per_candidate
-                ),
-            )
-            batch = grouping_proposer(context)
-            if not isinstance(batch, GroupProposalBatch):
-                raise TypeError(
-                    "grouping proposal generator must return GroupProposalBatch"
-                )
-            validated_window_proposals = validate_grouping_window_proposals(
-                frontier=frontier,
-                window=window,
-                proposals=batch.proposals,
-            )
-            pending_window_proposals.extend(
-                proposal.model_dump(mode="json")
-                for proposal in validated_window_proposals
-            )
-            return _success(
-                "apply_grouping_pass",
-                state_update=[
-                    (
-                        "u",
-                        {
-                            "adaptive_grouping_window": window_index + 1,
-                            "adaptive_grouping_window_proposals": pending_window_proposals,
-                        },
-                    )
-                ],
-            )
-
-        proposals = resolve_grouping_proposals(
-            frontier=frontier,
-            proposals=_proposals(pending_window_proposals),
-        )
-        if not proposals:
-            completed_tree = _mark_adaptive_grouping_complete(
-                tree, policy_identity=policy_version
-            )
-            history.append(
-                {
-                    "round": round_index + 1,
-                    "input_frontier": list(frontier),
-                    "window_count": len(windows),
-                    "proposals": [],
-                    "outcome": "no_supported_groups",
-                }
-            )
-            return _success(
-                "generate_grouping_summaries",
-                state_update=[
-                    (
-                        "u",
-                        {
-                            "tree": completed_tree.model_dump(mode="json"),
-                            "adaptive_grouping_complete": True,
-                            "adaptive_grouping_history": history,
-                        },
-                    )
-                ],
-            )
-
-        next_tree = apply_grouping_proposals(
-            tree,
-            proposals,
-            grouping_policy_version=f"{policy_version}:adaptive:{round_index + 1}",
-        )
-        next_root = next(node for node in next_tree.nodes if node.node_id == next_tree.root_id)
-        if len(next_root.children) >= len(frontier):
-            raise RuntimeError("adaptive grouping proposal did not reduce the frontier")
-        history.append(
-            {
-                "round": round_index + 1,
-                "input_frontier": list(frontier),
-                "proposals": [proposal.model_dump(mode="json") for proposal in proposals],
-                "output_frontier": [child.node_id for child in next_root.children],
-                "outcome": "groups_accepted",
-            }
-        )
-        return _success(
-            "apply_grouping_pass",
-            state_update=[
-                (
-                    "u",
-                    {
-                        "tree": next_tree.model_dump(mode="json"),
-                        "adaptive_grouping_round": round_index + 1,
-                        "adaptive_grouping_window": 0,
-                        "adaptive_grouping_window_proposals": [],
-                        "adaptive_grouping_history": history,
-                    },
-                )
-            ],
-        )
-
-    @resolver.register("generate_grouping_summaries")
-    def _summaries(ctx: StepContext) -> StepRunResult:
-        state = _typed_state(ctx.state_view)
-        tree = _tree(state)
-        document_id = _state_string(state, "document_id", tree.document_id)
-        policy_version = _state_string(state, "grouping_policy_version", "baseline-v1")
-        checkpoint_revision = _state_optional_string(state, "checkpoint_revision")
-        updated = _generate_tree_summaries(
-            tree,
-            document_id=document_id,
-            state_store=state_store,
-            policy=summary_policy,
-            generator=summary_generator,
-            grounded_generator=grounded_summary_generator,
-            grouping_policy_version=policy_version,
-            expected_tree_revision=(
-                checkpoint_revision
-                if checkpoint_revision is not None
-                else None
-            ),
-            require_no_existing_tree=_state_bool(state, "checkpoint_absent"),
-        )
-        current_revision = state_store.document_tree_revision(document_id=document_id)
-        return _success(
-            "persist_grouping_result",
-            state_update=[
-                (
-                    "u",
-                    {
-                        "tree": updated.model_dump(mode="json"),
-                        "summaries_generated": (summary_generator is not None
-                        or grounded_summary_generator is not None)
-                        and bool(summary_policy and summary_policy.enabled),
-                        "checkpoint_revision": current_revision,
-                        "checkpoint_absent": current_revision is None,
-                    },
-                )
-            ],
-        )
-
-    @resolver.register("persist_grouping_result")
-    def _persist(ctx: StepContext) -> StepRunResult:
-        state = _typed_state(ctx.state_view)
-        tree = _tree(state)
-        checkpoint_revision = _state_optional_string(state, "checkpoint_revision")
-        revision = state_store.save_document_tree(
-            document_id=_state_string(state, "document_id", tree.document_id),
-            tree=tree,
-            grouping_policy_version=_state_string(state, "grouping_policy_version", "baseline-v1"),
-            expected_tree_revision=(
-                checkpoint_revision
-                if checkpoint_revision is not None
-                else None
-            ),
-            require_no_existing_tree=_state_bool(state, "checkpoint_absent"),
-            last_runtime_step="persist_grouping_result",
-        )
-        return _success("end", state_update=[("u", {"checkpoint_revision": revision})])
-
-    @resolver.register("end")
-    def _end(ctx: StepContext) -> StepRunResult:
-        del ctx
-        return _success(None)
 
 
 def run_grouping_workflow(
@@ -682,8 +270,7 @@ def run_ocr_root_workflow(
         raise ValueError("provide grouping_proposals or grouping_passes, not both")
 
     if source_namespace is not None and (
-        not source_namespace.strip()
-        or source_namespace != source_namespace.strip()
+        not source_namespace.strip() or source_namespace != source_namespace.strip()
     ):
         raise ValueError(
             "OCR source_namespace must be non-empty and have no outer whitespace"
@@ -697,8 +284,7 @@ def run_ocr_root_workflow(
         raise TypeError("provider_settings must be WorkflowProviderSettings")
     effective_adaptive_policy = adaptive_grouping_policy or AdaptiveGroupingPolicy(
         enabled=(
-            grouping_proposer is not None
-            or provider_settings.parser.provider != "fake"
+            grouping_proposer is not None or provider_settings.parser.provider != "fake"
         )
     )
     if effective_adaptive_policy.enabled and grouping_proposer is None:
@@ -709,7 +295,9 @@ def run_ocr_root_workflow(
             )
         grouping_proposer = build_production_group_proposal_generator(provider_settings)
     elif not effective_adaptive_policy.enabled and grouping_proposer is not None:
-        raise ValueError("grouping proposer was supplied while adaptive grouping is disabled")
+        raise ValueError(
+            "grouping proposer was supplied while adaptive grouping is disabled"
+        )
     effective_summary_policy = summary_policy
     effective_grounded_summary_generator = grounded_summary_generator
     if (
@@ -723,10 +311,14 @@ def run_ocr_root_workflow(
             )
     if effective_adaptive_policy.enabled:
         if grouping_proposer is None:
-            raise RuntimeError("adaptive grouping proposal generator was not constructed")
+            raise RuntimeError(
+                "adaptive grouping proposal generator was not constructed"
+            )
         proposer_fingerprint = grouping_proposer.configuration_fingerprint
         if not proposer_fingerprint:
-            raise ValueError("grouping proposer configuration fingerprint cannot be empty")
+            raise ValueError(
+                "grouping proposer configuration fingerprint cannot be empty"
+            )
         summary_fingerprint: str | None = None
         active_summary_generator = (
             summary_generator
@@ -797,354 +389,28 @@ def run_ocr_root_workflow(
     }
     semantic_resolver = build_ingest_step_resolver(deps=semantic_deps)
 
-    root_resolver = MappingStepResolver()
-    prepared_page_payloads: list[OCRPageJSON] | None = None
-    prepared_reused_pages: list[int] | None = None
-    root_resolver.set_state_schema(
-        {
-            "ocr_page_result": "u",
-            "ocr_page_recovery_generation": "u",
-            "workflow_input": "u",
-            "tree": "u",
-            "grouping_result": "u",
-            "semantic_result": "u",
-            "semantic_tree": "u",
-            "export_bundle": "u",
-            "ocr_root_state_version": "u",
-            "ocr_root_lineage_id": "u",
-            "source_fingerprint": "u",
-            "source_namespace": "u",
-            "ocr_configuration_fingerprints": "u",
-            "parse_generation": "u",
-            "checkpoint_revision": "u",
-            "checkpoint_absent": "u",
-            "grouping_passes": "u",
-            "adaptive_grouping_round": "u",
-            "adaptive_grouping_window": "u",
-            "adaptive_grouping_history": "u",
-            "adaptive_grouping_window_proposals": "u",
-            "adaptive_grouping_complete": "u",
-            **page_resolver._state_schema,
-            **semantic_resolver._state_schema,
-        }
+    root_resolver_build = build_ocr_root_step_resolver(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        knowledge_engine=knowledge_engine,
+        preparation=preparation,
+        provider_settings=provider_settings,
+        document_id=document_id,
+        title=title,
+        grouping_policy_version=grouping_policy_version,
+        source_namespace=source_namespace,
+        source_namespace_identity=source_namespace_identity,
+        explicit_passes=explicit_passes,
+        resume_from_checkpoint=resume_from_checkpoint,
+        page_resolver=page_resolver,
+        grouping_resolver=grouping_resolver,
+        semantic_resolver=semantic_resolver,
     )
-
-    @root_resolver.register("ocr_root_start")
-    def _root_start(ctx: StepContext) -> StepRunResult:
-        del ctx
-        return _success("ocr_root_invoke_pages")
-
-    @root_resolver.register("ocr_root_invoke_pages", is_nested=True)
-    def _root_invoke_pages(ctx: StepContext) -> StepRunResult:
-        state = _typed_state(ctx.state_view)
-        recovery_generation = _recovery_generation(state)
-        recovery_suffix = (
-            f"|recovery-{recovery_generation}" if recovery_generation else ""
-        )
-        child_run_id = f"{ctx.run_id}|ocr-pages{recovery_suffix}"
-        return RunSuccess(
-            conversation_node_id=None,
-            state_update=[],
-            workflow_invocations=[
-                WorkflowInvocationRequest(
-                    workflow_id=DEFAULT_OCR_PAGE_WORKFLOW_ID,
-                    initial_state={
-                        **_page_workflow_initial_state(preparation.source_plan),
-                        "document_id": preparation.page_context.document_id,
-                        "ocr_configuration_fingerprints": list(
-                            preparation.page_context.configuration_fingerprints
-                        ),
-                    },
-                    result_state_key="ocr_page_result",
-                    run_id=child_run_id,
-                    invocation_key=(
-                        "ocr-pages-v1"
-                        if not recovery_generation
-                        else f"ocr-pages-recovery-v{recovery_generation}"
-                    ),
-                    conversation_id=f"ocr:{document_id}",
-                    turn_node_id=f"ocr:{document_id}:pages",
-                )
-            ],
-            _route_next=["ocr_root_prepare_grouping_input"],
-        )
-
-    @root_resolver.register("ocr_root_prepare_grouping_input")
-    def _root_prepare_grouping(ctx: StepContext) -> StepRunResult:
-        nonlocal prepared_page_payloads, prepared_reused_pages
-        state = _typed_state(ctx.state_view)
-        page_result = _typed_child_state(
-            state.get("ocr_page_result"),
-            label="OCR page child",
-        )
-        if _page_result_needs_recovery(
-            page_result=page_result,
-            context=preparation.page_context,
-            source_plan=preparation.source_plan,
-        ):
-            generation = _recovery_generation(state) + 1
-            return _success(
-                "ocr_root_invoke_pages",
-                state_update=[("u", {"ocr_page_recovery_generation": generation})],
-            )
-        raw_pages = _json_pages(
-            page_result, source_plan=preparation.source_plan
-        )
-        prepared_page_payloads = raw_pages
-        completed_pages = [
-            page_number
-            for page_number, _image_path in preparation.source_plan.page_sources
-        ]
-        if "completed_pages" in page_result:
-            legacy_completed = _int_list(page_result, "completed_pages")
-            if legacy_completed:
-                completed_pages = legacy_completed
-        recovery_generation = _recovery_generation(state)
-        recovery_suffix = (
-            f"|recovery-{recovery_generation}" if recovery_generation else ""
-        )
-        page_run_id = f"{ctx.run_id}|ocr-pages{recovery_suffix}"
-        reused_pages = _reused_pages_from_trace(conversation_engine, page_run_id)
-        prepared_reused_pages = reused_pages
-        if "reused_pages" in page_result:
-            legacy_reused = _int_list(page_result, "reused_pages")
-            if legacy_reused:
-                reused_pages = legacy_reused
-        artifacts = _finalize_ocr_workflow_artifacts(
-            document_id=document_id,
-            title=title,
-            raw_pages=raw_pages,
-            completed_pages=completed_pages,
-            reused_pages=reused_pages,
-            rendered_dir=preparation.source_plan.rendered_dir,
-            legacy_dir=preparation.source_plan.legacy_dir,
-            state_db_path=preparation.state_db_path,
-            progress_path=preparation.progress_path,
-            summary_path=preparation.summary_path,
-            provider_settings=provider_settings,
-            state_store=preparation.state_store,
-            restore_grouping_checkpoint=False,
-            persist_grouping_checkpoint=False,
-            publish_artifacts=False,
-            grouping_policy_version=grouping_policy_version,
-        )
-        if artifacts.document_tree is None:
-            raise ValueError("OCR normalization produced no document tree")
-        if not explicit_passes:
-            passes = [suggest_cross_page_continuations(artifacts.document_tree)]
-        else:
-            passes = explicit_passes
-        return _success(
-            "ocr_root_invoke_grouping",
-            state_update=[
-                (
-                    "u",
-                    {
-                        "workflow_input": artifacts.workflow_input.model_dump(
-                            field_mode="backend", dump_format="json"
-                        ),
-                        "tree": artifacts.document_tree.model_dump(mode="json"),
-                        "grouping_passes": [
-                            [proposal.model_dump(mode="json") for proposal in current_pass]
-                            for current_pass in passes
-                        ],
-                        "completed_pages": completed_pages,
-                        "reused_pages": reused_pages,
-                    },
-                )
-            ],
-        )
-
-    @root_resolver.register("ocr_root_invoke_grouping", is_nested=True)
-    def _root_invoke_grouping(ctx: StepContext) -> StepRunResult:
-        state = _typed_state(ctx.state_view)
-        tree = _tree(state)
-        existing_revision = preparation.state_store.document_tree_revision(document_id=document_id)
-        recovery_generation = _recovery_generation(state)
-        recovery_suffix = (
-            f"|recovery-{recovery_generation}" if recovery_generation else ""
-        )
-        return RunSuccess(
-            conversation_node_id=None,
-            state_update=[],
-            workflow_invocations=[
-                WorkflowInvocationRequest(
-                    workflow_id=DEFAULT_OCR_GROUPING_WORKFLOW_ID,
-                    initial_state={
-                        "document_id": document_id,
-                        "tree": tree.model_dump(mode="json"),
-                        "grouping_policy_version": grouping_policy_version,
-                        "grouping_passes": state.get("grouping_passes", []),
-                        "pass_index": 0,
-                        "adaptive_grouping_round": 0,
-                        "adaptive_grouping_window": 0,
-                        "adaptive_grouping_history": [],
-                        "adaptive_grouping_window_proposals": [],
-                        "adaptive_grouping_complete": False,
-                        "checkpoint_revision": existing_revision,
-                        "checkpoint_absent": existing_revision is None,
-                    },
-                    result_state_key="grouping_result",
-                    run_id=f"{ctx.run_id}|grouping{recovery_suffix}",
-                    invocation_key=(
-                        "grouping-v1"
-                        if not recovery_generation
-                        else f"grouping-recovery-v{recovery_generation}"
-                    ),
-                    conversation_id=f"ocr:{document_id}",
-                    turn_node_id=f"ocr:{document_id}:grouping",
-                )
-            ],
-            _route_next=["ocr_root_prepare_semantic_input"],
-        )
-
-    @root_resolver.register("ocr_root_prepare_semantic_input")
-    def _root_prepare_semantic(ctx: StepContext) -> StepRunResult:
-        state = _typed_state(ctx.state_view)
-        grouping_result = _typed_child_state(
-            state.get("grouping_result"),
-            label="grouping child",
-        )
-        grouped_tree = _tree(grouping_result)
-        workflow_input_payload = state.get("workflow_input")
-        if not isinstance(workflow_input_payload, dict):
-            raise TypeError("OCR root has no persisted semantic workflow input")
-        workflow_input = WorkflowIngestInput.model_validate(workflow_input_payload)
-        primary_collection = workflow_input.collections[0]
-        workflow_input = workflow_input.model_copy(
-            update={
-                "collections": [
-                    collection.model_copy(update={"source_namespace": source_namespace})
-                    if collection.collection_id == primary_collection.collection_id
-                    else collection
-                    for collection in workflow_input.collections
-                ]
-            }
-        )
-        attach_document_tree_metadata(workflow_input, grouped_tree)
-        return _success(
-            "ocr_root_invoke_semantic",
-            state_update=[
-                (
-                    "u",
-                    {
-                        "tree": grouped_tree.model_dump(mode="json"),
-                        "workflow_input": workflow_input.model_dump(
-                            field_mode="backend", dump_format="json"
-                        ),
-                    },
-                )
-            ],
-        )
-
-    @root_resolver.register("ocr_root_invoke_semantic", is_nested=True)
-    def _root_invoke_semantic(ctx: StepContext) -> StepRunResult:
-        state = _typed_state(ctx.state_view)
-        input_payload = state.get("workflow_input")
-        if not isinstance(input_payload, dict):
-            raise TypeError("OCR root has no semantic workflow input")
-        recovery_generation = _recovery_generation(state)
-        parse_generation = state.get("parse_generation")
-        expected_parse_generation = _semantic_parse_generation(recovery_generation)
-        if parse_generation != expected_parse_generation:
-            raise RuntimeError(
-                "OCR root parse-generation identity mismatch; refusing to invoke "
-                f"semantic parser with {parse_generation!r}, expected "
-                f"{expected_parse_generation!r}"
-            )
-        recovery_suffix = (
-            f"|recovery-{recovery_generation}" if recovery_generation else ""
-        )
-        return RunSuccess(
-            conversation_node_id=None,
-            state_update=[],
-            workflow_invocations=[
-                WorkflowInvocationRequest(
-                    workflow_id=DEFAULT_WORKFLOW_ID,
-                    initial_state={"input": input_payload},
-                    result_state_key="semantic_result",
-                    run_id=f"{ctx.run_id}|semantic{recovery_suffix}",
-                    invocation_key=parse_generation,
-                    conversation_id=f"ingest:{document_id}",
-                    turn_node_id=f"ingest:{document_id}:turn",
-                )
-            ],
-            _route_next=["ocr_root_finalize"],
-        )
-
-    @root_resolver.register("ocr_root_finalize")
-    def _root_finalize(ctx: StepContext) -> StepRunResult:
-        state = _typed_state(ctx.state_view)
-        semantic_result = _typed_child_state(
-            state.get("semantic_result"),
-            label="semantic child",
-        )
-        bundle = semantic_result.get("export_bundle")
-        if not isinstance(bundle, dict):
-            raise TypeError("semantic child did not publish an export bundle")
-        grouped_tree = _tree(state)
-        exported_grouping_tree = bundle.get("grouping_tree")
-        if not isinstance(exported_grouping_tree, dict):
-            raise TypeError("semantic child did not preserve the accepted grouping tree")
-        if exported_grouping_tree != grouped_tree.model_dump(mode="json"):
-            raise ValueError("semantic child grouping tree differs from the accepted OCR grouping")
-        semantic_tree = semantic_result.get("semantic_tree")
-        if not isinstance(semantic_tree, dict):
-            raise TypeError("semantic child did not publish a semantic tree")
-        return _success(
-            "ocr_root_end",
-            state_update=[
-                (
-                    "u",
-                    {
-                        "export_bundle": bundle,
-                        "semantic_tree": semantic_tree,
-                    },
-                )
-            ],
-        )
-
-    @root_resolver.register("ocr_root_end")
-    def _root_end(ctx: StepContext) -> StepRunResult:
-        del ctx
-        return _success(None)
-
-    # Child workflow designs reuse operation names such as ``start`` and
-    # ``end``. Dispatch by persisted workflow ID, not by a mutable global mode.
-    root_ops = set(root_resolver.ops)
-    child_ops = page_resolver.ops | grouping_resolver.ops | semantic_resolver.ops
-    dispatch = MappingStepResolver()
-    dispatch.set_state_schema(root_resolver._state_schema)
-
-    for op in root_ops | child_ops:
-        is_nested = op in {"ocr_root_invoke_pages", "ocr_root_invoke_grouping", "ocr_root_invoke_semantic"}
-
-        @dispatch.register(op, is_nested=is_nested)
-        def _dispatch(ctx: StepContext, operation: str = op) -> StepRunResult:
-            if ctx.workflow_id == DEFAULT_OCR_WORKFLOW_ID:
-                _validate_root_resume_identity(
-                    _typed_state(ctx.state_view),
-                    document_id=document_id,
-                    source_fingerprint=preparation.source_plan.input_fingerprint,
-                    source_namespace=source_namespace_identity,
-                    configuration_fingerprints=preparation.page_context.configuration_fingerprints,
-                    grouping_policy_version=grouping_policy_version,
-                    parse_generation=_semantic_parse_generation(recovery_generation),
-                    require_match=resume_from_checkpoint,
-                )
-                return root_resolver.resolve(operation)(ctx)
-            if ctx.workflow_id == DEFAULT_OCR_PAGE_WORKFLOW_ID:
-                return page_resolver.resolve(operation)(ctx)
-            if ctx.workflow_id == DEFAULT_OCR_GROUPING_WORKFLOW_ID:
-                return grouping_resolver.resolve(operation)(ctx)
-            if ctx.workflow_id == DEFAULT_WORKFLOW_ID:
-                return semantic_resolver.resolve(operation)(ctx)
-            raise ValueError(f"unsupported OCR workflow child {ctx.workflow_id!r}")
 
     runtime = _workflow_runtime(
         workflow_engine=workflow_engine,
         conversation_engine=conversation_engine,
-        step_resolver=dispatch.resolve,
+        step_resolver=root_resolver_build.step_resolver.resolve,
         predicate_registry=cast(
             dict[str, RuntimeDesignPredicate], workflow_predicates()
         ),
@@ -1193,114 +459,29 @@ def run_ocr_root_workflow(
                 "parse_generation": _semantic_parse_generation(recovery_generation),
                 "ocr_page_recovery_generation": recovery_generation,
                 "ocr_root_lineage_id": run_id or f"ocr|{document_id}",
-                "grouping_proposals": [proposal.model_dump(mode="json") for proposal in grouping_proposals],
+                "grouping_proposals": [
+                    proposal.model_dump(mode="json") for proposal in grouping_proposals
+                ],
                 "grouping_passes": [],
             },
             run_id=effective_run_id,
         )
     )
-    if result.status != "succeeded":
-        raise RuntimeError(f"OCR root workflow {result.status}: {result.errors}")
-    if effective_run_id != (run_id or f"ocr|{document_id}"):
-        # Recovery uses a fresh persisted incarnation because released runtimes
-        # treat a terminal run as immutable. Keep that storage identity internal;
-        # callers continue to observe the stable logical root identity.
-        result = replace(result, run_id=run_id or f"ocr|{document_id}")
-    final_state = _typed_state(result.final_state)
-    _validate_root_resume_identity(
-        final_state,
-        document_id=document_id,
-        source_fingerprint=preparation.source_plan.input_fingerprint,
-        source_namespace=source_namespace_identity,
-        configuration_fingerprints=preparation.page_context.configuration_fingerprints,
-        grouping_policy_version=grouping_policy_version,
-        parse_generation=_semantic_parse_generation(_recovery_generation(final_state)),
-        require_match=True,
-    )
-    _validate_root_invocation_lineage(
-        conversation_engine,
-        root_run_id=effective_run_id,
-        recovery_generation=_recovery_generation(final_state),
-    )
-    page_result = _typed_child_state(
-        final_state.get("ocr_page_result"),
-        label="OCR root page child",
-    )
-    if prepared_page_payloads is None:
-        # A terminal root resume skips its resolver steps. Revalidate and
-        # materialize that accepted generation once here; normal execution
-        # reuses the exact page snapshot already consumed by grouping.
-        _validate_root_page_result(
-            page_result=page_result,
-            context=preparation.page_context,
-            source_plan=preparation.source_plan,
-        )
-        raw_pages = _json_pages(
-            page_result, source_plan=preparation.source_plan
-        )
-    else:
-        raw_pages = prepared_page_payloads
-    completed_pages = [
-        page_number
-        for page_number, _image_path in preparation.source_plan.page_sources
-    ]
-    if "completed_pages" in page_result:
-        legacy_completed = _int_list(page_result, "completed_pages")
-        if legacy_completed:
-            completed_pages = legacy_completed
-    recovery_generation = _recovery_generation(final_state)
-    recovery_suffix = (
-        f"|recovery-{recovery_generation}" if recovery_generation else ""
-    )
-    if prepared_page_payloads is not None:
-        reused_pages = prepared_reused_pages or []
-    else:
-        page_run_id = f"{effective_run_id}|ocr-pages{recovery_suffix}"
-        reused_pages = _reused_pages_from_trace(conversation_engine, page_run_id)
-    if "reused_pages" in page_result:
-        legacy_reused = _int_list(page_result, "reused_pages")
-        if legacy_reused:
-            reused_pages = legacy_reused
-    # A terminal child invocation is not executed again during parent resume,
-    # so its prior reuse list is not regenerated in the child result state.
-    # Reconcile the parent-facing artifact summary from the accepted page set;
-    # this is reporting only and never turns an incomplete page into success.
-    if resume_from_checkpoint and completed_pages and not reused_pages:
-        reused_pages = list(completed_pages)
-    grouped_tree = _tree(final_state)
-    artifacts = _finalize_ocr_workflow_artifacts(
+    return finalize_ocr_root_result(
+        result=result,
+        effective_run_id=effective_run_id,
+        logical_run_id=run_id or f"ocr|{document_id}",
+        resume_from_checkpoint=resume_from_checkpoint,
+        conversation_engine=conversation_engine,
+        preparation=preparation,
+        provider_settings=provider_settings,
         document_id=document_id,
         title=title,
-        raw_pages=raw_pages,
-        completed_pages=completed_pages,
-        reused_pages=reused_pages,
-        rendered_dir=preparation.source_plan.rendered_dir,
-        legacy_dir=preparation.source_plan.legacy_dir,
-        state_db_path=preparation.state_db_path,
-        progress_path=preparation.progress_path,
-        summary_path=preparation.summary_path,
-        provider_settings=provider_settings,
-        state_store=preparation.state_store,
-        restore_grouping_checkpoint=False,
-        persist_grouping_checkpoint=False,
-        publish_artifacts=False,
+        source_namespace_identity=source_namespace_identity,
         grouping_policy_version=grouping_policy_version,
+        prepared_page_payloads=root_resolver_build.artifacts.prepared_page_payloads,
+        prepared_reused_pages=root_resolver_build.artifacts.prepared_reused_pages,
     )
-    workflow_input_payload = final_state.get("workflow_input")
-    if not isinstance(workflow_input_payload, dict):
-        raise TypeError("OCR root completed without workflow input")
-    artifacts.workflow_input = WorkflowIngestInput.model_validate(workflow_input_payload)
-    artifacts.document_tree = grouped_tree
-    _write_document_tree(preparation.source_plan.legacy_dir / "document-tree.json", grouped_tree)
-    _write_summary(
-        artifacts,
-        document_id=document_id,
-        provider_settings=provider_settings,
-        state_store=preparation.state_store,
-    )
-    raw_bundle = final_state.get("export_bundle")
-    bundle = WorkflowExportBundle.model_validate(raw_bundle) if isinstance(raw_bundle, dict) else None
-    return result, bundle, artifacts
 
 
 __all__ = [

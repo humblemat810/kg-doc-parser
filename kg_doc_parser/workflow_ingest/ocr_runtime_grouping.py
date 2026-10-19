@@ -24,12 +24,12 @@ from .ocr_pipeline import (
     SummaryGenerator,
 )
 from .ocr_runtime import (
-    _register_grouping_steps,
-    _tree,
-    _typed_state,
     _workflow_runtime,
 )
+from .ocr_runtime_common import document_tree_from_state as _tree
 from .ocr_runtime_grouping_state import validated_grouping_checkpoint
+from .ocr_runtime_grouping_steps import _register_grouping_steps
+from .ocr_runtime_state import typed_state as _typed_state
 
 
 def run_grouping_workflow(

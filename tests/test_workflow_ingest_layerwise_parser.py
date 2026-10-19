@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from _kogwistar_test_helpers import build_workflow_engine_triplet
 
+import kg_doc_parser.workflow_ingest.layerwise_boundary_pipeline as boundary_pipeline
 import kg_doc_parser.workflow_ingest.layerwise_llm as layerwise_module
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
@@ -254,7 +255,7 @@ def test_boundary_repair_shift_is_configurable(monkeypatch: pytest.MonkeyPatch) 
         text_after_cut="lpha\nbeta",
     )
     monkeypatch.setattr(
-        layerwise_module,
+        boundary_pipeline,
         "_resolve_boundary_anchor",
         lambda **_kwargs: layerwise_module._BoundaryAnchorResolution(
             resolved_cut_offset=6,

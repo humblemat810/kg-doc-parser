@@ -16,13 +16,12 @@ from .ocr_pipeline import (
     OCRPageProcessingContext,
     OCRSourcePlan,
     _process_ocr_page,
-    _sync_progress_from_state,
 )
-from .ocr_runtime import (
-    _checkpoint_repair_cursor,
-    _page_workflow_initial_state,
-    _success,
-    _typed_state,
+from .ocr_progress import sync_progress_from_state
+from .ocr_runtime import _checkpoint_repair_cursor
+from .ocr_runtime_common import workflow_success as _success
+from .ocr_runtime_page_state import (
+    page_workflow_initial_state as _page_workflow_initial_state,
 )
 from .ocr_runtime_page_state import (
     reconcile_page_checkpoint as _reconcile_page_checkpoint,
@@ -36,6 +35,9 @@ from .ocr_runtime_state import (
 )
 from .ocr_runtime_state import (
     page_cursor as _page_cursor,
+)
+from .ocr_runtime_state import (
+    typed_state as _typed_state,
 )
 
 
@@ -145,7 +147,7 @@ def build_page_resolver(
             verified_prefix_cursor = _checkpoint_repair_cursor(repair)
             return _success("process_ocr_page", state_update=[("u", dict(repair))])
         context.state_store.refresh_document_completion(document_id=context.document_id)
-        _sync_progress_from_state(
+        sync_progress_from_state(
             state_store=context.state_store,
             document_id=context.document_id,
             title=context.title,
