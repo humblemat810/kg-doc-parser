@@ -5,7 +5,16 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import pairwise
+from math import ceil, floor, isfinite
 from typing import Literal, cast
+
+from kogwistar.engine_core.multimodal import (
+    LegacyLocator,
+    MultimodalSpan,
+    SpatialRegionLocator,
+    TemporalIntervalLocator,
+)
+from kogwistar.id_provider import stable_id
 
 from .adapters import _allocated_cluster_numbers
 from .document_grouping import GroupProposal, group_node_id, merge_groups
@@ -25,6 +34,7 @@ from .document_models import (
     extract_reference_mentions,
 )
 from .models import WorkflowIngestInput
+from .serialization import JsonObject, JsonValue, decode_json_object
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,9 +98,14 @@ def build_document_tree(
     items: list[SourceItem] = []
     leaves: list[DocumentNode] = []
     rejected: list[UnrepresentedSourceDiagnostic] = []
+    seen_unit_ids: set[str] = set()
     for page in collection.pages:
         allocated = _allocated_cluster_numbers(page.units)
         for unit, cluster_number in zip(page.units, allocated, strict=True):
+            if unit.unit_id is not None:
+                if unit.unit_id in seen_unit_ids:
+                    raise ValueError(f"duplicate OCR source unit id: {unit.unit_id}")
+                seen_unit_ids.add(unit.unit_id)
             if unit.unit_id:
                 item_id = unit.unit_id
             else:
@@ -236,6 +251,250 @@ def build_document_tree(
         nodes=tuple(nodes),
     )
     return tree.model_copy(update={"references": extract_reference_mentions(tree)})
+
+
+def project_multimodal_source_evidence(
+    graph_payload: dict[str, JsonValue],
+    tree: DocumentTree,
+    *,
+    source_namespace: str | None = None,
+) -> dict[str, JsonValue]:
+    """Add first-class, source-grounded media evidence to a semantic graph.
+
+    The document grouping tree is authoritative for media identity and reading
+    order. Media is represented using Kogwistar's existing multimodal grounding
+    contract, not as OCR text or an invented semantic description.
+    """
+    ordered_media: list[SourceItem] = []
+    items = {item.item_id: item for item in tree.source_items}
+    nodes_by_id = {node.node_id: node for node in tree.nodes}
+    pending = [tree.root_id]
+    while pending:
+        node = nodes_by_id[pending.pop()]
+        if node.parts:
+            for part in node.parts:
+                item = items[part.item_id]
+                if item.media is not None:
+                    ordered_media.append(item)
+        else:
+            pending.extend(child.node_id for child in reversed(node.children))
+    if not ordered_media:
+        return graph_payload
+    if (
+        not isinstance(source_namespace, str)
+        or not source_namespace.strip()
+        or source_namespace != source_namespace.strip()
+    ):
+        raise ValueError(
+            "multimodal graph projection requires an explicit source namespace"
+        )
+
+    raw_nodes = graph_payload.get("nodes")
+    raw_edges = graph_payload.get("edges")
+    if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
+        raise TypeError("multimodal graph projection requires node and edge lists")
+    nodes = [decode_json_object(record, label="graph node") for record in raw_nodes]
+    edges = [decode_json_object(record, label="graph edge") for record in raw_edges]
+
+    semantic_roots: list[tuple[str, JsonObject]] = []
+    for record in nodes:
+        node_id = record.get("id")
+        metadata = record.get("metadata")
+        if (
+            isinstance(node_id, str)
+            and isinstance(metadata, dict)
+            and metadata.get("semantic_node_type") is not None
+            and metadata.get("parent_id") is None
+        ):
+            semantic_roots.append((node_id, record))
+    if len(semantic_roots) != 1:
+        raise ValueError(
+            "multimodal graph projection requires exactly one semantic root"
+        )
+    semantic_root_id = semantic_roots[0][0]
+
+    existing_node_ids = {
+        record_id
+        for record in nodes
+        if isinstance((record_id := record.get("id")), str)
+    }
+    existing_edge_ids = {
+        record_id
+        for record in edges
+        if isinstance((record_id := record.get("id")), str)
+    }
+    for reading_order, item in enumerate(ordered_media):
+        media = item.media
+        if media is None:
+            continue
+        mime_type = media.mime_type.partition(";")[0].strip().lower()
+        kind = item.kind.casefold()
+        if kind == "table" or kind.startswith("table:"):
+            modality: Literal[
+                "image", "audio", "video", "pdf_page", "table", "chart", "webpage"
+            ] = "table"
+        elif kind == "chart" or kind.startswith("chart:"):
+            modality = "chart"
+        elif mime_type.startswith("image/"):
+            modality = "image"
+        elif mime_type.startswith("audio/"):
+            modality = "audio"
+        elif mime_type.startswith("video/"):
+            modality = "video"
+        elif mime_type == "application/pdf":
+            modality = "pdf_page"
+        elif mime_type in {"text/html", "application/xhtml+xml"}:
+            modality = "webpage"
+        else:
+            raise ValueError(
+                f"unsupported multimodal source MIME type {media.mime_type!r} "
+                f"for item {item.item_id!r}"
+            )
+
+        location = item.location
+        bbox = location.bbox
+        locator: SpatialRegionLocator | TemporalIntervalLocator | LegacyLocator
+        if (
+            bbox is not None
+            and location.accuracy in {"region", "line", "word", "character"}
+            and bbox.coordinate_system in {"pixels", "relative"}
+        ):
+            locator = SpatialRegionLocator(
+                coordinate_system=(
+                    "normalized_0_1"
+                    if bbox.coordinate_system == "relative"
+                    else "pixels"
+                ),
+                x=bbox.x0,
+                y=bbox.y0,
+                width=bbox.x1 - bbox.x0,
+                height=bbox.y1 - bbox.y0,
+                page_number=(
+                    location.page_index + 1
+                    if location.page_index is not None
+                    else None
+                ),
+                frame_index=None,
+                timestamp_ms=None,
+            )
+        elif (
+            modality in {"audio", "video"}
+            and location.start_seconds is not None
+            and location.end_seconds is not None
+            and isfinite(location.start_seconds)
+            and isfinite(location.end_seconds)
+        ):
+            start_ms = max(0, floor(location.start_seconds * 1000))
+            locator = TemporalIntervalLocator(
+                start_ms=start_ms,
+                end_ms=max(start_ms + 1, ceil(location.end_seconds * 1000)),
+            )
+        else:
+            # Legacy locators preserve page-only, point-based, and otherwise
+            # non-normalizable coordinates without claiming spatial accuracy.
+            locator = LegacyLocator(
+                payload={
+                    "source_item_id": item.item_id,
+                    "kind": item.kind,
+                    "location": cast(
+                        JsonObject,
+                        decode_json_object(
+                            location.model_dump(mode="json"),
+                            label="source item location",
+                        ),
+                    ),
+                }
+            )
+        span = MultimodalSpan(
+            source_namespace=source_namespace,
+            resource_id=media.uri,
+            resource_revision_id=tree.source_revision,
+            content_sha256=media.sha256_hex,
+            modality=modality,
+            locator=locator,
+        )
+        span_payload = cast(JsonObject, span.model_dump(mode="json"))
+        source_node_id = str(
+            stable_id(
+                "workflow_ingest.multimodal_source_item",
+                tree.document_id,
+                tree.source_revision,
+                item.item_id,
+            )
+        )
+        edge_id = str(
+            stable_id(
+                "workflow_ingest.edge",
+                "HAS_SOURCE_EVIDENCE",
+                semantic_root_id,
+                source_node_id,
+                tree.document_id,
+            )
+        )
+        if source_node_id in existing_node_ids or edge_id in existing_edge_ids:
+            raise ValueError("multimodal source evidence identity collides with graph")
+        description = item.annotations.get("description", "").strip()
+        label = description or item.kind
+        grounding: JsonObject = {"spans": [], "multimodal_spans": [span_payload]}
+        nodes.append(
+            {
+                "id": source_node_id,
+                "label": label,
+                "type": "entity",
+                "doc_id": tree.document_id,
+                "summary": description or f"{item.kind} source evidence",
+                "metadata": {
+                    "doc_id": tree.document_id,
+                    "entity_type": "multimodal_source_evidence",
+                    "source_item_id": item.item_id,
+                    "source_item_kind": item.kind,
+                    "source_revision": tree.source_revision,
+                    "reading_order": reading_order,
+                    "mime_type": media.mime_type,
+                    "media_sha256": media.sha256_hex,
+                    "media_byte_length": media.byte_length,
+                    "location": cast(
+                        JsonValue,
+                        decode_json_object(
+                            location.model_dump(mode="json"),
+                            label="source item location",
+                        ),
+                    ),
+                    "annotations": cast(JsonValue, item.annotations),
+                    "insertion_method": "workflow_ingest",
+                },
+                "mentions": [grounding],
+                "aggregate_mentions": [],
+            }
+        )
+        edges.append(
+            {
+                "id": edge_id,
+                "label": "source evidence",
+                "type": "relationship",
+                "doc_id": tree.document_id,
+                "summary": f"{semantic_root_id}->{source_node_id}",
+                "relation": "HAS_SOURCE_EVIDENCE",
+                "source_ids": [semantic_root_id],
+                "target_ids": [source_node_id],
+                "source_edge_ids": [],
+                "target_edge_ids": [],
+                "mentions": [grounding],
+                "metadata": {
+                    "doc_id": tree.document_id,
+                    "source_item_id": item.item_id,
+                    "reading_order": reading_order,
+                    "insertion_method": "workflow_ingest",
+                },
+            }
+        )
+        existing_node_ids.add(source_node_id)
+        existing_edge_ids.add(edge_id)
+
+    result = dict(graph_payload)
+    result["nodes"] = cast(JsonValue, nodes)
+    result["edges"] = cast(JsonValue, edges)
+    return result
 
 
 def _spatial_accuracy(
@@ -421,9 +680,32 @@ def select_summary_targets(
         return result
 
     candidates: list[tuple[int, str, int]] = []
+    completed_targets = 0
+    used_tokens = 0
     eligible = set(policy.eligible_kinds)
     for node in tree.nodes:
-        if node.parts or node.summary is not None or node.kind not in eligible:
+        summary = node.summary
+        has_accepted_summary = summary is not None and summary.status in {
+            "generated",
+            "verified",
+        }
+        summary_matches_policy = False
+        if summary is not None and summary.status in {"generated", "verified"}:
+            generation_fingerprint = summary.generation_fingerprint
+            summary_matches_policy = generation_fingerprint == policy.generation_fingerprint
+        if summary_matches_policy and summary is not None:
+            # The policy bounds accepted work for the whole tree, not just one
+            # invocation. This keeps resume from resetting target/token caps.
+            completed_targets += 1
+            used_tokens += sum(
+                max(1, (_evidence_payload_size(slice_) + 3) // 4)
+                for slice_ in tree.evidence_slices(node.node_id)
+                if slice_.item_id in summary.evidence_item_ids
+            )
+            continue
+        # A completed summary from a different generation is stale and must be
+        # eligible for replacement; non-completed states remain non-candidates.
+        if node.parts or (summary is not None and not has_accepted_summary) or node.kind not in eligible:
             continue
         evidence = tree.evidence_slices(node.node_id)
         item_ids = {slice_.item_id for slice_ in evidence}
@@ -442,9 +724,8 @@ def select_summary_targets(
         candidates.append((depth(node.node_id), node.node_id, estimated_tokens))
 
     selected: list[str] = []
-    used_tokens = 0
     for _depth, node_id, estimated_tokens in sorted(candidates):
-        if len(selected) >= policy.maximum_targets:
+        if completed_targets + len(selected) >= policy.maximum_targets:
             break
         # The planner's estimate is also the provider boundary.  Clamping the
         # accounting while still sending the full evidence payload makes the

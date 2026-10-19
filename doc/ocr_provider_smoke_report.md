@@ -191,6 +191,26 @@ rejects. A second attempt bound the server to a non-responsive virtual
 interface. The successful run used the supported `low` setting and loopback
 binding; these were local server-launch issues, not parser-adapter failures.
 
+### Live multimodal figure comparison (2026-10-18)
+
+The same manually selected text-plus-figure fixture was exercised through the
+three available paths. The figure was a real 2421x1188 UML workflow image; the
+expected annotations were one manually specified title text region and one
+real figure region covering the diagram. The personal source image is not
+committed as a parser fixture.
+
+| Path | Transport result | Accepted OCR result | Independent quality result |
+| --- | --- | --- | --- |
+| Fake typed payload | N/A | Yes | 2/2 items, recall `1.0`, mean IoU `1.0`, exact text |
+| Codex bridge (`gpt-5.6-luna`) | Bridge returned HTTP 200 | No | Rejected by `OCRClusterResponse`: `meaningful_ordering` did not cover all returned clusters |
+| Bonsai 2 (`medium`, budget 2048) | Model loaded and generated | No | Rejected by `OCRClusterResponse`: source-item accounting reported `0 observed` versus `17 represented/unresolved` |
+
+The fake result is contract coverage only and is not provider evidence. The
+two live failures are important: neither malformed response was accepted or
+measured as accurate. They expose provider-output conformance gaps at the
+typed parser boundary, while the existing recorded Codex table-page result
+above remains the valid accepted real multimodal smoke.
+
 ## Reproduction
 
 Start the existing local Bonsai launcher with a supported reasoning mode:

@@ -4,6 +4,7 @@ import math
 from collections.abc import Mapping
 from typing import NotRequired, TypedDict, cast
 
+from ..models import _meaningful_ordering_error
 from .models import (
     BoundingBox,
     GroundedSourceRecord,
@@ -50,6 +51,7 @@ class OCRPageJSON(TypedDict):
     unresolved_item_count: NotRequired[int]
     is_blank_page: NotRequired[bool]
     meaningful_ordering: NotRequired[list[int]]
+    source_item_count: NotRequired[int]
     metadata: NotRequired[dict[str, JsonValue]]
     OCR_text_clusters: NotRequired[list[OCRTextClusterJSON]]
     non_text_objects: NotRequired[list[OCRNonTextObjectJSON]]
@@ -93,6 +95,11 @@ def _validated_ocr_page_json(
         type(unresolved_item_count) is not int or unresolved_item_count < 0
     ):
         raise TypeError("OCR page field 'unresolved_item_count' must be a non-negative integer")
+    source_item_count = value.get("source_item_count")
+    if source_item_count is not None and (
+        type(source_item_count) is not int or source_item_count < 0
+    ):
+        raise TypeError("OCR page field 'source_item_count' must be a non-negative integer")
     for key in ("meaningful_ordering",):
         field = value.get(key)
         if field is not None and (
@@ -231,6 +238,17 @@ def normalize_ocr_pages(
         non_text_objects = raw_page.get("non_text_objects", [])
         if not isinstance(text_clusters, list) or not isinstance(non_text_objects, list):
             raise TypeError("OCR cluster collections must be lists")
+        source_item_count = raw_page.get("source_item_count")
+        unresolved_item_count = raw_page.get("unresolved_item_count", 0)
+        if source_item_count is not None:
+            represented_item_count = len(text_clusters) + len(non_text_objects)
+            accounted_item_count = represented_item_count + unresolved_item_count
+            if source_item_count != accounted_item_count:
+                raise ValueError(
+                    "OCR source item accounting does not reconcile "
+                    f"({source_item_count} observed versus "
+                    f"{accounted_item_count} represented or unresolved)"
+                )
         page_metadata = raw_page.get("metadata", {})
         if not isinstance(page_metadata, dict):
             raise TypeError("OCR page metadata must be an object")
@@ -245,6 +263,7 @@ def normalize_ocr_pages(
             "data_loss_likelihood",
             "scan_quality",
             "unresolved_item_count",
+            "source_item_count",
         ):
             value = raw_page.get(key)
             if value is not None:
@@ -253,26 +272,35 @@ def normalize_ocr_pages(
         if ordering is not None:
             if not isinstance(ordering, list) or any(type(value) is not int for value in ordering):
                 raise TypeError("meaningful_ordering must be a list of integer cluster numbers")
-            all_clusters = [*text_clusters, *non_text_objects]
-            cluster_by_number = {
-                cluster.get("cluster_number"): cluster
-                for cluster in all_clusters
-                if isinstance(cluster, dict) and cluster.get("cluster_number") is not None
-            }
-            if len(cluster_by_number) != len(all_clusters):
-                raise ValueError("meaningful_ordering requires every OCR cluster to have a unique number")
-            if len(ordering) != len(all_clusters) or set(ordering) != set(cluster_by_number):
-                raise ValueError("meaningful_ordering must cover each OCR text and non-text cluster exactly once")
-            text_numbers = {
-                cluster.get("cluster_number")
-                for cluster in text_clusters
-                if isinstance(cluster, dict)
-            }
-            non_text_numbers = {
-                cluster.get("cluster_number")
-                for cluster in non_text_objects
-                if isinstance(cluster, dict)
-            }
+            cluster_by_number: dict[
+                int, OCRTextClusterJSON | OCRNonTextObjectJSON
+            ] = {}
+            expected_cluster_count = len(text_clusters) + len(non_text_objects)
+            text_numbers: set[int] = set()
+            non_text_numbers: set[int] = set()
+            for clusters, numbers in (
+                (text_clusters, text_numbers),
+                (non_text_objects, non_text_numbers),
+            ):
+                for cluster in clusters:
+                    cluster_number = cluster.get("cluster_number")
+                    if type(cluster_number) is not int:
+                        raise ValueError(
+                            "meaningful_ordering requires every OCR cluster to have "
+                            "an integer number"
+                        )
+                    if cluster_number in cluster_by_number:
+                        raise ValueError(
+                            "meaningful_ordering requires every OCR cluster to have "
+                            "a unique number"
+                        )
+                    cluster_by_number[cluster_number] = cluster
+                    numbers.add(cluster_number)
+            if (
+                len(ordering) != expected_cluster_count
+                or set(ordering) != set(cluster_by_number)
+            ):
+                raise ValueError(_meaningful_ordering_error(set(cluster_by_number), ordering))
             ordered_text_clusters = [
                 cluster_by_number[cluster_number]
                 for cluster_number in ordering

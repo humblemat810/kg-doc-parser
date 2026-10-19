@@ -1,0 +1,21 @@
+{
+  "items": [
+    {"item_id": "title", "modality": "text", "x_min": 78.0, "y_min": 59.0, "x_max": 186.0, "y_max": 72.0, "text": "OCR Layout Evaluation"},
+    {"item_id": "list-1", "modality": "text", "x_min": 98.0, "y_min": 160.0, "x_max": 201.0, "y_max": 173.0, "text": "1. First ordered item"},
+    {"item_id": "list-2", "modality": "text", "x_min": 98.0, "y_min": 220.0, "x_max": 203.0, "y_max": 233.0, "text": "2. Second ordered item"},
+    {"item_id": "list-3", "modality": "text", "x_min": 98.0, "y_min": 280.0, "x_max": 202.0, "y_max": 293.0, "text": "3. Third ordered item"},
+    {"item_id": "header-name", "modality": "text", "x_min": 728.0, "y_min": 160.0, "x_max": 758.0, "y_max": 173.0, "text": "Name"},
+    {"item_id": "header-value", "modality": "text", "x_min": 978.0, "y_min": 160.0, "x_max": 1007.0, "y_max": 173.0, "text": "Value"},
+    {"item_id": "header-status", "modality": "text", "x_min": 1228.0, "y_min": 160.0, "x_max": 1257.0, "y_max": 173.0, "text": "Status"},
+    {"item_id": "alpha", "modality": "text", "x_min": 728.0, "y_min": 230.0, "x_max": 762.0, "y_max": 243.0, "text": "Alpha"},
+    {"item_id": "42", "modality": "text", "x_min": 978.0, "y_min": 230.0, "x_max": 1002.0, "y_max": 243.0, "text": "42"},
+    {"item_id": "ready", "modality": "text", "x_min": 1228.0, "y_min": 230.0, "x_max": 1267.0, "y_max": 243.0, "text": "Ready"},
+    {"item_id": "beta", "modality": "text", "x_min": 728.0, "y_min": 305.0, "x_max": 762.0, "y_max": 318.0, "text": "Beta"},
+    {"item_id": "17", "modality": "text", "x_min": 978.0, "y_min": 305.0, "x_max": 1002.0, "y_max": 318.0, "text": "17"},
+    {"item_id": "review", "modality": "text", "x_min": 1228.0, "y_min": 305.0, "x_max": 1267.0, "y_max": 318.0, "text": "Review"},
+    {"item_id": "gamma", "modality": "text", "x_min": 728.0, "y_min": 375.0, "x_max": 762.0, "y_max": 388.0, "text": "Gamma"},
+    {"item_id": "8", "modality": "text", "x_min": 978.0, "y_min": 375.0, "x_max": 997.0, "y_max": 388.0, "text": "8"},
+    {"item_id": "done", "modality": "text", "x_min": 1228.0, "y_min": 375.0, "x_max": 1262.0, "y_max": 388.0, "text": "Done"},
+    {"item_id": "table-region", "modality": "non_text", "x_min": 700.0, "y_min": 140.0, "x_max": 1450.0, "y_max": 430.0}
+  ]
+}

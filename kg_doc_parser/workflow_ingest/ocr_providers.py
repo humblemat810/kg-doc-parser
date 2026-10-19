@@ -14,10 +14,11 @@ import json
 import os
 import platform
 import shutil
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, SupportsFloat, cast
 
 from ..models import NonTextCluster, OCRClusterResponse, TextCluster
 from .providers import ProviderEndpointConfig, WorkflowProviderSettings
@@ -84,6 +85,14 @@ def _as_external_sequence(value: object) -> Sequence[object]:
     return value
 
 
+def _as_external_items(value: object) -> tuple[object, ...]:
+    """Materialize finite vendor item iterables, including generators."""
+
+    if isinstance(value, (str, bytes, Mapping)) or not isinstance(value, Iterable):
+        return ()
+    return tuple(value)
+
+
 def _external_sequence(value: object, name: str) -> Sequence[object]:
     return _as_external_sequence(_external_attribute(value, name))
 
@@ -93,7 +102,7 @@ def _external_text(value: object, name: str, default: str = "") -> str:
     return candidate if isinstance(candidate, str) else default
 
 
-def _external_callable(value: object, name: str) -> Callable[[], object] | None:
+def _external_callable(value: object, name: str) -> Callable[..., object] | None:
     candidate = _external_attribute(value, name)
     return candidate if callable(candidate) else None
 
@@ -101,6 +110,30 @@ def _external_callable(value: object, name: str) -> Callable[[], object] | None:
 def _external_number(value: object, name: str) -> int | float | None:
     candidate = _external_attribute(value, name)
     return candidate if isinstance(candidate, (int, float)) else None
+
+
+def _external_coordinate_origin(
+    value: object,
+) -> Literal["bottomleft", "topleft", "unknown"] | None:
+    """Normalize a vendor coordinate-origin enum without trusting its repr."""
+
+    raw_origin = _external_attribute(value, "coord_origin")
+    if raw_origin is None:
+        return None
+    candidates = (
+        raw_origin,
+        _external_attribute(raw_origin, "name"),
+        _external_attribute(raw_origin, "value"),
+    )
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        normalized = candidate.rsplit(".", 1)[-1].replace("_", "").strip().lower()
+        if normalized == "bottomleft":
+            return "bottomleft"
+        if normalized == "topleft":
+            return "topleft"
+    return "unknown"
 
 
 def register_ocr_provider(name: str, provider: OCRPageProvider) -> None:
@@ -299,18 +332,23 @@ def _box_to_bounds(box: object) -> tuple[float, float, float, float]:
     """Convert a four-point OCR polygon into an axis-aligned pixel box."""
 
     try:
-        if isinstance(box, (str, bytes)) or not isinstance(box, Sequence):
-            raise TypeError
         points: list[tuple[float, float]] = []
-        for point in box:
-            if isinstance(point, (str, bytes)) or not isinstance(point, Sequence):
-                raise TypeError
-            if len(point) < 2:
+        raw_points = _as_external_items(box)
+        if not raw_points:
+            raise TypeError
+        for point in raw_points:
+            coordinates = _as_external_items(point)
+            if len(coordinates) < 2:
                 raise ValueError
-            x, y = point[0], point[1]
+            x, y = coordinates[0], coordinates[1]
             if isinstance(x, bool) or isinstance(y, bool):
                 raise TypeError
-            points.append((float(x), float(y)))
+            points.append(
+                (
+                    float(cast(SupportsFloat | str | bytes | bytearray, x)),
+                    float(cast(SupportsFloat | str | bytes | bytearray, y)),
+                )
+            )
         coordinates = tuple(value for point in points for value in point)
         if len(points) < 4 or len(coordinates) < 8:
             raise ValueError
@@ -324,16 +362,20 @@ def _box_to_bounds(box: object) -> tuple[float, float, float, float]:
 def _direct_response(
     image_path: Path,
     detections: Sequence[tuple[object, str]],
+    *,
+    unpaired_item_count: int = 0,
 ) -> OCRClusterResponse:
     width, height = _image_size(image_path)
     normalized: list[tuple[float, float, float, float, str]] = []
+    unresolved_item_count = unpaired_item_count
     for box, text in detections:
         value = text.strip()
         if not value:
+            unresolved_item_count += 1
             continue
         x_min, x_max, y_min, y_max = _box_to_bounds(box)
         normalized.append((x_min, y_min, x_max, y_max, value))
-    normalized.sort(key=lambda item: (item[1], item[0]))
+    normalized = _reading_order(normalized, float(width))
     clusters = [
         TextCluster(
             text=text,
@@ -361,8 +403,82 @@ def _direct_response(
         data_loss_likelihood=0.0,
         scan_quality="medium",
         contains_table=False,
+        unresolved_item_count=unresolved_item_count,
+        source_item_count=len(clusters) + unresolved_item_count,
         spatial_accuracy="region",
     )
+
+
+def _reading_order(
+    items: list[tuple[float, float, float, float, str]], page_width: float
+) -> list[tuple[float, float, float, float, str]]:
+    """Use column-major order only when geometry exposes a clear repeated gutter."""
+
+    spatial_order = sorted(items, key=lambda item: (item[1], item[0]))
+    if len(spatial_order) < 4:
+        return spatial_order
+
+    centers = sorted({(item[0] + item[2]) / 2 for item in spatial_order})
+    best_split: tuple[float, float] | None = None
+    minimum_gutter = max(8.0, page_width * 0.04)
+    for left_center, right_center in pairwise(centers):
+        split = (left_center + right_center) / 2
+        left = [item for item in spatial_order if (item[0] + item[2]) / 2 < split]
+        right = [item for item in spatial_order if (item[0] + item[2]) / 2 >= split]
+        if len(left) < 2 or len(right) < 2:
+            continue
+        gutter = min(item[0] for item in right) - max(item[2] for item in left)
+        if gutter < minimum_gutter:
+            continue
+        if _vertical_band_count(left) < 2 or _vertical_band_count(right) < 2:
+            continue
+        if best_split is None or gutter > best_split[0]:
+            best_split = (gutter, split)
+
+    if best_split is None:
+        return spatial_order
+    _gutter, split = best_split
+    left = [item for item in spatial_order if (item[0] + item[2]) / 2 < split]
+    right = [item for item in spatial_order if (item[0] + item[2]) / 2 >= split]
+    return sorted(left, key=lambda item: (item[1], item[0])) + sorted(
+        right, key=lambda item: (item[1], item[0])
+    )
+
+
+def _vertical_band_count(
+    items: Sequence[tuple[float, float, float, float, str]],
+) -> int:
+    bands = 0
+    band_end = float("-inf")
+    for item in sorted(items, key=lambda value: (value[1], value[3])):
+        if item[1] > band_end:
+            bands += 1
+            band_end = item[3]
+        else:
+            band_end = max(band_end, item[3])
+    return bands
+
+
+def _easyocr_detections(
+    raw_results: object,
+) -> tuple[list[tuple[object, str]], int]:
+    """Keep malformed EasyOCR rows visible as unresolved source items."""
+
+    if isinstance(raw_results, (str, bytes)) or not isinstance(raw_results, Sequence):
+        raise TypeError("EasyOCR returned detections in an invalid container")
+
+    detections: list[tuple[object, str]] = []
+    unresolved_item_count = 0
+    for item in raw_results:
+        if (
+            not isinstance(item, (list, tuple))
+            or len(item) < 2
+            or not isinstance(item[1], str)
+        ):
+            unresolved_item_count += 1
+            continue
+        detections.append((item[0], item[1]))
+    return detections, unresolved_item_count
 
 
 def run_rapidocr_page(image_path: Path, page_number: int, provider_settings: ProviderEndpointConfig) -> OCRClusterResponse:
@@ -374,10 +490,14 @@ def run_rapidocr_page(image_path: Path, page_number: int, provider_settings: Pro
     except ImportError as exc:
         raise RuntimeError("RapidOCR selected but rapidocr-onnxruntime is not installed") from exc
     result = RapidOCR()(str(image_path))
-    texts = _external_sequence(result, "txts")
-    boxes = _external_sequence(result, "boxes")
+    texts = _as_external_items(_external_attribute(result, "txts"))
+    boxes = _as_external_items(_external_attribute(result, "boxes"))
     detections = [(box, str(text)) for box, text in zip(boxes, texts, strict=False)]
-    return _direct_response(image_path, detections)
+    return _direct_response(
+        image_path,
+        detections,
+        unpaired_item_count=abs(len(boxes) - len(texts)),
+    )
 
 
 def run_easyocr_page(image_path: Path, page_number: int, provider_settings: ProviderEndpointConfig) -> OCRClusterResponse:
@@ -395,11 +515,12 @@ def run_easyocr_page(image_path: Path, page_number: int, provider_settings: Prov
     ) or ("en",)
     reader = Reader(list(languages), gpu=False, verbose=False)
     raw_results = reader.readtext(str(image_path), detail=1)
-    detections: list[tuple[object, str]] = []
-    for item in _as_external_sequence(raw_results):
-        if isinstance(item, (list, tuple)) and len(item) >= 2:
-            detections.append((item[0], str(item[1])))
-    return _direct_response(image_path, detections)
+    detections, unresolved_item_count = _easyocr_detections(raw_results)
+    return _direct_response(
+        image_path,
+        detections,
+        unpaired_item_count=unresolved_item_count,
+    )
 
 
 def _docling_pipeline_options(engine: str) -> object:
@@ -518,6 +639,12 @@ def run_docling_ocr_page(
             if len(numeric_values) != 4:
                 continue
             left_value, right_value, top_value, bottom_value = numeric_values
+            origin = _external_coordinate_origin(bbox)
+            if origin == "unknown":
+                continue
+            if origin == "bottomleft":
+                top_value = float(height) - top_value
+                bottom_value = float(height) - bottom_value
             left = max(0.0, left_value)
             right = min(float(width), right_value)
             top = max(0.0, top_value)
@@ -528,11 +655,14 @@ def run_docling_ocr_page(
 
     iterate_items = _external_callable(document, "iterate_items")
     raw_items = iterate_items() if iterate_items is not None else ()
-    items = list(_as_external_sequence(raw_items))
+    items = _as_external_items(raw_items)
     unresolved_markers = 0
-    represented_visual_items = 0
+    observed_visual_items = 0
     for item_record in items:
         item = item_record[0] if isinstance(item_record, tuple) and item_record else item_record
+        label = _external_text(item, "label").lower()
+        if any(kind in label for kind in ("picture", "figure", "image", "table")):
+            observed_visual_items += 1
         box = _box(item)
         if box is None:
             unresolved_item_count += 1
@@ -540,15 +670,12 @@ def run_docling_ocr_page(
         text_value = _external_text(item, "text")
         if not text_value:
             export_item = _external_callable(item, "export_to_markdown")
-            text_value = export_item() if export_item is not None else ""
+            text_value = export_item(document) if export_item is not None else ""
         text = str(text_value or "").strip()
-        label = _external_text(item, "label").lower()
         for marker in ("<!-- image -->", "<!-- table -->"):
             marker_count = text.count(marker)
             unresolved_markers += marker_count
             text = text.replace(marker, "").strip()
-        if any(kind in label for kind in ("picture", "figure", "image", "table")):
-            represented_visual_items += 1
         cluster_number = len(ordering)
         if text and "table" not in label and "picture" not in label and "figure" not in label:
             clusters.append(
@@ -578,7 +705,7 @@ def run_docling_ocr_page(
     # Docling can expose a page-wide text item whose Markdown contains a
     # placeholder for a picture/table but omit the corresponding item from
     # ``iterate_items``. Do not silently claim that placeholder is grounded.
-    unresolved_item_count += max(0, unresolved_markers - represented_visual_items)
+    unresolved_item_count += max(0, unresolved_markers - observed_visual_items)
 
     if not ordering:
         export = _external_callable(document, "export_to_markdown")
@@ -616,6 +743,7 @@ def run_docling_ocr_page(
         scan_quality="medium",
         contains_table=any("table" in _external_text(item, "label").lower() for item in items),
         unresolved_item_count=unresolved_item_count,
+        source_item_count=len(clusters) + len(non_text_objects) + unresolved_item_count,
         spatial_accuracy="region" if ordering else "page",
     )
 

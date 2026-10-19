@@ -1,0 +1,103 @@
+{
+  "OCR_text_clusters": [
+    {
+      "text": "Quarterly Revenue",
+      "bb_x_min": 112.0,
+      "bb_x_max": 409.0,
+      "bb_y_min": 73.0,
+      "bb_y_max": 124.0,
+      "cluster_number": 0
+    },
+    {
+      "text": "Revenue by Quarter",
+      "bb_x_min": 518.0,
+      "bb_x_max": 831.0,
+      "bb_y_min": 210.0,
+      "bb_y_max": 253.0,
+      "cluster_number": 1
+    },
+    {
+      "text": "100",
+      "bb_x_min": 290.0,
+      "bb_x_max": 338.0,
+      "bb_y_min": 304.0,
+      "bb_y_max": 334.0,
+      "cluster_number": 2
+    },
+    {
+      "text": "75",
+      "bb_x_min": 288.0,
+      "bb_x_max": 324.0,
+      "bb_y_min": 426.0,
+      "bb_y_max": 454.0,
+      "cluster_number": 3
+    },
+    {
+      "text": "50",
+      "bb_x_min": 288.0,
+      "bb_x_max": 324.0,
+      "bb_y_min": 544.0,
+      "bb_y_max": 574.0,
+      "cluster_number": 4
+    },
+    {
+      "text": "25",
+      "bb_x_min": 288.0,
+      "bb_x_max": 324.0,
+      "bb_y_min": 664.0,
+      "bb_y_max": 694.0,
+      "cluster_number": 5
+    },
+    {
+      "text": "Q2",
+      "bb_x_min": 698.0,
+      "bb_x_max": 738.0,
+      "bb_y_min": 842.0,
+      "bb_y_max": 872.0,
+      "cluster_number": 6
+    },
+    {
+      "text": "Q3",
+      "bb_x_min": 898.0,
+      "bb_x_max": 938.0,
+      "bb_y_min": 842.0,
+      "bb_y_max": 872.0,
+      "cluster_number": 7
+    },
+    {
+      "text": "Q4",
+      "bb_x_min": 1098.0,
+      "bb_x_max": 1136.0,
+      "bb_y_min": 844.0,
+      "bb_y_max": 870.0,
+      "cluster_number": 8
+    }
+  ],
+  "non_text_objects": [],
+  "is_empty_page": false,
+  "printed_page_number": null,
+  "meaningful_ordering": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "page_x_min": 0.0,
+  "page_x_max": 1600.0,
+  "page_y_min": 0.0,
+  "page_y_max": 1200.0,
+  "estimated_rotation_degrees": 0.0,
+  "incomplete_words_on_edge": false,
+  "incomplete_text": false,
+  "data_loss_likelihood": 0.0,
+  "scan_quality": "medium",
+  "contains_table": false,
+  "unresolved_item_count": 0,
+  "source_item_count": 9,
+  "spatial_accuracy": "region"
+}

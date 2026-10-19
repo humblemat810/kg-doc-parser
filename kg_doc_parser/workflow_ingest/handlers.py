@@ -23,6 +23,8 @@ from .adapters import (
     select_primary_collection,
 )
 from .cache import workflow_cache_namespace
+from .document_adapters import project_multimodal_source_evidence
+from .document_models import DocumentTree
 from .models import (
     CanonicalGraphWriteResult,
     CurrentLayerContext,
@@ -261,10 +263,37 @@ def _build_export_bundle(
     )
     raw_grouping_tree = collection.metadata.get("document_tree")
     grouping_tree: dict[str, JsonValue] | None = None
+    grouping_document: DocumentTree | None = None
+    source_revision: str | None = None
     if raw_grouping_tree is not None:
         grouping_tree = decode_json_object(
             raw_grouping_tree,
             label="document_tree metadata",
+        )
+        tree_fields = {
+            "document_id",
+            "tree_revision",
+            "root_id",
+            "source_items",
+            "nodes",
+        }
+        if tree_fields.intersection(grouping_tree):
+            grouping_document = DocumentTree.model_validate(grouping_tree)
+        revision_value = grouping_tree.get("source_revision")
+        if isinstance(revision_value, str) and revision_value:
+            source_revision = revision_value
+    if source_revision is not None:
+        graph_payload = semantic_tree_to_kge_payload(
+            tree,
+            doc_id=collection.collection_id,
+            parser_source_map=_parser_source_map(ctx.state_view["parser_source_map"]),
+            source_revision=source_revision,
+        )
+    if grouping_document is not None:
+        graph_payload = project_multimodal_source_evidence(
+            graph_payload,
+            grouping_document,
+            source_namespace=collection.source_namespace,
         )
     deps = runtime_deps or {}
     grouping_contract: Literal["optional", "required"] = (

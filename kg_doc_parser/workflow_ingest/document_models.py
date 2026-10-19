@@ -9,6 +9,7 @@ import json
 import re
 from collections import defaultdict
 from hashlib import sha256
+from math import isfinite
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -37,6 +38,8 @@ class BoundingBox(FrozenModel):
 
     @model_validator(mode="after")
     def valid(self) -> BoundingBox:
+        if not all(isfinite(value) for value in (self.x0, self.y0, self.x1, self.y1)):
+            raise ValueError("bounding-box coordinates must be finite")
         if not (self.x0 < self.x1 and self.y0 < self.y1):
             raise ValueError("bounding box must have positive area")
         if self.coordinate_system == "relative" and not all(0 <= v <= 1 for v in (self.x0, self.y0, self.x1, self.y1)):
@@ -56,6 +59,11 @@ class SourceLocation(FrozenModel):
     @model_validator(mode="after")
     def valid(self) -> SourceLocation:
         has_time = self.start_seconds is not None or self.end_seconds is not None
+        if any(
+            value is not None and not isfinite(value)
+            for value in (self.start_seconds, self.end_seconds)
+        ):
+            raise ValueError("time coordinates must be finite")
         if has_time and (self.start_seconds is None or self.end_seconds is None or self.end_seconds <= self.start_seconds):
             raise ValueError("time range must have positive endpoints")
         if self.bbox is not None and self.page_index is None:
@@ -164,6 +172,7 @@ class Summary(FrozenModel):
     evidence_item_ids: tuple[str, ...] = ()
     provider_model: str | None = None
     prompt_revision: str | None = None
+    generation_fingerprint: str | None = None
     input_fingerprint: str | None = None
     evidence_slice_fingerprint: str | None = None
 
@@ -175,6 +184,8 @@ class Summary(FrozenModel):
             raise ValueError("unavailable summaries cannot contain text")
         if len(set(self.evidence_item_ids)) != len(self.evidence_item_ids):
             raise ValueError("summary evidence items must be unique")
+        if self.generation_fingerprint is not None and not self.generation_fingerprint.strip():
+            raise ValueError("summary generation fingerprint must not be blank")
         return self
 
 
@@ -211,9 +222,9 @@ class SummaryPolicy(FrozenModel):
     """Bound optional derived-summary work independently of OCR."""
 
     enabled: bool = True
-    # Change this whenever the summary provider, model, prompt, or other
-    # output-affecting generation configuration changes. It is cache identity.
-    generation_fingerprint: str = Field(default="summary-v1", min_length=1)
+    # Custom generators without their own configuration_fingerprint must set
+    # this to a stable caller-owned revision before summaries can be cached.
+    generation_fingerprint: str | None = Field(default=None, min_length=1)
     eligible_kinds: tuple[str, ...] = (
         "table",
         "figure",
@@ -231,6 +242,30 @@ class SummaryPolicy(FrozenModel):
     def valid(self) -> SummaryPolicy:
         if len(set(self.eligible_kinds)) != len(self.eligible_kinds):
             raise ValueError("summary policy kinds must be unique")
+        if (
+            self.generation_fingerprint is not None
+            and not self.generation_fingerprint.strip()
+        ):
+            raise ValueError("summary generation fingerprint must not be blank")
+        return self
+
+
+class AdaptiveGroupingPolicy(FrozenModel):
+    """Bound iterative grouping work and its multimodal evidence context."""
+
+    enabled: bool = True
+    maximum_rounds: int = Field(default=6, ge=1, le=16)
+    window_size: int = Field(default=64, ge=2, le=64)
+    window_overlap: int = Field(default=31, ge=1, le=63)
+    maximum_evidence_items_per_candidate: int = Field(default=4, ge=1, le=16)
+    maximum_text_chars_per_candidate: int = Field(default=300, ge=32, le=2400)
+
+    @model_validator(mode="after")
+    def valid(self) -> AdaptiveGroupingPolicy:
+        if self.window_overlap >= self.window_size:
+            raise ValueError("grouping window overlap must be smaller than its size")
+        if self.window_size - self.window_overlap < 2:
+            raise ValueError("grouping windows must advance by at least two candidates")
         return self
 
 
@@ -351,8 +386,7 @@ class DocumentTree(FrozenModel):
             if node.summary is None or node.summary.status not in {"generated", "verified"}:
                 continue
             evidence = node.summary.evidence_item_ids
-            payload = [_model_json_object(items[item_id]) for item_id in sorted(evidence)]
-            expected = sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            expected = self.summary_input_fingerprint(node_id, tuple(sorted(evidence)))
             if node.summary.input_fingerprint != expected:
                 raise ValueError(f"summary fingerprint is stale for node {node_id}")
             if node.summary.evidence_slice_fingerprint is not None:
@@ -362,7 +396,11 @@ class DocumentTree(FrozenModel):
         return self
 
     def source_fingerprint(self) -> str:
-        payload = [_model_json_object(item) for item in self.source_items]
+        payload = {
+            "document_id": self.document_id,
+            "source_revision": self.source_revision,
+            "source_items": [_model_json_object(item) for item in self.source_items],
+        }
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def summary_input_fingerprint(self, node_id: str, evidence_item_ids: tuple[str, ...] | None = None) -> str:
@@ -386,7 +424,11 @@ class DocumentTree(FrozenModel):
         selected = tuple(sorted(evidence_item_ids if evidence_item_ids is not None else covered))
         if set(selected) - covered:
             raise ValueError("summary evidence must be within the node subtree")
-        payload = [_model_json_object(items[item_id]) for item_id in selected]
+        payload = {
+            "document_id": self.document_id,
+            "source_revision": self.source_revision,
+            "source_items": [_model_json_object(items[item_id]) for item_id in selected],
+        }
         return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def summary_slice_fingerprint(
@@ -406,14 +448,19 @@ class DocumentTree(FrozenModel):
         if node is None:
             raise KeyError(node_id)
         allowed = set(evidence_item_ids) if evidence_item_ids is not None else None
-        payload: list[JsonObject] = []
+        slices: list[JsonObject] = []
+        payload: dict[str, object] = {
+            "document_id": self.document_id,
+            "source_revision": self.source_revision,
+            "slices": slices,
+        }
 
         def visit(current_id: str) -> None:
             current = nodes[current_id]
             if current.parts:
                 for part_index, part in enumerate(current.parts):
                     if allowed is None or part.item_id in allowed:
-                        payload.append(
+                        slices.append(
                             {
                                 "node_id": current_id,
                                 "part_index": part_index,
@@ -428,9 +475,7 @@ class DocumentTree(FrozenModel):
                 visit(child.node_id)
 
         visit(node_id)
-        return sha256(
-            json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
-        ).hexdigest()
+        return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def evidence_slices(
         self,

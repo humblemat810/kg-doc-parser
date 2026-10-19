@@ -229,6 +229,65 @@ def test_graph_export_consumes_hierarchy_for_identical_source_evidence() -> None
 
 
 @pytest.mark.ci
+def test_graph_export_preserves_mixed_multimodal_sibling_reading_order() -> None:
+    source = "FIGURECAPTIONTABLEBODY"
+    ordered_items = (
+        ("figure", "FIGURE", 0, 6, "image_region"),
+        ("caption", "CAPTION", 6, 13, "ocr_text"),
+        ("table", "TABLE", 13, 18, "table"),
+        ("body", "BODY", 18, 22, "ocr_text"),
+    )
+    children = [
+        SemanticNode(
+            node_id=node_id,
+            parent_id="root",
+            title=title,
+            node_type="TEXT" if modality == "ocr_text" else "NON_TEXT",
+            total_content_pointers=[
+                HydratedTextPointer(
+                    source_cluster_id="page-1",
+                    start_char=start,
+                    end_char=end - 1,
+                    verbatim_text=source[start:end],
+                )
+            ],
+            metadata={"modality": modality},
+        )
+        for node_id, title, start, end, modality in ordered_items
+    ]
+    root = SemanticNode(
+        node_id="root",
+        title="Document",
+        node_type="DOCUMENT_ROOT",
+        child_nodes=children,
+    )
+
+    payload = semantic_tree_to_kge_payload(
+        root,
+        doc_id="multimodal-order",
+        parser_source_map={"page-1": {"text": source}},
+    )
+
+    edges = payload["edges"]
+    nodes = payload["nodes"]
+    assert isinstance(edges, list)
+    assert isinstance(nodes, list)
+    assert [edge["target_ids"][0] for edge in edges] == [
+        "figure",
+        "caption",
+        "table",
+        "body",
+    ]
+    assert [node["id"] for node in nodes] == [
+        "root",
+        "figure",
+        "caption",
+        "table",
+        "body",
+    ]
+
+
+@pytest.mark.ci
 def test_page_index_unary_normalization_preserves_nested_descendants_and_ownership() -> None:
     source = "Overview\nFirst row\nSecond row\nEndnote\n"
     source_map = {"page_1": {"text": source}}

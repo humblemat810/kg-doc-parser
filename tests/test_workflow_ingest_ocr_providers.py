@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterator
 from importlib.util import find_spec
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import ClassVar, Self
 
 import pytest
+from pydantic import BaseModel
 
 from kg_doc_parser.models import NonTextCluster, OCRClusterResponse, TextCluster
+from kg_doc_parser.ocr import RawOCRResponse, RawOCRResponseMetaless, TextBoxResponse
 from kg_doc_parser.workflow_ingest import (
     ProviderEndpointConfig,
     WorkflowProviderSettings,
@@ -52,6 +56,7 @@ def test_capability_inventory_contains_all_docling_engines_and_codex_boundary() 
     assert {item.provider for item in capabilities} >= {"custom", "kserve"}
 
 
+@pytest.mark.ci
 def test_ocr_provider_smoke_writes_typed_json_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -70,6 +75,137 @@ def test_ocr_provider_smoke_writes_typed_json_report(
     assert isinstance(report, dict)
     assert report["live_status"] == "not_requested"
     assert isinstance(report["providers"], list)
+
+
+@pytest.mark.ci
+def test_ocr_provider_smoke_rejects_ground_truth_without_live_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = Path("tests") / ".tmp_ocr_provider_smoke_invalid_ground_truth"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ocr-provider-smoke",
+            "--ground-truth",
+            "missing-ground-truth.json",
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="2"):
+        ocr_provider_smoke.main()
+    assert not output_dir.exists()
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize(
+    ("arguments", "expected_error"),
+    [
+        (["--live", "--image", "missing-image.png"], "image file does not exist"),
+        (["--live", "--image", "tests/test_workflow_ingest_ocr_providers.py", "--page-number", "0"], "page-number must be positive"),
+    ],
+)
+def test_ocr_provider_smoke_rejects_invalid_live_inputs_before_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    expected_error: str,
+) -> None:
+    with TemporaryDirectory(prefix="ocr-provider-smoke-invalid-", dir="tests") as tmp_dir:
+        output_dir = Path(tmp_dir) / "invalid-live-input"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["ocr-provider-smoke", *arguments, "--output-dir", str(output_dir)],
+        )
+
+        with pytest.raises(SystemExit, match="2"):
+            ocr_provider_smoke.main()
+        assert expected_error in capsys.readouterr().err
+        assert not output_dir.exists()
+
+
+@pytest.mark.ci
+def test_ocr_provider_smoke_rejects_malformed_ground_truth_before_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with TemporaryDirectory(prefix="ocr-provider-smoke-ground-truth-", dir="tests") as tmp_dir:
+        temp_path = Path(tmp_dir)
+        ground_truth = temp_path / "ground-truth.json"
+        ground_truth.write_text("not-json", encoding="utf-8")
+        output_dir = temp_path / "invalid-ground-truth"
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "ocr-provider-smoke",
+                "--live",
+                "--image",
+                __file__,
+                "--ground-truth",
+                str(ground_truth),
+                "--output-dir",
+                str(output_dir),
+            ],
+        )
+
+        with pytest.raises(SystemExit, match="2"):
+            ocr_provider_smoke.main()
+        assert "invalid ground-truth file" in capsys.readouterr().err
+        assert not output_dir.exists()
+
+
+@pytest.mark.ci
+def test_ocr_provider_smoke_evaluates_live_response_against_ground_truth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture_dir = Path(__file__).parent / "fixtures" / "ocr_ground_truth"
+    output_dir = Path("tests") / ".tmp_ocr_provider_smoke_ground_truth"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    image_path = fixture_dir / "codex_ocr_layout_page.png"
+    ground_truth_path = fixture_dir / "codex_ocr_layout_page_ground_truth.json"
+    response = OCRClusterResponse.model_validate_json(
+        (fixture_dir / "codex_ocr_layout_page_response.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    monkeypatch.setattr(
+        ocr_provider_smoke,
+        "_run_live_ocr_page",
+        lambda _image, _page, _settings: response,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ocr-provider-smoke",
+            "--live",
+            "--image",
+            str(image_path),
+            "--ground-truth",
+            str(ground_truth_path),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    assert ocr_provider_smoke.main() == 0
+    live_result = json.loads(
+        (output_dir / "live-result.json").read_text(encoding="utf-8")
+    )
+    quality_report = json.loads(
+        (output_dir / "quality-report.json").read_text(encoding="utf-8")
+    )
+    assert live_result["status"] == "succeeded"
+    assert quality_report["expected_item_count"] == 17
+    assert quality_report["item_recall_by_modality"] == {
+        "non_text": 0.0,
+        "text": 1.0,
+    }
+    assert "OCR_text_clusters" not in live_result
 
 
 def test_ocr_response_accepts_unified_text_and_nontext_reading_order() -> None:
@@ -109,6 +245,82 @@ def test_ocr_response_accepts_unified_text_and_nontext_reading_order() -> None:
         contains_table=False,
     )
     assert response.meaningful_ordering == [0, 1]
+
+
+@pytest.mark.ci
+def test_ocr_response_rejects_cluster_id_shared_across_modalities() -> None:
+    with pytest.raises(ValueError, match="Overlapped ids: \\[0\\]"):
+        OCRClusterResponse(
+            OCR_text_clusters=[
+                TextCluster(
+                    text="text",
+                    bb_x_min=0,
+                    bb_x_max=10,
+                    bb_y_min=0,
+                    bb_y_max=10,
+                    cluster_number=0,
+                )
+            ],
+            non_text_objects=[
+                NonTextCluster(
+                    description="figure",
+                    bb_x_min=0,
+                    bb_x_max=10,
+                    bb_y_min=10,
+                    bb_y_max=20,
+                    cluster_number=0,
+                )
+            ],
+            is_empty_page=False,
+            printed_page_number=None,
+            meaningful_ordering=[0],
+            page_x_min=0,
+            page_x_max=100,
+            page_y_min=0,
+            page_y_max=100,
+            estimated_rotation_degrees=0,
+            incomplete_words_on_edge=False,
+            incomplete_text=False,
+            data_loss_likelihood=0,
+            scan_quality="high",
+            contains_table=False,
+        )
+
+
+@pytest.mark.ci
+def test_ocr_response_accepts_large_unique_reading_order() -> None:
+    cluster_count = 256
+    response = OCRClusterResponse(
+        OCR_text_clusters=[
+            TextCluster(
+                text=f"region {cluster_number}",
+                bb_x_min=0,
+                bb_x_max=10,
+                bb_y_min=cluster_number,
+                bb_y_max=cluster_number + 1,
+                cluster_number=cluster_number,
+            )
+            for cluster_number in range(cluster_count)
+        ],
+        non_text_objects=[],
+        is_empty_page=False,
+        printed_page_number=None,
+        meaningful_ordering=list(reversed(range(cluster_count))),
+        page_x_min=0,
+        page_x_max=10,
+        page_y_min=0,
+        page_y_max=cluster_count,
+        estimated_rotation_degrees=0,
+        incomplete_words_on_edge=False,
+        incomplete_text=False,
+        data_loss_likelihood=0,
+        scan_quality="high",
+        contains_table=False,
+    )
+
+    assert len(response.meaningful_ordering) == cluster_count
+    assert response.meaningful_ordering[0] == cluster_count - 1
+    assert response.meaningful_ordering[-1] == 0
 
 
 def test_normalize_ocr_pages_preserves_caption_and_nontext_permutation() -> None:
@@ -168,6 +380,21 @@ def test_normalize_ocr_pages_preserves_caption_and_nontext_permutation() -> None
         "image_region",
         "ocr_text",
     ]
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize(
+    "response_model",
+    [RawOCRResponse, RawOCRResponseMetaless, TextBoxResponse],
+)
+def test_legacy_ocr_schemas_describe_meaningful_ordering_as_reading_order(
+    response_model: type[BaseModel],
+) -> None:
+    description = response_model.model_fields["meaningful_ordering"].description
+
+    assert description is not None
+    assert "authoritative reading order" in description
+    assert "exactly once" in description
 
 
 @pytest.mark.parametrize(
@@ -249,6 +476,125 @@ def test_direct_rapidocr_adapter_normalizes_boxes_without_docling(
     assert response.OCR_text_clusters[0].text == "hello"
     assert response.OCR_text_clusters[0].bb_x_min == 10
     assert response.OCR_text_clusters[0].bb_y_max == 30
+    assert response.unresolved_item_count == 0
+    assert response.source_item_count == 1
+
+
+@pytest.mark.ci
+def test_direct_rapidocr_adapter_orders_clear_columns_top_to_bottom(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from PIL import Image
+
+    image_path = tmp_path / "two-columns.png"
+    Image.new("RGB", (100, 100), "white").save(image_path)
+
+    class Output:
+        boxes: ClassVar[list[list[tuple[int, int]]]] = [
+            [(5, 10), (40, 10), (40, 20), (5, 20)],
+            [(60, 10), (95, 10), (95, 20), (60, 20)],
+            [(5, 30), (40, 30), (40, 40), (5, 40)],
+            [(60, 30), (95, 30), (95, 40), (60, 40)],
+        ]
+        txts: ClassVar[list[str]] = ["left top", "right top", "left next", "right next"]
+
+    class FakeRapidOCR:
+        def __call__(self, _path: str) -> Output:
+            return Output()
+
+    module = ModuleType("rapidocr")
+    module.RapidOCR = FakeRapidOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidocr", module)
+
+    response = run_rapidocr_page(
+        image_path, 1, ProviderEndpointConfig(provider="rapidocr")
+    )
+
+    assert [
+        response.OCR_text_clusters[index].text
+        for index in response.meaningful_ordering
+    ] == ["left top", "left next", "right top", "right next"]
+
+
+def test_direct_rapidocr_adapter_accepts_numpy_style_iterables(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """NumPy arrays from RapidOCR must not be mistaken for empty sequences."""
+    from PIL import Image
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+
+    class ArrayLike:
+        def __init__(self, values: tuple[object, ...]) -> None:
+            self.values = values
+
+        def __iter__(self) -> Iterator[object]:
+            return iter(self.values)
+
+    class Output:
+        boxes: ClassVar[ArrayLike] = ArrayLike(
+            (
+                ArrayLike(
+                    (
+                        ArrayLike((10, 20)),
+                        ArrayLike((50, 20)),
+                        ArrayLike((50, 30)),
+                        ArrayLike((10, 30)),
+                    )
+                ),
+            )
+        )
+        txts: ClassVar[ArrayLike] = ArrayLike(("hello",))
+
+    class FakeRapidOCR:
+        def __call__(self, path: str) -> Output:
+            assert path == str(image_path)
+            return Output()
+
+    module = ModuleType("rapidocr")
+    module.RapidOCR = FakeRapidOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidocr", module)
+    response = run_rapidocr_page(image_path, 1, ProviderEndpointConfig(provider="rapidocr"))
+
+    assert [cluster.text for cluster in response.OCR_text_clusters] == ["hello"]
+    assert response.OCR_text_clusters[0].bb_x_min == 10
+    assert response.OCR_text_clusters[0].bb_y_max == 30
+    assert response.source_item_count == 1
+    assert response.unresolved_item_count == 0
+
+
+def test_direct_rapidocr_adapter_accounts_for_mismatched_result_arrays(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unpaired provider boxes/text are visible instead of truncated by zip."""
+    from PIL import Image
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+
+    class Output:
+        boxes: ClassVar[tuple[tuple[tuple[int, int], ...], ...]] = (
+            ((10, 20), (50, 20), (50, 30), (10, 30)),
+            ((55, 20), (75, 20), (75, 30), (55, 30)),
+        )
+        txts: ClassVar[tuple[str, ...]] = ("hello",)
+
+    class FakeRapidOCR:
+        def __call__(self, _path: str) -> Output:
+            return Output()
+
+    module = ModuleType("rapidocr")
+    module.RapidOCR = FakeRapidOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidocr", module)
+
+    response = run_rapidocr_page(
+        image_path, 1, ProviderEndpointConfig(provider="rapidocr")
+    )
+
+    assert [cluster.text for cluster in response.OCR_text_clusters] == ["hello"]
+    assert response.source_item_count == 2
+    assert response.unresolved_item_count == 1
 
 
 def test_direct_rapidocr_adapter_rejects_boolean_polygon_coordinates(
@@ -301,6 +647,116 @@ def test_direct_easyocr_adapter_normalizes_boxes_without_docling(
     response = run_easyocr_page(image_path, 1, ProviderEndpointConfig(provider="easyocr"))
     assert response.OCR_text_clusters[0].text == "hello"
     assert response.OCR_text_clusters[0].bb_x_max == 50
+    assert response.unresolved_item_count == 0
+    assert response.source_item_count == 1
+
+
+@pytest.mark.ci
+def test_direct_easyocr_adapter_accounts_for_malformed_detection_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from PIL import Image
+
+    from kg_doc_parser.workflow_ingest.ocr_pipeline import (
+        OCRQualityPolicy,
+        _evaluate_ocr_quality,
+    )
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+    valid_box = [(10, 20), (50, 20), (50, 30), (10, 30)]
+
+    class FakeReader:
+        def __init__(self, languages: list[str], *, gpu: bool, verbose: bool) -> None:
+            del languages
+            assert gpu is False and verbose is False
+
+        def readtext(self, path: str, *, detail: int) -> list[object]:
+            assert path == str(image_path) and detail == 1
+            return [[valid_box, "visible", 0.99], [valid_box], [valid_box, None, 0.5]]
+
+    module = ModuleType("easyocr")
+    module.Reader = FakeReader  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "easyocr", module)
+
+    response = run_easyocr_page(
+        image_path,
+        1,
+        ProviderEndpointConfig(provider="easyocr"),
+    )
+
+    assert [cluster.text for cluster in response.OCR_text_clusters] == ["visible"]
+    assert response.unresolved_item_count == 2
+    assert response.source_item_count == 3
+    diagnostics = _evaluate_ocr_quality(
+        response,
+        OCRQualityPolicy(reject_unresolved_items=True),
+    )
+    assert [(item.code, item.severity) for item in diagnostics] == [
+        ("unresolved_items", "error")
+    ]
+
+
+@pytest.mark.ci
+def test_direct_easyocr_adapter_rejects_invalid_result_container(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from PIL import Image
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+
+    class FakeReader:
+        def __init__(self, languages: list[str], *, gpu: bool, verbose: bool) -> None:
+            del languages
+            assert gpu is False and verbose is False
+
+        def readtext(self, path: str, *, detail: int) -> object:
+            assert path == str(image_path) and detail == 1
+            return object()
+
+    module = ModuleType("easyocr")
+    module.Reader = FakeReader  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "easyocr", module)
+
+    with pytest.raises(TypeError, match="invalid container"):
+        run_easyocr_page(
+            image_path,
+            1,
+            ProviderEndpointConfig(provider="easyocr"),
+        )
+
+
+@pytest.mark.ci
+def test_direct_rapidocr_adapter_accounts_for_empty_detections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from PIL import Image
+
+    image_path = tmp_path / "page.png"
+    Image.new("RGB", (100, 80), "white").save(image_path)
+
+    class Output:
+        boxes: ClassVar[list[list[tuple[int, int]]]] = [
+            [(10, 20), (50, 20), (50, 30), (10, 30)],
+            [(10, 40), (50, 40), (50, 50), (10, 50)],
+        ]
+        txts: ClassVar[list[str]] = ["hello", " "]
+
+    class FakeRapidOCR:
+        def __call__(self, path: str) -> Output:
+            assert path == str(image_path)
+            return Output()
+
+    module = ModuleType("rapidocr")
+    module.RapidOCR = FakeRapidOCR  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "rapidocr", module)
+
+    response = run_rapidocr_page(image_path, 1, ProviderEndpointConfig(provider="rapidocr"))
+
+    assert [cluster.text for cluster in response.OCR_text_clusters] == ["hello"]
+    assert response.unresolved_item_count == 1
+    assert response.source_item_count == 2
 
 
 def test_docling_missing_runtime_fails_at_selection_boundary() -> None:
@@ -317,17 +773,30 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Docling item provenance remains distinct and is clipped to page bounds."""
+    from enum import Enum
+
     from PIL import Image
 
     image_path = tmp_path / "page.png"
     Image.new("RGB", (100, 80), "white").save(image_path)
 
     class BBox:
-        def __init__(self, left: float, right: float, top: float, bottom: float) -> None:
+        def __init__(
+            self,
+            left: float,
+            right: float,
+            top: float,
+            bottom: float,
+            coord_origin: object | None = None,
+        ) -> None:
             self.l = left
             self.r = right
             self.t = top
             self.b = bottom
+            self.coord_origin = coord_origin
+
+    class CoordinateOrigin(Enum):
+        BOTTOMLEFT = "BOTTOMLEFT"
 
     class Provenance:
         def __init__(self, bbox: BBox) -> None:
@@ -349,7 +818,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
             ]
 
     class Conversion:
-        document = Document()
+        document: object = Document()
 
     class InputFormat:
         IMAGE = "image"
@@ -364,6 +833,11 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
 
         def convert(self, _path: str) -> Conversion:
             return Conversion()
+
+    class PictureItem(Item):
+        def export_to_markdown(self, document: object) -> str:
+            assert document is Conversion.document
+            return "<!-- image -->"
 
     docling = ModuleType("docling")
     datamodel = ModuleType("docling.datamodel")
@@ -405,6 +879,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     assert response.meaningful_ordering == [0, 1, 2]
     assert response.contains_table is True
     assert response.unresolved_item_count == 1
+    assert response.source_item_count == 4
 
     class PlaceholderDocument:
         def iterate_items(self) -> list[Item]:
@@ -420,6 +895,89 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     assert [cluster.text for cluster in placeholder_response.OCR_text_clusters] == ["heading"]
     assert placeholder_response.non_text_objects == []
     assert placeholder_response.unresolved_item_count == 1
+    assert placeholder_response.source_item_count == 2
+
+    class BottomLeftDocument:
+        def iterate_items(self) -> Iterator[Item]:
+            yield Item(
+                "text",
+                "OCR Layout Evaluation",
+                BBox(
+                    76.6129,
+                    186.2903,
+                    1143.3511,
+                    1125.7979,
+                    "BOTTOMLEFT",
+                ),
+            )
+            yield PictureItem(
+                "picture",
+                "",
+                BBox(
+                    698.7095,
+                    1450.9932,
+                    1060.4846,
+                    768.4368,
+                    CoordinateOrigin.BOTTOMLEFT,
+                ),
+            )
+
+    Conversion.document = BottomLeftDocument()
+    recorded_source_image = (
+        Path(__file__).parent
+        / "fixtures"
+        / "ocr_ground_truth"
+        / "codex_ocr_layout_page.png"
+    )
+    bottom_left_response = run_docling_ocr_page(
+        recorded_source_image,
+        1,
+        WorkflowProviderSettings(ocr=ProviderEndpointConfig(provider="docling", model="docling")),
+        engine="rapidocr",
+    )
+    assert bottom_left_response.OCR_text_clusters[0].text == "OCR Layout Evaluation"
+    assert (
+        bottom_left_response.OCR_text_clusters[0].bb_y_min,
+        bottom_left_response.OCR_text_clusters[0].bb_y_max,
+    ) == pytest.approx((56.6489, 74.2021))
+    assert len(bottom_left_response.non_text_objects) == 1
+    assert (
+        bottom_left_response.non_text_objects[0].bb_y_min,
+        bottom_left_response.non_text_objects[0].bb_y_max,
+    ) == pytest.approx((139.5154, 431.5632))
+    assert bottom_left_response.unresolved_item_count == 0
+    assert bottom_left_response.spatial_accuracy == "region"
+
+    class UnknownOriginDocument:
+        def iterate_items(self) -> list[Item]:
+            return [Item("picture", "", BBox(10, 50, 70, 60, "CENTER"))]
+
+    Conversion.document = UnknownOriginDocument()
+    unknown_origin_response = run_docling_ocr_page(
+        image_path,
+        1,
+        WorkflowProviderSettings(ocr=ProviderEndpointConfig(provider="docling", model="docling")),
+        engine="rapidocr",
+    )
+    assert unknown_origin_response.non_text_objects == []
+    assert unknown_origin_response.unresolved_item_count == 1
+
+    class UnboxedPlaceholderDocument:
+        def iterate_items(self) -> list[Item]:
+            return [
+                Item("text", "heading\n\n<!-- image -->", BBox(0, 40, 5, 20)),
+                Item("picture", "", None),
+            ]
+
+    Conversion.document = UnboxedPlaceholderDocument()
+    unboxed_placeholder_response = run_docling_ocr_page(
+        image_path,
+        1,
+        WorkflowProviderSettings(ocr=ProviderEndpointConfig(provider="docling", model="docling")),
+        engine="rapidocr",
+    )
+    assert unboxed_placeholder_response.unresolved_item_count == 1
+    assert unboxed_placeholder_response.source_item_count == 2
 
     class FallbackDocument:
         def iterate_items(self) -> list[Item]:
@@ -437,6 +995,7 @@ def test_docling_adapter_preserves_text_table_figure_provenance(
     )
     assert [cluster.text for cluster in fallback_response.OCR_text_clusters] == ["heading"]
     assert fallback_response.unresolved_item_count == 1
+    assert fallback_response.source_item_count == 2
 
 
 def test_registered_provider_is_explicit_and_process_local(tmp_path: Path) -> None:
