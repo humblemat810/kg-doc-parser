@@ -23,6 +23,8 @@ The parser is pinned to published Kogwistar `0.6.14`.
 - Decompose OCR, layerwise, PageIndex, and parser-core internals into cohesive
   modules while preserving supported public imports and callback protocols.
 - Retain support for PyPy 3.11 and CPython 3.12-3.14.
+- Upgrade `pydantic-extension` to `0.0.8` for its intended performance
+  improvement.
 
 ## Verification required before tagging
 
