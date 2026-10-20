@@ -178,6 +178,50 @@ def test_ocr_quality_strict_mode_flags_unexplained_image_regions() -> None:
 
 
 @pytest.mark.ci
+def test_ocr_quality_accepts_boxes_aligned_with_each_rendered_text_line() -> None:
+    scratch = scratch_path("ocr_quality_aligned_text_lines")
+    image_path = scratch / "aligned-lines.png"
+    image = Image.new("RGB", (1200, 800), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((60, 60), "durable OCR alpha", fill="black")
+    draw.text((60, 140), "durable OCR beta", fill="black")
+    image.save(image_path)
+    image.close()
+
+    response = OCRClusterResponse.model_validate(
+        {
+            **fake_ocr_response(1, "durable OCR alpha").model_dump(),
+            "OCR_text_clusters": [
+                {
+                    "text": "durable OCR alpha",
+                    "bb_x_min": 55,
+                    "bb_x_max": 300,
+                    "bb_y_min": 55,
+                    "bb_y_max": 80,
+                    "cluster_number": 0,
+                },
+                {
+                    "text": "durable OCR beta",
+                    "bb_x_min": 55,
+                    "bb_x_max": 300,
+                    "bb_y_min": 135,
+                    "bb_y_max": 160,
+                    "cluster_number": 1,
+                },
+            ],
+            "meaningful_ordering": [0, 1],
+        }
+    )
+
+    diagnostics = _evaluate_ocr_quality(
+        response, OCRQualityPolicy(), source_image_path=image_path
+    )
+    assert "unexplained_visual_ink_regions" not in {
+        item.code for item in diagnostics
+    }
+
+
+@pytest.mark.ci
 def test_ocr_quality_policy_records_unresolved_provider_items() -> None:
     response = fake_ocr_response(1, "quality signal").model_copy(
         update={"unresolved_item_count": 2}
