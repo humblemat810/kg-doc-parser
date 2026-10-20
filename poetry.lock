@@ -2856,14 +2856,14 @@ typing-extensions = ">=4.14.1"
 
 [[package]]
 name = "pydantic-extension"
-version = "0.0.7"
+version = "0.0.8"
 description = "Handy pydantic extension for advanced slicing and FASTAPI, LLM context awareness"
 optional = false
-python-versions = ">=3.9"
+python-versions = ">=3.11"
 groups = ["main"]
 files = [
-    {file = "pydantic_extension-0.0.7-py3-none-any.whl", hash = "sha256:bdecac7e08cc9d740ac937cfc77621ab1c74e265aa55ff80ad3e8d108468af74"},
-    {file = "pydantic_extension-0.0.7.tar.gz", hash = "sha256:d22068580f4924d916537929bb8aff0a20e49daf3dd495e2ffdb141f8f696ecf"},
+    {file = "pydantic_extension-0.0.8-py3-none-any.whl", hash = "sha256:35bbca32cf36be8283cf92fd4a812158131e16f5d418f93b28348156301d7e98"},
+    {file = "pydantic_extension-0.0.8.tar.gz", hash = "sha256:31b15f0389c7072ce6cdc8d2f18097c6d59a9b4b07d8b9359d61bb8d74816712"},
 ]
 
 [[package]]
@@ -4404,4 +4404,4 @@ vertex = ["langchain-google-vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "deae3f55a17c8d65b452b83bd61c0f4b3cf37ebda625e83a8f1240336d1cd013"
+content-hash = "328e828175efa2440efe9cf1c29a320b46f38e090f7d3b523a880321fc00f6fb"

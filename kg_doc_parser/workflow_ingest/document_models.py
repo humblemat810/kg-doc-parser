@@ -166,8 +166,11 @@ class ChildRef(FrozenModel):
         return self
 
 
+SummaryStatus = Literal["pending", "generated", "verified", "failed", "skipped"]
+
+
 class Summary(FrozenModel):
-    status: Literal["pending", "generated", "verified", "failed", "skipped"]
+    status: SummaryStatus
     text: str | None = None
     evidence_item_ids: tuple[str, ...] = ()
     provider_model: str | None = None

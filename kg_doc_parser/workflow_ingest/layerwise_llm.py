@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Mapping, Sequence
-from typing import Protocol, TypedDict, cast
+from typing import cast
 
 from kogwistar.runtime import (
     RetryAttemptRecord,
@@ -11,7 +11,7 @@ from kogwistar.runtime import (
     retry_with_context,
 )
 
-from . import layerwise_boundary_pipeline as boundary_pipeline
+from . import layerwise_boundary_prompts as boundary_prompts
 from .layerwise_boundaries import (
     _boundary_anchor_excerpt,  # noqa: F401 - compatibility re-export
     _boundary_candidates_for_pointer,  # noqa: F401 - compatibility re-export
@@ -27,7 +27,6 @@ from .layerwise_boundaries import (
 from .layerwise_boundary_pipeline import (
     _annotate_proposal_result,
     _assemble_layer_result_from_boundaries,
-    _boundary_candidate_lookup,
     _boundary_decision_key,
     _boundary_identical_parent_child_ids,
     _boundary_refinement_prompt_context,
@@ -35,21 +34,31 @@ from .layerwise_boundary_pipeline import (
     _boundary_review_decision,
     _boundary_review_decision_summary,
     _boundary_validation_reason,
+    _proposal_validation_reason,
+)
+from .layerwise_boundary_prompts import (
+    _boundary_candidate_lookup,
     _normalize_boundary_cutpoints_from_candidates,
     _parent_context_excerpt,
     _proposal_attempt_context,
-    _proposal_validation_reason,
     _summarize_for_prompt,
+)
+from .layerwise_contracts import (
+    LayerwiseEventSink,
+    LayerwiseFallbackBuilder,
+    LayerwiseLLMCallbacks,
+    LayerwiseProposeCallback,  # noqa: F401 - preserve callable module API
+    LayerwiseReviewCallback,  # noqa: F401 - preserve callable module API
 )
 from .layerwise_invocation import structured_invoke as _structured_invoke
 from .layerwise_payloads import (
     _dump_model,
     _hydrate_llm_layer_result,
     _hydrate_llm_pointer_payload,  # noqa: F401 - compatibility re-export
-    _hydrate_llm_review,
     _object_dict,  # noqa: F401 - compatibility re-export
     _object_list,
 )
+from .layerwise_review import build_layerwise_review_callback
 from .layerwise_source_spans import (
     _offset_value,
     _pointer_signature,  # noqa: F401 - compatibility re-export
@@ -63,13 +72,11 @@ from .models import (
     BoundaryReviewDecision,
     CurrentLayerContext,
     CurrentLayerResult,
-    CurrentLayerReview,
     FailureCategory,
     LayerChildCandidate,
     LayerReasoningEntry,
     LLMBoundaryProposalBatch,
     LLMCurrentLayerResult,
-    LLMCurrentLayerReview,
     ParseSessionState,
 )
 from .parser_core import ParserPayload, ParserSourceMap, SplitStrategy
@@ -96,61 +103,6 @@ def _bounded_retry_delay(
     base = float(provider_settings.parser.retry_backoff_seconds or 0.0)
     maximum = float(provider_settings.parser.retry_backoff_max_seconds or 0.0)
     return min(maximum, base * (2 ** max(0, attempt_number - 1))) if maximum else 0.0
-
-
-class LayerwiseProposeCallback(Protocol):
-    """Provider callback for a bounded layer proposal."""
-
-    def __call__(
-        self,
-        *,
-        parser_source_map: ParserSourceMap,
-        current_layer_context: CurrentLayerContext,
-        semantic_tree: SemanticNode,
-        split_strategy: SplitStrategy,
-        parser_input_dict: ParserPayload,
-        parse_session: ParseSessionState,
-        **kwargs: object,
-    ) -> CurrentLayerResult: ...
-
-
-class LayerwiseReviewCallback(Protocol):
-    """Provider callback for reviewing a bounded layer proposal."""
-
-    def __call__(
-        self,
-        *,
-        current_layer_context: CurrentLayerContext,
-        current_layer_result: CurrentLayerResult,
-        split_strategy: SplitStrategy,
-        parser_source_map: ParserSourceMap | None = None,
-        parse_session: ParseSessionState | None = None,
-        **kwargs: object,
-    ) -> CurrentLayerReview: ...
-
-
-class LayerwiseEventSink(Protocol):
-    """Structured event callback used by parser orchestration."""
-
-    def __call__(self, stage: str, **extra: object) -> None: ...
-
-
-class LayerwiseFallbackBuilder(Protocol):
-    """Deterministic fallback for unavailable or invalid provider output."""
-
-    def __call__(
-        self,
-        *,
-        current_layer_context: CurrentLayerContext,
-        parser_source_map: ParserSourceMap,
-    ) -> CurrentLayerResult: ...
-
-
-class LayerwiseLLMCallbacks(TypedDict):
-    propose_layer_fn: LayerwiseProposeCallback
-    review_layer_fn: LayerwiseReviewCallback
-    max_depth: int
-    allow_review: bool
 
 
 LayerwiseCallback = LayerwiseLLMCallbacks
@@ -289,7 +241,7 @@ def build_layerwise_llm_callbacks(
         **kwargs: object,
     ) -> CurrentLayerResult:
         if proposal_mode == "boundaries":
-            boundary_candidates = boundary_pipeline._boundary_prompt_candidate_context(
+            boundary_candidates = boundary_prompts._boundary_prompt_candidate_context(
                 current_layer_context=current_layer_context,
                 parser_source_map=parser_source_map,
                 max_points=provider_settings.boundary_max_points,
@@ -1317,159 +1269,17 @@ def build_layerwise_llm_callbacks(
         )
         return annotated
 
-    def _review_layer_fn(
-        *,
-        current_layer_context: CurrentLayerContext,
-        current_layer_result: CurrentLayerResult,
-        split_strategy: SplitStrategy,
-        parser_source_map: ParserSourceMap | None = None,
-        parse_session: ParseSessionState | None = None,
-        **kwargs: object,
-    ) -> CurrentLayerReview:
-        review_payload = {
-            "task": "Review the current semantic layer proposal for layerwise correctness and source-grounded coverage.",
-            "split_strategy": split_strategy,
-            "attempt_context": _proposal_attempt_context(
-                parse_session=parse_session,
-                current_layer_context=current_layer_context,
-            ),
-            "current_layer_context": _summarize_for_prompt(
-                current_layer_context,
-                max_depth=4,
-                max_items=6,
-                max_string=280,
-            ),
-            "current_layer_result": _summarize_for_prompt(
-                current_layer_result,
-                max_depth=4,
-                max_items=6,
-                max_string=280,
-            ),
-            "parent_nodes": _parent_context_excerpt(
-                current_layer_context=current_layer_context,
-                parser_source_map=parser_source_map or {},
-            ),
-            "source_map_excerpt": _source_map_excerpt(parser_source_map or {}),
-            "review_rules": [
-                "Review only the immediate children for this layer.",
-                "Children should preserve each parent meaning collectively without inventing missing text.",
-                "Coverage gaps, overlap conflicts, and duplicates should be called out explicitly.",
-                "Prefer coarser layerwise structure over deep flattening when both are source-grounded.",
-                "If the layer is already in a good layerwise sweet spot, satisfied=true is appropriate.",
-            ],
-        }
-        messages = [
-            (
-                "system",
-                (
-                    "You review ONE semantic layer in an iterative document parsing workflow. "
-                    "Return only structured data matching CurrentLayerReview."
-                ),
-            ),
-            (
-                "human",
-                safe_json_dumps(review_payload, sort_keys=True),
-            ),
-        ]
-        _emit(
-            "workflow_layered_review_start",
-            review_source="llm",
-            depth=current_layer_context.depth,
-            retry_count=current_layer_context.retry_count,
-            split_strategy=split_strategy,
-            child_count=len(current_layer_result.children),
-        )
-        try:
-            review_result: LLMCurrentLayerReview = _structured_invoke(
-                chat_model,
-                LLMCurrentLayerReview,
-                messages,
-                timeout_seconds=(
-                    provider_settings.review_timeout_seconds
-                    or provider_settings.parser.timeout_seconds
-                ),
-                diagnostics_sink=_emit_provider_diagnostics,
-                operation="layer_review",
-                max_in_flight=provider_settings.parser.max_in_flight_calls,
-                attempt_index=1,
-                call_role="review",
-                strategy=split_strategy,
-            )
-            reviewed: LLMCurrentLayerReview = review_result
-            runtime_review = _hydrate_llm_review(
-                reviewed,
-                parser_source_map=parser_source_map or {},
-            )
-            _emit(
-                "workflow_layered_review_result",
-                review_source="llm",
-                depth=current_layer_context.depth,
-                retry_count=current_layer_context.retry_count,
-                split_strategy=split_strategy,
-                satisfied=runtime_review.satisfied,
-                coverage_ok=runtime_review.coverage_ok,
-            )
-            _emit(
-                "workflow_layered_review_completed",
-                review_source="llm",
-                depth=current_layer_context.depth,
-                retry_count=current_layer_context.retry_count,
-                split_strategy=split_strategy,
-                satisfied=runtime_review.satisfied,
-                coverage_ok=runtime_review.coverage_ok,
-            )
-            return runtime_review
-        except Exception as exc:
-            failure_reason = _trim_text(repr(exc), max_chars=500)
-            failure_kind = (
-                "timeout" if isinstance(exc, TimeoutError) else "provider_failure"
-            )
-            fallback_review = CurrentLayerReview(
-                updated_result=current_layer_result,
-                coverage_ok=None,
-                satisfied=None,
-                strategy_used=split_strategy,
-                review_notes=[
-                    f"quality_unknown: semantic layer review {failure_kind}",
-                    "deterministic checks did not authorize successful review",
-                ],
-                metadata={
-                    "review_failure": failure_kind,
-                    "review_failure_reason": failure_reason,
-                    "failure_type": (
-                        "timeout"
-                        if failure_kind == "timeout"
-                        else _normalized_provider_failure_type()
-                    ),
-                },
-            )
-            _emit(
-                "workflow_layered_review_result",
-                review_source="fallback",
-                review_failure_reason=failure_reason,
-                depth=current_layer_context.depth,
-                retry_count=current_layer_context.retry_count,
-                split_strategy=split_strategy,
-                satisfied=fallback_review.satisfied,
-                coverage_ok=fallback_review.coverage_ok,
-            )
-            _emit(
-                "workflow_layered_review_completed",
-                review_source="fallback",
-                review_failure_reason=failure_reason,
-                depth=current_layer_context.depth,
-                retry_count=current_layer_context.retry_count,
-                split_strategy=split_strategy,
-                satisfied=fallback_review.satisfied,
-                coverage_ok=fallback_review.coverage_ok,
-            )
-            if failure_kind == "timeout":
-                raise
-            return fallback_review
+    review_layer_fn = build_layerwise_review_callback(
+        chat_model=chat_model,
+        provider_settings=provider_settings,
+        emit=_emit,
+        diagnostics_sink=_emit_provider_diagnostics,
+        normalized_failure_type=_normalized_provider_failure_type,
+    )
 
     return {
         "propose_layer_fn": _propose_layer_fn,
-        "review_layer_fn": _review_layer_fn,
+        "review_layer_fn": review_layer_fn,
         "max_depth": max_depth,
         "allow_review": allow_review,
     }

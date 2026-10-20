@@ -2,6 +2,7 @@
 from typing import Literal
 
 from .semantic_document_splitting_layerwise_edits import SemanticNode, parse_doc
+from .workflow_ingest.serialization import JsonObject
 
 
 def text_to_ocr_format(text: str, filename: str = "input_text") -> dict[str, object]:
@@ -29,7 +30,7 @@ def parse_doc_text(
     doc_id: str = "text_doc",
     parsing_mode: Literal["snippet", "delimiter"] = "snippet",
     max_depth: int = 10,
-) -> tuple[SemanticNode, dict[str, dict[str, object]]]:
+) -> tuple[SemanticNode, dict[str, JsonObject]]:
     """
     Convenience function to parse a raw text string.
     """

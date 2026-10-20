@@ -82,6 +82,11 @@ def test_legacy_import_rejects_non_string_relation_endpoints() -> None:
         kge_payload_to_semantic_tree(payload)
 
 
+def test_legacy_import_preserves_empty_graph_failure_type() -> None:
+    with pytest.raises(IndexError, match="list index out of range"):
+        kge_payload_to_semantic_tree({"nodes": [], "edges": []})
+
+
 def test_legacy_import_rejects_a_persisted_unary_tree() -> None:
     payload = semantic_tree_to_kge_payload(
         _legacy_tree(2), parser_source_map=_legacy_source_map(2)

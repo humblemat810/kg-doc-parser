@@ -19,6 +19,8 @@ from kg_doc_parser.workflow_ingest import (
 )
 from kg_doc_parser.workflow_ingest.layerwise_boundary_pipeline import (
     _boundary_identical_parent_child_ids,
+)
+from kg_doc_parser.workflow_ingest.layerwise_boundary_prompts import (
     _make_boundary_summary,
     _pointer_excerpt,
 )
@@ -560,7 +562,7 @@ def test_boundary_mode_repairs_missing_anchors_from_source_excerpt(
         lambda role, settings: fake_model,
     )
     monkeypatch.setattr(
-        "kg_doc_parser.workflow_ingest.layerwise_boundary_pipeline._boundary_prompt_candidate_context",
+        "kg_doc_parser.workflow_ingest.layerwise_boundary_prompts._boundary_prompt_candidate_context",
         lambda **kwargs: [],
     )
 

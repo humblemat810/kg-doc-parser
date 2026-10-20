@@ -20,15 +20,20 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TypeAlias, cast
 
 # A direct script invocation must prefer this checkout to an installed parser.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from kg_doc_parser.workflow_ingest.model_validation import validate_backend_payload
 from kg_doc_parser.workflow_ingest.models import (
     CurrentLayerContext,
     CurrentLayerResult,
     LayerChildCandidate,
+    LayerCoverageGap,
+    LayerDuplicateChildNote,
+    LayerSpanConflict,
+    WorkflowIngestInput,
 )
 from kg_doc_parser.workflow_ingest.ocr_pipeline import (
     OCRPageProcessingContext,
@@ -38,12 +43,22 @@ from kg_doc_parser.workflow_ingest.ocr_runtime_page_state import (
     reconcile_page_checkpoint,
 )
 from kg_doc_parser.workflow_ingest.parser_core_validation import (
+    ParserSourceMap,
     detect_layer_invariants,
 )
 from kg_doc_parser.workflow_ingest.semantics import (
     HydratedTextPointer,
     pointer_source_validation_error,
 )
+
+InvariantResult: TypeAlias = tuple[  # noqa: UP040 - preserve Python 3.11/PyPy syntax
+    bool,
+    bool,
+    list[LayerSpanConflict],
+    list[LayerCoverageGap],
+    list[LayerDuplicateChildNote],
+    list[str],
+]
 
 
 def _pointer(source_id: str, text: str, start: int, end: int) -> HydratedTextPointer:
@@ -57,10 +72,10 @@ def _pointer(source_id: str, text: str, start: int, end: int) -> HydratedTextPoi
 
 def _layer(
     children_per_parent: int, parent_count: int, *, overlap: bool
-) -> tuple[CurrentLayerContext, CurrentLayerResult, dict[str, dict[str, str]]]:
+) -> tuple[CurrentLayerContext, CurrentLayerResult, ParserSourceMap]:
     parent_ids: list[str] = []
     parent_pointers: dict[str, list[HydratedTextPointer]] = {}
-    source_map: dict[str, dict[str, str]] = {}
+    source_map: ParserSourceMap = {}
     children: list[LayerChildCandidate] = []
     for parent_index in range(parent_count):
         parent_id = f"parent-{parent_index}"
@@ -174,8 +189,8 @@ def main() -> int:
         def validate(
             context: CurrentLayerContext = context,
             result: CurrentLayerResult = result,
-            source_map: dict[str, dict[str, str]] = source_map,
-        ) -> object:
+            source_map: ParserSourceMap = source_map,
+        ) -> InvariantResult:
             return detect_layer_invariants(
                 current_layer_context=context,
                 current_layer_result=result,
@@ -201,8 +216,8 @@ def main() -> int:
         def validate_overlaps(
             context: CurrentLayerContext = context,
             result: CurrentLayerResult = result,
-            source_map: dict[str, dict[str, str]] = source_map,
-        ) -> object:
+            source_map: ParserSourceMap = source_map,
+        ) -> InvariantResult:
             return detect_layer_invariants(
                 current_layer_context=context,
                 current_layer_result=result,
@@ -226,8 +241,8 @@ def main() -> int:
         def validate_parents(
             context: CurrentLayerContext = context,
             result: CurrentLayerResult = result,
-            source_map: dict[str, dict[str, str]] = source_map,
-        ) -> object:
+            source_map: ParserSourceMap = source_map,
+        ) -> InvariantResult:
             return detect_layer_invariants(
                 current_layer_context=context,
                 current_layer_result=result,
@@ -252,9 +267,7 @@ def main() -> int:
         return CurrentLayerResult.model_validate(payload)
 
     def validate_payload_with_mode() -> object:
-        return CurrentLayerResult.model_validate(
-            payload, context={"modeslice:mode": "backend"}
-        )
+        return validate_backend_payload(CurrentLayerResult, payload)
 
     def dump_payload() -> object:
         return result.model_dump(field_mode="backend", dump_format="json")
@@ -290,6 +303,37 @@ def main() -> int:
     )
     profile_work["pydantic_layer_dump_320"] = dump_payload
 
+    workflow_input = WorkflowIngestInput.from_text(
+        document_id="benchmark-document", text="A small persisted source payload."
+    )
+    workflow_input_payload = workflow_input.model_dump(
+        field_mode="backend", dump_format="json"
+    )
+
+    def validate_workflow_input() -> object:
+        return WorkflowIngestInput.model_validate(workflow_input_payload)
+
+    def validate_workflow_input_with_mode() -> object:
+        return validate_backend_payload(WorkflowIngestInput, workflow_input_payload)
+
+    assert validate_workflow_input() == validate_workflow_input_with_mode()
+    print("pydantic_workflow_input_validate=1", file=sys.stderr, flush=True)
+    measurements.append(
+        {
+            "case": "pydantic_workflow_input_validate",
+            "items": 1,
+            **_measure(validate_workflow_input, samples=args.samples),
+        }
+    )
+    print("pydantic_workflow_input_validate_explicit_mode=1", file=sys.stderr, flush=True)
+    measurements.append(
+        {
+            "case": "pydantic_workflow_input_validate_explicit_mode",
+            "items": 1,
+            **_measure(validate_workflow_input_with_mode, samples=args.samples),
+        }
+    )
+
     pointer = result.children[0].total_content_pointers[0]
 
     def check_pointer_batch() -> object:
@@ -307,7 +351,11 @@ def main() -> int:
         }
     )
 
-    with tempfile.TemporaryDirectory(prefix="parser-hotpaths-") as directory:
+    benchmark_tmp_root = Path(__file__).resolve().parents[1] / ".tmp-parser-benchmark"
+    benchmark_tmp_root.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="parser-hotpaths-", dir=benchmark_tmp_root
+    ) as directory:
         root = Path(directory)
         for page_count in (80, 320):
             work = _ocr_case(root, page_count)
