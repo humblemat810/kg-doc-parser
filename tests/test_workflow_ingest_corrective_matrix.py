@@ -6,7 +6,7 @@ import pytest
 from _kogwistar_test_helpers import build_workflow_engine_triplet
 
 import kg_doc_parser.workflow_ingest.handlers as handlers_module
-import kg_doc_parser.workflow_ingest.page_index as page_index_module
+import kg_doc_parser.workflow_ingest.page_index_provider as page_index_provider_module
 from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
     BlockAssignmentBatch,
@@ -59,7 +59,11 @@ def _install_atomic_table_provider(monkeypatch: pytest.MonkeyPatch) -> None:
             assert include_raw is True
             return _StructuredOutput()
 
-    monkeypatch.setattr(page_index_module, "build_chat_model_for_role", lambda *args, **kwargs: _FakeChat())
+    monkeypatch.setattr(
+        page_index_provider_module,
+        "build_chat_model_for_role",
+        lambda *args, **kwargs: _FakeChat(),
+    )
 
 
 @pytest.mark.parametrize("mode", ["heuristic", "ollama"])

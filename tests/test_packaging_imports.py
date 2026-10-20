@@ -24,11 +24,11 @@ def test_kg_doc_parser_import_surface_is_available() -> None:
 def test_release_metadata_matches_current_parser_version() -> None:
     root = Path(__file__).resolve().parents[1]
     metadata = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    release_notes = (root / "doc" / "release_0.2.19.md").read_text(encoding="utf-8")
+    release_notes = (root / "doc" / "release_0.2.20.md").read_text(encoding="utf-8")
 
-    assert metadata["tool"]["poetry"]["version"] == "0.2.19"
-    assert "# KG Doc Parser 0.2.19" in release_notes
-    assert "Release tag: `v0.2.19`" in release_notes
+    assert metadata["tool"]["poetry"]["version"] == "0.2.20"
+    assert "# KG Doc Parser 0.2.20" in release_notes
+    assert "Release tag: `v0.2.20`" in release_notes
 
 
 def test_src_package_is_not_importable() -> None:
@@ -54,10 +54,10 @@ def test_ci_uses_the_released_kogwistar_package_and_pinned_pypy_source_revision(
     )
     workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert declared_version == "0.6.13"
+    assert declared_version == "0.6.14"
     assert locked_package["version"] == declared_version
     assert "source" not in locked_package
-    assert "ref: v0.6.13" in workflow
+    assert "ref: v0.6.14" in workflow
 
 
 def test_cloud_adapter_extras_are_declared_without_changing_base_install() -> None:

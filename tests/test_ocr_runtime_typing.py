@@ -4,10 +4,12 @@ from typing import cast
 
 import pytest
 
-from kg_doc_parser.workflow_ingest.ocr_runtime import (
-    _OCRWorkflowState,
-    _page_source_state,
-    _resume_identity_value,
+from kg_doc_parser.workflow_ingest.ocr_runtime_contracts import (
+    OCRWorkflowState as _OCRWorkflowState,
+)
+from kg_doc_parser.workflow_ingest.ocr_runtime_state import (
+    page_source_state as _page_source_state,
+    resume_identity_value as _resume_identity_value,
 )
 
 

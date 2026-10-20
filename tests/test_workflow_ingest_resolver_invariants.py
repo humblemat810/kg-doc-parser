@@ -20,7 +20,6 @@ from kg_doc_parser.workflow_ingest.parser_core import (
     check_layer_coverage,
     commit_layer_children,
     dedupe_and_filter_layer,
-    detect_layer_invariants,
     enqueue_next_layer_frontier,
     finalize_semantic_tree,
     find_semantic_node,
@@ -30,6 +29,7 @@ from kg_doc_parser.workflow_ingest.parser_core import (
     review_layer,
     validate_layer_commit,
 )
+from kg_doc_parser.workflow_ingest.parser_core_validation import detect_layer_invariants
 from kg_doc_parser.workflow_ingest.semantics import (
     HydratedTextPointer,
     SemanticNode,

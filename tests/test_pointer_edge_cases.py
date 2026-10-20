@@ -287,7 +287,7 @@ def test_malformed_provider_boolean_offsets_fail_closed() -> None:
 
 @pytest.mark.parametrize("field", ["start_char", "end_char"])
 def test_pointer_text_does_not_treat_boolean_offsets_as_positions(field: str) -> None:
-    from kg_doc_parser.workflow_ingest.layerwise_llm import _pointer_text
+    from kg_doc_parser.workflow_ingest.layerwise_source_spans import pointer_text
 
     pointer = {
         "source_cluster_id": "doc|p1_t0",
@@ -296,13 +296,13 @@ def test_pointer_text_does_not_treat_boolean_offsets_as_positions(field: str) ->
     }
     pointer[field] = True
 
-    assert _pointer_text(pointer, parser_source_map=_source("secret")) == ""
+    assert pointer_text(pointer, parser_source_map=_source("secret")) == ""
 
 
 def test_non_string_provider_cluster_id_cannot_match_string_source_key() -> None:
-    from kg_doc_parser.workflow_ingest.layerwise_llm import _pointer_text
+    from kg_doc_parser.workflow_ingest.layerwise_source_spans import pointer_text
 
-    assert _pointer_text(
+    assert pointer_text(
         {
             "source_cluster_id": 123,
             "start_char": 0,

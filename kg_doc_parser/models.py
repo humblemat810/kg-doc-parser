@@ -113,6 +113,13 @@ class TextCluster(ModeSlicingMixin, BaseModel):
     bb_y_min: DtoType[float]  = Field(description='the bounding box y min in pixel coordinate of the text_cluster. ')
     bb_y_max: DtoType[float]  = Field(description='the bounding box y max in pixel coordinate of the text_cluster. ')
     cluster_number: int = Field(description="per page unique number of the cluster, starting from 0")
+    continuation_id: DtoType[str | None] = Field(
+        default=None,
+        description=(
+            "Optional provider- or user-supplied identifier shared only by text "
+            "fragments known to continue the same paragraph across adjacent pages."
+        ),
+    )
 class NonTextCluster(ModeSlicingMixin, BaseModel):
     """Recognised meaningful objects other than OCR characters, include image, figures. """
     description: DtoType[str] = Field(description='the description or summary of the non-OCR object')

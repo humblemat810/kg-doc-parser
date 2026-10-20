@@ -429,6 +429,50 @@ def test_normalize_ocr_and_source_map_contract():
 
 
 @pytest.mark.ci
+def test_normalize_ocr_preserves_item_level_continuation_identity() -> None:
+    inp = normalize_ocr_pages(
+        document_id="continuation-doc",
+        title="Continuation Doc",
+        pages=[
+            {
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [
+                    {
+                        "text": "continued text",
+                        "cluster_number": 0,
+                        "continuation_id": "paragraph-42",
+                    }
+                ],
+            }
+        ],
+    )
+
+    unit = inp.collections[0].pages[0].units[0]
+    assert unit.metadata["continuation_id"] == "paragraph-42"
+
+
+@pytest.mark.ci
+def test_normalize_ocr_rejects_empty_continuation_identity() -> None:
+    with pytest.raises(ValueError, match="continuation_id"):
+        normalize_ocr_pages(
+            document_id="continuation-doc",
+            title="Continuation Doc",
+            pages=[
+                {
+                    "pdf_page_num": 1,
+                    "OCR_text_clusters": [
+                        {
+                            "text": "continued text",
+                            "cluster_number": 0,
+                            "continuation_id": " ",
+                        }
+                    ],
+                }
+            ],
+        )
+
+
+@pytest.mark.ci
 @pytest.mark.parametrize("page_number", [True, 1.5, 0, -1, "not-a-number"])
 def test_normalize_ocr_rejects_ambiguous_page_numbers(page_number):
     with pytest.raises(ValueError, match="positive integer"):

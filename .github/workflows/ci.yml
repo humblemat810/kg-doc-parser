@@ -36,12 +36,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Check out Kogwistar 0.6.13 source profile for PyPy
+      - name: Check out Kogwistar 0.6.14 source profile for PyPy
         if: matrix.is_pypy
         uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: v0.6.13
+          ref: v0.6.14
           path: kogwistar
 
       - name: Set up Python
@@ -95,7 +95,7 @@ jobs:
         if: matrix.label == 'cpython312'
         run: poetry run pyright
 
-      - name: Verify Kogwistar 0.6.13 source-profile import on PyPy
+      - name: Verify Kogwistar 0.6.14 source-profile import on PyPy
         if: matrix.is_pypy
         env:
           KOGWISTAR_IMPL_MODE: python
@@ -108,6 +108,7 @@ jobs:
           poetry run pytest -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           tests/test_packaging_imports.py
           tests/test_parser_state_edge_cases.py
+          tests/test_recovery_workflow_contract.py
           tests/test_pointer_edge_cases.py
           tests/test_workflow_ingest_contracts.py
           tests/test_fixture_payload_regressions.py
@@ -129,6 +130,7 @@ jobs:
           python -m pytest -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
           tests/test_packaging_imports.py
           tests/test_parser_state_edge_cases.py
+          tests/test_recovery_workflow_contract.py
           tests/test_pointer_edge_cases.py
           tests/test_workflow_ingest_contracts.py
           tests/test_fixture_payload_regressions.py
@@ -166,9 +168,9 @@ jobs:
           poetry run pytest -p no:cacheprovider -q
           tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_after_page_63
           tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_page_artifact_publish_crash_is_recoverable
-          tests/test_workflow_ingest_ocr_pipeline.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact
-          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_retries_after_grouping_sqlite_commit_before_nested_checkpoint
-          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_retries_after_semantic_graph_commit_before_checkpoint
+          tests/test_workflow_ingest_ocr_preparation_resume.py::test_prepare_ocr_workflow_retries_checkpoint_without_artifact
+          tests/test_workflow_ingest_ocr_publication_recovery.py::test_ocr_root_retries_after_grouping_sqlite_commit_before_nested_checkpoint
+          tests/test_workflow_ingest_ocr_publication_recovery.py::test_ocr_root_retries_after_semantic_graph_commit_before_checkpoint
 
   durable-graph-gate:
     name: Durable OCR graph publication
@@ -193,6 +195,6 @@ jobs:
       - name: Verify OCR graph publication and fresh-process recovery
         run: >-
           poetry run pytest -p no:cacheprovider -q
-          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_graph_publication_survives_durable_engine_reopen
-          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_root_fresh_process_resume_publishes_durable_graph
-          tests/test_workflow_ingest_ocr_pipeline.py::test_ocr_summary_is_not_regenerated_after_fresh_process_resume
+          tests/test_workflow_ingest_ocr_publication_recovery.py::test_ocr_root_graph_publication_survives_durable_engine_reopen
+          tests/test_workflow_ingest_ocr_publication_recovery.py::test_ocr_root_fresh_process_resume_publishes_durable_graph
+          tests/test_workflow_ingest_ocr_publication_recovery.py::test_ocr_summary_is_not_regenerated_after_fresh_process_resume

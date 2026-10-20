@@ -7,8 +7,8 @@ from typing import Literal, Protocol, TypedDict, cast
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.storage_backend import StorageBackend
+from kogwistar.runtime.contract import Predicate as RuntimeDesignPredicate
 from kogwistar.runtime.contract import WorkflowEdgeInfo
-from kogwistar.runtime.design import Predicate as RuntimeDesignPredicate
 from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.typing_interfaces import EmbeddingFunctionLike
 
