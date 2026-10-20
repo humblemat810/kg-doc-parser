@@ -1,0 +1,177 @@
+{
+  "benchmark_version": 1,
+  "python": "3.14.6",
+  "implementation": "CPython",
+  "platform": "Windows",
+  "samples": 3,
+  "measurements": [
+    {
+      "case": "disjoint_siblings",
+      "items": 20,
+      "iterations_per_sample": 28,
+      "wall_ms_samples": [
+        0.704,
+        0.8167,
+        0.6602
+      ],
+      "wall_ms_median": 0.704,
+      "cpu_ms_median": 0.558
+    },
+    {
+      "case": "disjoint_siblings",
+      "items": 80,
+      "iterations_per_sample": 2,
+      "wall_ms_samples": [
+        8.0307,
+        8.3849,
+        8.5541
+      ],
+      "wall_ms_median": 8.3849,
+      "cpu_ms_median": 7.8125
+    },
+    {
+      "case": "disjoint_siblings",
+      "items": 320,
+      "iterations_per_sample": 1,
+      "wall_ms_samples": [
+        133.1305,
+        147.273,
+        159.7635
+      ],
+      "wall_ms_median": 147.273,
+      "cpu_ms_median": 140.625
+    },
+    {
+      "case": "overlapping_siblings",
+      "items": 20,
+      "iterations_per_sample": 1,
+      "wall_ms_samples": [
+        616.9349,
+        770.6339,
+        713.1117
+      ],
+      "wall_ms_median": 713.1117,
+      "cpu_ms_median": 671.875
+    },
+    {
+      "case": "overlapping_siblings",
+      "items": 40,
+      "iterations_per_sample": 1,
+      "wall_ms_samples": [
+        2598.2273,
+        2559.7907,
+        2393.8231
+      ],
+      "wall_ms_median": 2559.7907,
+      "cpu_ms_median": 2375.0
+    },
+    {
+      "case": "two_children_per_parent",
+      "items": 20,
+      "iterations_per_sample": 22,
+      "wall_ms_samples": [
+        1.5538,
+        2.1007,
+        4.2807
+      ],
+      "wall_ms_median": 2.1007,
+      "cpu_ms_median": 2.1307
+    },
+    {
+      "case": "two_children_per_parent",
+      "items": 80,
+      "iterations_per_sample": 2,
+      "wall_ms_samples": [
+        10.2898,
+        12.9202,
+        14.0938
+      ],
+      "wall_ms_median": 12.9202,
+      "cpu_ms_median": 7.8125
+    },
+    {
+      "case": "two_children_per_parent",
+      "items": 160,
+      "iterations_per_sample": 1,
+      "wall_ms_samples": [
+        71.3471,
+        53.6881,
+        49.0345
+      ],
+      "wall_ms_median": 53.6881,
+      "cpu_ms_median": 62.5
+    },
+    {
+      "case": "pydantic_layer_validate",
+      "items": 320,
+      "iterations_per_sample": 1,
+      "wall_ms_samples": [
+        2469.9492,
+        1828.5861,
+        2018.91
+      ],
+      "wall_ms_median": 2018.91,
+      "cpu_ms_median": 1984.375
+    },
+    {
+      "case": "pydantic_layer_validate_explicit_mode",
+      "items": 320,
+      "iterations_per_sample": 4,
+      "wall_ms_samples": [
+        7.6766,
+        7.0764,
+        6.4263
+      ],
+      "wall_ms_median": 7.0764,
+      "cpu_ms_median": 3.9062
+    },
+    {
+      "case": "pydantic_layer_dump",
+      "items": 320,
+      "iterations_per_sample": 1,
+      "wall_ms_samples": [
+        1128.1529,
+        966.7761,
+        1305.0083
+      ],
+      "wall_ms_median": 1128.1529,
+      "cpu_ms_median": 1109.375
+    },
+    {
+      "case": "source_pointer_validation",
+      "items": 10000,
+      "iterations_per_sample": 1,
+      "wall_ms_samples": [
+        34.0006,
+        31.7977,
+        34.893
+      ],
+      "wall_ms_median": 34.0006,
+      "cpu_ms_median": 31.25
+    },
+    {
+      "case": "ocr_cached_artifact_reconcile",
+      "items": 80,
+      "iterations_per_sample": 1,
+      "wall_ms_samples": [
+        24.3102,
+        29.1868,
+        29.5971
+      ],
+      "wall_ms_median": 29.1868,
+      "cpu_ms_median": 31.25
+    },
+    {
+      "case": "ocr_cached_artifact_reconcile",
+      "items": 320,
+      "iterations_per_sample": 1,
+      "wall_ms_samples": [
+        220.6887,
+        94.5561,
+        97.0754
+      ],
+      "wall_ms_median": 97.0754,
+      "cpu_ms_median": 93.75
+    }
+  ]
+}
