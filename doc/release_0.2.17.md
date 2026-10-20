@@ -4,29 +4,34 @@ Release tag: `v0.2.17`
 
 ## Release status
 
-This release contains the OCR/grouping recovery hardening from the current
-feature branch. It rejects orphaned grouping frontiers instead of allowing a
-new document tree to overwrite recoverable checkpoint state.
+This is the next parser release after `v0.2.16`. It consolidates the changes
+merged since that release; earlier untagged `0.2.18`-`0.2.20` candidates are
+superseded and are not separate releases. Do not tag or publish until the
+required release checks below pass.
 
-The release remains compatible with the currently published Kogwistar
-dependency. The parser pin is intentionally unchanged until the Kogwistar
-`0.6.12` ownership and typed join/resume fixes are merged and published; downstream release
-verification must then confirm the installed package before changing that pin.
+The parser is pinned to published Kogwistar `0.6.14`.
 
-## Included fixes
+## Included changes
 
-- Reject grouping frontiers that survive without their document-tree revision.
-- Preserve fail-closed recovery behavior after interrupted OCR/grouping runs.
-- Keep materialized OCR page paths inside the rendered directory, reject
-  duplicate/non-positive page numbers, and publish byte payloads atomically.
-- Validate cached PDF page images before reuse and atomically publish regenerated
-  PNGs after successful decoding.
-- Record the broad OCR audit as an explicit B01-B14 release ledger; unresolved
-  fidelity, quality, performance, and rasterization gates remain open.
-- Keep the existing PyPy 3.11 and CPython 3.12-3.14 compatibility contract.
+- Harden OCR source-item accounting, quality diagnostics, hybrid PDF evidence,
+  and image/render artifact validation.
+- Keep OCR pages, grouping, summaries, and semantic graph publication within
+  persisted Kogwistar workflow execution, with SQLite retaining OCR artifacts
+  and reconciliation state.
+- Strengthen checkpoint decoding, recovery identity, and artifact/checkpoint
+  crash-boundary handling while preserving resumable execution.
+- Decompose OCR, layerwise, PageIndex, and parser-core internals into cohesive
+  modules while preserving supported public imports and callback protocols.
+- Retain support for PyPy 3.11 and CPython 3.12-3.14.
 
 ## Verification required before tagging
 
-- Full parser CI on CPython 3.12-3.14 and PyPy 3.11.
-- Kogwistar `0.6.12` published and verified before any dependency-pin update.
-- Packaging, lock, Ruff, and parser recovery contract checks.
+- Full parser CI passes on CPython 3.12-3.14 and PyPy 3.11.
+- Pyright and the configured Ruff checks pass.
+- Packaging, lock, pin-contract, recovery, and durable graph-publication tests
+  pass against the published Kogwistar `0.6.14` package.
+- The release workflow validates version `0.2.17` and tag `v0.2.17`.
+
+This release does not claim corpus-wide OCR completeness. Remaining OCR quality
+and provider-specific fidelity limitations stay documented in the OCR status
+ledger.
