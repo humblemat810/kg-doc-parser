@@ -21,7 +21,7 @@ git show <commit> -- doc/ocr_grouping/OCR_STATUS_LEDGER.md
 | Semantic hierarchy publication | PASS in prior CI; root artifact deduplication locally verified | Prior parser CI `39188130268` passed durable graph publication. The current root path now writes the accepted grouped tree and summary once; `test_default_adaptive_root_wires_grounded_summary_and_semantic_export` verifies one tree and summary publication. |
 | OCR completeness and positional fidelity | PARTIAL; see B08/B13 below | Cross-page automatic merges require an explicit matching item identity. Hybrid PDF mode now OCRs reliable direct-image regions and falls back to full-page OCR when PDF visual coverage is uncertain. Structural and visual screening do not prove provider-wide semantic completeness. |
 | Typing and supported interpreters | Standard Pyright baseline previously passed; current changed-file Pyright unavailable locally | Parser Pyright on the code reviewed for commit `1bdbc11`: 0 errors/warnings (`--pythonversion 3.11`). The current Windows invocation fails before analysis because Node cannot `lstat C:\\Users\\chanh` (`EPERM`). Prior strict scans reported 2,168 parser and 4,421 core unknown-type findings. Changed-file Ruff passes; current changes still require CI Pyright and the CPython/PyPy matrix. |
-| Release | Parser candidate `0.2.19`; no release action in this work | Kogwistar `0.6.14` is the released parser dependency. Do not publish a parser release until parser CI passes. |
+| Release | Next candidate `0.2.17`; not yet tagged or published | `v0.2.16` is the latest released parser tag. The `0.2.17` candidate consolidates unreleased changes; Kogwistar `0.6.14` is the dependency pin. Do not tag or publish until parser CI passes. |
 
 ## B01-B14 Audit Reconciliation
 
