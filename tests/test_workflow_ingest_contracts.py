@@ -938,6 +938,32 @@ def test_export_rejects_opaque_nested_grouping_metadata() -> None:
 
 
 @pytest.mark.ci
+def test_export_rejects_malformed_authoritative_source_checkpoint() -> None:
+    base = WorkflowIngestInput.from_text(
+        document_id="malformed-authoritative-source-doc",
+        text="A small document",
+        title="Malformed source record",
+    )
+    ctx = SimpleNamespace(
+        state_view={
+            "normalized_input": base,
+            "semantic_tree": SemanticNode(
+                title="Malformed source record",
+                node_type="DOCUMENT_ROOT",
+                total_content_pointers=[],
+                child_nodes=[],
+                level_from_root=0,
+            ),
+            "parser_source_map": {},
+            "authoritative_source_map": {"unit-a": {"unit_id": "unit-a"}},
+        }
+    )
+
+    with pytest.raises(ValueError, match="GroundedSourceRecord|validation error"):
+        _build_export_bundle(ctx=ctx)
+
+
+@pytest.mark.ci
 def test_export_carries_authoritative_source_revision() -> None:
     base = WorkflowIngestInput.from_text(
         document_id="source-revision-doc",

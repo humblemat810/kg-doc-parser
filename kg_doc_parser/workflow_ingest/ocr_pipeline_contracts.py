@@ -12,6 +12,7 @@ from ..models import OCRClusterResponse
 from .adapters import OCRPageJSON
 from .document_models import DocumentTree, EvidenceSlice, SourceItem, Summary
 from .models import WorkflowIngestInput
+from .ocr_state_types import OCRPageStatus
 from .providers import WorkflowProviderSettings
 
 
@@ -29,7 +30,7 @@ class OCRPageProgress(BaseModel):
     image_path: str
     image_sha256: str
     json_path: str
-    status: str = "completed"
+    status: OCRPageStatus = "completed"
 
 
 class OCRWorkflowProgress(BaseModel):

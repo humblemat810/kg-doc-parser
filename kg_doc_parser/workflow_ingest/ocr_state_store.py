@@ -15,7 +15,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from ..models import SplitPage
-from .document_models import DocumentTree, Summary
+from .document_models import DocumentTree
 from .ocr_artifacts import (
     artifact_metadata as _ocr_artifact_metadata,
 )
@@ -40,16 +40,64 @@ from .ocr_inputs import (
 )
 from .ocr_pipeline_contracts import (
     GroupingCheckpointMetadata,
-    OCRPageProgress,
-    OCRWorkflowProgress,
 )
+from .ocr_progress_state import OCRProgressStateMixin
 from .ocr_quality_policy import (
     ocr_artifact_quality_error as _ocr_artifact_quality_error,
 )
+from .ocr_state_schema import initialize_ocr_state_schema
+from .ocr_state_types import (
+    OCRPageStatus,
+    OCRStage,
+    decode_ocr_page_status,
+    decode_ocr_stage,
+)
+from .ocr_summary_state import OCRSummaryStateMixin
 from .serialization import JsonObject
 
 _LOGGER = logging.getLogger(__name__)
 _OCR_STATE_SCHEMA_VERSION = 2
+
+
+def _grouping_text(row: sqlite3.Row, column: str) -> str:
+    value: object = row[column]
+    if not isinstance(value, str):
+        raise ValueError(f"persisted grouping field {column!r} must be text")
+    return value
+
+
+def _grouping_nonnegative_int(row: sqlite3.Row, column: str) -> int:
+    value: object = row[column]
+    if type(value) is not int or value < 0:
+        raise ValueError(
+            f"persisted grouping field {column!r} must be a nonnegative integer"
+        )
+    return value
+
+
+def _decode_grouping_pages(value: object) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        raise ValueError("persisted grouping checkpoint page frontier is malformed")
+    pages: list[int] = []
+    for page in value:
+        if type(page) is not int or page < 1:
+            raise ValueError("persisted grouping checkpoint page frontier is malformed")
+        pages.append(page)
+    if pages != sorted(set(pages)):
+        raise ValueError("persisted grouping checkpoint page frontier is not ordered")
+    return tuple(pages)
+
+
+def _decode_grouping_frontier(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError("persisted grouping frontier is malformed")
+    frontier: list[str] = []
+    for node_id in value:
+        if not isinstance(node_id, str) or not node_id:
+            raise ValueError("persisted grouping frontier is malformed")
+        frontier.append(node_id)
+    return tuple(frontier)
+
 
 class GroupingCheckpointConflict(RuntimeError):
     """A grouping writer lost its expected checkpoint ownership."""
@@ -59,9 +107,9 @@ class GroupingCheckpointConflict(RuntimeError):
 class OCRPageStateSnapshot:
     """One page/stage snapshot from the SQLite resume store."""
     page_number: int
-    stage: str
+    stage: OCRStage
     attempt_count: int
-    status: str
+    status: OCRPageStatus
     content_hash: str | None
     artifact_path: str | None
     last_error: str | None
@@ -71,7 +119,7 @@ class OCRPageStateSnapshot:
     artifact_sha256: str | None = None
 
 
-class OCRWorkflowStateStore:
+class OCRWorkflowStateStore(OCRProgressStateMixin, OCRSummaryStateMixin):
     """SQLite-backed OCR/render state for one artifact root."""
 
     def __init__(self, db_path: Path) -> None:
@@ -135,112 +183,7 @@ class OCRWorkflowStateStore:
             conn.close()
 
     def _initialize(self) -> None:
-        with self._session() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS document_state (
-                    document_id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    source_kind TEXT NOT NULL,
-                    input_fingerprint TEXT NOT NULL,
-                    schema_version INTEGER NOT NULL,
-                    total_pages INTEGER NOT NULL,
-                    is_completed INTEGER NOT NULL DEFAULT 0,
-                    last_updated_ts REAL NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS page_state (
-                    document_id TEXT NOT NULL,
-                    page_number INTEGER NOT NULL,
-                    stage TEXT NOT NULL,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    content_hash TEXT,
-                    artifact_path TEXT,
-                    last_error TEXT,
-                    last_model TEXT,
-                    config_fingerprint TEXT,
-                    artifact_sha256 TEXT,
-                    last_attempted_ts REAL,
-                    PRIMARY KEY (document_id, page_number, stage)
-                );
-
-                CREATE TABLE IF NOT EXISTS model_attempts (
-                    document_id TEXT NOT NULL,
-                    page_number INTEGER NOT NULL,
-                    stage TEXT NOT NULL,
-                    attempt_index INTEGER NOT NULL,
-                    model_name TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    error_message TEXT,
-                    retry_feedback TEXT,
-                    attempted_ts REAL NOT NULL,
-                    PRIMARY KEY (document_id, page_number, stage, attempt_index)
-                );
-
-                CREATE TABLE IF NOT EXISTS document_tree_state (
-                    document_id TEXT PRIMARY KEY,
-                    tree_revision TEXT NOT NULL,
-                    source_fingerprint TEXT NOT NULL,
-                    grouping_policy_version TEXT NOT NULL,
-                    tree_json TEXT NOT NULL,
-                    last_updated_ts REAL NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS grouping_frontier_state (
-                    document_id TEXT PRIMARY KEY,
-                    source_fingerprint TEXT NOT NULL,
-                    grouping_policy_version TEXT NOT NULL,
-                    frontier_json TEXT NOT NULL,
-                    last_updated_ts REAL NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS grouping_checkpoint_metadata (
-                    document_id TEXT PRIMARY KEY,
-                    source_fingerprint TEXT NOT NULL,
-                    grouping_policy_version TEXT NOT NULL,
-                    accepted_page_frontier_json TEXT NOT NULL,
-                    tree_revision TEXT NOT NULL,
-                    merge_revision INTEGER NOT NULL DEFAULT 0,
-                    last_runtime_step TEXT NOT NULL,
-                    last_updated_ts REAL NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS summary_attempts (
-                    document_id TEXT NOT NULL,
-                    node_id TEXT NOT NULL,
-                    input_fingerprint TEXT NOT NULL,
-                    attempt_index INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    summary_json TEXT,
-                    error_message TEXT,
-                    last_updated_ts REAL NOT NULL,
-                    PRIMARY KEY (document_id, node_id, input_fingerprint, attempt_index)
-                );
-                """
-            )
-            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(page_state)").fetchall()}
-            if "config_fingerprint" not in columns:
-                conn.execute("ALTER TABLE page_state ADD COLUMN config_fingerprint TEXT")
-            if "artifact_sha256" not in columns:
-                conn.execute("ALTER TABLE page_state ADD COLUMN artifact_sha256 TEXT")
-            attempt_columns = {
-                str(row[1])
-                for row in conn.execute("PRAGMA table_info(model_attempts)").fetchall()
-            }
-            if "retry_feedback" not in attempt_columns:
-                conn.execute("ALTER TABLE model_attempts ADD COLUMN retry_feedback TEXT")
-            checkpoint_columns = {
-                str(row[1])
-                for row in conn.execute(
-                    "PRAGMA table_info(grouping_checkpoint_metadata)"
-                ).fetchall()
-            }
-            if "merge_revision" not in checkpoint_columns:
-                conn.execute(
-                    "ALTER TABLE grouping_checkpoint_metadata "
-                    "ADD COLUMN merge_revision INTEGER NOT NULL DEFAULT 0"
-                )
+        initialize_ocr_state_schema(self._session)
 
     def _is_empty(self) -> bool:
         with self._session() as conn:
@@ -580,27 +523,24 @@ class OCRWorkflowStateStore:
             ).fetchone()
         if row is None:
             return None
-        stored_source = str(row["source_fingerprint"])
-        stored_policy = str(row["grouping_policy_version"])
+        stored_source = _grouping_text(row, "source_fingerprint")
+        stored_policy = _grouping_text(row, "grouping_policy_version")
         if source_fingerprint is not None and stored_source != source_fingerprint:
             return None
         if grouping_policy_version is not None and stored_policy != grouping_policy_version:
             return None
-        payload = json.loads(str(row["accepted_page_frontier_json"]))
-        if not isinstance(payload, list) or any(
-            type(page) is not int or page < 1 for page in payload
-        ):
-            raise ValueError("persisted grouping checkpoint page frontier is malformed")
-        if payload != sorted(set(payload)):
-            raise ValueError("persisted grouping checkpoint page frontier is not ordered")
+        payload: object = json.loads(
+            _grouping_text(row, "accepted_page_frontier_json")
+        )
+        accepted_pages = _decode_grouping_pages(payload)
         return GroupingCheckpointMetadata(
             document_id=document_id,
             source_fingerprint=stored_source,
             grouping_policy_version=stored_policy,
-            accepted_page_frontier=tuple(payload),
-            tree_revision=str(row["tree_revision"]),
-            merge_revision=int(row["merge_revision"]),
-            last_runtime_step=str(row["last_runtime_step"]),
+            accepted_page_frontier=accepted_pages,
+            tree_revision=_grouping_text(row, "tree_revision"),
+            merge_revision=_grouping_nonnegative_int(row, "merge_revision"),
+            last_runtime_step=_grouping_text(row, "last_runtime_step"),
         )
 
     def document_tree_revision(self, *, document_id: str) -> str | None:
@@ -610,7 +550,7 @@ class OCRWorkflowStateStore:
                 "SELECT tree_revision FROM document_tree_state WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
-        return None if row is None else str(row["tree_revision"])
+        return None if row is None else _grouping_text(row, "tree_revision")
 
     def load_document_tree(
         self,
@@ -656,33 +596,39 @@ class OCRWorkflowStateStore:
                 """,
                 (document_id,),
             ).fetchall()
+        if row is None:
+            return None
+        stored_source = _grouping_text(row, "source_fingerprint")
+        stored_policy = _grouping_text(row, "grouping_policy_version")
+        tree_json = _grouping_text(row, "tree_json")
         if (
-            row is None
-            or (source_fingerprint is not None and str(row["source_fingerprint"]) != source_fingerprint)
+            (source_fingerprint is not None and stored_source != source_fingerprint)
             or (
                 grouping_policy_version is not None
-                and str(row["grouping_policy_version"]) != grouping_policy_version
+                and stored_policy != grouping_policy_version
             )
         ):
             return None
         if frontier is None or metadata is None:
             raise ValueError("persisted grouping checkpoint is missing a companion record")
-        stored_source = str(row["source_fingerprint"])
-        stored_policy = str(row["grouping_policy_version"])
-        stored_revision = hashlib.sha256(
-            str(row["tree_json"]).encode("utf-8")
-        ).hexdigest()
+        stored_frontier_source = _grouping_text(frontier, "source_fingerprint")
+        stored_frontier_policy = _grouping_text(frontier, "grouping_policy_version")
+        stored_metadata_source = _grouping_text(metadata, "source_fingerprint")
+        stored_metadata_policy = _grouping_text(metadata, "grouping_policy_version")
+        stored_metadata_revision = _grouping_text(metadata, "tree_revision")
+        last_runtime_step = _grouping_text(metadata, "last_runtime_step")
+        stored_revision = hashlib.sha256(tree_json.encode("utf-8")).hexdigest()
         if (
-            str(frontier["source_fingerprint"]) != stored_source
-            or str(frontier["grouping_policy_version"]) != stored_policy
-            or str(metadata["source_fingerprint"]) != stored_source
-            or str(metadata["grouping_policy_version"]) != stored_policy
-            or str(metadata["tree_revision"]) != stored_revision
-            or not str(metadata["last_runtime_step"])
+            stored_frontier_source != stored_source
+            or stored_frontier_policy != stored_policy
+            or stored_metadata_source != stored_source
+            or stored_metadata_policy != stored_policy
+            or stored_metadata_revision != stored_revision
+            or not last_runtime_step
         ):
             raise ValueError("persisted grouping checkpoint records disagree")
 
-        tree = DocumentTree.model_validate_json(str(row["tree_json"]))
+        tree = DocumentTree.model_validate_json(tree_json)
         if tree.source_fingerprint() != stored_source:
             raise ValueError("persisted grouping tree source fingerprint is inconsistent")
         root = next((node for node in tree.nodes if node.node_id == tree.root_id), None)
@@ -693,21 +639,20 @@ class OCRWorkflowStateStore:
             if root.children
             else (root.node_id,)
         )
-        frontier_payload = json.loads(str(frontier["frontier_json"]))
-        if (
-            not isinstance(frontier_payload, list)
-            or not all(isinstance(item, str) and item for item in frontier_payload)
-            or tuple(frontier_payload) != expected_frontier
-        ):
+        frontier_payload: object = json.loads(
+            _grouping_text(frontier, "frontier_json")
+        )
+        if _decode_grouping_frontier(frontier_payload) != expected_frontier:
             raise ValueError("persisted grouping frontier does not match its tree")
-        accepted_pages = json.loads(str(metadata["accepted_page_frontier_json"]))
-        if (
-            not isinstance(accepted_pages, list)
-            or any(type(page) is not int or page < 1 for page in accepted_pages)
-            or accepted_pages != sorted(set(accepted_pages))
-            or accepted_pages
-            != [int(row["page_number"]) for row in completed_page_rows]
-        ):
+        accepted_pages_payload: object = json.loads(
+            _grouping_text(metadata, "accepted_page_frontier_json")
+        )
+        accepted_pages = _decode_grouping_pages(accepted_pages_payload)
+        completed_pages = tuple(
+            _grouping_nonnegative_int(completed_row, "page_number")
+            for completed_row in completed_page_rows
+        )
+        if accepted_pages != completed_pages:
             raise ValueError(
                 "persisted grouping accepted-page frontier does not match "
                 "completed OCR pages"
@@ -731,19 +676,20 @@ class OCRWorkflowStateStore:
                 """,
                 (document_id,),
             ).fetchone()
+        if row is None:
+            return None
+        stored_source = _grouping_text(row, "source_fingerprint")
+        stored_policy = _grouping_text(row, "grouping_policy_version")
         if (
-            row is None
-            or (source_fingerprint is not None and str(row["source_fingerprint"]) != source_fingerprint)
+            (source_fingerprint is not None and stored_source != source_fingerprint)
             or (
                 grouping_policy_version is not None
-                and str(row["grouping_policy_version"]) != grouping_policy_version
+                and stored_policy != grouping_policy_version
             )
         ):
             return None
-        payload = json.loads(str(row["frontier_json"]))
-        if not isinstance(payload, list) or not all(isinstance(item, str) and item for item in payload):
-            raise ValueError("persisted grouping frontier is malformed")
-        return tuple(payload)
+        payload: object = json.loads(_grouping_text(row, "frontier_json"))
+        return _decode_grouping_frontier(payload)
 
     def rebuild_from_artifacts(
         self,
@@ -853,9 +799,9 @@ class OCRWorkflowStateStore:
         *,
         document_id: str,
         page_number: int,
-        stage: str,
+        stage: OCRStage,
         attempt_count: int,
-        status: str,
+        status: OCRPageStatus,
         content_hash: str | None,
         artifact_path: str | None,
         last_error: str | None,
@@ -905,7 +851,9 @@ class OCRWorkflowStateStore:
                 ),
             )
 
-    def get_page_state(self, *, document_id: str, page_number: int, stage: str) -> OCRPageStateSnapshot | None:
+    def get_page_state(
+        self, *, document_id: str, page_number: int, stage: OCRStage
+    ) -> OCRPageStateSnapshot | None:
         with self._session() as conn:
             row = conn.execute(
                 """
@@ -921,9 +869,9 @@ class OCRWorkflowStateStore:
             return None
         return OCRPageStateSnapshot(
             page_number=int(row["page_number"]),
-            stage=str(row["stage"]),
+            stage=decode_ocr_stage(row["stage"]),
             attempt_count=int(row["attempt_count"]),
-            status=str(row["status"]),
+            status=decode_ocr_page_status(row["status"]),
             content_hash=row["content_hash"],
             artifact_path=row["artifact_path"],
             last_error=row["last_error"],
@@ -938,7 +886,7 @@ class OCRWorkflowStateStore:
         *,
         document_id: str,
         page_number: int,
-        stage: str,
+        stage: OCRStage,
         content_hash: str,
         artifact_path: Path | None = None,
         config_fingerprint: str | Sequence[str] | None = None,
@@ -1038,7 +986,7 @@ class OCRWorkflowStateStore:
         *,
         document_id: str,
         page_number: int,
-        stage: str,
+        stage: OCRStage,
         content_hash: str | None,
         model_name: str,
         artifact_path: Path | None = None,
@@ -1235,7 +1183,7 @@ class OCRWorkflowStateStore:
         *,
         document_id: str,
         page_number: int,
-        stage: str,
+        stage: OCRStage,
         content_hash: str | None,
         artifact_path: Path | None,
         model_name: str | None,
@@ -1352,7 +1300,7 @@ class OCRWorkflowStateStore:
         *,
         document_id: str,
         page_number: int,
-        stage: str,
+        stage: OCRStage,
         content_hash: str | None,
         config_fingerprint: str | None,
         error_message: str,
@@ -1416,43 +1364,9 @@ class OCRWorkflowStateStore:
                 )
             return updated_count == 1
 
-    def mark_document_completed(self, *, document_id: str, is_completed: bool) -> None:
-        with self._session() as conn:
-            conn.execute(
-                """
-                UPDATE document_state
-                SET is_completed = ?, last_updated_ts = ?
-                WHERE document_id = ?
-                """,
-                (1 if is_completed else 0, time.time(), document_id),
-            )
-
-    def refresh_document_completion(self, *, document_id: str) -> bool:
-        with self._session() as conn:
-            row = conn.execute(
-                """
-                SELECT total_pages
-                FROM document_state
-                WHERE document_id = ?
-                """,
-                (document_id,),
-            ).fetchone()
-            total_pages = int(row["total_pages"]) if row is not None else 0
-            completed_rows = conn.execute(
-                """
-                SELECT page_number
-                FROM page_state
-                WHERE document_id = ? AND stage = 'ocr' AND status = 'completed'
-                """,
-                (document_id,),
-            ).fetchall()
-        completed_pages = {int(completed_row["page_number"]) for completed_row in completed_rows}
-        expected_pages = set(range(1, total_pages + 1))
-        is_completed = total_pages > 0 and completed_pages == expected_pages
-        self.mark_document_completed(document_id=document_id, is_completed=is_completed)
-        return is_completed
-
-    def list_model_attempts(self, *, document_id: str, page_number: int, stage: str = "ocr") -> list[JsonObject]:
+    def list_model_attempts(
+        self, *, document_id: str, page_number: int, stage: OCRStage = "ocr"
+    ) -> list[JsonObject]:
         with self._session() as conn:
             rows = conn.execute(
                 """
@@ -1465,166 +1379,4 @@ class OCRWorkflowStateStore:
                 (document_id, page_number, stage),
             ).fetchall()
         return [dict(row) for row in rows]
-
-    def record_summary_attempt(
-        self,
-        *,
-        document_id: str,
-        node_id: str,
-        input_fingerprint: str,
-        status: str,
-        summary: Summary | None = None,
-        error_message: str | None = None,
-    ) -> int:
-        """Journal one idempotent summary attempt for crash-safe retries."""
-        if status not in {"pending", "generated", "verified", "failed", "skipped"}:
-            raise ValueError(f"unsupported summary status: {status}")
-        summary_json = (
-            json.dumps(summary.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
-            if summary is not None
-            else None
-        )
-        with self._session() as conn:
-            if status in {"generated", "verified"}:
-                # Accepted summaries are canonical for an exact generation
-                # identity. Serialize the check with the insert so duplicate
-                # delivery cannot create a second accepted journal row.
-                conn.execute("BEGIN IMMEDIATE")
-                accepted = conn.execute(
-                    """
-                    SELECT attempt_index
-                    FROM summary_attempts
-                    WHERE document_id = ? AND node_id = ?
-                      AND input_fingerprint = ?
-                      AND status IN ('generated', 'verified')
-                    ORDER BY attempt_index DESC
-                    LIMIT 1
-                    """,
-                    (document_id, node_id, input_fingerprint),
-                ).fetchone()
-                if accepted is not None:
-                    return int(accepted["attempt_index"])
-            row = conn.execute(
-                """
-                SELECT COALESCE(MAX(attempt_index), 0) AS last_attempt
-                FROM summary_attempts
-                WHERE document_id = ? AND node_id = ? AND input_fingerprint = ?
-                """,
-                (document_id, node_id, input_fingerprint),
-            ).fetchone()
-            attempt_index = int(row["last_attempt"]) + 1 if row is not None else 1
-            conn.execute(
-                """
-                INSERT INTO summary_attempts (
-                    document_id, node_id, input_fingerprint, attempt_index,
-                    status, summary_json, error_message, last_updated_ts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    document_id,
-                    node_id,
-                    input_fingerprint,
-                    attempt_index,
-                    status,
-                    summary_json,
-                    error_message,
-                    time.time(),
-                ),
-            )
-        return attempt_index
-
-    def load_completed_summary(
-        self,
-        *,
-        document_id: str,
-        node_id: str,
-        input_fingerprint: str,
-    ) -> Summary | None:
-        """Load the latest accepted summary for one exact generation key.
-
-        Failed and pending attempts never satisfy this lookup. The JSON is
-        validated through ``Summary`` before it can be reused, so malformed
-        or incompatible journal rows become cache misses rather than accepted
-        graph content.
-        """
-        with self._session() as conn:
-            row = conn.execute(
-                """
-                SELECT summary_json
-                FROM summary_attempts
-                WHERE document_id = ? AND node_id = ? AND input_fingerprint = ?
-                  AND status IN ('generated', 'verified')
-                  AND summary_json IS NOT NULL
-                ORDER BY attempt_index DESC
-                LIMIT 1
-                """,
-                (document_id, node_id, input_fingerprint),
-            ).fetchone()
-        if row is None or row["summary_json"] is None:
-            return None
-        try:
-            payload = json.loads(str(row["summary_json"]))
-            return Summary.model_validate(payload)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return None
-
-    def list_summary_attempts(self, *, document_id: str) -> list[JsonObject]:
-        with self._session() as conn:
-            rows = conn.execute(
-                """
-                SELECT node_id, input_fingerprint, attempt_index, status,
-                       summary_json, error_message, last_updated_ts
-                FROM summary_attempts
-                WHERE document_id = ?
-                ORDER BY node_id, input_fingerprint, attempt_index
-                """,
-                (document_id,),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def export_progress_payload(
-        self,
-        *,
-        document_id: str,
-        title: str,
-        source_kind: str,
-        total_pages: int,
-    ) -> OCRWorkflowProgress:
-        pages: dict[str, OCRPageProgress] = {}
-        with self._session() as conn:
-            rows = conn.execute(
-                """
-                SELECT page_number, content_hash, artifact_path, status
-                FROM page_state
-                WHERE document_id = ? AND stage = 'ocr'
-                ORDER BY page_number
-                """,
-                (document_id,),
-            ).fetchall()
-        for row in rows:
-            if row["artifact_path"] is None:
-                continue
-            pages[str(int(row["page_number"]))] = OCRPageProgress(
-                page_number=int(row["page_number"]),
-                image_path="",
-                image_sha256=row["content_hash"] or "",
-                json_path=str(row["artifact_path"]),
-                status=str(row["status"]),
-            )
-        return OCRWorkflowProgress(
-            document_id=document_id,
-            title=title,
-            source_kind=source_kind,
-            total_pages=total_pages,
-            pages=pages,
-        )
-
-    def read_document_completed(self, *, document_id: str) -> bool:
-        with self._session() as conn:
-            row = conn.execute(
-                "SELECT is_completed FROM document_state WHERE document_id = ?",
-                (document_id,),
-            ).fetchone()
-        return bool(row is not None and int(row["is_completed"]) == 1)
-
 

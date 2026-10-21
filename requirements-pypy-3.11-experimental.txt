@@ -1,7 +1,7 @@
 # PyPy 3.11 source-profile dependencies.  Native PDF and GPU/NumPy extras are
 # intentionally excluded; this lane exercises the parser's text/control path.
 pydantic==2.13.5
-pydantic-extension==0.0.7
+pydantic-extension==0.0.8
 anyio==4.15.1
 Jinja2==3.1.6
 diskcache==5.6.3

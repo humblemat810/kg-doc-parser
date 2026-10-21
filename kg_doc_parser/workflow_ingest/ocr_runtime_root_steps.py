@@ -7,13 +7,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.runtime import MappingStepResolver
+from kogwistar.runtime import MappingStepResolver, StepContext
 from kogwistar.runtime.models import (
     RunSuccess,
     StepRunResult,
     WorkflowInvocationRequest,
 )
-from kogwistar.runtime.runtime import StepContext
 
 from .design import (
     DEFAULT_OCR_GROUPING_WORKFLOW_ID,
@@ -26,6 +25,7 @@ from .document_adapters import (
     suggest_cross_page_continuations,
 )
 from .document_grouping import GroupProposal
+from .model_validation import validate_backend_payload
 from .models import WorkflowIngestInput
 from .ocr_pipeline import (
     OCRPageJSON,
@@ -299,7 +299,9 @@ def build_ocr_root_step_resolver(
         workflow_input_payload = state.get("workflow_input")
         if not isinstance(workflow_input_payload, dict):
             raise TypeError("OCR root has no persisted semantic workflow input")
-        workflow_input = WorkflowIngestInput.model_validate(workflow_input_payload)
+        workflow_input = validate_backend_payload(
+            WorkflowIngestInput, workflow_input_payload
+        )
         primary_collection = workflow_input.collections[0]
         workflow_input = workflow_input.model_copy(
             update={

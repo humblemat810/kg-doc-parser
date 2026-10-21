@@ -29,7 +29,10 @@ from kg_doc_parser.workflow_ingest.parser_core import (
     review_layer,
     validate_layer_commit,
 )
-from kg_doc_parser.workflow_ingest.parser_core_validation import detect_layer_invariants
+from kg_doc_parser.workflow_ingest.parser_core_validation import (
+    _overlapping_sibling_pointer_pairs,
+    detect_layer_invariants,
+)
 from kg_doc_parser.workflow_ingest.semantics import (
     HydratedTextPointer,
     SemanticNode,
@@ -117,10 +120,12 @@ def test_detect_layer_invariants_reports_overlap_gap_and_duplicate_notes():
         reasoning_history=[],
     )
 
-    coverage_ok, satisfied, overlap_conflicts, coverage_gaps, duplicate_notes, notes = detect_layer_invariants(
-        current_layer_context=context,
-        current_layer_result=result,
-        parser_source_map={unit_id: {"text": text}},
+    coverage_ok, satisfied, overlap_conflicts, coverage_gaps, duplicate_notes, notes = (
+        detect_layer_invariants(
+            current_layer_context=context,
+            current_layer_result=result,
+            parser_source_map={unit_id: {"text": text}},
+        )
     )
 
     assert coverage_ok is False
@@ -132,6 +137,157 @@ def test_detect_layer_invariants_reports_overlap_gap_and_duplicate_notes():
     assert any(gap.expected_text == text[13:16] for gap in coverage_gaps)
     assert any("duplicate child proposal" in note for note in notes)
     assert any("gap in parent" in note for note in notes)
+
+
+def test_interval_sweep_matches_legacy_sibling_overlap_order_and_contents():
+    children = [
+        _child(
+            node_id="a",
+            parent_node_id="p",
+            title="A",
+            node_type="TEXT_FLOW",
+            pointer=_pointer("source-a", "0123456789", 0, 4),
+        ),
+        _child(
+            node_id="b",
+            parent_node_id="p",
+            title="B",
+            node_type="TEXT_FLOW",
+            pointer=_pointer("source-a", "0123456789", 4, 7),
+        ),
+        _child(
+            node_id="c",
+            parent_node_id="p",
+            title="C",
+            node_type="TEXT_FLOW",
+            pointer=_pointer("source-a", "0123456789", 8, 9),
+        ),
+    ]
+    children[0].total_content_pointers.append(_pointer("source-b", "abcdefgh", 1, 6))
+    children[1].total_content_pointers.append(_pointer("source-b", "abcdefgh", 5, 7))
+
+    expected = []
+    for left_index, left_child in enumerate(children):
+        for right_index in range(left_index + 1, len(children)):
+            right_child = children[right_index]
+            for left_pointer_index, left_pointer in enumerate(
+                left_child.total_content_pointers
+            ):
+                for right_pointer_index, right_pointer in enumerate(
+                    right_child.total_content_pointers
+                ):
+                    if (
+                        left_pointer.source_cluster_id
+                        != right_pointer.source_cluster_id
+                    ):
+                        continue
+                    overlap_start = max(
+                        left_pointer.start_char, right_pointer.start_char
+                    )
+                    overlap_end = min(left_pointer.end_char, right_pointer.end_char)
+                    if overlap_start <= overlap_end:
+                        expected.append(
+                            (
+                                left_index,
+                                right_index,
+                                left_pointer_index,
+                                right_pointer_index,
+                                left_pointer,
+                                right_pointer,
+                                overlap_start,
+                                overlap_end,
+                            )
+                        )
+
+    actual = list(_overlapping_sibling_pointer_pairs(children, None))
+    assert actual == expected
+
+
+def test_large_interval_sweep_matches_pairwise_overlap_semantics():
+    text = "x" * 1000
+    children = []
+    for index in range(70):
+        child = _child(
+            node_id=f"child-{index}",
+            parent_node_id="parent",
+            title=f"Child {index}",
+            node_type="TEXT_FLOW",
+            pointer=_pointer("source-a", text, index * 3, index * 3 + 5),
+        )
+        child.total_content_pointers.append(
+            _pointer("source-b", text, (index % 5) * 7, (index % 5) * 7 + 12)
+        )
+        children.append(child)
+
+    expected = []
+    for left_index, left_child in enumerate(children):
+        for right_index in range(left_index + 1, len(children)):
+            right_child = children[right_index]
+            for left_pointer_index, left_pointer in enumerate(
+                left_child.total_content_pointers
+            ):
+                for right_pointer_index, right_pointer in enumerate(
+                    right_child.total_content_pointers
+                ):
+                    if (
+                        left_pointer.source_cluster_id
+                        != right_pointer.source_cluster_id
+                    ):
+                        continue
+                    overlap_start = max(
+                        left_pointer.start_char, right_pointer.start_char
+                    )
+                    overlap_end = min(left_pointer.end_char, right_pointer.end_char)
+                    if overlap_start <= overlap_end:
+                        expected.append(
+                            (
+                                left_index,
+                                right_index,
+                                left_pointer_index,
+                                right_pointer_index,
+                                left_pointer,
+                                right_pointer,
+                                overlap_start,
+                                overlap_end,
+                            )
+                        )
+
+    assert list(_overlapping_sibling_pointer_pairs(children, None)) == expected
+
+
+def test_large_disjoint_layer_uses_sweep_without_changing_invariant_result():
+    text = "x" * 65
+    parent_id = "parent"
+    source_id = "source"
+    children = [
+        _child(
+            node_id=f"child-{index}",
+            parent_node_id=parent_id,
+            title=f"Child {index}",
+            node_type="TEXT_FLOW",
+            pointer=_pointer(source_id, text, index, index),
+        )
+        for index in range(len(text))
+    ]
+    context = CurrentLayerContext(
+        depth=0,
+        parent_node_ids=[parent_id],
+        parent_content_pointers_by_id={parent_id: [_pointer(source_id, text, 0, 64)]},
+    )
+
+    coverage_ok, satisfied, conflicts, gaps, duplicate_notes, _ = (
+        detect_layer_invariants(
+            current_layer_context=context,
+            current_layer_result=CurrentLayerResult(children=children),
+            parser_source_map={source_id: {"text": text}},
+        )
+    )
+
+    assert coverage_ok is True
+    assert satisfied is True
+    assert conflicts == []
+    assert gaps == []
+    assert duplicate_notes == []
 
 
 def test_detect_layer_invariants_rejects_duplicate_child_ids_even_with_distinct_spans():
@@ -225,7 +381,9 @@ def test_dedupe_and_filter_layer_keeps_grounded_same_title_and_drops_true_duplic
     assert [child.node_id for child in filtered.children] == ["child-a-1", "child-b"]
     assert filtered.children[0].title == "Section A"
     assert filtered.satisfied is False
-    assert [item.error_type for item in filtered.validation_diagnostics] == ["foreign_parent"]
+    assert [item.error_type for item in filtered.validation_diagnostics] == [
+        "foreign_parent"
+    ]
 
 
 def test_validate_layer_commit_keeps_valid_parent_when_other_diagnostic_is_foreign():
@@ -281,7 +439,9 @@ def test_validate_layer_commit_keeps_valid_parent_when_other_diagnostic_is_forei
     assert review.updated_result is not None
     assert [child.node_id for child in review.updated_result.children] == ["a-1", "a-2"]
     assert review.updated_result.validation_diagnostics == []
-    assert [item.error_type for item in review.validation_diagnostics] == ["foreign_parent"]
+    assert [item.error_type for item in review.validation_diagnostics] == [
+        "foreign_parent"
+    ]
 
 
 def test_validate_layer_commit_rejects_a_child_id_shared_across_parents():
@@ -338,7 +498,10 @@ def test_validate_layer_commit_rejects_a_child_id_shared_across_parents():
 
     assert review.committable_parent_node_ids == []
     assert review.failed_parent_node_ids == ["doc|a", "doc|b"]
-    assert any(item.error_type == "duplicate_child_id" for item in review.validation_diagnostics)
+    assert any(
+        item.error_type == "duplicate_child_id"
+        for item in review.validation_diagnostics
+    )
 
 
 def test_detect_layer_invariants_rejects_empty_child_and_invalid_parent_source():
@@ -363,10 +526,12 @@ def test_detect_layer_invariants_rejects_empty_child_and_invalid_parent_source()
         satisfied=True,
     )
 
-    coverage_ok, satisfied, _overlaps, gaps, _duplicates, notes = detect_layer_invariants(
-        current_layer_context=context,
-        current_layer_result=result,
-        parser_source_map={"doc|p1_t0": {"text": "Alpha"}},
+    coverage_ok, satisfied, _overlaps, gaps, _duplicates, notes = (
+        detect_layer_invariants(
+            current_layer_context=context,
+            current_layer_result=result,
+            parser_source_map={"doc|p1_t0": {"text": "Alpha"}},
+        )
     )
 
     assert coverage_ok is False
@@ -501,8 +666,12 @@ def test_repair_layer_candidates_isolates_unrecoverable_pointer(caplog):
     assert repaired.metadata["failure_type"] == "repair_failure"
     assert repaired.metadata["rollback"] == "verified_parent_retained"
     assert "unrecoverable pointer" in repaired.metadata["repair_failures"][0]
-    assert any("repair_layer_candidates failed" in record.message for record in caplog.records)
-    assert any("source_cluster_id='doc|p1_t0'" in record.message for record in caplog.records)
+    assert any(
+        "repair_layer_candidates failed" in record.message for record in caplog.records
+    )
+    assert any(
+        "source_cluster_id='doc|p1_t0'" in record.message for record in caplog.records
+    )
     assert any("parent='doc|root'" in record.message for record in caplog.records)
 
 
@@ -537,7 +706,10 @@ def test_repair_validation_error_becomes_retryable_diagnostic(caplog):
     assert repaired.validation_diagnostics[0].phase == "repair"
     assert repaired.validation_diagnostics[0].error_type == "ValueError"
     assert repaired.metadata["retryable"] is True
-    assert any("repair payload failed validation" in record.message for record in caplog.records)
+    assert any(
+        "repair payload failed validation" in record.message
+        for record in caplog.records
+    )
 
 
 def test_review_dropping_one_sibling_is_rejected_after_provider_return() -> None:
@@ -583,7 +755,9 @@ def test_review_dropping_one_sibling_is_rejected_after_provider_return() -> None
     assert reviewed.satisfied is False
     assert reviewed.updated_result is not None
     assert reviewed.updated_result.children == [left]
-    assert any(issue.issue_kind == "unary_refinement" for issue in reviewed.structural_issues)
+    assert any(
+        issue.issue_kind == "unary_refinement" for issue in reviewed.structural_issues
+    )
 
 
 def test_repair_collapsing_two_children_is_rejected_at_commit_gate() -> None:
@@ -622,7 +796,9 @@ def test_repair_collapsing_two_children_is_rejected_at_commit_gate() -> None:
 
     assert review.satisfied is False
     assert review.structural_issues[0].issue_kind == "unary_refinement"
-    assert right.node_id not in [child.node_id for child in review.updated_result.children]
+    assert right.node_id not in [
+        child.node_id for child in review.updated_result.children
+    ]
     with pytest.raises(ValueError, match="unary refinement"):
         commit_layer_children(
             semantic_tree=SemanticNode(
@@ -792,7 +968,9 @@ def test_terminal_content_coverage_ignores_wrapper_and_detects_missing_content()
                         node_id="content",
                         parent_id="page",
                         title="Alpha",
-                        total_content_pointers=[_pointer("doc|p1_t0", "Alpha Beta", 0, 4)],
+                        total_content_pointers=[
+                            _pointer("doc|p1_t0", "Alpha Beta", 0, 4)
+                        ],
                     )
                 ],
             )
@@ -832,7 +1010,9 @@ def test_terminal_content_coverage_rejects_duplicate_positions_but_allows_whites
         ],
     )
 
-    whitespace_gap = compute_terminal_content_coverage(root, {"doc|p1_t0": {"text": text}})
+    whitespace_gap = compute_terminal_content_coverage(
+        root, {"doc|p1_t0": {"text": text}}
+    )
     assert whitespace_gap["valid"] is True
     assert whitespace_gap["overall"] == 1.0
 
@@ -853,12 +1033,21 @@ def test_terminal_content_coverage_rejects_duplicate_positions_but_allows_whites
     assert duplicate_coverage["multiply_owned_nonws_ranges"]["doc|p1_t0"]
 
     assert classify_terminal_coverage_status(root, whitespace_gap) == "complete"
-    assert classify_terminal_coverage_status(
-        root.model_copy(update={"metadata": {"atomic_retained": True}}),
-        whitespace_gap,
-    ) == "atomic_valid"
-    assert classify_terminal_coverage_status(root, duplicate_coverage) == "partial_degraded"
-    assert classify_terminal_coverage_status(root, {"valid": False, "covered_nonws": 0}) == "failed"
+    assert (
+        classify_terminal_coverage_status(
+            root.model_copy(update={"metadata": {"atomic_retained": True}}),
+            whitespace_gap,
+        )
+        == "atomic_valid"
+    )
+    assert (
+        classify_terminal_coverage_status(root, duplicate_coverage)
+        == "partial_degraded"
+    )
+    assert (
+        classify_terminal_coverage_status(root, {"valid": False, "covered_nonws": 0})
+        == "failed"
+    )
 
 
 def test_review_disabled_still_runs_deterministic_invariants():
@@ -867,7 +1056,9 @@ def test_review_disabled_still_runs_deterministic_invariants():
         depth=0,
         parent_node_ids=["doc|root"],
         parent_titles=["Doc"],
-        parent_content_pointers_by_id={"doc|root": [_pointer("doc|p1_t0", text, 0, len(text) - 1)]},
+        parent_content_pointers_by_id={
+            "doc|root": [_pointer("doc|p1_t0", text, 0, len(text) - 1)]
+        },
     )
     result = CurrentLayerResult(
         children=[
@@ -902,7 +1093,9 @@ def test_validate_layer_commit_rejects_changed_candidate_set():
         depth=0,
         parent_node_ids=["doc|root"],
         parent_titles=["Doc"],
-        parent_content_pointers_by_id={"doc|root": [_pointer("doc|p1_t0", text, 0, len(text) - 1)]},
+        parent_content_pointers_by_id={
+            "doc|root": [_pointer("doc|p1_t0", text, 0, len(text) - 1)]
+        },
     )
     review = validate_layer_commit(
         current_layer_context=context,
@@ -954,7 +1147,7 @@ def test_validate_layer_commit_preserves_valid_parent_when_batch_sibling_fails()
                 title="Beta",
                 node_type="TEXT_FLOW",
                 pointer=_pointer("doc|p1_t0", valid_text, 6, 9),
-            )
+            ),
         ],
         satisfied=True,
     )
@@ -963,7 +1156,7 @@ def test_validate_layer_commit_preserves_valid_parent_when_batch_sibling_fails()
         current_layer_context=context,
         current_layer_result=result,
         parser_source_map={
-                "doc|p1_t0": {"text": valid_text},
+            "doc|p1_t0": {"text": valid_text},
             "doc|p1_t1": {"text": invalid_text},
         },
     )
@@ -973,7 +1166,10 @@ def test_validate_layer_commit_preserves_valid_parent_when_batch_sibling_fails()
     assert review.committable_parent_node_ids == [valid_parent]
     assert review.failed_parent_node_ids == [invalid_parent]
     assert review.metadata["partial_commit"] is True
-    assert [child.node_id for child in review.updated_result.children] == ["child-a", "child-b"]
+    assert [child.node_id for child in review.updated_result.children] == [
+        "child-a",
+        "child-b",
+    ]
 
     tree = SemanticNode(
         node_id="doc|root",
@@ -1124,7 +1320,9 @@ def test_find_semantic_node_handles_a_tree_deeper_than_python_recursion_limit():
     root = SemanticNode(node_id="root", title="Root", node_type="DOCUMENT_ROOT")
     current = root
     for index in range(1200):
-        child = SemanticNode(node_id=f"node-{index}", parent_id=str(current.node_id), title="Deep")
+        child = SemanticNode(
+            node_id=f"node-{index}", parent_id=str(current.node_id), title="Deep"
+        )
         current.child_nodes.append(child)
         current = child
 
@@ -1254,7 +1452,9 @@ def test_check_layer_coverage_emits_conflict_notes_from_review():
         reason="duplicate child proposal under the same parent",
     )
     review = CurrentLayerReview(
-        updated_result=CurrentLayerResult(children=[], satisfied=False, reasoning_history=[]),
+        updated_result=CurrentLayerResult(
+            children=[], satisfied=False, reasoning_history=[]
+        ),
         coverage_ok=False,
         satisfied=False,
         overlap_conflicts=[overlap],
@@ -1305,7 +1505,9 @@ def test_unary_refinement_is_rejected_at_detector_commit_and_frontier():
     assert satisfied is False
     with pytest.raises(ValueError, match="unary refinement"):
         commit_layer_children(
-            semantic_tree=SemanticNode(node_id=parent, title="Doc", node_type="DOCUMENT_ROOT"),
+            semantic_tree=SemanticNode(
+                node_id=parent, title="Doc", node_type="DOCUMENT_ROOT"
+            ),
             current_layer_result=result,
             current_depth=0,
         )
@@ -1362,7 +1564,9 @@ def test_atomic_retention_requires_verified_parent_and_is_not_unary():
         parent_titles=["Doc"],
         parent_content_pointers_by_id={parent: [_pointer("doc|p1_t0", text, 0, 4)]},
     )
-    retained = CurrentLayerResult(children=[], metadata={"atomic_retained": True}, satisfied=True)
+    retained = CurrentLayerResult(
+        children=[], metadata={"atomic_retained": True}, satisfied=True
+    )
     review = validate_layer_commit(
         current_layer_context=context,
         current_layer_result=retained,
@@ -1406,7 +1610,10 @@ def test_atomic_retention_rejects_an_unverified_parent_pointer():
 
     assert review.satisfied is False
     assert review.failed_parent_node_ids == [parent]
-    assert any("unknown source cluster" in gap.expected_text for gap in review.coverage_gap_notes)
+    assert any(
+        "unknown source cluster" in gap.expected_text
+        for gap in review.coverage_gap_notes
+    )
 
 
 def test_atomic_retention_rejects_an_invalid_pointer_override_before_commit():
@@ -1637,7 +1844,9 @@ def test_modern_export_and_coverage_handle_deep_valid_branching_tree():
         source_revision="source-revision-1",
     )
     assert revision_payload["source_revision"] == "source-revision-1"
-    root_node = next(node for node in revision_payload["nodes"] if node["id"] == root.node_id)
+    root_node = next(
+        node for node in revision_payload["nodes"] if node["id"] == root.node_id
+    )
     assert root_node["metadata"]["source_revision"] == "source-revision-1"
     assert len(payload["nodes"]) == 2201
 
@@ -1645,7 +1854,12 @@ def test_modern_export_and_coverage_handle_deep_valid_branching_tree():
 def test_atomic_retention_rejects_a_mixed_batch_with_an_unverified_omitted_parent():
     root = SemanticNode(node_id="root", title="Root", node_type="DOCUMENT_ROOT")
     root.child_nodes = [
-        SemanticNode(node_id="good", parent_id="root", title="Good", total_content_pointers=[_pointer("unit", "Good", 0, 3)]),
+        SemanticNode(
+            node_id="good",
+            parent_id="root",
+            title="Good",
+            total_content_pointers=[_pointer("unit", "Good", 0, 3)],
+        ),
         SemanticNode(node_id="bad", parent_id="root", title="Bad"),
     ]
     result = CurrentLayerResult(
@@ -1762,7 +1976,9 @@ def test_shared_tree_shape_validator_rejects_a_generated_deep_unary_chain():
     root = SemanticNode(node_id="root", title="Root", node_type="DOCUMENT_ROOT")
     current = root
     for index in range(70):
-        child = SemanticNode(node_id=f"node-{index}", parent_id=current.node_id, title=str(index))
+        child = SemanticNode(
+            node_id=f"node-{index}", parent_id=current.node_id, title=str(index)
+        )
         current.child_nodes = [child]
         current = child
     with pytest.raises(ValueError, match="unary semantic node"):

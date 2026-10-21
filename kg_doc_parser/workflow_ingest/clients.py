@@ -27,6 +27,7 @@ from .design import (
     DEFAULT_WORKFLOW_ID,
     ensure_ingest_workflow_design,
 )
+from .model_validation import validate_backend_payload
 from .models import (
     CanonicalGraphWriteResult,
     IngestRunHandle,
@@ -451,7 +452,9 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
             )
         bundle = None
         if "export_bundle" in run.final_state:
-            bundle = WorkflowExportBundle.model_validate(run.final_state["export_bundle"])
+            bundle = validate_backend_payload(
+                WorkflowExportBundle, run.final_state["export_bundle"]
+            )
         emit_probe_event(
             probe,
             "workflow.run_finished",
@@ -508,7 +511,9 @@ class DirectRuntimeIngestClient(IngestExecutionClient):
         )
         bundle = None
         if "export_bundle" in resumed.final_state:
-            bundle = WorkflowExportBundle.model_validate(resumed.final_state["export_bundle"])
+            bundle = validate_backend_payload(
+                WorkflowExportBundle, resumed.final_state["export_bundle"]
+            )
         workflow_id = str(kwargs.get("workflow_id", DEFAULT_WORKFLOW_ID))
         emit_probe_event(
             probe,
@@ -637,7 +642,9 @@ class ServerCanonicalKgClient(IngestExecutionClient):
         )
         bundle = None
         if "export_bundle" in run.final_state:
-            bundle = WorkflowExportBundle.model_validate(run.final_state["export_bundle"])
+            bundle = validate_backend_payload(
+                WorkflowExportBundle, run.final_state["export_bundle"]
+            )
         emit_probe_event(
             probe,
             "workflow.run_finished",

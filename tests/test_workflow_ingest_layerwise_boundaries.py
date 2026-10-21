@@ -9,10 +9,12 @@ from layerwise_test_support import (
 from kg_doc_parser.workflow_ingest.layerwise_boundaries import _legal_cutpoints_for_text
 from kg_doc_parser.workflow_ingest.layerwise_boundary_pipeline import (
     _boundary_parent_coverage_report,
-    _boundary_prompt_candidate_context,
     _boundary_review_decision,
     _boundary_validation_reason,
     _proposal_validation_reason,
+)
+from kg_doc_parser.workflow_ingest.layerwise_boundary_prompts import (
+    _boundary_prompt_candidate_context,
 )
 from kg_doc_parser.workflow_ingest.models import (
     BoundaryCutpoint,

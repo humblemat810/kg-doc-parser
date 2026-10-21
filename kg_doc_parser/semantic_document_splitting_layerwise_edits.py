@@ -81,7 +81,6 @@ import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from enum import Enum
 from functools import wraps
 from hashlib import sha256
 from pathlib import Path
@@ -93,11 +92,13 @@ except ImportError:  # pragma: no cover
     from typing import TypeAlias
 import math
 import os
-from collections import deque
+from collections import defaultdict, deque
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from typing import ClassVar, ParamSpec, Protocol, TypeVar, cast
 from uuid import UUID
+
+from .workflow_ingest.serialization import JsonObject, JsonValue, decode_json_object
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -136,7 +137,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from rapidfuzz.distance import LCSseq
 
 from kg_doc_parser.document_ingester_logger import DocumentIngestSQLiteCallback
 from kg_doc_parser.llm_structured_output import build_structured_output_runnable
@@ -605,73 +605,51 @@ def not_self_like(parent: SemanticNode, child: LLMChildNodeResponse) -> bool:
 # ==============================================================================
 # PHASE 2: PRE-PROCESSING
 # ==============================================================================
-def prepare_document_for_llm(doc_dict: dict) -> tuple[dict, dict[str, dict]]:
-    # Simple restructure of input format
-    filename = list(doc_dict.keys())[0]
-    pages_data = doc_dict[filename]
-    source_cluster_map = {}
-    for page in pages_data:
-        if 'pdf_page_num' not in page or 'OCR_text_clusters' not in page:
+def prepare_document_for_llm(
+    doc_dict: Mapping[str, object],
+) -> tuple[JsonObject, dict[str, JsonObject]]:
+    """Validate and index the JSON OCR document consumed by layerwise parsing."""
+    document = decode_json_object(doc_dict, label="raw OCR document")
+    if not document:
+        raise ValueError("raw OCR document must contain a filename entry")
+
+    filename, pages_value = next(iter(document.items()))
+    if not isinstance(pages_value, list):
+        raise TypeError("raw OCR document pages must be a list")
+
+    pages_data: list[JsonObject] = []
+    source_cluster_map: dict[str, JsonObject] = {}
+    for page_index, page_value in enumerate(pages_value):
+        page = decode_json_object(page_value, label=f"raw OCR page {page_index}")
+        pages_data.append(page)
+        if "pdf_page_num" not in page or "OCR_text_clusters" not in page:
             continue
-        page_num = page['pdf_page_num']
-        for i, cluster in enumerate(page['OCR_text_clusters']):
-            cluster_id = f"p{page_num}_c{i}"
-            cluster['id'] = cluster_id
-            source_cluster_map[cluster_id] = cluster
-        for i, cluster in enumerate(page['non_text_objects']):
-            cluster_id = f"p{page_num}_c{i}"
-            cluster['id'] = cluster_id
-            source_cluster_map[cluster_id] = cluster
+
+        page_number = page["pdf_page_num"]
+        for key in ("OCR_text_clusters", "non_text_objects"):
+            clusters_value = page[key]
+            if not isinstance(clusters_value, list):
+                raise TypeError(f"raw OCR page field {key!r} must be a list")
+
+            clusters: list[JsonObject] = []
+            for cluster_index, cluster_value in enumerate(clusters_value):
+                cluster = decode_json_object(
+                    cluster_value,
+                    label=(
+                        f"raw OCR page {page_index} field {key!r} "
+                        f"item {cluster_index}"
+                    ),
+                )
+                cluster_id = f"p{page_number}_c{cluster_index}"
+                cluster["id"] = cluster_id
+                clusters.append(cluster)
+                source_cluster_map[cluster_id] = cluster
+            page[key] = clusters
+
     return {"document_filename": filename, "pages": pages_data}, source_cluster_map
 
 
-def _source_map_entry_text(entry: dict[str, Any]) -> str:
-    """Best-effort text extraction for OCR-shaped source-map entries.
-
-    The legacy parser sometimes sees raw OCR cluster dicts and sometimes sees
-    already-normalized text-bearing records. We accept both so a missing `text`
-    key does not break tree bootstrapping.
-    """
-
-    if not isinstance(entry, dict):
-        return str(entry or "")
-
-    for key in ("text", "content", "verbatim_text", "snippet", "summary"):
-        value = entry.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-
-    clusters = entry.get("OCR_text_clusters") or []
-    if isinstance(clusters, list) and clusters:
-        parts = []
-        for cluster in clusters:
-            if not isinstance(cluster, dict):
-                continue
-            text = (
-                cluster.get("text")
-                or cluster.get("content")
-                or cluster.get("verbatim_text")
-                or cluster.get("snippet")
-                or ""
-            )
-            if text:
-                parts.append(str(text))
-        if parts:
-            return "\n".join(parts)
-
-    non_text_objects = entry.get("non_text_objects") or []
-    if isinstance(non_text_objects, list) and non_text_objects:
-        parts = []
-        for obj in non_text_objects:
-            if not isinstance(obj, dict):
-                continue
-            text = obj.get("description") or obj.get("text") or ""
-            if text:
-                parts.append(str(text))
-        if parts:
-            return "\n".join(parts)
-
-    return ""
+from .semantic_source_text import source_map_entry_text as _source_map_entry_text
 
 # ==============================================================================
 # PHASE 3: LLM PROCESSING - ROBUST LAYER-WISE (BFS)
@@ -1712,168 +1690,13 @@ from pydantic import BaseModel
 # ============================================================================
 # Utilities — deterministic, no‑LLM fixes first
 # ============================================================================
-
-def _safe_slice(text: str, start: int, end_inclusive: int) -> str:
-    end_excl = len(text) if end_inclusive == -1 else end_inclusive + 1
-    if start < 0:
-        start = 0
-    if end_excl < 0:
-        end_excl = 0
-    return text[start:end_excl]
-
-
-def _all_exact_occurrences(haystack: str, needle: str) -> list[tuple[int, int]]:
-    """Return all (start, end_inclusive) exact matches for `needle` in `haystack`.
-    Uses Python's find() loop for speed and determinism. Empty needle => none.
-    """
-    if not needle:
-        return []
-    out: list[tuple[int, int]] = []
-    i = 0
-    L = len(needle)
-    while True:
-        i = haystack.find(needle, i)
-        if i == -1:
-            break
-        out.append((i, i + L - 1))
-        i += max(1, L)
-    return out
-
-
-def _best_occurrence_by_proximity(
-    occurrences: list[tuple[int, int]], proposed_start: int
-) -> tuple[int, int] | None:
-    if not occurrences:
-        return None
-    return min(occurrences, key=lambda ab: abs(ab[0] - (proposed_start or 0)))
-
-
-def _whitespace_collapse(s: str) -> str:
-    return re.sub(r"\s+", " ", s.strip())
-
-
-def _soft_exact_positions(
-    source_text: str,
-    verbatim: str,
-    *,
-    fuzzy_threshold: float | None = None,   # 0..100 if rapidfuzz; 0..1 with difflib (we normalize to 0..100)
-    fuzzy_len_stretch: float = 0.25,          # allow window length to vary ±25%
-    fuzzy_stride_frac: float = 0.10,          # stride as a fraction of |verbatim|
-) -> tuple[list[tuple[int, int]], dict | None]:
-    """Exact match with minimal sanitation; optional fuzzy fallback.
-    Returns list of candidate (start, end_incl) positions.
-    """
-    # 1) raw exact
-    occ = _all_exact_occurrences(source_text, verbatim)
-    if occ:
-        return occ, {"name": "exact", "collapsed": False}
-
-    # 2) whitespace-collapsed exact (build collapsed and span map)
-    v2 = _whitespace_collapse(verbatim)
-    if not v2:
-        return [], None
-    spans: list[tuple[int, int]] = []  # (orig_start, orig_end_incl) per collapsed char
-    collapsed_chars = []
-    i = 0
-    N = len(source_text)
-    while i < N:
-        if source_text[i].isspace():
-            j = i
-            while j < N and source_text[j].isspace():
-                j += 1
-            if collapsed_chars and collapsed_chars[-1] == " ":
-                # already collapsed previous WS run; just advance
-                pass
-            else:
-                collapsed_chars.append(" ")
-                spans.append((i, j - 1))
-            i = j
-        else:
-            collapsed_chars.append(source_text[i])
-            spans.append((i, i))
-            i += 1
-
-    collapsed_text = "".join(collapsed_chars)
-    occ2 = _all_exact_occurrences(collapsed_text, v2)
-    if occ2:
-        mapped: list[tuple[int, int]] = []
-        for s_idx, e_idx in occ2:
-            mapped.append((spans[s_idx][0], spans[e_idx][1]))
-        return mapped, {"name": "exact", "collapsed": True}
-
-    # 3) Optional fuzzy fallback on collapsed_text
-    if fuzzy_threshold is None:
-        return [], None
-
-    # --- helper to map collapsed [s,e] -> original inclusive span
-    def _map_back(s_idx: int, e_idx: int) -> tuple[int, int]:
-        try:
-            _ = spans[s_idx][0], spans[e_idx][1]
-        except Exception as _e:
-            pass # for debugger see what happen
-        return spans[s_idx][0], spans[e_idx][1]
-
-    Lq = len(v2)
-    if Lq == 0 or len(collapsed_text) == 0:
-        return [], None
-
-    # Normalize threshold to 0..100
-    thr = float(fuzzy_threshold)
-    if thr <= 1.0:  # user may pass 0..1 when thinking "difflib ratio"
-        thr *= 100.0
-
-    best_score = -1.0
-    best_span = None  # (s_idx, e_idx)
-
-    # --- RapidFuzz path (fast): use LCS ratio as a cheap, positionable proxy ---
-    # if _HAVE_RAPIDFUZZ:
-        # We search windows near the query length (±stretch).
-    Lmin = max(1, int(math.floor(Lq * (1.0 - fuzzy_len_stretch))))
-    Lmax = max(Lmin, int(math.ceil(Lq * (1.0 + fuzzy_len_stretch))))
-    stride = max(1, int(max(1, round(Lq * fuzzy_stride_frac))))
-
-    for wlen in (Lmin, Lq, Lmax):
-        if wlen > len(collapsed_text):
-            continue
-        for s in range(0, len(collapsed_text) - wlen + 1, stride):
-            e = s + wlen  # exclusive
-            # LCSseq.ratio returns 0..100
-            score = LCSseq.normalized_similarity(v2, collapsed_text[s:e]) * 100.0
-            if score > best_score:
-                best_score = score
-                best_span = (s, e - 1)
-
-    if best_span and best_score >= thr:
-        orig_s, orig_e = _map_back(*best_span)
-        return [(orig_s, orig_e)], {"name" : "LCSseq.normalized_similarity", "threshold": thr, "collapsed": True}
-    # --- True RapidFuzz path (fast): use LCS ratio as a cheap, positionable proxy ---
-    import difflib
-    def locate_span(query: str, text: str) -> tuple[int, int] | None:
-        sm = difflib.SequenceMatcher(
-            None,
-            text.lower(),
-            query.lower()
-        )
-        match = max(sm.get_matching_blocks(), key=lambda m: m.size)
-        if match.size == 0:
-            return None
-        #end_inclusive span need converted to python like index style
-        return match.a, match.a + match.size-1
-    best_span = locate_span(verbatim, collapsed_text)
-    from rapidfuzz import fuzz
-    if best_span:
-        best_score = fuzz.ratio(verbatim, collapsed_text[best_span[0]: best_span[1]])
-    if best_span and best_score >= thr:
-        orig_s, orig_e = _map_back(*best_span)
-        return [(orig_s, orig_e)], {"name" : "difflib.SequenceMatcher", "threshold": thr, "collapsed": True}
-    best_span = locate_span(verbatim, source_text)
-    from rapidfuzz import fuzz
-    if best_span:
-        best_score = fuzz.ratio(verbatim, collapsed_text[best_span[0]: best_span[1]])
-    if best_span and best_score >= thr:
-        return [best_span], {"name" : "difflib.SequenceMatcher", "threshold": thr, "collapsed": False}
-
-    return [], None
+from .semantic_pointer_matching import (
+    all_exact_occurrences as _all_exact_occurrences,
+    best_occurrence_by_proximity as _best_occurrence_by_proximity,
+    safe_slice as _safe_slice,
+    soft_exact_positions as _soft_exact_positions,
+    whitespace_collapse as _whitespace_collapse,
+)
 
 
 # ============================================================================
@@ -3178,11 +3001,11 @@ def print_tree(node: SemanticNode, indent: str = "") -> None:
 @parser_llm_cache
 def parse_doc(
     doc_id: str,
-    raw_doc_dict: dict[str, object],
+    raw_doc_dict: Mapping[str, object],
     parsing_mode: Literal["snippet", "delimiter"] = "snippet",
     max_depth: int = 10,
     model_names: list[str] | None = None,
-) -> tuple[SemanticNode, dict[str, dict]]:
+) -> tuple[SemanticNode, dict[str, JsonObject]]:
     
     
     try:
@@ -3395,237 +3218,19 @@ def semantic_tree_to_kge_payload(
         "nodes": nodes,
         "edges": edges,
     }
-from collections import defaultdict
+from .semantic_graph_import import (
+    _extract_pointers_from_mentions,
+    _extract_pointers_from_references,
+    _legacy_int,
+    _legacy_mapping,
+    _legacy_node_type,
+    _legacy_object_list,
+    _legacy_string,
+    _legacy_string_list,
+    kge_payload_to_semantic_tree,
+)
 
 
-def _legacy_object_list(value: object, *, label: str) -> list[Mapping[str, object]]:
-    """Narrow a legacy JSON list before semantic reconstruction."""
-
-    if not isinstance(value, list) or not all(isinstance(item, Mapping) for item in value):
-        raise TypeError(f"legacy graph field {label!r} must be a list of objects")
-    return [
-        _legacy_mapping(item, label=f"{label}[{index}]")
-        for index, item in enumerate(value)
-    ]
-
-
-def _legacy_string_list(value: object, *, label: str) -> list[str]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise TypeError(f"legacy graph field {label!r} must be a list of strings")
-    return list(value)
-
-
-def _legacy_mapping(value: object, *, label: str) -> Mapping[str, object]:
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise TypeError(f"legacy graph field {label!r} must be an object")
-    if not all(isinstance(key, str) for key in value):
-        raise TypeError(f"legacy graph field {label!r} must have string keys")
-    return dict(value)
-
-
-def _legacy_string(value: object, *, label: str, default: str | None = None) -> str:
-    if value is None and default is not None:
-        return default
-    if not isinstance(value, str):
-        raise TypeError(f"legacy graph field {label!r} must be a string")
-    return value
-
-
-def _legacy_int(value: object, *, label: str, default: int | None = None) -> int:
-    if value is None and default is not None:
-        return default
-    if type(value) is not int:
-        raise TypeError(f"legacy graph field {label!r} must be an integer")
-    return value
-
-
-def _legacy_node_type(value: object) -> Literal[
-    "DOCUMENT_ROOT", "TEXT_FLOW", "KEY_VALUE_PAIR", "TABLE"
-]:
-    if value == "DOCUMENT_ROOT":
-        return "DOCUMENT_ROOT"
-    if value == "TEXT_FLOW":
-        return "TEXT_FLOW"
-    if value == "KEY_VALUE_PAIR":
-        return "KEY_VALUE_PAIR"
-    if value == "TABLE":
-        return "TABLE"
-    raise ValueError(f"unsupported legacy semantic node type: {value!r}")
-
-
-def _extract_pointers_from_mentions(
-    mentions: Sequence[Mapping[str, object]],
-) -> list[HydratedTextPointer]:
-    if len(mentions) != 1:
-        raise ValueError("legacy semantic nodes must contain exactly one mention group")
-    mention = mentions[0]
-    spans = _legacy_object_list(mention.get("spans"), label="mentions.spans")
-    results: list[HydratedTextPointer] = []
-    for span in spans:
-        doc_page = _legacy_string(
-            span.get("document_page_url"), label="document_page_url", default=""
-        )
-        source_cluster_id: str | None = None
-        if "#" in doc_page:
-            source_cluster_id = doc_page.split("#", 1)[1]
-        if not source_cluster_id:
-            source_cluster_id = "p1_c0"
-        span_verification = span.get("verification")
-        if span_verification is not None and not isinstance(span_verification, str):
-            raise TypeError("legacy graph field 'verification' must be a string or null")
-        results.append(
-            HydratedTextPointer(
-                source_cluster_id=source_cluster_id,
-                start_char=_legacy_int(span.get("start_char"), label="start_char", default=0),
-                end_char=(
-                    -1
-                    if span.get("end_char") == 10**9
-                    else _legacy_int(span.get("end_char"), label="end_char", default=-1)
-                ),
-                verbatim_text=_legacy_string(
-                    span.get("excerpt"), label="excerpt", default=""
-                ),
-                start_delimiter=None,
-                end_delimiter=None,
-                validation_method=span_verification,
-            )
-        )
-    return results
-def _extract_pointers_from_references(
-    refs: Sequence[Mapping[str, object]],
-) -> list[HydratedTextPointer]:
-    # turn MCP ref → HydratedTextPointer-like
-    results: list[HydratedTextPointer] = []
-    for r in refs:
-        # document_page_url: "doc://{doc_id}#{source_cluster_id}"
-        doc_page = _legacy_string(
-            r.get("document_page_url"), label="document_page_url", default=""
-        )
-        source_cluster_id: str | None = None
-        if "#" in doc_page:
-            source_cluster_id = doc_page.split("#", 1)[1]
-        # fallback
-        if not source_cluster_id:
-            source_cluster_id = "p1_c0"
-        r_mentions = _legacy_object_list(r.get("mentions", []), label="references.mentions")
-        if len(r_mentions) == 0:
-            r_mention_verification = None
-        else:
-            if len(r_mentions) > 1 :
-                # unsupported multiple mentions, possibly try load from wrong doc parsing results
-                raise ValueError("legacy references support at most one mention group")
-            else:
-                r_mention_verification = r_mentions[0].get("verification")
-                if r_mention_verification is not None and not isinstance(
-                    r_mention_verification, str
-                ):
-                    raise TypeError("legacy graph field 'verification' must be a string or null")
-        
-        results.append(
-            HydratedTextPointer(
-                source_cluster_id=source_cluster_id,
-                start_char=_legacy_int(r.get("start_char"), label="start_char", default=0),
-                end_char=(
-                    -1
-                    if r.get("end_char") == 10**9
-                    else _legacy_int(r.get("end_char"), label="end_char", default=-1)
-                ),
-                verbatim_text=_legacy_string(r.get("snippet"), label="snippet", default=""),
-                start_delimiter=None,
-                end_delimiter=None,
-                validation_method=r_mention_verification,
-            )
-        )
-    return results
-
-
-def kge_payload_to_semantic_tree(payload: Mapping[str, object]) -> "SemanticNode":
-    nodes_data = _legacy_object_list(payload.get("nodes", []), label="nodes")
-    edges_data = _legacy_object_list(payload.get("edges", []), label="edges")
-
-    sem_nodes: dict[str, SemanticNode] = {}
-    for n in nodes_data:
-        md = _legacy_mapping(n.get("metadata"), label="metadata")
-        # old path
-        # pointers = _extract_pointers_from_metadata(md)
-        # new path (MCP-style references)
-        # if not pointers and n.get("references"):
-        # pointers = _extract_pointers_from_references(n["references"])
-        level_from_root = _legacy_int(md.get("level_from_root"), label="level_from_root")
-        mentions = _extract_pointers_from_mentions(
-            _legacy_object_list(n.get("mentions"), label="mentions")
-        )
-        node_id = _legacy_string(n.get("id"), label="id")
-        parent_id_raw = md.get("parent_id")
-        parent_id = (
-            UUID(_legacy_string(parent_id_raw, label="parent_id"))
-            if parent_id_raw
-            else None
-        )
-        sem = SemanticNode(
-            node_id=UUID(node_id),
-            parent_id=parent_id,
-            node_type=_legacy_node_type(md.get("semantic_node_type", "TEXT_FLOW")),
-            title=_legacy_string(n.get("label"), label="label", default=""),
-            total_content_pointers=mentions,
-            child_nodes=[],
-            level_from_root=level_from_root,
-        )
-        sem_nodes[node_id] = sem
-
-    children_by_parent: dict[str, list[str]] = defaultdict(list)
-    for e in edges_data:
-        relation = e.get("relation") or e.get("predicate")
-        if relation != "HAS_CHILD":
-            continue
-
-        if "source_ids" in e or "target_ids" in e:
-            src_ids = [
-                item
-                for item in _legacy_string_list(e.get("source_ids", []), label="source_ids")
-            ]
-            tgt_ids = [
-                item
-                for item in _legacy_string_list(e.get("target_ids", []), label="target_ids")
-            ]
-            if not src_ids or not tgt_ids:
-                continue
-            parent_id = src_ids[0]
-            child_id = tgt_ids[0]
-        else:
-            parent_id = e.get("subject_id")
-            child_id = e.get("object_id")
-            if parent_id is not None:
-                parent_id = _legacy_string(parent_id, label="subject_id")
-            if child_id is not None:
-                child_id = _legacy_string(child_id, label="object_id")
-            if not parent_id or not child_id:
-                continue
-
-        children_by_parent[parent_id].append(child_id)
-
-    for pid, child_ids in children_by_parent.items():
-        parent_sem = sem_nodes.get(pid)
-        if not parent_sem:
-            continue
-        for cid in child_ids:
-            child_sem = sem_nodes.get(cid)
-            if child_sem:
-                parent_sem.child_nodes.append(child_sem)
-
-    root_candidates = [s for s in sem_nodes.values() if s.parent_id is None]
-    if root_candidates:
-        root = root_candidates[0]
-    else:
-        all_child_ids = {cid for cids in children_by_parent.values() for cid in cids}
-        all_ids = set(sem_nodes.keys())
-        root_ids = list(all_ids - all_child_ids)
-        root = sem_nodes[root_ids[0]] if root_ids else list(sem_nodes.values())[0]
-    validate_semantic_tree_integrity(root)
-    return root
-    
 def all_child_from_root(
     root: SemanticNode,
     results: list[SemanticNode] | None = None,
@@ -3639,117 +3244,26 @@ def all_child_from_root(
         pending.extend(reversed(node.child_nodes))
     return results
 
-available_node_ids = ContextVar("indexing_nodes", default=set())
-class IndexingResponse(BaseModel):
-    "Represent a single indexing result of a node"
-    node_id : str = Field(description = "The node id this index result is representing")
-    canonical_title: str = Field(description = "best searchable title")
-    keywords: list[str] = Field(description = "5-12 short keywords")
-    aliases: list[str] = Field(description = "0-5 alternative phrasings")
-    provision: str = Field(description = "clauses, terms, sections, and schedules. Example: 'Schedule 3.1', 'Term 5a', 'Clause 3.12.2(a)'")
-    @model_validator(mode='after')
-    def _check_consistency(self) -> Self:
-        node_set = available_node_ids.get()
-        try:
-            node_set.remove(str(self.node_id))
-        except KeyError:
-            raise Exception(f'node_id {self.node_id} duplicated or not exist')
-        return self
-class BatchIndexResponse(BaseModel):
-    "a list of batch run of indexing"
-    index : list[IndexingResponse] = Field(description = "a list of indexing result. Each response member/element must have 1 and only 1 corresponding index. Each key is the input node's id")
-    # @model_validator(mode='after')
-    # def _check_used_all_node_id(self):
-    #     node_set = available_node_ids.get()
-    #     assert (set(str(i.node_id) for i in self.index) == node_set)
-    #     return self    
-class IdMapping:
-    def __init__(self) -> None:
-        self.forward_map: dict[str, str] = {}
-        self.backward_map: dict[str, str] = {}
-
-    def to_uuid(self, short_id: str) -> str | None:
-        return self.backward_map.get(short_id)
-
-    def to_short_id(self, id: str, title: object) -> str:
-        if id not in self.forward_map:
-            self.forward_map[id] = f"nid:{len(self.forward_map)}:{title}"
-            self.backward_map[self.forward_map[id]] = id
-        
-        return self.forward_map[id]
-    pass
-
-class IndexMode(str, Enum):
-    FLAT_VERBATIM = "flat_verbatim"
-    BOTTOM_UP_DIGEST = "bottom_up_digest"
-    BOTH = "both"
-
-
-def _default_token_estimate(text: str) -> int:
-    return max(1, (len(text) + 3) // 4)
-
-
-def _json_compact(obj: object) -> str:
-    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-
-
-def _render_nodes_payload(nodes_payload: list[dict[str, Any]] | dict[str, Any]) -> str:
-    return _json_compact({"nodes": nodes_payload})
-
-
-def batch_nodes(
-    items: list[dict[str, Any]],
-    *,
-    max_nodes: int | None = None,
-    max_input_tokens: int | None = None,
-    token_estimator: Callable[[str], int] = _default_token_estimate,
-    base_prompt_tokens: int = 450,
-    per_node_overhead_tokens: int = 15,
-    render_item_for_estimate: Callable[[dict[str, Any]], str] = _json_compact,
-) -> Iterable[list[dict[str, Any]]]:
-    if max_nodes is None and max_input_tokens is None:
-        max_nodes = 25
-
-    batch: list[dict[str, Any]] = []
-    batch_tokens = base_prompt_tokens
-
-    def flush() -> Generator[list[dict[str, Any]], None, None]:
-        nonlocal batch, batch_tokens
-        if batch:
-            yield batch
-        batch = []
-        batch_tokens = base_prompt_tokens
-
-    for item in items:
-        item_text = render_item_for_estimate(item)
-        item_tokens = token_estimator(item_text) + per_node_overhead_tokens
-
-        would_exceed_tokens = (
-            max_input_tokens is not None
-            and batch
-            and (batch_tokens + item_tokens) > max_input_tokens
-        )
-        would_exceed_nodes = (
-            max_nodes is not None
-            and batch
-            and (len(batch) + 1) > max_nodes
-        )
-
-        if would_exceed_tokens or would_exceed_nodes:
-            yield from flush()
-
-        # best-effort: allow single oversized item
-        batch.append(item)
-        batch_tokens += item_tokens
-
-    yield from flush()
+from .semantic_indexing_contracts import (
+    BatchIndexResponse,
+    IdMapping,
+    IndexingResponse,
+    IndexMode,
+    available_node_ids,
+    batch_nodes,
+)
+from .semantic_indexing_contracts import (
+    default_token_estimate as _default_token_estimate,
+)
+from .semantic_indexing_contracts import json_compact as _json_compact
+from .semantic_indexing_contracts import render_nodes_payload as _render_nodes_payload
 
 
 @dataclass
 class _Prepared:
     id_map: IdMapping
-    dumped: list[dict[str, Any]]              # full dumped nodes with short ids
-    node_by_id: dict[str, dict[str, Any]]     # short_id -> dumped node
+    dumped: list[JsonObject]
+    node_by_id: dict[str, JsonObject]
 
 
 def _prepare_nodes(sem_nodes: list["SemanticNode"]) -> _Prepared:
@@ -3758,58 +3272,106 @@ def _prepare_nodes(sem_nodes: list["SemanticNode"]) -> _Prepared:
     id_map.forward_map = {}
     id_map.backward_map = {}
 
-    dumped: list[dict[str, Any]] = []
+    dumped: list[JsonObject] = []
     for n in sem_nodes:
-        d = n.model_dump()
-        d["node_id"] = id_map.to_short_id(d["node_id"], d.get("title"))
+        d = decode_json_object(
+            n.model_dump(mode="json"), label="semantic indexing node"
+        )
+        node_id = d.get("node_id")
+        if not isinstance(node_id, str):
+            raise ValueError("semantic indexing node must have a string node_id")
+        title = d.get("title")
+        if title is not None and not isinstance(title, str):
+            raise ValueError("semantic indexing node title must be a string or null")
+        d["node_id"] = id_map.to_short_id(node_id, title)
         dumped.append(d)
 
     for d in dumped:
         pid = d.get("parent_id")
         if pid is not None:
-            d["parent_id"] = id_map.to_short_id(pid, d.get("title"))
+            if not isinstance(pid, str):
+                raise ValueError("semantic indexing parent_id must be a string or null")
+            title = d.get("title")
+            if title is not None and not isinstance(title, str):
+                raise ValueError("semantic indexing node title must be a string or null")
+            d["parent_id"] = id_map.to_short_id(pid, title)
 
-    node_by_id = {str(d["node_id"]): d for d in dumped}
+    node_by_id = {d["node_id"]: d for d in dumped if isinstance(d["node_id"], str)}
+    if len(node_by_id) != len(dumped):
+        raise ValueError("semantic indexing payload contains a non-string node_id")
     return _Prepared(id_map=id_map, dumped=dumped, node_by_id=node_by_id)
 
 
-def _leaf_payload(node_dict: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "node_id": node_dict["node_id"],
-        "title": node_dict.get("title"),
-        "kind": "LEAF",
-        "contents": [
-            p.get("verbatim_text")
-            for p in (node_dict.get("total_content_pointers") or [])
-            if p and (p.get("verbatim_text") or p.get("start_delimiter"))
-        ],
-    }
+def _leaf_payload(node_dict: JsonObject) -> JsonObject:
+    node_id = node_dict.get("node_id")
+    if not isinstance(node_id, str):
+        raise ValueError("semantic indexing node must have a string node_id")
+    title = node_dict.get("title")
+    if title is not None and not isinstance(title, str):
+        raise ValueError("semantic indexing node title must be a string or null")
 
-def digest_lite(r: IndexingResponse) -> dict[str, Any]:
-    return {
-        "node_id": str(r.node_id),
-        "t": (r.canonical_title or "")[:120],
-        "k": (r.keywords or [])[:12],
-        # omit aliases/provision by default
-    }
-def _digest_from_index(r: "IndexingResponse") -> dict[str, Any]:
+    raw_pointers = node_dict.get("total_content_pointers")
+    if not isinstance(raw_pointers, list):
+        raise ValueError("semantic indexing node pointers must be a list")
+    contents: list[JsonValue] = []
+    for pointer in raw_pointers:
+        if not isinstance(pointer, dict) or not pointer:
+            continue
+        verbatim_text = pointer.get("verbatim_text")
+        if verbatim_text or pointer.get("start_delimiter"):
+            contents.append(verbatim_text)
+    return decode_json_object(
+        {
+            "node_id": node_id,
+            "title": title,
+            "kind": "LEAF",
+            "contents": contents,
+        },
+        label="semantic indexing leaf payload",
+    )
+
+def digest_lite(r: IndexingResponse) -> JsonObject:
+    return decode_json_object(
+        {
+            "node_id": str(r.node_id),
+            "t": (r.canonical_title or "")[:120],
+            "k": (r.keywords or [])[:12],
+            # omit aliases/provision by default
+        },
+        label="semantic indexing digest",
+    )
+def _digest_from_index(r: "IndexingResponse") -> JsonObject:
     # compact, bounded; used only for parent prompts
-    return {
-        "node_id": str(r.node_id),
-        "canonical_title": (r.canonical_title or "")[:160],
-        "keywords": (r.keywords or [])[:12],
-        "aliases": (r.aliases or [])[:5],
-        "provision": (r.provision or "")[:120],
-    }
+    return decode_json_object(
+        {
+            "node_id": str(r.node_id),
+            "canonical_title": (r.canonical_title or "")[:160],
+            "keywords": (r.keywords or [])[:12],
+            "aliases": (r.aliases or [])[:5],
+            "provision": (r.provision or "")[:120],
+        },
+        label="semantic indexing result",
+    )
 
 
-def _parent_payload(node_dict: dict[str, Any], child_digests: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "node_id": node_dict["node_id"],
-        "title": node_dict.get("title"),
-        "kind": "PARENT",
-        "children": child_digests,
-    }
+def _parent_payload(
+    node_dict: JsonObject, child_digests: list[JsonObject]
+) -> JsonObject:
+    node_id = node_dict.get("node_id")
+    if not isinstance(node_id, str):
+        raise ValueError("semantic indexing node must have a string node_id")
+    title = node_dict.get("title")
+    if title is not None and not isinstance(title, str):
+        raise ValueError("semantic indexing node title must be a string or null")
+    return decode_json_object(
+        {
+            "node_id": node_id,
+            "title": title,
+            "kind": "PARENT",
+            "children": child_digests,
+        },
+        label="semantic indexing parent payload",
+    )
 
 @parser_llm_cache
 def build_index_terms_for_semantic_node(
@@ -3955,7 +3517,7 @@ def build_index_terms_for_semantic_node(
 
         ready = deque([nid for nid in node_by_id if remaining_children.get(nid, 0) == 0])
 
-        digest_by_id: dict[str, dict[str, Any]] = {}
+        digest_by_id: dict[str, JsonObject] = {}
         index_by_id: dict[str, IndexingResponse] = {}
         order: list[str] = []
         seen = 0
@@ -3967,7 +3529,7 @@ def build_index_terms_for_semantic_node(
                 wave.append(ready.popleft())
             if not wave and seen < total:
                 raise RuntimeError("Deadlock: no ready nodes but unprocessed nodes remain (cycle/missing parent)")
-            wave_payload: list[dict[str, Any]] = []
+            wave_payload: list[JsonObject] = []
             for nid in wave:
                 kids = children_by_parent.get(nid, [])
                 if not kids:

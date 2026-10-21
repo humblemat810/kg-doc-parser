@@ -428,6 +428,19 @@ def test_grouping_checkpoint_load_rejects_mismatched_companion_records() -> None
 
     with sqlite3.connect(store.db_path) as conn:
         conn.execute(
+            "UPDATE document_tree_state SET source_fingerprint = ? WHERE document_id = ?",
+            (sqlite3.Binary(b"corrupt-source"), tree.document_id),
+        )
+    with pytest.raises(ValueError, match="source_fingerprint.*must be text"):
+        store.load_document_tree(document_id=tree.document_id)
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE document_tree_state SET source_fingerprint = ? WHERE document_id = ?",
+            (tree.source_fingerprint(), tree.document_id),
+        )
+
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
             "UPDATE grouping_checkpoint_metadata SET tree_revision = ? WHERE document_id = ?",
             ("stale-revision", tree.document_id),
         )

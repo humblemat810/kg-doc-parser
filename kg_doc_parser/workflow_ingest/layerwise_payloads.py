@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from .model_validation import validate_backend_payload
 from .models import (
     CurrentLayerResult,
     CurrentLayerReview,
@@ -47,7 +48,9 @@ def hydrate_pointer_payload(
 
     payload = object_dict(dump_model(pointer))
     raw_source_cluster_id = payload.get("source_cluster_id")
-    source_cluster_id = raw_source_cluster_id if isinstance(raw_source_cluster_id, str) else ""
+    source_cluster_id = (
+        raw_source_cluster_id if isinstance(raw_source_cluster_id, str) else ""
+    )
     start_char = payload.get("start_char")
     end_char = payload.get("end_char")
     if type(start_char) is int and type(end_char) is int:
@@ -66,7 +69,9 @@ def hydrate_pointer_payload(
             payload.update(hydrated.model_dump())
             return payload
     raw_verbatim_text = payload.get("verbatim_text")
-    payload["verbatim_text"] = raw_verbatim_text if isinstance(raw_verbatim_text, str) else ""
+    payload["verbatim_text"] = (
+        raw_verbatim_text if isinstance(raw_verbatim_text, str) else ""
+    )
     return payload
 
 
@@ -85,7 +90,7 @@ def hydrate_layer_result(
         ]
         children.append(child_payload)
     payload["children"] = children
-    return CurrentLayerResult.model_validate(payload)
+    return validate_backend_payload(CurrentLayerResult, payload)
 
 
 def hydrate_review(
@@ -113,7 +118,7 @@ def hydrate_review(
         conflict_payload["right_span"] = hydrate_pointer_payload(
             conflict_payload.get("right_span"), parser_source_map=parser_source_map
         )
-    return CurrentLayerReview.model_validate(payload)
+    return validate_backend_payload(CurrentLayerReview, payload)
 
 
 # Keep the compatibility helpers imported by existing internal callers.

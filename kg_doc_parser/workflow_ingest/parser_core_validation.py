@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TypeAlias
 
 from .models import (
     CurrentLayerContext,
     CurrentLayerResult,
+    LayerChildCandidate,
     LayerCoverageGap,
     LayerDuplicateChildNote,
     LayerSpanConflict,
@@ -55,6 +57,121 @@ def _has_meaningful_gap_text(text: str) -> bool:
     return bool("".join(text.split()))
 
 
+def _overlapping_sibling_pointer_pairs(
+    children: list[LayerChildCandidate],
+    source_map: ParserSourceMap | None,
+) -> Iterator[
+    tuple[int, int, int, int, HydratedTextPointer, HydratedTextPointer, int, int]
+]:
+    """Return overlapping pointers in the same order as the former pairwise scan."""
+
+    # For small layers, direct iteration avoids sorting/allocating a sweep index.
+    # Dense layers also benefit because nearly every pair is a real diagnostic.
+    if len(children) <= 64:
+        for left_index, left_child in enumerate(children):
+            for right_index in range(left_index + 1, len(children)):
+                right_child = children[right_index]
+                for left_pointer_index, left_pointer in enumerate(
+                    left_child.total_content_pointers
+                ):
+                    left_end = _pointer_end(left_pointer, source_map)
+                    for right_pointer_index, right_pointer in enumerate(
+                        right_child.total_content_pointers
+                    ):
+                        if (
+                            left_pointer.source_cluster_id
+                            != right_pointer.source_cluster_id
+                        ):
+                            continue
+                        right_end = _pointer_end(right_pointer, source_map)
+                        overlap_start = max(
+                            left_pointer.start_char, right_pointer.start_char
+                        )
+                        overlap_end = min(left_end, right_end)
+                        if overlap_start <= overlap_end:
+                            yield (
+                                left_index,
+                                right_index,
+                                left_pointer_index,
+                                right_pointer_index,
+                                left_pointer,
+                                right_pointer,
+                                overlap_start,
+                                overlap_end,
+                            )
+        return
+
+    intervals_by_source: dict[
+        str, list[tuple[int, int, int, int, HydratedTextPointer]]
+    ] = {}
+    for child_index, child_obj in enumerate(children):
+        child = child_obj
+        for pointer_index, pointer in enumerate(child.total_content_pointers):
+            intervals_by_source.setdefault(pointer.source_cluster_id, []).append(
+                (
+                    pointer.start_char,
+                    _pointer_end(pointer, source_map),
+                    child_index,
+                    pointer_index,
+                    pointer,
+                )
+            )
+
+    candidates: list[
+        tuple[int, int, int, int, HydratedTextPointer, HydratedTextPointer, int, int]
+    ] = []
+    for intervals in intervals_by_source.values():
+        ordered = sorted(
+            intervals, key=lambda item: (item[0], item[1], item[2], item[3])
+        )
+        active: list[tuple[int, int, int, int, HydratedTextPointer]] = []
+        for current in ordered:
+            start, end, child_index, pointer_index, pointer = current
+            active = [item for item in active if item[1] >= start]
+            if end < start:
+                continue
+            for other in active:
+                _, other_end, other_child_index, other_pointer_index, other_pointer = (
+                    other
+                )
+                if (
+                    other_child_index == child_index
+                    or other_end < start
+                    or end < other[0]
+                ):
+                    continue
+                if other_child_index < child_index:
+                    candidates.append(
+                        (
+                            other_child_index,
+                            child_index,
+                            other_pointer_index,
+                            pointer_index,
+                            other_pointer,
+                            pointer,
+                            max(other[0], start),
+                            min(other_end, end),
+                        )
+                    )
+                else:
+                    candidates.append(
+                        (
+                            child_index,
+                            other_child_index,
+                            pointer_index,
+                            other_pointer_index,
+                            pointer,
+                            other_pointer,
+                            max(start, other[0]),
+                            min(end, other_end),
+                        )
+                    )
+            active.append(current)
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    yield from candidates
+
+
 def detect_layer_invariants(
     *,
     current_layer_context: CurrentLayerContext,
@@ -76,8 +193,17 @@ def detect_layer_invariants(
     review_notes: list[str] = []
     seen_overlap_pairs: set[tuple[str, str, str, str, int, int, str]] = set()
     seen_child_ids: dict[str, str] = {}
+    children_by_parent: dict[str, list[LayerChildCandidate]] = {}
+    pointer_ends: dict[int, int] = {}
+
+    def pointer_end(pointer: HydratedTextPointer) -> int:
+        key = id(pointer)
+        if key not in pointer_ends:
+            pointer_ends[key] = _pointer_end(pointer, parser_source_map)
+        return pointer_ends[key]
 
     for child in current_layer_result.children:
+        children_by_parent.setdefault(child.parent_node_id, []).append(child)
         previous_parent = seen_child_ids.get(child.node_id)
         if previous_parent is not None:
             duplicate_notes.append(
@@ -100,11 +226,7 @@ def detect_layer_invariants(
 
     parent_pointers = current_layer_context.parent_content_pointers_by_id or {}
     for parent_id in current_layer_context.parent_node_ids:
-        parent_children = [
-            child
-            for child in current_layer_result.children
-            if child.parent_node_id == parent_id
-        ]
+        parent_children = children_by_parent.get(parent_id, [])
         if not parent_children:
             explicitly_atomic = current_layer_result.atomic_retained and (
                 not current_layer_result.atomic_parent_ids
@@ -136,7 +258,7 @@ def detect_layer_invariants(
                                     parent_node_id=parent_id,
                                     source_cluster_id=parent_pointer.source_cluster_id,
                                     gap_start=max(parent_pointer.start_char, 0),
-                                    gap_end=_pointer_end(parent_pointer, parser_source_map),
+                                    gap_end=pointer_end(parent_pointer),
                                     expected_text=pointer_error,
                                 )
                             )
@@ -157,14 +279,18 @@ def detect_layer_invariants(
                         f"parent {parent_id} cannot be atomically retained without a source map"
                     )
                 if not any(gap.parent_node_id == parent_id for gap in coverage_gaps):
-                    review_notes.append(f"parent {parent_id} retained as an explicit atomic unit")
+                    review_notes.append(
+                        f"parent {parent_id} retained as an explicit atomic unit"
+                    )
             else:
                 for parent_pointer in parent_pointers.get(parent_id, []):
-                    parent_end = _pointer_end(parent_pointer, parser_source_map)
+                    parent_end = pointer_end(parent_pointer)
                     cluster_text = _source_text(
                         (parser_source_map or {}).get(parent_pointer.source_cluster_id)
                     )
-                    expected_text = cluster_text[parent_pointer.start_char : parent_end + 1]
+                    expected_text = cluster_text[
+                        parent_pointer.start_char : parent_end + 1
+                    ]
                     if _has_meaningful_gap_text(expected_text):
                         coverage_gaps.append(
                             LayerCoverageGap(
@@ -205,7 +331,9 @@ def detect_layer_invariants(
                     f"nested unary refinement under child {child.node_id} of parent {parent_id}"
                 )
 
-        seen_signatures: dict[tuple[str, tuple[tuple[str, int, int, str], ...]], str] = {}
+        seen_signatures: dict[
+            tuple[str, tuple[tuple[str, int, int, str], ...]], str
+        ] = {}
         for child in parent_children:
             signature = (child.title.strip().lower(), _child_pointer_fingerprint(child))
             if signature in seen_signatures:
@@ -225,56 +353,131 @@ def detect_layer_invariants(
             else:
                 seen_signatures[signature] = child.node_id
 
-        for left_index, left_child in enumerate(parent_children):
-            for right_child in parent_children[left_index + 1 :]:
-                for left_pointer in left_child.total_content_pointers:
-                    for right_pointer in right_child.total_content_pointers:
-                        if left_pointer.source_cluster_id != right_pointer.source_cluster_id:
-                            continue
-                        left_end = _pointer_end(left_pointer, parser_source_map)
-                        right_end = _pointer_end(right_pointer, parser_source_map)
-                        overlap_start = max(left_pointer.start_char, right_pointer.start_char)
-                        overlap_end = min(left_end, right_end)
-                        if overlap_start > overlap_end:
-                            continue
-                        conflict_kind = (
-                            "duplicate"
-                            if left_pointer.start_char == right_pointer.start_char
-                            and left_end == right_end
-                            and _normalize_text(left_pointer.verbatim_text)
-                            == _normalize_text(right_pointer.verbatim_text)
-                            else "overlap"
-                        )
-                        pair_key = (
-                            parent_id,
-                            left_child.node_id,
-                            right_child.node_id,
-                            left_pointer.source_cluster_id,
-                            overlap_start,
-                            overlap_end,
-                            conflict_kind,
-                        )
-                        if pair_key in seen_overlap_pairs:
-                            continue
-                        seen_overlap_pairs.add(pair_key)
-                        overlap_conflicts.append(
-                            LayerSpanConflict(
-                                parent_node_id=parent_id,
-                                left_child_id=left_child.node_id,
-                                right_child_id=right_child.node_id,
-                                source_cluster_id=left_pointer.source_cluster_id,
-                                left_span=left_pointer,
-                                right_span=right_pointer,
-                                overlap_start=overlap_start,
-                                overlap_end=overlap_end,
-                                conflict_kind=conflict_kind,
+        def record_overlap(
+            left_child: LayerChildCandidate,
+            right_child: LayerChildCandidate,
+            left_pointer: HydratedTextPointer,
+            right_pointer: HydratedTextPointer,
+            overlap_start: int,
+            overlap_end: int,
+            current_parent_id: str = parent_id,
+        ) -> None:
+            left_end = pointer_end(left_pointer)
+            right_end = pointer_end(right_pointer)
+            conflict_kind = (
+                "duplicate"
+                if left_pointer.start_char == right_pointer.start_char
+                and left_end == right_end
+                and _normalize_text(left_pointer.verbatim_text)
+                == _normalize_text(right_pointer.verbatim_text)
+                else "overlap"
+            )
+            pair_key = (
+                current_parent_id,
+                left_child.node_id,
+                right_child.node_id,
+                left_pointer.source_cluster_id,
+                overlap_start,
+                overlap_end,
+                conflict_kind,
+            )
+            if pair_key in seen_overlap_pairs:
+                return
+            seen_overlap_pairs.add(pair_key)
+            overlap_conflicts.append(
+                LayerSpanConflict(
+                    parent_node_id=current_parent_id,
+                    left_child_id=left_child.node_id,
+                    right_child_id=right_child.node_id,
+                    source_cluster_id=left_pointer.source_cluster_id,
+                    left_span=left_pointer,
+                    right_span=right_pointer,
+                    overlap_start=overlap_start,
+                    overlap_end=overlap_end,
+                    conflict_kind=conflict_kind,
+                )
+            )
+            review_notes.append(
+                f"{conflict_kind} between {left_child.node_id} and "
+                f"{right_child.node_id} on {left_pointer.source_cluster_id}:"
+                f"{overlap_start}-{overlap_end}"
+            )
+
+        if len(parent_children) <= 64:
+            for left_index, left_child in enumerate(parent_children):
+                for right_child in parent_children[left_index + 1 :]:
+                    for left_pointer in left_child.total_content_pointers:
+                        for right_pointer in right_child.total_content_pointers:
+                            if (
+                                left_pointer.source_cluster_id
+                                != right_pointer.source_cluster_id
+                            ):
+                                continue
+                            left_end = _pointer_end(left_pointer, parser_source_map)
+                            right_end = _pointer_end(right_pointer, parser_source_map)
+                            overlap_start = max(
+                                left_pointer.start_char, right_pointer.start_char
                             )
-                        )
-                        review_notes.append(
-                            f"{conflict_kind} between {left_child.node_id} and "
-                            f"{right_child.node_id} on {left_pointer.source_cluster_id}:"
-                            f"{overlap_start}-{overlap_end}"
-                        )
+                            overlap_end = min(left_end, right_end)
+                            if overlap_start > overlap_end:
+                                continue
+                            conflict_kind = (
+                                "duplicate"
+                                if left_pointer.start_char == right_pointer.start_char
+                                and left_end == right_end
+                                and _normalize_text(left_pointer.verbatim_text)
+                                == _normalize_text(right_pointer.verbatim_text)
+                                else "overlap"
+                            )
+                            pair_key = (
+                                parent_id,
+                                left_child.node_id,
+                                right_child.node_id,
+                                left_pointer.source_cluster_id,
+                                overlap_start,
+                                overlap_end,
+                                conflict_kind,
+                            )
+                            if pair_key in seen_overlap_pairs:
+                                continue
+                            seen_overlap_pairs.add(pair_key)
+                            overlap_conflicts.append(
+                                LayerSpanConflict(
+                                    parent_node_id=parent_id,
+                                    left_child_id=left_child.node_id,
+                                    right_child_id=right_child.node_id,
+                                    source_cluster_id=left_pointer.source_cluster_id,
+                                    left_span=left_pointer,
+                                    right_span=right_pointer,
+                                    overlap_start=overlap_start,
+                                    overlap_end=overlap_end,
+                                    conflict_kind=conflict_kind,
+                                )
+                            )
+                            review_notes.append(
+                                f"{conflict_kind} between {left_child.node_id} and "
+                                f"{right_child.node_id} on {left_pointer.source_cluster_id}:"
+                                f"{overlap_start}-{overlap_end}"
+                            )
+        else:
+            for (
+                left_index,
+                right_index,
+                _,
+                _,
+                left_pointer,
+                right_pointer,
+                overlap_start,
+                overlap_end,
+            ) in _overlapping_sibling_pointer_pairs(parent_children, parser_source_map):
+                record_overlap(
+                    parent_children[left_index],
+                    parent_children[right_index],
+                    left_pointer,
+                    right_pointer,
+                    overlap_start,
+                    overlap_end,
+                )
 
         for parent_pointer in parent_pointers.get(parent_id, []):
             parent_pointer_error = (
@@ -309,7 +512,9 @@ def detect_layer_invariants(
                     continue
                 for child_pointer in child.total_content_pointers:
                     pointer_error = (
-                        pointer_source_validation_error(child_pointer, parser_source_map)
+                        pointer_source_validation_error(
+                            child_pointer, parser_source_map
+                        )
                         if parser_source_map is not None
                         else None
                     )
@@ -319,7 +524,7 @@ def detect_layer_invariants(
                                 parent_node_id=parent_id,
                                 source_cluster_id=child_pointer.source_cluster_id,
                                 gap_start=max(child_pointer.start_char, 0),
-                                gap_end=_pointer_end(child_pointer, parser_source_map),
+                                gap_end=pointer_end(child_pointer),
                                 expected_text=pointer_error,
                             )
                         )
@@ -328,10 +533,16 @@ def detect_layer_invariants(
                             f"{pointer_error}"
                         )
                         continue
-                    if child_pointer.source_cluster_id != parent_pointer.source_cluster_id:
+                    if (
+                        child_pointer.source_cluster_id
+                        != parent_pointer.source_cluster_id
+                    ):
                         continue
-                    child_end = _pointer_end(child_pointer, parser_source_map)
-                    if child_pointer.start_char < parent_start or child_end > parent_end:
+                    child_end = pointer_end(child_pointer)
+                    if (
+                        child_pointer.start_char < parent_start
+                        or child_end > parent_end
+                    ):
                         coverage_gaps.append(
                             LayerCoverageGap(
                                 parent_node_id=parent_id,
@@ -345,18 +556,26 @@ def detect_layer_invariants(
                             f"child pointer {child.node_id} is outside parent {parent_id}"
                         )
                         continue
-                    child_intervals.append((max(child_pointer.start_char, 0), child_end))
+                    child_intervals.append(
+                        (max(child_pointer.start_char, 0), child_end)
+                    )
             merged = _merge_intervals(child_intervals)
-            cluster_text = _source_text(
-                parser_source_map.get(parent_pointer.source_cluster_id)
-            ) if parser_source_map else ""
+            cluster_text = (
+                _source_text(parser_source_map.get(parent_pointer.source_cluster_id))
+                if parser_source_map
+                else ""
+            )
             cursor = parent_start
             for start, end in merged:
                 if start > cursor:
                     gap_start = cursor
                     gap_end = min(start - 1, parent_end)
                     if gap_start <= gap_end:
-                        gap_text = cluster_text[gap_start : gap_end + 1] if cluster_text else ""
+                        gap_text = (
+                            cluster_text[gap_start : gap_end + 1]
+                            if cluster_text
+                            else ""
+                        )
                         if not _has_meaningful_gap_text(gap_text):
                             cursor = max(cursor, gap_end + 1)
                         else:
@@ -394,12 +613,22 @@ def detect_layer_invariants(
                     )
 
     coverage_ok = not coverage_gaps
+    has_unary_nested_child = any(
+        len(child.child_candidates) == 1 for child in current_layer_result.children
+    )
     branching_ok = all(
-        len(
-            [child for child in current_layer_result.children if child.parent_node_id == parent_id]
-        ) != 1
-        and all(len(child.child_candidates) != 1 for child in current_layer_result.children)
+        len(children_by_parent.get(parent_id, [])) != 1
+        and not has_unary_nested_child
         for parent_id in current_layer_context.parent_node_ids
     )
-    satisfied = coverage_ok and not overlap_conflicts and not duplicate_notes and branching_ok
-    return coverage_ok, satisfied, overlap_conflicts, coverage_gaps, duplicate_notes, review_notes
+    satisfied = (
+        coverage_ok and not overlap_conflicts and not duplicate_notes and branching_ok
+    )
+    return (
+        coverage_ok,
+        satisfied,
+        overlap_conflicts,
+        coverage_gaps,
+        duplicate_notes,
+        review_notes,
+    )

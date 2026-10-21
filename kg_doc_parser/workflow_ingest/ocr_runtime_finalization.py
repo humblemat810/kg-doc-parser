@@ -7,9 +7,10 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.runtime.runtime import RunResult
+from kogwistar.runtime import RunResult
 
 from .document_models import DocumentTree
+from .model_validation import validate_backend_payload
 from .models import WorkflowExportBundle, WorkflowIngestInput
 from .ocr_pipeline import (
     OCRPageJSON,
@@ -143,8 +144,8 @@ def finalize_ocr_root_result(
     workflow_input_payload = final_state.get("workflow_input")
     if not isinstance(workflow_input_payload, dict):
         raise TypeError("OCR root completed without workflow input")
-    artifacts.workflow_input = WorkflowIngestInput.model_validate(
-        workflow_input_payload
+    artifacts.workflow_input = validate_backend_payload(
+        WorkflowIngestInput, workflow_input_payload
     )
     artifacts.document_tree = grouped_tree
     _write_document_tree(
@@ -158,7 +159,7 @@ def finalize_ocr_root_result(
     )
     raw_bundle = final_state.get("export_bundle")
     bundle = (
-        WorkflowExportBundle.model_validate(raw_bundle)
+        validate_backend_payload(WorkflowExportBundle, raw_bundle)
         if isinstance(raw_bundle, dict)
         else None
     )

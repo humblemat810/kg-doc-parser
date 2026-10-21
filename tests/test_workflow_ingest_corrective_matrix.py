@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from _kogwistar_test_helpers import build_workflow_engine_triplet
 
-import kg_doc_parser.workflow_ingest.handlers as handlers_module
+import kg_doc_parser.workflow_ingest.handler_layerwise as layerwise_handlers_module
 import kg_doc_parser.workflow_ingest.page_index_provider as page_index_provider_module
 from kg_doc_parser.workflow_ingest import (
     BlockAssignment,
@@ -211,7 +211,7 @@ def test_corrective_long_table_workflow_strategy_matrix(
 
     if strategy == "page_index":
         monkeypatch.setattr(
-            handlers_module,
+            layerwise_handlers_module,
             "parse_page_index_layer",
             lambda *, parent_id, **_kwargs: valid_table_children(parent_id),
         )
@@ -411,7 +411,9 @@ def test_durable_batch_commits_valid_parent_and_requeues_failed_parent(
             assert parent_id == beta_id
             return children_for(beta_id, beta_start, beta_end)
 
-        monkeypatch.setattr(handlers_module, "parse_page_index_layer", page_index_layer)
+        monkeypatch.setattr(
+            layerwise_handlers_module, "parse_page_index_layer", page_index_layer
+        )
 
     def review_layer(*, current_layer_context, current_layer_result, **_kwargs) -> CurrentLayerReview:
         return CurrentLayerReview(
@@ -501,7 +503,9 @@ def test_durable_empty_provider_is_retried_before_atomic_page_index_fallback(
     # The normal cascade is allowed to reach deterministic PageIndex as its
     # final fallback.  This test isolates the durable failure contract by
     # making every selected strategy return the same invalid empty result.
-    monkeypatch.setattr(handlers_module, "parse_page_index_layer", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        layerwise_handlers_module, "parse_page_index_layer", lambda **_kwargs: []
+    )
 
     run, bundle = run_ingest_workflow(
         inp=inp,
@@ -565,7 +569,11 @@ def test_durable_invalid_pointer_refinement_fails_closed(monkeypatch: pytest.Mon
             )
         ]
 
-    monkeypatch.setattr(handlers_module, "parse_page_index_layer", invalid_page_index_layer)
+    monkeypatch.setattr(
+        layerwise_handlers_module,
+        "parse_page_index_layer",
+        invalid_page_index_layer,
+    )
 
     run, bundle = run_ingest_workflow(
         inp=inp,
