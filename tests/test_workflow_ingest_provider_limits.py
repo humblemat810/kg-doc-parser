@@ -110,6 +110,27 @@ def test_provider_adapters_map_output_cap_to_native_option(
         assert captured[0]["max_retries"] == 0
 
 
+def test_ollama_adapter_maps_configured_context_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[dict[str, Any]] = []
+    _fake_provider_module(monkeypatch, "langchain_ollama", "ChatOllama", captured)
+
+    build_chat_model(
+        ProviderEndpointConfig(
+            provider="ollama",
+            model="text-only-critic",
+            ollama_num_ctx=2_048,
+        )
+    )
+
+    assert captured[0]["num_ctx"] == 2_048
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_ollama_context_window_must_be_positive(value: int) -> None:
+    with pytest.raises(ValueError, match="ollama_num_ctx"):
+        ProviderEndpointConfig(provider="ollama", ollama_num_ctx=value)
+
+
 @pytest.mark.parametrize("value", [0, -1])
 def test_provider_output_token_cap_must_be_positive(value: int) -> None:
     with pytest.raises(ValueError, match="max_output_tokens"):

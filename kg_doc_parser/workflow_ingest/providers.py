@@ -490,6 +490,9 @@ class ProviderEndpointConfig(ModeSlicingMixin, BaseModel):
     max_output_tokens: Annotated[
         int | None, DtoField(), BackendField(), FrontendField(), LLMField()
     ] = Field(default=None, gt=0)
+    ollama_num_ctx: Annotated[
+        int | None, DtoField(), BackendField(), FrontendField(), LLMField()
+    ] = Field(default=None, gt=0)
     timeout_seconds: Annotated[
         float,
         DtoField(),
@@ -1206,6 +1209,8 @@ def build_chat_model(
         }
         if spec.max_output_tokens is not None:
             kwargs["num_predict"] = spec.max_output_tokens
+        if spec.ollama_num_ctx is not None:
+            kwargs["num_ctx"] = spec.ollama_num_ctx
         if spec.base_url:
             kwargs["base_url"] = spec.base_url
         return cast(SupportsStructuredOutput, _construct_provider(ChatOllama, kwargs))
