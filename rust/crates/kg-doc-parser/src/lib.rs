@@ -11,3 +11,4 @@ pub mod pointer_matching;
 pub mod semantic;
 pub mod semantic_indexing;
 pub mod source_text;
+pub mod strategy;
