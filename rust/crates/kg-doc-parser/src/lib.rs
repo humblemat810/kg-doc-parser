@@ -1,3 +1,4 @@
+pub mod document_models;
 pub mod page_index_candidates;
 pub mod page_index_classification;
 pub mod page_index_contracts;
