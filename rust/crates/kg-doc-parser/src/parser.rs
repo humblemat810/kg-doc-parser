@@ -98,13 +98,10 @@ pub fn parse_doc_text(
     if parsing_mode == ParsingMode::Delimiter {
         let delimiters = ["\n\n\n", "\n\n", "\n"];
         let mut remaining = text;
-        loop {
-            let Some(delimiter) = delimiters
-                .iter()
-                .find(|delimiter| remaining.contains(**delimiter))
-            else {
-                break;
-            };
+        while let Some(delimiter) = delimiters
+            .iter()
+            .find(|delimiter| remaining.contains(**delimiter))
+        {
             for chunk in remaining.split(delimiter) {
                 let chunk = chunk.trim();
                 if !chunk.is_empty() {
