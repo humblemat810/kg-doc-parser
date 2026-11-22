@@ -13,6 +13,7 @@
 | Semantic indexing batching | Mirror `semantic_indexing_contracts.py`; short IDs, token estimates, compact JSON and deterministic batching | DONE | Batching unit tests |
 | Page-index contracts | Mirror `page_index_contracts.py` block spans, source formats and node types | DONE | Contract model tests |
 | Page-index classification | Mirror `page_index_classification.py`; headings, terms, tables, paragraphs and numeric-heavy blocks | DONE | Classification unit tests |
+| Page-index candidates | Mirror `page_index_candidates.py`; block spans, stable IDs, candidate extraction and deterministic assignments | DONE | Candidate extraction tests |
 | Raw OCR input adapter | Mirror `text_processing_utils.text_to_ocr_format`; deterministic single-cluster input envelope | TODO | Adapter contract test |
 | Document models | Mirror `workflow_ingest/document_models.py`; nodes, references, evidence slices, media refs, summaries and policies | TODO | Model contract tests |
 | Document grouping and tree | Mirror `document_grouping.py` and `page_index_tree.py`; grouping, merge rules and tree materialization | TODO | Tree golden fixtures |
