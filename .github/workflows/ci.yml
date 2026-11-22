@@ -121,6 +121,28 @@ jobs:
           tests/test_workflow_ingest_resolver_invariants.py
           -q --durations=25 --durations-min=0 -p no:cacheprovider
 
+      - name: Run deterministic PyPy 3.11 CI tests
+        if: matrix.is_pypy
+        env:
+          KOGWISTAR_IMPL_MODE: python
+          PYTHONPATH: ${{ github.workspace }}/kogwistar
+        run: >-
+          python -m pytest -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
+          tests/test_packaging_imports.py
+          tests/test_parser_state_edge_cases.py
+          tests/test_recovery_workflow_contract.py
+          tests/test_pointer_edge_cases.py
+          tests/test_workflow_ingest_contracts.py
+          tests/test_fixture_payload_regressions.py
+          tests/test_workflow_ingest_conversation_graph.py
+          tests/test_workflow_ingest_layerwise_llm.py
+          tests/test_workflow_ingest_layerwise_parser.py
+          tests/test_workflow_ingest_ocr_pipeline.py
+          tests/test_workflow_ingest_ocr_providers.py
+          tests/test_workflow_ingest_page_index_pipeline.py
+          tests/test_workflow_ingest_resolver_invariants.py
+          -q --durations=25 --durations-min=0 -p no:cacheprovider
+
   rust-port:
     name: Rust port gates
     runs-on: ubuntu-latest
@@ -148,28 +170,6 @@ jobs:
 
       - name: Lint Rust workspace
         run: cargo clippy --all --all-targets -- -D warnings
-
-      - name: Run deterministic PyPy 3.11 CI tests
-        if: matrix.is_pypy
-        env:
-          KOGWISTAR_IMPL_MODE: python
-          PYTHONPATH: ${{ github.workspace }}/kogwistar
-        run: >-
-          python -m pytest -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
-          tests/test_packaging_imports.py
-          tests/test_parser_state_edge_cases.py
-          tests/test_recovery_workflow_contract.py
-          tests/test_pointer_edge_cases.py
-          tests/test_workflow_ingest_contracts.py
-          tests/test_fixture_payload_regressions.py
-          tests/test_workflow_ingest_conversation_graph.py
-          tests/test_workflow_ingest_layerwise_llm.py
-          tests/test_workflow_ingest_layerwise_parser.py
-          tests/test_workflow_ingest_ocr_pipeline.py
-          tests/test_workflow_ingest_ocr_providers.py
-          tests/test_workflow_ingest_page_index_pipeline.py
-          tests/test_workflow_ingest_resolver_invariants.py
-          -q --durations=25 --durations-min=0 -p no:cacheprovider
 
   recovery-gate:
     name: Linux recovery release gate
