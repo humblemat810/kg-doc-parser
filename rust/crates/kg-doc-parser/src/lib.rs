@@ -1,6 +1,7 @@
 pub mod page_index_candidates;
 pub mod page_index_classification;
 pub mod page_index_contracts;
+pub mod page_index_pipeline;
 pub mod page_index_source_text;
 pub mod page_index_tree;
 pub mod parser;
