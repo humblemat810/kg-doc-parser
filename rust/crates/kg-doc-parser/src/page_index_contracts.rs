@@ -32,3 +32,30 @@ pub struct BlockSpan {
     pub confidence: f64,
     pub heading_level: Option<u8>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateBlock {
+    pub block_id: String,
+    pub page_number: u32,
+    pub order: u32,
+    pub start_char: usize,
+    pub end_char: usize,
+    pub line_start: usize,
+    pub line_end: usize,
+    pub indent: usize,
+    pub kind_hint: String,
+    pub confidence: f64,
+    pub text: String,
+    pub node_type_hint: PageIndexNodeType,
+    pub title_hint: String,
+    pub heading_level: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockAssignment {
+    pub block_id: String,
+    pub parent_id: Option<String>,
+    pub node_type: PageIndexNodeType,
+    pub title: String,
+    pub summary: String,
+}
