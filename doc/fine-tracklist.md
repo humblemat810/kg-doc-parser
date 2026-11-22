@@ -7,6 +7,10 @@
 | Text pointer model | Mirror `HydratedTextPointer`; source cluster ID and exact character spans | DONE | Pointer model unit test |
 | Parsing modes | Mirror `text_processing_utils.parse_doc_text`; snippet and delimiter modes with bounded depth | DONE | Mode unit tests |
 | Markdown section parser | Heading and paragraph segmentation, source pointers, atomic leaf fallback | DONE | Text/Markdown unit tests |
+| Source text extraction | Mirror `semantic_source_text.py`; direct text fields, OCR clusters, non-text objects and nested non-string evidence | DONE | Source text unit tests |
+| Pointer matching (exact and whitespace) | Mirror `semantic_pointer_matching.py`; inclusive offsets, non-overlapping exact matches, whitespace-normalized spans and diagnostics | DONE | Pointer matching unit tests |
+| Pointer matching (fuzzy) | Mirror explicit fuzzy threshold path; LCSseq, difflib fallback and threshold diagnostics | TODO | Fuzzy matching fixtures |
+| Semantic indexing batching | Mirror `semantic_indexing_contracts.py`; short IDs, token estimates, compact JSON and deterministic batching | DONE | Batching unit tests |
 | Raw OCR input adapter | Mirror `text_processing_utils.text_to_ocr_format`; deterministic single-cluster input envelope | TODO | Adapter contract test |
 | Document models | Mirror `workflow_ingest/document_models.py`; nodes, references, evidence slices, media refs, summaries and policies | TODO | Model contract tests |
 | Document grouping and tree | Mirror `document_grouping.py` and `page_index_tree.py`; grouping, merge rules and tree materialization | TODO | Tree golden fixtures |
