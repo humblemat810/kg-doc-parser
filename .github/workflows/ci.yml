@@ -36,12 +36,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Check out Kogwistar 0.6.15 source profile for PyPy
+      - name: Check out Kogwistar 0.7.2 source profile for PyPy
         if: matrix.is_pypy
         uses: actions/checkout@v7
         with:
           repository: humblemat810/kogwistar
-          ref: v0.6.15
+          ref: v0.7.2
           path: kogwistar
 
       - name: Set up Python
@@ -95,7 +95,7 @@ jobs:
         if: matrix.label == 'cpython312'
         run: poetry run pyright
 
-      - name: Verify Kogwistar 0.6.15 source-profile import on PyPy
+      - name: Verify Kogwistar 0.7.2 source-profile import on PyPy
         if: matrix.is_pypy
         env:
           KOGWISTAR_IMPL_MODE: python
@@ -142,6 +142,34 @@ jobs:
           tests/test_workflow_ingest_page_index_pipeline.py
           tests/test_workflow_ingest_resolver_invariants.py
           -q --durations=25 --durations-min=0 -p no:cacheprovider
+
+  rust-port:
+    name: Rust port gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format Rust workspace
+        run: cargo fmt --all -- --check
+
+      - name: Run Rust tests
+        run: cargo test --all
+
+      - name: Lint Rust workspace
+        run: cargo clippy --all --all-targets -- -D warnings
 
   recovery-gate:
     name: Linux recovery release gate

@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/kg-doc-parser"]
+
+[workspace.package]
+edition = "2021"
+license = "Other/Proprietary"
+repository = "https://github.com/humblemat810/kg_doc_parser"
+
+[workspace.dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+regex = "1.11"
+sha2 = "0.10"

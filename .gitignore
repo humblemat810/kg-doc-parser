@@ -21,5 +21,6 @@ tests/.tmp_*.log
 .pytest*
 .tmp*
 src.zip
+rust/target/
 
 .vscode/launch.json

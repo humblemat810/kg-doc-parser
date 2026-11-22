@@ -1511,17 +1511,18 @@ referencing = ">=0.31.0"
 
 [[package]]
 name = "kogwistar"
-version = "0.6.15"
+version = "0.7.2"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 optional = false
-python-versions = ">=3.12"
+python-versions = ">=3.11"
 groups = ["main"]
 files = [
-    {file = "kogwistar-0.6.15-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:9366d87853d363e1270dcf5c3f923eaa8992c15796b83d866e9c8e6e5c4cc31b"},
-    {file = "kogwistar-0.6.15-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:770af7d7ace8e81e206f19c726e0a6ff602d5946933f0f232fd7e1c26533a597"},
-    {file = "kogwistar-0.6.15-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:f164fe6353f28c41bd9d80113366ff78a3ff6fcdb2015d71b58dfa6c4c97997b"},
-    {file = "kogwistar-0.6.15-cp312-abi3-win_amd64.whl", hash = "sha256:e8982644b01c62bc12f435ecfe5789885ae5383576ad8777136e4eb9ef7e5a7d"},
-    {file = "kogwistar-0.6.15.tar.gz", hash = "sha256:274c34919895c67841e9b04564bcb5d201bd3f4df7b46fc65ab9faadf2049d87"},
+    {file = "kogwistar-0.7.2-cp312-abi3-macosx_10_12_x86_64.whl", hash = "sha256:56e1e20b5dcd346acc87b74c720345177e263ed742f4d2d495e65a4a74ebb6ce"},
+    {file = "kogwistar-0.7.2-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:5e2f76e1124870f7b1ed06562f42b23d7a191eabdc286fdae43228a5789587f2"},
+    {file = "kogwistar-0.7.2-cp312-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:73a8604acfad7398d28301ac782c0db9b9913a9d961ed7aaad117dd8d461f8ef"},
+    {file = "kogwistar-0.7.2-cp312-abi3-win_amd64.whl", hash = "sha256:70a23d52896fc546883b1f6d279d6e87ef3fd7994b5505bb391e47a829c96928"},
+    {file = "kogwistar-0.7.2-py3-none-any.whl", hash = "sha256:86e9d515f8afb07e861fbc2ddc1756a5ff2a76969cbf39db2f839675622d7ec6"},
+    {file = "kogwistar-0.7.2.tar.gz", hash = "sha256:c8bec0c45ad2870c4dcf5a06e54a3410c1fc489a2bf21675e51b64f2e22a509e"},
 ]
 
 [package.dependencies]
@@ -1531,17 +1532,22 @@ fastapi = ">=0.111"
 httpx = ">=0.28.1"
 jinja2 = ">=3.1"
 joblib = {version = ">=1.3", markers = "implementation_name == \"cpython\""}
-mcp = ">=2.2.0,<3"
+jsonschema = ">=4.21,<5"
+mcp = {version = ">=2.2.0,<3", markers = "implementation_name != \"pypy\" or sys_platform != \"win32\""}
 pydantic = ">=2.6"
 pydantic-extension = ">=0.0.8"
 pyjwt = ">=2.8"
 python-dotenv = ">=1.0.1"
-python-jose = {version = ">=3.3", extras = ["cryptography"]}
+python-jose = [
+    {version = ">=3.3", extras = ["cryptography"], markers = "implementation_name != \"pypy\" or sys_platform != \"win32\""},
+    {version = ">=3.3", markers = "implementation_name == \"pypy\" and sys_platform == \"win32\""},
+]
 rapidfuzz = ">=3.13.0"
 requests = ">=2.32"
 typing-extensions = ">=4.8"
 
 [package.extras]
+benchmark = ["psutil (>=6)"]
 browser = ["playwright (>=1.45,<2)"]
 build = ["build", "twine"]
 chroma = ["chromadb (>=1.0.15)"]
@@ -1558,7 +1564,7 @@ otel = ["opentelemetry-api (>=1.24)", "opentelemetry-exporter-otlp (>=1.24)", "o
 pgvector = ["pgvector (>=0.3.6)", "psycopg[binary] (>=3.1)", "sqlalchemy[asyncio] (>=2.0)"]
 rust = ["maturin (>=1.7,<2)"]
 server = ["mcp (>=2.2.0,<3)", "uvicorn[standard] (>=0.30)"]
-test = ["numpy (>=1.26)", "pytest (>=8)", "pytest-asyncio (>=1.1.0)", "pytest-dotenv (>=0.5.2)", "pytest-xdist (>=3.8,<4)", "testcontainers (>=4.0)"]
+test = ["numpy (>=1.26)", "pytest (>=8)", "pytest-asyncio (>=1.1.0)", "pytest-dotenv (>=0.5.2)", "pytest-timeout (>=2.3)", "pytest-xdist (>=3.8,<4)", "testcontainers (>=4.0)"]
 typecheck = ["mypy (>=1.8)", "pyright (==1.1.411)"]
 viz = ["pygraphviz (>=1.14)"]
 
@@ -4404,4 +4410,4 @@ vertex = ["langchain-google-vertexai"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "a978d4c217c433b957a3af23d1f5db7bc3fdb4f91ff2ac79c59ce4af5a9e991c"
+content-hash = "3f5790f1c6f401f5424c578dcd1f5b9217ff9796b2ee15c05a42b118a1c54deb"
