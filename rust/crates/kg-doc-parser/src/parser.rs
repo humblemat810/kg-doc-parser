@@ -34,6 +34,26 @@ fn pointer(cluster_id: &str, text: &str) -> HydratedTextPointer {
     }
 }
 
+pub fn text_to_ocr_format(text: &str, filename: &str) -> serde_json::Value {
+    let mut envelope = serde_json::Map::new();
+    envelope.insert(
+        filename.to_string(),
+        json!([{
+            "pdf_page_num": 1,
+            "OCR_text_clusters": [{
+                "text": text,
+                "bb_x_min": 0,
+                "bb_y_min": 0,
+                "bb_x_max": 1000,
+                "bb_y_max": 1000,
+                "cluster_number": 0
+            }],
+            "non_text_objects": []
+        }]),
+    );
+    serde_json::Value::Object(envelope)
+}
+
 fn paragraph_node(cluster_id: &str, paragraph: &str, parent_id: &str, level: u64) -> SemanticNode {
     let title = paragraph
         .split_whitespace()
@@ -233,5 +253,16 @@ mod tests {
     #[test]
     fn rejects_empty_text() {
         assert!(parse_doc_text("", "doc", ParsingMode::Snippet, 10).is_err());
+    }
+
+    #[test]
+    fn wraps_raw_text_for_ocr_input() {
+        let raw = text_to_ocr_format("raw text", "input_text");
+        let page = &raw["input_text"][0];
+        assert_eq!(page["pdf_page_num"], 1);
+        let cluster = &page["OCR_text_clusters"][0];
+        assert_eq!(cluster["text"], "raw text");
+        assert_eq!(cluster["cluster_number"], 0);
+        assert_eq!(page["non_text_objects"], serde_json::Value::Array(vec![]));
     }
 }
