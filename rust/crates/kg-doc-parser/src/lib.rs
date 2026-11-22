@@ -1,6 +1,7 @@
 pub mod document_grouping;
 pub mod document_models;
 pub mod ocr_artifacts;
+pub mod ocr_providers;
 pub mod page_index_candidates;
 pub mod page_index_classification;
 pub mod page_index_contracts;
