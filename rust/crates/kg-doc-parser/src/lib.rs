@@ -9,6 +9,7 @@ pub mod page_index_source_text;
 pub mod page_index_tree;
 pub mod parser;
 pub mod pointer_matching;
+pub mod providers;
 pub mod semantic;
 pub mod semantic_indexing;
 pub mod source_text;
