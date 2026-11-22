@@ -1,37 +1,37 @@
 # Rust Port Fine Tracklist
 
-| Task | Implementation Detail | Status | Gate |
-| --- | --- | --- | --- |
-| Semantic node model | Mirror `workflow_ingest/semantics.py::SemanticNode`; node type, title, summary, total/aggregate pointers, children and level | DONE | Model unit test |
-| Stable node ID | Mirror Kogwistar stable-id semantics; pointer fingerprint plus parent, type, title and level | DONE | Stable ID unit test |
-| Text pointer model | Mirror `HydratedTextPointer`; source cluster ID and exact character spans | DONE | Pointer model unit test |
-| Parsing modes | Mirror `text_processing_utils.parse_doc_text`; snippet and delimiter modes with bounded depth | DONE | Mode unit tests |
-| Markdown section parser | Heading and paragraph segmentation, source pointers, atomic leaf fallback | DONE | Text/Markdown unit tests |
-| Source text extraction | Mirror `semantic_source_text.py`; direct text fields, OCR clusters, non-text objects and nested non-string evidence | DONE | Source text unit tests |
-| Pointer matching (exact and whitespace) | Mirror `semantic_pointer_matching.py`; inclusive offsets, non-overlapping exact matches, whitespace-normalized spans and diagnostics | DONE | Pointer matching unit tests |
-| Pointer matching (fuzzy) | Mirror explicit fuzzy threshold path; LCSseq, difflib fallback and threshold diagnostics | DONE | Fuzzy matching fixtures |
-| Semantic indexing batching | Mirror `semantic_indexing_contracts.py`; short IDs, token estimates, compact JSON and deterministic batching | DONE | Batching unit tests |
-| Page-index contracts | Mirror `page_index_contracts.py` block spans, source formats and node types | DONE | Contract model tests |
-| Page-index classification | Mirror `page_index_classification.py`; headings, terms, tables, paragraphs and numeric-heavy blocks | DONE | Classification unit tests |
-| Page-index candidates | Mirror `page_index_candidates.py`; block spans, stable IDs, candidate extraction and deterministic assignments | DONE | Candidate extraction tests |
-| Page-index tree materialization | Mirror `page_index_tree.py`; grounded pointer resolution, heading containers, atomic heading leaves and aggregate spans | DONE | Tree materialization tests |
-| Page-index assembly and pipeline | Mirror `page_index_candidates.py` plus `page_index.py`; block assembly, deterministic fallback and heuristic end-to-end parse | DONE | Assembly and pipeline tests |
-| Raw OCR input adapter | Mirror `text_processing_utils.text_to_ocr_format`; deterministic single-cluster input envelope | TODO | Adapter contract test |
-| Document models | Mirror `workflow_ingest/document_models.py`; nodes, references, evidence slices, media refs, summaries and policies | TODO | Model contract tests |
-| Document grouping and tree | Mirror `document_grouping.py` and `page_index_tree.py`; grouping, merge rules and tree materialization | TODO | Tree golden fixtures |
-| Page-index parser | Mirror `page_index*`; block specs, candidates, classification, refinement and validation | TODO | Page-index golden fixtures |
-| Layerwise parser | Mirror `semantic_document_splitting_layerwise_edits.parse_doc`; source map, semantic tree and layer edits | TODO | Layerwise golden fixtures |
-| Parser core session | Mirror `parser_core*`; session initialization, frontier preparation, review, commit and validation | TODO | Parser core contract tests |
-| OCR normalization | Mirror `models.py` plus `document_adapters.py`; page clusters, coordinates, identity, source maps and continuation rules | TODO | OCR normalization fixtures |
-| OCR runtime | Mirror `ocr_runtime*`; grouping, continuation, lineage, page state and finalization | TODO | OCR runtime fixtures |
-| OCR providers | Mirror `ocr_providers.py`; provider registry, capabilities and runtime adapters | TODO | Provider contract suite |
-| OCR quality | Mirror `ocr_quality*`; ground truth, reports and policy thresholds | TODO | Quality tests |
-| Workflow artifacts | Mirror `ocr_artifacts.py` and `serialization.py`; typed JSON schemas and artifact I/O | TODO | Artifact schema suite |
-| Provider and LLM settings | Mirror `providers.py` and `llm_structured_output.py`; role-based model selection, retries, metrics and callbacks | TODO | Provider contract tests |
-| Strategy selection | Mirror `strategy.py`; priority, triage, assessment and decision contracts | TODO | Strategy fixtures |
-| Service and runners | Mirror `service.py`, `runners.py` and `workflow_ingest/cli.py`; OCR, page-index, layerwise, demo and smoke commands | TODO | CLI parity suite |
-| Demo harness | Mirror `demo_harness.py`; isolated server launch, artifacts and external connection | TODO | Demo smoke test |
-| Semantic graph import | Mirror `semantic_graph_import.py` and `semantic_pointer_matching.py`; graph publication and pointer grounding | TODO | Graph fixture suite |
-| Semantic source/index contracts | Mirror `semantic_source_text.py` and `semantic_indexing_contracts.py`; source text and indexing boundaries | TODO | Contract tests |
-| Cross-language parity | Golden fixtures across text, page-index, layerwise and OCR lanes | TODO | Python/Rust fixture suite |
-| CI | Add fmt, clippy, test and cross-language parity workflow | TODO | Workflow green |
+| Task | Implementation Detail | Rust implementation | Python source | Status | Gate |
+| --- | --- | --- | --- | --- | --- |
+| Semantic node model | Node type, title, summary, total/aggregate pointers, children and level | `rust/crates/kg-doc-parser/src/semantic.rs` | `kg_doc_parser/workflow_ingest/semantics.py` | DONE | Model unit test |
+| Stable node ID | Pointer fingerprint plus parent, type, title and level | `rust/crates/kg-doc-parser/src/semantic.rs` | `kg_doc_parser/workflow_ingest/semantics.py` | DONE | Stable ID unit test |
+| Text pointer model | Source cluster ID and exact character spans | `rust/crates/kg-doc-parser/src/semantic.rs` | `kg_doc_parser/workflow_ingest/semantics.py` | DONE | Pointer model unit test |
+| Parsing modes | Snippet and delimiter modes with bounded depth | `rust/crates/kg-doc-parser/src/parser.rs` | `kg_doc_parser/text_processing_utils.py` | DONE | Mode unit tests |
+| Markdown section parser | Heading and paragraph segmentation, source pointers, atomic leaf fallback | `rust/crates/kg-doc-parser/src/parser.rs` | `kg_doc_parser/semantic_document_splitting_layerwise_edits.py` | DONE | Text/Markdown unit tests |
+| Source text extraction | Direct text fields, OCR clusters, non-text objects and nested non-string evidence | `rust/crates/kg-doc-parser/src/source_text.rs` | `kg_doc_parser/semantic_source_text.py` | DONE | Source text unit tests |
+| Pointer matching (exact and whitespace) | Inclusive offsets, non-overlapping exact matches, whitespace-normalized spans and diagnostics | `rust/crates/kg-doc-parser/src/pointer_matching.rs` | `kg_doc_parser/semantic_pointer_matching.py` | DONE | Pointer matching unit tests |
+| Pointer matching (fuzzy) | Explicit fuzzy threshold path; LCSseq, difflib fallback and threshold diagnostics | `rust/crates/kg-doc-parser/src/pointer_matching.rs` | `kg_doc_parser/semantic_pointer_matching.py` | DONE | Fuzzy matching fixtures |
+| Semantic indexing batching | Short IDs, token estimates, compact JSON and deterministic batching | `rust/crates/kg-doc-parser/src/semantic_indexing.rs` | `kg_doc_parser/semantic_indexing_contracts.py` | DONE | Batching unit tests |
+| Page-index contracts | Block spans, source formats and node types | `rust/crates/kg-doc-parser/src/page_index_contracts.rs` | `kg_doc_parser/workflow_ingest/page_index_contracts.py` | DONE | Contract model tests |
+| Page-index classification | Headings, terms, tables, paragraphs and numeric-heavy blocks | `rust/crates/kg-doc-parser/src/page_index_classification.rs` | `kg_doc_parser/workflow_ingest/page_index_classification.py` | DONE | Classification unit tests |
+| Page-index candidates | Block spans, stable IDs, candidate extraction and deterministic assignments | `rust/crates/kg-doc-parser/src/page_index_candidates.rs` | `kg_doc_parser/workflow_ingest/page_index_candidates.py` | DONE | Candidate extraction tests |
+| Page-index tree materialization | Grounded pointer resolution, heading containers, atomic heading leaves and aggregate spans | `rust/crates/kg-doc-parser/src/page_index_tree.rs` | `kg_doc_parser/workflow_ingest/page_index_tree.py` | DONE | Tree materialization tests |
+| Page-index assembly and pipeline | Block assembly, deterministic fallback and heuristic end-to-end parse | `rust/crates/kg-doc-parser/src/page_index_pipeline.rs` | `kg_doc_parser/workflow_ingest/page_index.py` | DONE | Assembly and pipeline tests |
+| Raw OCR input adapter | Deterministic single-cluster input envelope | `rust/crates/kg-doc-parser/src/parser.rs` | `kg_doc_parser/text_processing_utils.py` | TODO | Adapter contract test |
+| Document models | Nodes, references, evidence slices, media refs, summaries and policies | `rust/crates/kg-doc-parser/src/document_models.rs` | `kg_doc_parser/workflow_ingest/document_models.py` | TODO | Model contract tests |
+| Document grouping and tree | Grouping, merge rules and tree materialization | `rust/crates/kg-doc-parser/src/document_grouping.rs` | `kg_doc_parser/workflow_ingest/document_grouping.py` | TODO | Tree golden fixtures |
+| Page-index parser | Block specs, candidates, classification, refinement and validation | `rust/crates/kg-doc-parser/src/page_index*.rs` | `kg_doc_parser/workflow_ingest/page_index*.py` | TODO | Page-index golden fixtures |
+| Layerwise parser | Source map, semantic tree and layer edits | `rust/crates/kg-doc-parser/src/layerwise_parser.rs` | `kg_doc_parser/semantic_document_splitting_layerwise_edits.py` | TODO | Layerwise golden fixtures |
+| Parser core session | Session initialization, frontier preparation, review, commit and validation | `rust/crates/kg-doc-parser/src/parser_core.rs` | `kg_doc_parser/workflow_ingest/parser_core*.py` | TODO | Parser core contract tests |
+| OCR normalization | Page clusters, coordinates, identity, source maps and continuation rules | `rust/crates/kg-doc-parser/src/ocr_normalization.rs` | `kg_doc_parser/workflow_ingest/models.py`, `kg_doc_parser/workflow_ingest/document_adapters.py` | TODO | OCR normalization fixtures |
+| OCR runtime | Grouping, continuation, lineage, page state and finalization | `rust/crates/kg-doc-parser/src/ocr_runtime*.rs` | `kg_doc_parser/workflow_ingest/ocr_runtime*.py` | TODO | OCR runtime fixtures |
+| OCR providers | Provider registry, capabilities and runtime adapters | `rust/crates/kg-doc-parser/src/ocr_providers.rs` | `kg_doc_parser/workflow_ingest/ocr_providers.py` | TODO | Provider contract suite |
+| OCR quality | Ground truth, reports and policy thresholds | `rust/crates/kg-doc-parser/src/ocr_quality*.rs` | `kg_doc_parser/workflow_ingest/ocr_quality*.py` | TODO | Quality tests |
+| Workflow artifacts | Typed JSON schemas and artifact I/O | `rust/crates/kg-doc-parser/src/ocr_artifacts.rs` | `kg_doc_parser/workflow_ingest/ocr_artifacts.py`, `kg_doc_parser/workflow_ingest/serialization.py` | TODO | Artifact schema suite |
+| Provider and LLM settings | Role-based model selection, retries, metrics and callbacks | `rust/crates/kg-doc-parser/src/providers.rs` | `kg_doc_parser/workflow_ingest/providers.py`, `kg_doc_parser/llm_structured_output.py` | TODO | Provider contract tests |
+| Strategy selection | Priority, triage, assessment and decision contracts | `rust/crates/kg-doc-parser/src/strategy.rs` | `kg_doc_parser/workflow_ingest/strategy.py` | TODO | Strategy fixtures |
+| Service and runners | OCR, page-index, layerwise, demo and smoke commands | `rust/crates/kg-doc-parser/src/service.rs`, `rust/crates/kg-doc-parser/src/runners.rs` | `kg_doc_parser/workflow_ingest/service.py`, `kg_doc_parser/workflow_ingest/runners.py`, `kg_doc_parser/workflow_ingest/cli.py` | TODO | CLI parity suite |
+| Demo harness | Isolated server launch, artifacts and external connection | `rust/crates/kg-doc-parser/src/demo_harness.rs` | `kg_doc_parser/workflow_ingest/demo_harness.py` | TODO | Demo smoke test |
+| Semantic graph import | Graph publication and pointer grounding | `rust/crates/kg-doc-parser/src/semantic_graph_import.rs` | `kg_doc_parser/semantic_graph_import.py`, `kg_doc_parser/semantic_pointer_matching.py` | TODO | Graph fixture suite |
+| Semantic source/index contracts | Source text and indexing boundaries | `rust/crates/kg-doc-parser/src/semantic_source_text.rs`, `rust/crates/kg-doc-parser/src/semantic_indexing.rs` | `kg_doc_parser/semantic_source_text.py`, `kg_doc_parser/semantic_indexing_contracts.py` | TODO | Contract tests |
+| Cross-language parity | Golden fixtures across text, page-index, layerwise and OCR lanes | `rust/crates/kg-doc-parser/tests/` | `tests/` | TODO | Python/Rust fixture suite |
+| CI | Add fmt, clippy, test and cross-language parity workflow | `.github/workflows/ci.yml` | `tests/` | TODO | Workflow green |
