@@ -9,7 +9,7 @@
 | Markdown section parser | Heading and paragraph segmentation, source pointers, atomic leaf fallback | DONE | Text/Markdown unit tests |
 | Source text extraction | Mirror `semantic_source_text.py`; direct text fields, OCR clusters, non-text objects and nested non-string evidence | DONE | Source text unit tests |
 | Pointer matching (exact and whitespace) | Mirror `semantic_pointer_matching.py`; inclusive offsets, non-overlapping exact matches, whitespace-normalized spans and diagnostics | DONE | Pointer matching unit tests |
-| Pointer matching (fuzzy) | Mirror explicit fuzzy threshold path; LCSseq, difflib fallback and threshold diagnostics | TODO | Fuzzy matching fixtures |
+| Pointer matching (fuzzy) | Mirror explicit fuzzy threshold path; LCSseq, difflib fallback and threshold diagnostics | DONE | Fuzzy matching fixtures |
 | Semantic indexing batching | Mirror `semantic_indexing_contracts.py`; short IDs, token estimates, compact JSON and deterministic batching | DONE | Batching unit tests |
 | Page-index contracts | Mirror `page_index_contracts.py` block spans, source formats and node types | DONE | Contract model tests |
 | Page-index classification | Mirror `page_index_classification.py`; headings, terms, tables, paragraphs and numeric-heavy blocks | DONE | Classification unit tests |

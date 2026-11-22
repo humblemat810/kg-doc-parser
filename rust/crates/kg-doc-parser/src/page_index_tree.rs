@@ -56,7 +56,7 @@ pub fn resolve_pointer(
             });
         }
     }
-    let (matches, diagnostic) = soft_exact_positions(page_text, needle);
+    let (matches, diagnostic) = soft_exact_positions(page_text, needle, None, 0.25, 0.10);
     if matches.is_empty() || diagnostic.is_none() {
         anyhow::bail!("unable to resolve excerpt against page text for {unit_id:?}: {needle:?}");
     }
