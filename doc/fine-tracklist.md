@@ -25,7 +25,7 @@
 | OCR normalization | Page clusters, coordinates, identity, source maps and continuation rules | `rust/crates/kg-doc-parser/src/ocr_normalization.rs` | `kg_doc_parser/workflow_ingest/models.py`, `kg_doc_parser/workflow_ingest/document_adapters.py` | TODO | OCR normalization fixtures |
 | OCR runtime | Grouping, continuation, lineage, page state and finalization | `rust/crates/kg-doc-parser/src/ocr_runtime*.rs` | `kg_doc_parser/workflow_ingest/ocr_runtime*.py` | TODO | OCR runtime fixtures |
 | OCR providers | Provider registry, capabilities and runtime adapters | `rust/crates/kg-doc-parser/src/ocr_providers.rs` | `kg_doc_parser/workflow_ingest/ocr_providers.py` | TODO | Provider contract suite |
-| OCR quality | Ground truth, reports and policy thresholds | `rust/crates/kg-doc-parser/src/ocr_quality*.rs` | `kg_doc_parser/workflow_ingest/ocr_quality*.py` | TODO | Quality tests |
+| OCR quality | Ground truth, reports and policy thresholds | `rust/crates/kg-doc-parser/src/ocr_quality.rs` | `kg_doc_parser/workflow_ingest/ocr_quality.py` | DONE | Quality tests |
 | Workflow artifacts | Typed JSON schemas and artifact I/O | `rust/crates/kg-doc-parser/src/ocr_artifacts.rs` | `kg_doc_parser/workflow_ingest/ocr_artifacts.py`, `kg_doc_parser/workflow_ingest/serialization.py` | DONE | Artifact schema suite |
 | Provider and LLM settings | Role-based model selection, retries, metrics and callbacks | `rust/crates/kg-doc-parser/src/providers.rs` | `kg_doc_parser/workflow_ingest/providers.py`, `kg_doc_parser/llm_structured_output.py` | DONE | Provider contract tests |
 | Strategy selection | Priority, triage, assessment and decision contracts | `rust/crates/kg-doc-parser/src/strategy.rs` | `kg_doc_parser/workflow_ingest/strategy.py` | DONE | Strategy fixtures |
