@@ -59,3 +59,29 @@ pub struct BlockAssignment {
     pub title: String,
     pub summary: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PageIndexSourceRole {
+    Heading,
+    Content,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageIndexBlockSpec {
+    pub title: String,
+    pub node_type: PageIndexNodeType,
+    pub excerpt: String,
+    pub display_excerpt: Option<String>,
+    pub summary: String,
+    pub source_role: PageIndexSourceRole,
+    pub child_nodes: Vec<PageIndexBlockSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageIndexValidationResult {
+    pub valid: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub fallback_reason: Option<String>,
+}
