@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(graph["edges"].as_array().unwrap().len(), 2);
 
         let results = run_layerwise_batch_workflow(
-            &[document.clone()],
+            std::slice::from_ref(&document),
             &temp.path().join("batch"),
             ParsingMode::Snippet,
             10,
