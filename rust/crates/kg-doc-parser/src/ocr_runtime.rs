@@ -3,6 +3,8 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
+use crate::document_models::DocumentTree;
+
 pub const OCR_ROOT_STATE_VERSION: &str = "ocr-root-v3";
 pub const OCR_PAGE_STATE_VERSION: &str = "ocr-page-v2";
 
@@ -606,6 +608,52 @@ pub fn validate_invocation_lineages(
     Ok(())
 }
 
+pub fn expected_grouping_frontier(tree: &DocumentTree) -> Result<Vec<String>> {
+    tree.validate()?;
+    let Some(root) = tree.nodes.iter().find(|node| node.node_id == tree.root_id) else {
+        bail!("grouping checkpoint root is missing");
+    };
+    if root.children.is_empty() {
+        Ok(vec![root.node_id.clone()])
+    } else {
+        Ok(root
+            .children
+            .iter()
+            .map(|child| child.node_id.clone())
+            .collect())
+    }
+}
+
+pub fn validated_grouping_checkpoint(
+    tree: &DocumentTree,
+    grouping_policy_version: &str,
+    restored: Option<DocumentTree>,
+    revision: Option<String>,
+    persisted_frontier: Option<Vec<String>>,
+) -> Result<(Option<DocumentTree>, Option<String>)> {
+    let expected_source_fingerprint = tree.source_fingerprint();
+    let Some(restored) = restored else {
+        if revision.is_some() {
+            bail!("grouping checkpoint exists but does not match the current source or policy");
+        }
+        return Ok((None, None));
+    };
+    if restored.source_fingerprint() != expected_source_fingerprint {
+        bail!("grouping checkpoint exists but does not match the current source or policy");
+    }
+    let Some(persisted_frontier) = persisted_frontier else {
+        bail!("grouping checkpoint exists but its frontier is missing or mismatched");
+    };
+    let expected_frontier = expected_grouping_frontier(&restored)?;
+    if persisted_frontier != expected_frontier {
+        bail!("grouping checkpoint frontier does not match the restored tree");
+    }
+    Ok((
+        Some(restored),
+        revision.map(|revision| format!("{grouping_policy_version}:{revision}")),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -759,5 +807,113 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("duplicate="));
+    }
+
+    #[test]
+    fn validates_grouping_checkpoint_frontier() {
+        let tree = DocumentTree {
+            schema_version: "1.0".to_string(),
+            document_id: "doc".to_string(),
+            source_revision: "source".to_string(),
+            tree_revision: 1,
+            root_id: "root".to_string(),
+            source_items: vec![crate::document_models::SourceItem {
+                item_id: "p1".to_string(),
+                kind: "text".to_string(),
+                location: crate::document_models::SourceLocation {
+                    page_index: Some(1),
+                    printed_page_label: None,
+                    bbox: None,
+                    start_seconds: None,
+                    end_seconds: None,
+                    structural_path: None,
+                    accuracy: crate::document_models::SourceAccuracy::Page,
+                },
+                text: Some("Alpha Beta".to_string()),
+                media: None,
+                ocr_metadata: None,
+                annotations: std::collections::BTreeMap::new(),
+            }],
+            nodes: vec![
+                crate::document_models::DocumentNode {
+                    node_id: "root".to_string(),
+                    kind: "document".to_string(),
+                    parts: Vec::new(),
+                    children: vec![
+                        crate::document_models::ChildRef {
+                            node_id: "left".to_string(),
+                            separator_before: String::new(),
+                        },
+                        crate::document_models::ChildRef {
+                            node_id: "right".to_string(),
+                            separator_before: String::new(),
+                        },
+                    ],
+                    summary: None,
+                    annotations: std::collections::BTreeMap::new(),
+                },
+                crate::document_models::DocumentNode {
+                    node_id: "left".to_string(),
+                    kind: "text".to_string(),
+                    parts: vec![crate::document_models::SourceSlice {
+                        item_id: "p1".to_string(),
+                        start: Some(0),
+                        end: Some(5),
+                        separator_before: String::new(),
+                    }],
+                    children: Vec::new(),
+                    summary: None,
+                    annotations: std::collections::BTreeMap::new(),
+                },
+                crate::document_models::DocumentNode {
+                    node_id: "right".to_string(),
+                    kind: "text".to_string(),
+                    parts: vec![crate::document_models::SourceSlice {
+                        item_id: "p1".to_string(),
+                        start: Some(5),
+                        end: Some(10),
+                        separator_before: String::new(),
+                    }],
+                    children: Vec::new(),
+                    summary: None,
+                    annotations: std::collections::BTreeMap::new(),
+                },
+            ],
+            references: Vec::new(),
+        };
+        assert_eq!(
+            expected_grouping_frontier(&tree).unwrap(),
+            vec!["left".to_string(), "right".to_string()]
+        );
+        assert!(validated_grouping_checkpoint(
+            &tree,
+            "grouping-v1",
+            Some(tree.clone()),
+            Some("2".to_string()),
+            Some(vec!["left".to_string(), "right".to_string()])
+        )
+        .is_ok());
+        assert!(validated_grouping_checkpoint(
+            &tree,
+            "grouping-v1",
+            Some(tree.clone()),
+            Some("2".to_string()),
+            Some(vec!["wrong".to_string()])
+        )
+        .is_err());
+        assert!(validated_grouping_checkpoint(
+            &tree,
+            "grouping-v1",
+            None,
+            Some("2".to_string()),
+            None
+        )
+        .is_err());
+        assert!(
+            validated_grouping_checkpoint(&tree, "grouping-v1", None, None, None)
+                .unwrap()
+                .0
+                .is_none()
+        );
     }
 }
