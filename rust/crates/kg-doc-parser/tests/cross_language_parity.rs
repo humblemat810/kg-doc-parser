@@ -1,6 +1,10 @@
 use kg_doc_parser::page_index_classification::{classify_block, ClassifyBlockOptions};
 use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
 use kg_doc_parser::page_index_pipeline::heuristic_page_outline;
+use kg_doc_parser::pointer_matching::{
+    all_exact_occurrences, best_occurrence_by_proximity, safe_slice, soft_exact_positions,
+    whitespace_collapse,
+};
 use kg_doc_parser::{
     page_index_source_text::split_pages, semantic_indexing as indexing,
     source_text::source_map_entry_text,
@@ -12,6 +16,67 @@ fn fixture() -> Value {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/semantic_contracts.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn pointer_matching_contracts_match_python() {
+    let payload = fixture()["pointer_matching"].clone();
+    for case in payload["safe_slice"].as_array().unwrap() {
+        assert_eq!(
+            safe_slice(
+                case["text"].as_str().unwrap(),
+                case["start"].as_i64().unwrap() as isize,
+                case["end_inclusive"].as_i64().unwrap() as isize,
+            ),
+            case["expected"].as_str().unwrap(),
+        );
+    }
+    for case in payload["all_exact_occurrences"].as_array().unwrap() {
+        let actual = all_exact_occurrences(
+            case["haystack"].as_str().unwrap(),
+            case["needle"].as_str().unwrap(),
+        );
+        assert_eq!(serde_json::to_value(actual).unwrap(), case["expected"]);
+    }
+    for case in payload["best_occurrence_by_proximity"].as_array().unwrap() {
+        let occurrences = case["occurrences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| {
+                let items = value.as_array().unwrap();
+                (
+                    items[0].as_u64().unwrap() as usize,
+                    items[1].as_u64().unwrap() as usize,
+                )
+            })
+            .collect::<Vec<_>>();
+        let actual = best_occurrence_by_proximity(
+            &occurrences,
+            case["proposed_start"].as_u64().unwrap() as usize,
+        );
+        assert_eq!(serde_json::to_value(actual).unwrap(), case["expected"]);
+    }
+    for case in payload["whitespace_collapse"].as_array().unwrap() {
+        assert_eq!(
+            whitespace_collapse(case["text"].as_str().unwrap()),
+            case["expected"].as_str().unwrap(),
+        );
+    }
+    for case in payload["soft_exact_positions"].as_array().unwrap() {
+        let (actual, diagnostic) = soft_exact_positions(
+            case["source_text"].as_str().unwrap(),
+            case["verbatim"].as_str().unwrap(),
+            None,
+            0.25,
+            0.10,
+        );
+        assert_eq!(serde_json::to_value(&actual).unwrap(), case["expected"]);
+        assert_eq!(
+            serde_json::to_value(diagnostic).unwrap(),
+            case["diagnostic"]
+        );
+    }
 }
 
 #[test]

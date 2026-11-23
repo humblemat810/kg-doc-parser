@@ -10,6 +10,13 @@ from kg_doc_parser.semantic_indexing_contracts import (
     render_nodes_payload,
 )
 from kg_doc_parser.semantic_source_text import source_map_entry_text
+from kg_doc_parser.semantic_pointer_matching import (
+    all_exact_occurrences,
+    best_occurrence_by_proximity,
+    safe_slice,
+    soft_exact_positions,
+    whitespace_collapse,
+)
 from kg_doc_parser.workflow_ingest.page_index_source_text import _split_pages
 from kg_doc_parser.workflow_ingest.page_index_classification import _classify_block
 from kg_doc_parser.workflow_ingest.page_index import _heuristic_page_outline
@@ -66,6 +73,38 @@ def test_page_index_heuristic_outlines_match_rust() -> None:
         )
         assert [spec.model_dump(mode="json") for spec in specs] == case["expected_block_specs"]
         assert diagnostics == case["expected_diagnostics"]
+
+
+def test_pointer_matching_contracts_match_rust() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))["pointer_matching"]
+    for case in payload["safe_slice"]:
+        assert safe_slice(case["text"], case["start"], case["end_inclusive"]) == case["expected"]
+    for case in payload["all_exact_occurrences"]:
+        assert [
+            list(span)
+            for span in all_exact_occurrences(case["haystack"], case["needle"])
+        ] == case["expected"]
+    for case in payload["best_occurrence_by_proximity"]:
+        assert (
+            list(
+                best_occurrence_by_proximity(
+                    [tuple(span) for span in case["occurrences"]],
+                    case["proposed_start"],
+                )
+                or ()
+            )
+            == case["expected"]
+        )
+    for case in payload["whitespace_collapse"]:
+        assert whitespace_collapse(case["text"]) == case["expected"]
+    for case in payload["soft_exact_positions"]:
+        spans, diagnostic = soft_exact_positions(
+            case["source_text"],
+            case["verbatim"],
+            fuzzy_threshold=None,
+        )
+        assert [list(span) for span in spans] == case["expected"]
+        assert diagnostic == case["diagnostic"]
 
 
 def test_semantic_indexing_contracts_match_rust() -> None:

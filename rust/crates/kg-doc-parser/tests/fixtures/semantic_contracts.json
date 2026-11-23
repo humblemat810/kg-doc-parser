@@ -133,6 +133,43 @@
         "fallback_reason": null
       }
     }
-  ]
+  ],
+  "pointer_matching": {
+    "safe_slice": [
+      {"text": "abcdef", "start": 1, "end_inclusive": 3, "expected": "bcd"},
+      {"text": "abcdef", "start": -1, "end_inclusive": -1, "expected": "abcdef"},
+      {"text": "abcdef", "start": 6, "end_inclusive": 9, "expected": ""}
+    ],
+    "all_exact_occurrences": [
+      {"haystack": "alpha beta alpha", "needle": "alpha", "expected": [[0,4],[11,15]]},
+      {"haystack": "alpha", "needle": "", "expected": []}
+    ],
+    "best_occurrence_by_proximity": [
+      {"occurrences": [[0,4],[11,15]], "proposed_start": 10, "expected": [11,15]}
+    ],
+    "whitespace_collapse": [
+      {"text": "  alpha   beta  ", "expected": "alpha beta"}
+    ],
+    "soft_exact_positions": [
+      {
+        "source_text": "alpha beta alpha",
+        "verbatim": "beta",
+        "expected": [[6,9]],
+        "diagnostic": {"name": "exact", "collapsed": false}
+      },
+      {
+        "source_text": "alpha   beta",
+        "verbatim": "alpha beta",
+        "expected": [[0,11]],
+        "diagnostic": {"name": "exact", "collapsed": true}
+      },
+      {
+        "source_text": "alpha beta",
+        "verbatim": "missing",
+        "expected": [],
+        "diagnostic": null
+      }
+    ]
+  }
 }
 
