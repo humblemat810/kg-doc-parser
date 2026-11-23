@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
-use serde_json::Value;
+use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 
 pub const OCR_ROOT_STATE_VERSION: &str = "ocr-root-v3";
 pub const OCR_PAGE_STATE_VERSION: &str = "ocr-page-v2";
@@ -224,6 +226,249 @@ pub fn validate_page_resume_identity(state: &Value, identity: &PageResumeIdentit
     )
 }
 
+pub struct PageReconciliationSources {
+    pub page_sources: Vec<PageSourceState>,
+    pub legacy_dir: std::path::PathBuf,
+}
+
+pub struct PageReconciliationRequest<'a> {
+    pub document_id: &'a str,
+    pub page_number: u64,
+    pub image_digest: &'a str,
+    pub artifact_path: &'a std::path::Path,
+}
+
+pub trait PageArtifactGate {
+    fn accepts(&self, request: &PageReconciliationRequest) -> bool;
+}
+
+pub struct ReadableArtifactGate;
+
+impl PageArtifactGate for ReadableArtifactGate {
+    fn accepts(&self, request: &PageReconciliationRequest) -> bool {
+        std::fs::read(request.artifact_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .map(|payload| {
+                payload.get("pdf_page_num").and_then(Value::as_u64) == Some(request.page_number)
+                    || payload
+                        .get("pdf_page_num")
+                        .and_then(Value::as_str)
+                        .and_then(|value| value.trim().parse::<u64>().ok())
+                        == Some(request.page_number)
+            })
+            .unwrap_or(false)
+    }
+}
+
+fn validated_page_json(
+    value: &Value,
+    default_page_number: Option<u64>,
+    _strict_page_number_types: bool,
+) -> Result<Value> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("OCR page payload must be a JSON object"))?;
+    let raw_page_number = object.get("pdf_page_num").unwrap_or(&Value::Null);
+    if let Some(page_number) = raw_page_number.as_u64() {
+        if page_number < 1 {
+            bail!("OCR page pdf_page_num must be a positive integer");
+        }
+    } else if let Some(page_number) = raw_page_number.as_str() {
+        if page_number.trim().parse::<u64>().is_err() {
+            bail!("OCR page pdf_page_num must be a positive integer");
+        }
+    } else if raw_page_number.is_null() {
+        if default_page_number.unwrap_or(0) < 1 {
+            bail!("OCR page pdf_page_num must be a positive integer");
+        }
+    } else {
+        bail!("OCR page pdf_page_num must be a positive integer");
+    }
+    for key in ["printed_page_number", "spatial_accuracy", "text"] {
+        if let Some(value) = object.get(key) {
+            if !value.is_null() && !value.is_string() {
+                bail!("OCR page field {key:?} has an invalid type");
+            }
+        }
+    }
+    for key in ["contains_table", "is_blank_page"] {
+        if let Some(value) = object.get(key) {
+            if !value.is_null() && !value.is_boolean() {
+                bail!("OCR page field {key:?} has an invalid type");
+            }
+        }
+    }
+    for key in ["unresolved_item_count", "source_item_count"] {
+        if let Some(value) = object.get(key) {
+            if value.as_u64().is_none() {
+                bail!("OCR page field {key:?} must be a non-negative integer");
+            }
+        }
+    }
+    for key in [
+        "page_x_min",
+        "page_x_max",
+        "page_y_min",
+        "page_y_max",
+        "data_loss_likelihood",
+    ] {
+        if let Some(value) = object.get(key) {
+            if !value.is_null() && value.as_f64().map(|number| number.is_finite()) != Some(true) {
+                bail!("OCR page field {key:?} must be a finite number");
+            }
+        }
+    }
+    for key in [
+        "meaningful_ordering",
+        "OCR_text_clusters",
+        "non_text_objects",
+    ] {
+        if let Some(value) = object.get(key) {
+            if !value.is_null() && !value.is_array() {
+                bail!("OCR page field {key:?} must be a list");
+            }
+        }
+    }
+    Ok(value.clone())
+}
+
+pub fn json_pages(
+    state: &Value,
+    sources: Option<&[PageSourceState]>,
+    legacy_dir: Option<&std::path::Path>,
+) -> Result<Vec<Value>> {
+    if let Some(raw_pages) = state.get("raw_pages") {
+        let Some(items) = raw_pages.as_array() else {
+            bail!("OCR page runtime raw page state is malformed");
+        };
+        return items
+            .iter()
+            .map(|item| validated_page_json(item, None, true))
+            .collect();
+    }
+    let legacy_dir = state
+        .get("legacy_dir")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .or_else(|| legacy_dir.map(PathBuf::from));
+    let Some(legacy_dir) = legacy_dir else {
+        bail!("OCR page runtime state has no legacy artifact directory");
+    };
+    let Some(sources) = sources else {
+        bail!("OCR page runtime state has no page source list");
+    };
+    let cursor = page_cursor(state) as usize;
+    let mut pages = Vec::new();
+    for source in sources.iter().take(cursor) {
+        let path = legacy_dir.join(format!("page_{}.json", source.page_number));
+        let bytes = std::fs::read(&path).map_err(|error| {
+            anyhow::anyhow!("OCR page artifact is not readable: {path:?}: {error}")
+        })?;
+        let payload = serde_json::from_slice::<Value>(&bytes).map_err(|error| {
+            anyhow::anyhow!("OCR page artifact is not readable: {path:?}: {error}")
+        })?;
+        pages.push(validated_page_json(
+            &payload,
+            Some(source.page_number),
+            false,
+        )?);
+    }
+    Ok(pages)
+}
+
+pub fn reconcile_page_checkpoint<G: PageArtifactGate>(
+    state: &Value,
+    sources: Option<&[PageSourceState]>,
+    legacy_dir: &std::path::Path,
+    gate: &G,
+    document_id: &str,
+    start_index: usize,
+) -> Result<Option<Value>> {
+    let cursor = page_cursor(state) as usize;
+    let sources = if state.get("page_sources").is_some() {
+        page_sources(state)?
+    } else {
+        sources
+            .ok_or_else(|| anyhow::anyhow!("OCR page runtime state has no page source list"))?
+            .to_vec()
+    };
+    let completed = if state.get("completed_pages").is_some() {
+        Some(int_list(state, "completed_pages")?)
+    } else {
+        None
+    };
+    let reused = if state.get("reused_pages").is_some() {
+        Some(int_list(state, "reused_pages")?)
+    } else {
+        None
+    };
+    if start_index > cursor {
+        bail!("OCR checkpoint reconciliation start index is out of range");
+    }
+    for index in start_index..cursor {
+        let Some(source) = sources.get(index) else {
+            bail!("OCR page runtime state has no page source list");
+        };
+        let image_bytes = std::fs::read(&source.image_path).map_err(|error| {
+            anyhow::anyhow!(
+                "OCR page image is not readable: {:?}: {error}",
+                source.image_path
+            )
+        })?;
+        let mut digest = Sha256::new();
+        digest.update(image_bytes);
+        let image_digest = digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let artifact_path = legacy_dir.join(format!("page_{}.json", source.page_number));
+        let request = PageReconciliationRequest {
+            document_id,
+            page_number: source.page_number,
+            image_digest: &image_digest,
+            artifact_path: &artifact_path,
+        };
+        if gate.accepts(&request) {
+            continue;
+        }
+        let mut repair = Map::new();
+        repair.insert("page_cursor".to_string(), json!(index));
+        if let Some(completed) = &completed {
+            repair.insert(
+                "completed_pages".to_string(),
+                json!(completed.iter().take(index).cloned().collect::<Vec<_>>()),
+            );
+        }
+        if let (Some(reused), Some(completed)) = (&reused, &completed) {
+            let completed_prefix = completed
+                .iter()
+                .take(index)
+                .cloned()
+                .collect::<std::collections::HashSet<i64>>();
+            repair.insert(
+                "reused_pages".to_string(),
+                json!(reused
+                    .iter()
+                    .take(index)
+                    .filter(|number| completed_prefix.contains(*number))
+                    .cloned()
+                    .collect::<Vec<_>>()),
+            );
+        }
+        if state.get("raw_pages").is_some() {
+            let pages = json_pages(state, Some(&sources), Some(legacy_dir))?;
+            repair.insert(
+                "raw_pages".to_string(),
+                json!(pages.into_iter().take(index).collect::<Vec<_>>()),
+            );
+        }
+        return Ok(Some(Value::Object(repair)));
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +549,35 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("document_id"));
+    }
+
+    #[test]
+    fn reconciles_checkpoint_and_rewinds_invalid_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("page_1.png");
+        std::fs::write(&image, b"page one").unwrap();
+        let artifact = temp.path().join("page_1.json");
+        std::fs::write(&artifact, r#"{"pdf_page_num":1}"#).unwrap();
+        let state = json!({
+            "page_cursor": 1,
+            "page_sources": [{"page_number": 1, "image_path": image}],
+            "completed_pages": [1],
+            "reused_pages": [1],
+            "raw_pages": [{"pdf_page_num": 1}]
+        });
+        let gate = ReadableArtifactGate;
+        let repair = reconcile_page_checkpoint(&state, None, temp.path(), &gate, "doc", 0).unwrap();
+        assert!(repair.is_none());
+
+        std::fs::remove_file(&artifact).unwrap();
+        let repair = reconcile_page_checkpoint(&state, None, temp.path(), &gate, "doc", 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repair["page_cursor"], 0);
+        assert_eq!(repair["completed_pages"], json!([]));
+        assert_eq!(repair["reused_pages"], json!([]));
+        assert_eq!(repair["raw_pages"], json!([]));
+
+        assert!(reconcile_page_checkpoint(&state, None, temp.path(), &gate, "doc", 2).is_err());
     }
 }
