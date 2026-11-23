@@ -1,4 +1,7 @@
 use anyhow::{bail, Result};
+use kg_doc_parser::demo_harness::{
+    prepare_demo_artifacts, write_demo_summary, DemoHarnessConfig, DemoParserMode,
+};
 use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
 use kg_doc_parser::page_index_pipeline::parse_page_index_document_heuristic;
 use kg_doc_parser::parser::{parse_file, ParsingMode};
@@ -16,7 +19,11 @@ fn usage() -> ! {
 fn main() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let command = arguments.first().map(String::as_str).unwrap_or_default();
-    if command != "parse" && command != "page-index" && command != "page-index-workflow" {
+    if command != "parse"
+        && command != "page-index"
+        && command != "page-index-workflow"
+        && command != "demo-summary"
+    {
         usage();
     }
     let mut input = None;
@@ -93,6 +100,30 @@ fn main() -> Result<()> {
                 run_page_index_source_workflow(&input, output_dir.as_path(), source_format)?;
             println!("{}", serde_json::to_string_pretty(&result.extra)?);
         }
+        return Ok(());
+    }
+    if command == "demo-summary" {
+        let Some(output_dir) = output_dir else {
+            bail!("demo-summary requires --output-dir");
+        };
+        let mut config = DemoHarnessConfig {
+            output_dir,
+            ..Default::default()
+        };
+        config.document_id = input
+            .file_stem()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("demo-doc")
+            .to_string();
+        config.parser_mode = match mode.as_str() {
+            "fake_layered" => DemoParserMode::FakeLayered,
+            "legacy_cached" => DemoParserMode::LegacyCached,
+            _ => bail!("demo-summary mode must be fake_layered or legacy_cached"),
+        };
+        let artifacts = prepare_demo_artifacts(&config)?;
+        write_demo_summary(&artifacts, &config, "children")?;
+        let summary = serde_json::to_string_pretty(&artifacts.summary_path)?;
+        println!("{summary}");
         return Ok(());
     }
     let payload = if command == "page-index" {
