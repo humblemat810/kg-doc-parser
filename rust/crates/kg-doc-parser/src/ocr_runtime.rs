@@ -84,6 +84,18 @@ pub fn page_cursor(state: &Value) -> u64 {
         .unwrap_or(0)
 }
 
+pub fn page_workflow_initial_state(
+    source_fingerprint: &str,
+    legacy_dir: &std::path::Path,
+) -> Value {
+    json!({
+        "ocr_page_state_version": OCR_PAGE_STATE_VERSION,
+        "source_fingerprint": source_fingerprint,
+        "legacy_dir": legacy_dir,
+        "page_cursor": 0,
+    })
+}
+
 pub fn resume_identity_value(state: &Value, key: &str) -> Result<ResumeIdentity> {
     let Some(value) = state.get(key) else {
         bail!("OCR checkpoint identity field {key:?} is missing");
@@ -469,6 +481,66 @@ pub fn reconcile_page_checkpoint<G: PageArtifactGate>(
         return Ok(Some(Value::Object(repair)));
     }
     Ok(None)
+}
+
+fn expected_page_numbers(sources: &[PageSourceState]) -> Vec<u64> {
+    sources.iter().map(|source| source.page_number).collect()
+}
+
+fn root_page_checkpoint_incomplete<G: PageArtifactGate>(
+    state: &Value,
+    sources: &[PageSourceState],
+    legacy_dir: &std::path::Path,
+    gate: &G,
+    document_id: &str,
+) -> Result<bool> {
+    let cursor = page_cursor(state);
+    let expected_pages = expected_page_numbers(sources);
+    let legacy_completed = if state.get("completed_pages").is_some() {
+        int_list(state, "completed_pages")?
+            .into_iter()
+            .map(|page| page as u64)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let completed = if legacy_completed.is_empty() {
+        expected_pages
+            .iter()
+            .take(cursor as usize)
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        legacy_completed
+    };
+    let incomplete = cursor != sources.len() as u64 || completed != expected_pages;
+    let checkpoint_broken =
+        reconcile_page_checkpoint(state, Some(sources), legacy_dir, gate, document_id, 0)?
+            .is_some();
+    Ok(incomplete || checkpoint_broken)
+}
+
+pub fn validate_root_page_result<G: PageArtifactGate>(
+    state: &Value,
+    sources: &[PageSourceState],
+    legacy_dir: &std::path::Path,
+    gate: &G,
+    document_id: &str,
+) -> Result<()> {
+    if root_page_checkpoint_incomplete(state, sources, legacy_dir, gate, document_id)? {
+        bail!("OCR root page child completed with an incomplete page checkpoint");
+    }
+    Ok(())
+}
+
+pub fn page_result_needs_recovery<G: PageArtifactGate>(
+    state: &Value,
+    sources: &[PageSourceState],
+    legacy_dir: &std::path::Path,
+    gate: &G,
+    document_id: &str,
+) -> Result<bool> {
+    root_page_checkpoint_incomplete(state, sources, legacy_dir, gate, document_id)
 }
 
 pub fn recovery_generation(state: &Value) -> Result<u64> {
@@ -914,6 +986,34 @@ mod tests {
                 .unwrap()
                 .0
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn validates_root_page_result_and_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("page_1.png");
+        std::fs::write(&image, b"page one").unwrap();
+        let artifact = temp.path().join("page_1.json");
+        std::fs::write(&artifact, r#"{"pdf_page_num":1}"#).unwrap();
+        let sources = vec![PageSourceState {
+            page_number: 1,
+            image_path: image.to_string_lossy().to_string(),
+        }];
+        let state = page_workflow_initial_state("source", temp.path());
+        assert_eq!(state["ocr_page_state_version"], OCR_PAGE_STATE_VERSION);
+        assert_eq!(state["page_cursor"], 0);
+
+        let gate = ReadableArtifactGate;
+        assert!(validate_root_page_result(&state, &sources, temp.path(), &gate, "doc").is_err());
+
+        let mut complete = state.clone();
+        complete["page_cursor"] = json!(1);
+        complete["completed_pages"] = json!([1]);
+        assert!(validate_root_page_result(&complete, &sources, temp.path(), &gate, "doc").is_ok());
+        std::fs::remove_file(&artifact).unwrap();
+        assert!(
+            page_result_needs_recovery(&complete, &sources, temp.path(), &gate, "doc").unwrap()
         );
     }
 }
