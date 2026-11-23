@@ -2,22 +2,24 @@ use anyhow::{bail, Result};
 use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
 use kg_doc_parser::page_index_pipeline::parse_page_index_document_heuristic;
 use kg_doc_parser::parser::{parse_file, ParsingMode};
+use kg_doc_parser::runners::run_page_index_source_workflow;
 use serde_json::json;
 use std::path::PathBuf;
 
 fn usage() -> ! {
-    eprintln!("usage: kg-doc-parser <parse|page-index> --input <path> [--mode snippet|delimiter|markdown|text] [--max-depth <depth>] [--output <path>]");
+    eprintln!("usage: kg-doc-parser <parse|page-index|page-index-workflow> --input <path> [--mode snippet|delimiter|markdown|text] [--max-depth <depth>] [--output <path>] [--output-dir <dir>]");
     std::process::exit(2);
 }
 
 fn main() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let command = arguments.first().map(String::as_str).unwrap_or_default();
-    if command != "parse" && command != "page-index" {
+    if command != "parse" && command != "page-index" && command != "page-index-workflow" {
         usage();
     }
     let mut input = None;
     let mut output = "-";
+    let mut output_dir = None;
     let mut mode = if command == "page-index" {
         "markdown".to_string()
     } else {
@@ -42,6 +44,13 @@ fn main() -> Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("--output requires a path"))?;
                 index += 2;
             }
+            "--output-dir" => {
+                output_dir =
+                    Some(PathBuf::from(arguments.get(index + 1).ok_or_else(
+                        || anyhow::anyhow!("--output-dir requires a path"),
+                    )?));
+                index += 2;
+            }
             "--mode" => {
                 mode = arguments
                     .get(index + 1)
@@ -62,6 +71,19 @@ fn main() -> Result<()> {
     let Some(input) = input else {
         usage();
     };
+    if command == "page-index-workflow" {
+        let source_format = match mode.as_str() {
+            "markdown" => PageIndexSourceFormat::Markdown,
+            "text" => PageIndexSourceFormat::Text,
+            _ => bail!("page-index-workflow mode must be markdown or text"),
+        };
+        let Some(output_dir) = output_dir else {
+            bail!("page-index-workflow requires --output-dir");
+        };
+        let result = run_page_index_source_workflow(&input, output_dir.as_path(), source_format)?;
+        println!("{}", serde_json::to_string_pretty(&result.extra)?);
+        return Ok(());
+    }
     let payload = if command == "page-index" {
         let source_format = match mode.as_str() {
             "markdown" => PageIndexSourceFormat::Markdown,
