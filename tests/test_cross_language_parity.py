@@ -23,6 +23,7 @@ from kg_doc_parser.workflow_ingest.page_index import _heuristic_page_outline
 from kg_doc_parser.workflow_ingest.page_index_tree import page_index_normalize_text
 from kg_doc_parser.workflow_ingest.parser_core_session import source_map_fingerprint
 from kg_doc_parser.workflow_ingest.ocr_artifacts import artifact_schema_error
+from kg_doc_parser.workflow_ingest.ocr_providers import list_ocr_provider_capabilities
 
 
 FIXTURE = (
@@ -135,6 +136,14 @@ def test_source_map_fingerprint_matches_rust() -> None:
             "z": {"text": "second"},
         }
     )
+
+
+def test_ocr_provider_inventory_shape_matches_rust() -> None:
+    capabilities = list_ocr_provider_capabilities()
+    assert len(capabilities) == 19
+    assert capabilities[0].provider == "docling"
+    assert capabilities[6].provider == "rapidocr"
+    assert capabilities[8].provider == "bonsai"
 
 
 def test_semantic_indexing_contracts_match_rust() -> None:
