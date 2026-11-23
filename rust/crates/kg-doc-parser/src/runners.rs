@@ -339,4 +339,28 @@ mod tests {
         );
         assert!(infer_page_index_source_format(text, "json").is_err());
     }
+
+    #[test]
+    fn discovers_nested_page_index_files_for_batch_workflows() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let alpha = temp.path().join("alpha.md");
+        let beta = nested.join("beta.txt");
+        std::fs::write(&alpha, "# Alpha\n\nAlpha paragraph.").unwrap();
+        std::fs::write(&beta, "Beta\n\nBeta paragraph.").unwrap();
+        let results = run_page_index_batch_workflow(
+            &[temp.path().to_path_buf()],
+            &temp.path().join("output"),
+            PageIndexSourceFormat::Text,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 2);
+        let input_paths = results
+            .iter()
+            .map(|result| result.input_path.clone())
+            .collect::<Vec<_>>();
+        assert!(input_paths.contains(&alpha));
+        assert!(input_paths.contains(&beta));
+    }
 }
