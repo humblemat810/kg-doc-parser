@@ -1,7 +1,12 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+use crate::page_index_contracts::PageIndexSourceFormat;
+use crate::page_index_pipeline::parse_page_index_document_heuristic;
 
 fn walk_directory(
     directory: &Path,
@@ -88,6 +93,138 @@ pub fn collision_safe_batch_identity(
     format!("{stem}-{}", &fingerprint[..16])
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowCommandResult {
+    pub kind: String,
+    pub input_path: PathBuf,
+    pub output_dir: PathBuf,
+    pub status: String,
+    pub probe_path: PathBuf,
+    pub summary_path: PathBuf,
+    pub extra: Value,
+}
+
+fn probe_event(path: &Path, kind: &str, payload: Value) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&serde_json::json!({"event": kind, "payload": payload}))?
+    )?;
+    Ok(())
+}
+
+fn document_stem(path: &Path) -> String {
+    path.file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("document")
+        .to_string()
+}
+
+pub fn run_page_index_source_workflow(
+    source_path: &Path,
+    output_dir: &Path,
+    source_format: PageIndexSourceFormat,
+) -> Result<WorkflowCommandResult> {
+    let output_dir = output_dir.to_path_buf();
+    std::fs::create_dir_all(&output_dir)?;
+    let probe_path = output_dir.join("workflow-events.jsonl");
+    let raw_text = std::fs::read_to_string(source_path)?;
+    probe_event(
+        &probe_path,
+        "workflow.file_started",
+        serde_json::json!({
+            "workflow_kind": "page_index",
+            "source_path": source_path,
+            "output_dir": output_dir,
+        }),
+    )?;
+    let stem = document_stem(source_path);
+    let result = parse_page_index_document_heuristic(&stem, &stem, &raw_text, source_format)?;
+    let page_count = result.semantic_tree.child_nodes.len();
+    let max_depth = result
+        .semantic_tree
+        .child_nodes
+        .iter()
+        .map(|page| page.child_nodes.len())
+        .max()
+        .unwrap_or(0);
+    let summary = serde_json::json!({
+        "kind": "page_index",
+        "source_path": source_path,
+        "mode": "heuristic",
+        "source_format": source_format,
+        "page_count": page_count,
+        "max_depth": max_depth,
+    });
+    let summary_path = output_dir.join("page-index-summary.json");
+    std::fs::write(&summary_path, serde_json::to_string_pretty(&summary)?)?;
+    probe_event(
+        &probe_path,
+        "workflow.file_finished",
+        serde_json::json!({
+            "workflow_kind": "page_index",
+            "source_path": source_path,
+            "output_dir": output_dir,
+            "status": "succeeded",
+            "summary_path": summary_path,
+        }),
+    )?;
+    Ok(WorkflowCommandResult {
+        kind: "page_index".to_string(),
+        input_path: source_path.to_path_buf(),
+        output_dir,
+        status: "succeeded".to_string(),
+        probe_path,
+        summary_path,
+        extra: summary,
+    })
+}
+
+pub fn run_page_index_batch_workflow(
+    paths: &[PathBuf],
+    output_dir: &Path,
+    source_format: PageIndexSourceFormat,
+) -> Result<Vec<WorkflowCommandResult>> {
+    let output_dir = output_dir.to_path_buf();
+    std::fs::create_dir_all(&output_dir)?;
+    let probe_path = output_dir.join("workflow-events.jsonl");
+    let files = discover_input_files(paths, &[".md", ".txt", ".markdown"], true)?;
+    probe_event(
+        &probe_path,
+        "workflow.batch_started",
+        serde_json::json!({
+            "workflow_kind": "page_index",
+            "file_count": files.len(),
+            "output_dir": output_dir,
+        }),
+    )?;
+    let results = files
+        .iter()
+        .map(|source_path| {
+            run_page_index_source_workflow(
+                source_path,
+                &output_dir.join(document_stem(source_path)),
+                source_format,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    probe_event(
+        &probe_path,
+        "workflow.batch_finished",
+        serde_json::json!({
+            "workflow_kind": "page_index",
+            "file_count": results.len(),
+            "output_dir": output_dir,
+        }),
+    )?;
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +267,32 @@ mod tests {
         assert_ne!(identity, "duplicate");
         assert!(identity.starts_with("duplicate-"));
         assert_eq!(identity.len(), "duplicate-".len() + 16);
+    }
+
+    #[test]
+    fn runs_page_index_source_and_batch_workflows() {
+        let temp = tempfile::tempdir().unwrap();
+        let input = temp.path().join("page-index.md");
+        std::fs::write(&input, "# Section One\n\nParagraph one.").unwrap();
+        let result = run_page_index_source_workflow(
+            &input,
+            &temp.path().join("single"),
+            PageIndexSourceFormat::Markdown,
+        )
+        .unwrap();
+        assert_eq!(result.status, "succeeded");
+        assert_eq!(result.extra["page_count"], 1);
+        assert!(result.summary_path.exists());
+        assert!(result.probe_path.exists());
+
+        let results = run_page_index_batch_workflow(
+            &[temp.path().to_path_buf()],
+            &temp.path().join("batch"),
+            PageIndexSourceFormat::Markdown,
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].input_path, input);
+        assert!(results[0].summary_path.exists());
     }
 }
