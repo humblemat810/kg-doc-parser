@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::layerwise_edits::semantic_tree_to_kge_payload;
 use crate::layerwise_parser::{prepare_document_for_llm, stable_id};
+use crate::ocr_artifacts::artifact_schema_error;
 use crate::page_index_contracts::PageIndexSourceFormat;
 use crate::page_index_pipeline::parse_page_index_document_heuristic;
 use crate::parser::ParsingMode;
@@ -156,6 +157,99 @@ fn document_stem(path: &Path) -> String {
         .to_string()
 }
 
+pub const OCR_FILE_SUFFIXES: [&str; 8] = [
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".pdf",
+];
+pub const OCR_IMAGE_SUFFIXES: [&str; 7] =
+    [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"];
+
+pub trait OcrRunner {
+    fn provider_name(&self) -> &str {
+        "provider"
+    }
+
+    fn run_page(&self, image_path: &Path, page_number: u64) -> Result<Value>;
+}
+
+impl<F> OcrRunner for F
+where
+    F: Fn(&Path, u64) -> Result<Value>,
+{
+    fn run_page(&self, image_path: &Path, page_number: u64) -> Result<Value> {
+        self(image_path, page_number)
+    }
+}
+
+pub trait PdfRasterizer {
+    fn identity(&self) -> &str {
+        "render-v1"
+    }
+
+    fn render_pdf(&self, pdf_path: &Path, rendered_dir: &Path) -> Result<Vec<PathBuf>>;
+}
+
+impl<F> PdfRasterizer for F
+where
+    F: Fn(&Path, &Path) -> Result<Vec<PathBuf>>,
+{
+    fn render_pdf(&self, pdf_path: &Path, rendered_dir: &Path) -> Result<Vec<PathBuf>> {
+        self(pdf_path, rendered_dir)
+    }
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let contents = std::fs::read(path)?;
+    let mut digest = Sha256::new();
+    digest.update(contents);
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn normalize_page_number(value: u64) -> Result<i64> {
+    let value = i64::try_from(value)?;
+    if value <= 0 {
+        anyhow::bail!("OCR page numbers must be positive");
+    }
+    Ok(value)
+}
+
+fn validate_ocr_artifact(
+    mut artifact: Value,
+    image_path: &Path,
+    page_number: u64,
+    provider_name: &str,
+) -> Result<Value> {
+    let object = artifact
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("OCR page artifact must be a JSON object"))?;
+    let page_number = normalize_page_number(page_number)?;
+    if !object.contains_key("pdf_page_num") {
+        object.insert("pdf_page_num".to_string(), serde_json::json!(page_number));
+    }
+    let metadata = object
+        .entry("metadata")
+        .or_insert_with(|| serde_json::json!({}));
+    let metadata = metadata
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("OCR page metadata must be a JSON object"))?;
+    metadata
+        .entry("ocr_provider".to_string())
+        .or_insert_with(|| serde_json::json!(provider_name));
+    if !metadata.contains_key("source_image_sha256") {
+        metadata.insert(
+            "source_image_sha256".to_string(),
+            serde_json::json!(sha256_file(image_path)?),
+        );
+    }
+    if let Some(error) = artifact_schema_error(&artifact) {
+        anyhow::bail!(error);
+    }
+    Ok(artifact)
+}
+
 pub fn run_page_index_source_workflow(
     source_path: &Path,
     output_dir: &Path,
@@ -261,6 +355,187 @@ pub fn run_layerwise_batch_workflow(
         "workflow.batch_finished",
         serde_json::json!({
             "workflow_kind": "layerwise",
+            "file_count": results.len(),
+            "output_dir": output_dir,
+        }),
+    )?;
+    Ok(results)
+}
+
+pub fn run_ocr_source_workflow(
+    source_path: &Path,
+    output_dir: &Path,
+    runner: &dyn OcrRunner,
+    rasterizer: Option<&dyn PdfRasterizer>,
+    probe_path: &Path,
+) -> Result<WorkflowCommandResult> {
+    std::fs::create_dir_all(output_dir)?;
+    let document_id = document_stem(source_path);
+    let extension = source_path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(|extension| format!(".{}", extension.to_lowercase()))
+        .unwrap_or_default();
+    let source_kind;
+    let rendered_dir;
+    let render_configuration_fingerprint;
+    let mut page_sources = Vec::new();
+    if extension == ".pdf" {
+        if !source_path.is_file() {
+            anyhow::bail!("OCR source must be an existing image or PDF");
+        }
+        let Some(rasterizer) = rasterizer else {
+            anyhow::bail!("PDF OCR workflow requires a PDF rasterizer");
+        };
+        source_kind = "pdf";
+        rendered_dir = output_dir.join("rendered_pages");
+        std::fs::create_dir_all(&rendered_dir)?;
+        let rendered_paths = rasterizer.render_pdf(source_path, &rendered_dir)?;
+        if rendered_paths.is_empty() {
+            anyhow::bail!("PDF rasterizer produced no pages");
+        }
+        for (index, image_path) in rendered_paths.iter().enumerate() {
+            let image_extension = image_path
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(|extension| format!(".{}", extension.to_lowercase()))
+                .unwrap_or_default();
+            if !OCR_IMAGE_SUFFIXES.contains(&image_extension.as_str()) {
+                anyhow::bail!("unsupported rendered OCR image: {}", image_path.display());
+            }
+            page_sources.push(((index + 1) as u64, image_path.clone()));
+        }
+        render_configuration_fingerprint = rasterizer.identity().to_string();
+    } else {
+        if !OCR_IMAGE_SUFFIXES.contains(&extension.as_str()) {
+            anyhow::bail!("OCR source must be an image or PDF");
+        }
+        if !source_path.is_file() {
+            anyhow::bail!("OCR source must be an existing image or PDF");
+        }
+        source_kind = "image";
+        rendered_dir = output_dir.join("rendered_pages");
+        std::fs::create_dir_all(&rendered_dir)?;
+        page_sources.push((1, source_path.to_path_buf()));
+        render_configuration_fingerprint = "image-materialize-v1".to_string();
+    }
+    let input_fingerprint = sha256_file(source_path)?;
+    let legacy_dir = output_dir.join("legacy_split_pages");
+    std::fs::create_dir_all(&legacy_dir)?;
+    probe_event(
+        probe_path,
+        "workflow.file_started",
+        serde_json::json!({
+            "workflow_kind": "ocr",
+            "source_path": source_path,
+            "output_dir": output_dir,
+            "document_id": document_id,
+        }),
+    )?;
+    let mut pages = Vec::with_capacity(page_sources.len());
+    for (page_number, image_path) in page_sources {
+        let artifact = runner.run_page(&image_path, page_number)?;
+        let artifact =
+            validate_ocr_artifact(artifact, &image_path, page_number, runner.provider_name())?;
+        let artifact_path = legacy_dir.join(format!("page_{page_number}.json"));
+        std::fs::write(&artifact_path, serde_json::to_string_pretty(&artifact)?)?;
+        pages.push(serde_json::json!({
+            "page_number": page_number,
+            "image_path": image_path,
+            "json_path": artifact_path,
+            "status": "completed",
+        }));
+    }
+    let progress = serde_json::json!({
+        "document_id": document_id,
+        "title": document_id,
+        "source_kind": source_kind,
+        "input_fingerprint": input_fingerprint,
+        "render_configuration_fingerprint": render_configuration_fingerprint,
+        "total_pages": pages.len(),
+        "pages": pages,
+    });
+    let progress_path = output_dir.join("ocr-progress.json");
+    std::fs::write(&progress_path, serde_json::to_string_pretty(&progress)?)?;
+    let summary = serde_json::json!({
+        "kind": "ocr",
+        "source_path": source_path,
+        "document_id": document_id,
+        "title": document_id,
+        "source_kind": source_kind,
+        "input_fingerprint": input_fingerprint,
+        "page_count": pages.len(),
+        "render_configuration_fingerprint": render_configuration_fingerprint,
+        "legacy_dir": legacy_dir,
+        "rendered_dir": rendered_dir,
+        "progress_path": progress_path,
+    });
+    let summary_path = output_dir.join("ocr-summary.json");
+    std::fs::write(&summary_path, serde_json::to_string_pretty(&summary)?)?;
+    probe_event(
+        probe_path,
+        "workflow.file_finished",
+        serde_json::json!({
+            "workflow_kind": "ocr",
+            "source_path": source_path,
+            "output_dir": output_dir,
+            "document_id": document_id,
+            "status": "succeeded",
+            "summary_path": summary_path,
+        }),
+    )?;
+    Ok(WorkflowCommandResult {
+        kind: "ocr".to_string(),
+        input_path: source_path.to_path_buf(),
+        output_dir: output_dir.to_path_buf(),
+        status: "succeeded".to_string(),
+        probe_path: probe_path.to_path_buf(),
+        summary_path,
+        extra: summary,
+    })
+}
+
+pub fn run_ocr_batch_workflow(
+    source_paths: &[PathBuf],
+    output_dir: &Path,
+    runner: &dyn OcrRunner,
+    rasterizer: Option<&dyn PdfRasterizer>,
+) -> Result<Vec<WorkflowCommandResult>> {
+    std::fs::create_dir_all(output_dir)?;
+    let probe_path = output_dir.join("workflow-events.jsonl");
+    let files = discover_input_files(source_paths, &OCR_FILE_SUFFIXES, true)?;
+    let mut stem_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for source_path in &files {
+        let stem = document_stem(source_path);
+        *stem_counts.entry(stem).or_insert(0) += 1;
+    }
+    probe_event(
+        &probe_path,
+        "workflow.batch_started",
+        serde_json::json!({
+            "workflow_kind": "ocr",
+            "file_count": files.len(),
+            "output_dir": output_dir,
+        }),
+    )?;
+    let results = files
+        .iter()
+        .map(|source_path| {
+            let batch_identity = collision_safe_batch_identity(source_path, &stem_counts);
+            run_ocr_source_workflow(
+                source_path,
+                &output_dir.join(&batch_identity),
+                runner,
+                rasterizer,
+                &probe_path,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    probe_event(
+        &probe_path,
+        "workflow.batch_finished",
+        serde_json::json!({
+            "workflow_kind": "ocr",
             "file_count": results.len(),
             "output_dir": output_dir,
         }),
@@ -627,5 +902,77 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].input_path, document);
         assert!(results[0].summary_path.exists());
+    }
+
+    #[test]
+    fn runs_ocr_image_source_workflow() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("sample.png");
+        std::fs::write(&source, b"fake image").unwrap();
+        let runner = |_image_path: &Path, page_number: u64| -> Result<Value> {
+            Ok(serde_json::json!({
+                "metadata": {"ocr_json_version": "0.1", "ocr_model_name": "fake"},
+                "pdf_page_num": page_number,
+                "OCR_text_clusters": [{"text": format!("page {page_number}")}],
+                "non_text_objects": []
+            }))
+        };
+        let output = temp.path().join("single");
+        let result = run_ocr_source_workflow(
+            &source,
+            &output,
+            &runner,
+            None,
+            &output.join("workflow-events.jsonl"),
+        )
+        .unwrap();
+        assert_eq!(result.status, "succeeded");
+        assert_eq!(result.extra["page_count"], 1);
+        assert!(output.join("legacy_split_pages/page_1.json").exists());
+        assert!(output.join("ocr-summary.json").exists());
+        assert!(output.join("ocr-progress.json").exists());
+    }
+
+    #[test]
+    fn runs_ocr_pdf_and_batch_workflows() {
+        let temp = tempfile::tempdir().unwrap();
+        let pdf = temp.path().join("report.pdf");
+        std::fs::write(&pdf, b"fake pdf").unwrap();
+        let runner = |_image_path: &Path, page_number: u64| -> Result<Value> {
+            Ok(serde_json::json!({
+                "metadata": {"ocr_json_version": "0.1", "ocr_model_name": "fake"},
+                "pdf_page_num": page_number,
+                "OCR_text_clusters": [{"text": format!("page {page_number}")}],
+                "non_text_objects": []
+            }))
+        };
+        let rasterizer = |_pdf_path: &Path, rendered_dir: &Path| -> Result<Vec<PathBuf>> {
+            let first = rendered_dir.join("page_1.png");
+            let second = rendered_dir.join("page_2.png");
+            std::fs::write(&first, b"one").unwrap();
+            std::fs::write(&second, b"two").unwrap();
+            Ok(vec![first, second])
+        };
+        let output = temp.path().join("single");
+        let result = run_ocr_source_workflow(
+            &pdf,
+            &output,
+            &runner,
+            Some(&rasterizer),
+            &output.join("workflow-events.jsonl"),
+        )
+        .unwrap();
+        assert_eq!(result.extra["page_count"], 2);
+        assert!(output.join("legacy_split_pages/page_1.json").exists());
+        assert!(output.join("legacy_split_pages/page_2.json").exists());
+
+        let batch_input = temp.path().join("batch-inputs");
+        std::fs::create_dir_all(&batch_input).unwrap();
+        std::fs::write(batch_input.join("sample.png"), b"one").unwrap();
+        std::fs::write(batch_input.join("sample.jpg"), b"two").unwrap();
+        let batch_output = temp.path().join("batch");
+        let results = run_ocr_batch_workflow(&[batch_input], &batch_output, &runner, None).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|result| result.status == "succeeded"));
     }
 }
