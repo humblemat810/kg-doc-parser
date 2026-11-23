@@ -60,6 +60,43 @@
       "raw_text": "first\fform feed\tsecond",
       "expected": ["first", "form feed\tsecond"]
     }
+  ],
+  "page_index_classify_blocks": [
+    {
+      "text": "# Alpha",
+      "start_char": 0,
+      "end_char": 7,
+      "options": {"source_format": "markdown"},
+      "expected": {
+        "node_type": "HEADING",
+        "title": "Alpha",
+        "kind_hint": "heading_markdown",
+        "heading_level": 1
+      }
+    },
+    {
+      "text": "Section 1: Scope",
+      "start_char": 0,
+      "end_char": 16,
+      "options": {"source_format": "text", "is_first": true},
+      "expected": {
+        "node_type": "HEADING",
+        "title": "Section 1: Scope",
+        "kind_hint": "heading_plain",
+        "heading_level": 1
+      }
+    },
+    {
+      "text": "- Definition: Scope",
+      "start_char": 0,
+      "end_char": 19,
+      "options": {"source_format": "text"},
+      "expected": {
+        "node_type": "TERM",
+        "title": "Definition: Scope",
+        "kind_hint": "term_list_item"
+      }
+    }
   ]
 }
 

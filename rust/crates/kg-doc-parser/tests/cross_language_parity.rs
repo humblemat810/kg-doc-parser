@@ -1,3 +1,5 @@
+use kg_doc_parser::page_index_classification::{classify_block, ClassifyBlockOptions};
+use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
 use kg_doc_parser::{
     page_index_source_text::split_pages, semantic_indexing as indexing,
     source_text::source_map_entry_text,
@@ -9,6 +11,40 @@ fn fixture() -> Value {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/semantic_contracts.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn page_index_classify_blocks_matches_python() {
+    let payload = fixture();
+    for case in payload["page_index_classify_blocks"].as_array().unwrap() {
+        let options = &case["options"];
+        let source_format = match options["source_format"].as_str().unwrap() {
+            "markdown" => PageIndexSourceFormat::Markdown,
+            _ => PageIndexSourceFormat::Text,
+        };
+        let actual = classify_block(
+            case["text"].as_str().unwrap(),
+            case["start_char"].as_u64().unwrap() as usize,
+            case["end_char"].as_u64().unwrap() as usize,
+            ClassifyBlockOptions {
+                source_format,
+                is_first: options["is_first"].as_bool().unwrap_or(false),
+                ..Default::default()
+            },
+        );
+        let expected = &case["expected"];
+        assert_eq!(
+            serde_json::to_value(actual.node_type).unwrap(),
+            expected["node_type"]
+        );
+        assert_eq!(actual.title, expected["title"]);
+        assert_eq!(actual.kind_hint, expected["kind_hint"]);
+        if let Some(heading_level) = expected["heading_level"].as_u64() {
+            assert_eq!(actual.heading_level, Some(heading_level as u8));
+        } else {
+            assert_eq!(actual.heading_level, None);
+        }
+    }
 }
 
 #[test]
