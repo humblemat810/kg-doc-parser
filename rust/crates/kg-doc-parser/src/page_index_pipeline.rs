@@ -151,7 +151,7 @@ pub fn parse_page_index_document_heuristic(
         let root_pointer = HydratedTextPointer {
             source_cluster_id: format!("{document_id}:page:{page_number}"),
             start_char: 0,
-            end_char: page_text.chars().count().saturating_sub(1) as u64,
+            end_char: page_text.chars().count().saturating_sub(1) as i64,
             verbatim_text: page_text.clone(),
         };
         let mut page_node = make_semantic_node(

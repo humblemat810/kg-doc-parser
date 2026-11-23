@@ -29,7 +29,7 @@ fn pointer(cluster_id: &str, text: &str) -> HydratedTextPointer {
     HydratedTextPointer {
         source_cluster_id: cluster_id.to_string(),
         start_char: 0,
-        end_char: text.chars().count().saturating_sub(1) as u64,
+        end_char: text.chars().count().saturating_sub(1) as i64,
         verbatim_text: text.to_string(),
     }
 }

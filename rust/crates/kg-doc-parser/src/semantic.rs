@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 pub struct HydratedTextPointer {
     pub source_cluster_id: String,
     pub start_char: u64,
-    pub end_char: u64,
+    pub end_char: i64,
     pub verbatim_text: String,
 }
 
