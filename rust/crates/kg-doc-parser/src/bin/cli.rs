@@ -2,6 +2,7 @@ use anyhow::{bail, Result};
 use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
 use kg_doc_parser::page_index_pipeline::parse_page_index_document_heuristic;
 use kg_doc_parser::parser::{parse_file, ParsingMode};
+use kg_doc_parser::runners::infer_page_index_source_format;
 use kg_doc_parser::runners::run_page_index_batch_workflow;
 use kg_doc_parser::runners::run_page_index_source_workflow;
 use serde_json::json;
@@ -78,11 +79,7 @@ fn main() -> Result<()> {
         usage();
     };
     if command == "page-index-workflow" {
-        let source_format = match mode.as_str() {
-            "markdown" => PageIndexSourceFormat::Markdown,
-            "text" => PageIndexSourceFormat::Text,
-            _ => bail!("page-index-workflow mode must be markdown or text"),
-        };
+        let source_format = infer_page_index_source_format(&input, &mode)?;
         let Some(output_dir) = output_dir else {
             bail!("page-index-workflow requires --output-dir");
         };
@@ -100,9 +97,21 @@ fn main() -> Result<()> {
     }
     let payload = if command == "page-index" {
         let source_format = match mode.as_str() {
+            "auto" => {
+                if input
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(|extension| extension.to_lowercase())
+                    == Some("md".to_string())
+                {
+                    PageIndexSourceFormat::Markdown
+                } else {
+                    PageIndexSourceFormat::Text
+                }
+            }
             "markdown" => PageIndexSourceFormat::Markdown,
             "text" => PageIndexSourceFormat::Text,
-            _ => bail!("page-index mode must be markdown or text"),
+            _ => bail!("page-index mode must be auto, markdown, or text"),
         };
         let text = std::fs::read_to_string(&input)?;
         let document_id = input

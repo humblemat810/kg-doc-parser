@@ -8,6 +8,31 @@ use std::path::{Path, PathBuf};
 use crate::page_index_contracts::PageIndexSourceFormat;
 use crate::page_index_pipeline::parse_page_index_document_heuristic;
 
+pub fn infer_page_index_source_format(
+    source_path: &Path,
+    requested: &str,
+) -> Result<PageIndexSourceFormat> {
+    match requested {
+        "text" => Ok(PageIndexSourceFormat::Text),
+        "markdown" => Ok(PageIndexSourceFormat::Markdown),
+        "auto" => {
+            let extension = source_path
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(|value| value.to_lowercase())
+                .unwrap_or_default();
+            if extension == "md" || extension == "markdown" {
+                Ok(PageIndexSourceFormat::Markdown)
+            } else {
+                Ok(PageIndexSourceFormat::Text)
+            }
+        }
+        other => {
+            anyhow::bail!("page-index source format must be auto, text, or markdown: {other:?}")
+        }
+    }
+}
+
 fn walk_directory(
     directory: &Path,
     allowed_suffixes: &std::collections::HashSet<String>,
