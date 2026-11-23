@@ -50,9 +50,12 @@ pub fn resolve_pointer(
             let end_char = start_char + needle.chars().count() - 1;
             return Ok(HydratedTextPointer {
                 source_cluster_id: unit_id.to_string(),
-                start_char: start_char as u64,
-                end_char: end_char as u64,
+                start_char: start_char as i64,
+                end_char: end_char as i64,
                 verbatim_text: page_text[start_char..start_char + needle.len()].to_string(),
+                start_delimiter: None,
+                end_delimiter: None,
+                validation_method: None,
             });
         }
     }
@@ -63,13 +66,16 @@ pub fn resolve_pointer(
     let (start_char, end_char) = matches[0];
     Ok(HydratedTextPointer {
         source_cluster_id: unit_id.to_string(),
-        start_char: start_char as u64,
-        end_char: end_char as u64,
+        start_char: start_char as i64,
+        end_char: end_char as i64,
         verbatim_text: page_text
             .chars()
             .skip(start_char)
             .take(end_char - start_char + 1)
             .collect(),
+        start_delimiter: None,
+        end_delimiter: None,
+        validation_method: None,
     })
 }
 
@@ -85,7 +91,7 @@ fn materialize_block_tree_inner(
     let mut cursor = start_at;
     for spec in block_specs {
         let pointer = resolve_pointer(unit_id, page_text, &spec.excerpt, cursor)?;
-        cursor = pointer.end_char as usize + 1;
+        cursor = (pointer.end_char as usize) + 1;
         let is_heading = spec.source_role == PageIndexSourceRole::Heading;
         let mut node = make_semantic_node(
             &spec.title,
@@ -147,12 +153,15 @@ fn materialize_block_tree_inner(
             node.aggregate_content_pointers = vec![HydratedTextPointer {
                 source_cluster_id: pointer.source_cluster_id.clone(),
                 start_char: pointer.start_char,
-                end_char: aggregate_end as u64,
+                end_char: aggregate_end as i64,
                 verbatim_text: page_text
                     .chars()
                     .skip(pointer.start_char as usize)
                     .take(aggregate_end - pointer.start_char as usize + 1)
                     .collect(),
+                start_delimiter: None,
+                end_delimiter: None,
+                validation_method: None,
             }];
         }
         if let Some(leaf) = heading_leaf {
