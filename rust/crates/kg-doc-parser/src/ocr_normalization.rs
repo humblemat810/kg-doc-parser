@@ -1,8 +1,17 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::document_grouping::GroupProposal;
 use crate::document_models::{BoundingBox, DocumentTree, SourceItem};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OCRMetadata {
+    pub provider: String,
+    pub model: String,
+    pub configuration_fingerprint: String,
+    pub confidence: Option<f64>,
+}
 
 fn first_part<'a>(
     node: &'a crate::document_models::DocumentNode,
@@ -148,12 +157,119 @@ pub fn suggest_cross_page_continuations(tree: &DocumentTree) -> Result<Vec<Group
     Ok(proposals)
 }
 
+pub fn spatial_accuracy(value: &serde_json::Value, has_bbox: bool) -> String {
+    let Some(value) = value.as_str() else {
+        return "page".to_string();
+    };
+    if has_bbox && matches!(value, "page" | "region" | "line" | "word" | "character") {
+        value.to_string()
+    } else {
+        "page".to_string()
+    }
+}
+
+fn non_empty_string(value: Option<&serde_json::Value>) -> Option<String> {
+    value
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+pub fn ocr_metadata(metadata: &serde_json::Value) -> Option<OCRMetadata> {
+    let provider = non_empty_string(metadata.get("ocr_provider"))?;
+    let model = non_empty_string(
+        metadata
+            .get("ocr_model_name")
+            .or_else(|| metadata.get("ocr_model")),
+    )?;
+    let configuration_fingerprint =
+        non_empty_string(metadata.get("ocr_configuration_fingerprint"))?;
+    let confidence = metadata
+        .get("ocr_confidence")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|confidence| confidence.is_finite());
+    Some(OCRMetadata {
+        provider,
+        model,
+        configuration_fingerprint,
+        confidence,
+    })
+}
+
+pub fn page_annotations(
+    metadata: &serde_json::Value,
+) -> std::collections::BTreeMap<String, String> {
+    let mut annotations = std::collections::BTreeMap::new();
+    for key in [
+        "incomplete_text",
+        "incomplete_words_on_edge",
+        "data_loss_likelihood",
+        "scan_quality",
+    ] {
+        if let Some(value) = metadata.get(key) {
+            if value.is_string() || value.is_boolean() || value.is_number() {
+                annotations.insert(
+                    format!("ocr:{key}"),
+                    match value {
+                        serde_json::Value::String(value) => value.clone(),
+                        other => other.to_string(),
+                    },
+                );
+            }
+        }
+    }
+    annotations
+}
+
+pub fn unit_near_page_y_edge(
+    unit: &BoundingBox,
+    unit_metadata: &serde_json::Value,
+    page_metadata: &serde_json::Value,
+    edge: &str,
+) -> bool {
+    if unit_metadata
+        .get("coordinate_system")
+        .and_then(serde_json::Value::as_str)
+        != Some("pixels")
+    {
+        return false;
+    }
+    let Some(page_y_min) = page_metadata
+        .get("page_y_min")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite())
+    else {
+        return false;
+    };
+    let Some(page_y_max) = page_metadata
+        .get("page_y_max")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| value.is_finite())
+    else {
+        return false;
+    };
+    if page_y_max <= page_y_min {
+        return false;
+    }
+    let page_height = page_y_max - page_y_min;
+    let edge_margin = 8.0f64.max(page_height * 0.025);
+    if edge == "top" {
+        unit.y0 <= page_y_min + edge_margin
+    } else if edge == "bottom" {
+        unit.y1 >= page_y_max - edge_margin
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::document_models::{
         BoundingBox, CoordinateSystem, DocumentNode, DocumentTree, SourceAccuracy, SourceLocation,
     };
+    use serde_json::json;
     use std::collections::BTreeMap;
 
     fn annotations(values: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -292,5 +408,52 @@ mod tests {
         assert!(suggest_cross_page_continuations(&tree(first, second))
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn normalizes_spatial_metadata_and_edge_evidence() {
+        let metadata = json!({
+            "ocr_provider": "docling",
+            "ocr_model_name": "docling-v2",
+            "ocr_configuration_fingerprint": "cfg-1",
+            "ocr_confidence": 0.9,
+            "incomplete_text": true,
+            "data_loss_likelihood": 0.1,
+            "scan_quality": "high"
+        });
+        let parsed = ocr_metadata(&metadata).unwrap();
+        assert_eq!(parsed.provider, "docling");
+        assert_eq!(parsed.model, "docling-v2");
+        assert_eq!(parsed.configuration_fingerprint, "cfg-1");
+        assert_eq!(parsed.confidence, Some(0.9));
+        let annotations = page_annotations(&metadata);
+        assert_eq!(annotations["ocr:incomplete_text"], "true");
+        assert_eq!(annotations["ocr:data_loss_likelihood"], "0.1");
+        assert_eq!(annotations["ocr:scan_quality"], "high");
+        assert_eq!(spatial_accuracy(&json!("region"), true), "region");
+        assert_eq!(spatial_accuracy(&json!("region"), false), "page");
+        assert_eq!(spatial_accuracy(&json!("unknown"), true), "page");
+
+        let unit = BoundingBox {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 10.0,
+            y1: 4.0,
+            coordinate_system: CoordinateSystem::Pixels,
+        };
+        let unit_metadata = json!({"coordinate_system": "pixels"});
+        let page_metadata = json!({"page_y_min": 0.0, "page_y_max": 100.0});
+        assert!(unit_near_page_y_edge(
+            &unit,
+            &unit_metadata,
+            &page_metadata,
+            "top"
+        ));
+        assert!(!unit_near_page_y_edge(
+            &unit,
+            &unit_metadata,
+            &page_metadata,
+            "bottom"
+        ));
     }
 }
