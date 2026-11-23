@@ -1,4 +1,7 @@
-use kg_doc_parser::{semantic_indexing as indexing, source_text::source_map_entry_text};
+use kg_doc_parser::{
+    page_index_source_text::split_pages, semantic_indexing as indexing,
+    source_text::source_map_entry_text,
+};
 use serde_json::Value;
 use std::path::PathBuf;
 
@@ -6,6 +9,21 @@ fn fixture() -> Value {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/semantic_contracts.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn page_index_split_pages_matches_python() {
+    let payload = fixture();
+    for case in payload["page_index_split_pages"].as_array().unwrap() {
+        let actual = split_pages(case["raw_text"].as_str().unwrap());
+        let expected = case["expected"].as_array().unwrap();
+        let expected = expected
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<Vec<_>>>()
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
 }
 
 #[test]

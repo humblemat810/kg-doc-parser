@@ -10,6 +10,7 @@ from kg_doc_parser.semantic_indexing_contracts import (
     render_nodes_payload,
 )
 from kg_doc_parser.semantic_source_text import source_map_entry_text
+from kg_doc_parser.workflow_ingest.page_index_source_text import _split_pages
 
 
 FIXTURE = (
@@ -27,6 +28,12 @@ def test_source_map_entry_text_matches_rust() -> None:
     payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
     for case in payload["source_map_entry_text"]:
         assert source_map_entry_text(case["entry"]) == case["expected"]
+
+
+def test_page_index_split_pages_matches_rust() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    for case in payload["page_index_split_pages"]:
+        assert _split_pages(case["raw_text"]) == case["expected"]
 
 
 def test_semantic_indexing_contracts_match_rust() -> None:

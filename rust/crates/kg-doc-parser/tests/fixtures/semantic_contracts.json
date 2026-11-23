@@ -50,6 +50,16 @@
       "per_node_overhead_tokens": 0,
       "expected": [[{"id": "one"}, {"id": "two"}], [{"id": "three"}]]
     }
+  ],
+  "page_index_split_pages": [
+    {
+      "raw_text": "one\n\n--- PAGE BREAK ---\n\ntwo",
+      "expected": ["one", "two"]
+    },
+    {
+      "raw_text": "first\fform feed\tsecond",
+      "expected": ["first", "form feed\tsecond"]
+    }
   ]
 }
 
