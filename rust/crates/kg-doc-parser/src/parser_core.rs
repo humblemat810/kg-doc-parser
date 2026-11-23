@@ -234,7 +234,7 @@ pub fn prepare_layer_frontier(
 )> {
     anyhow::ensure!(!frontier_queue.is_empty(), "frontier queue is empty");
     let mut sorted_queue = frontier_queue.to_vec();
-    sorted_queue.sort_by(|left, right| (left.depth, left.order).cmp(&(right.depth, right.order)));
+    sorted_queue.sort_by_key(|item| (item.depth, item.order));
     let current_depth = sorted_queue[0].depth;
     let current_items = sorted_queue
         .iter()
