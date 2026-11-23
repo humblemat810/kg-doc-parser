@@ -6,13 +6,15 @@ use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
 use kg_doc_parser::page_index_pipeline::parse_page_index_document_heuristic;
 use kg_doc_parser::parser::{parse_file, ParsingMode};
 use kg_doc_parser::runners::infer_page_index_source_format;
+use kg_doc_parser::runners::run_layerwise_batch_workflow;
+use kg_doc_parser::runners::run_layerwise_source_workflow;
 use kg_doc_parser::runners::run_page_index_batch_workflow;
 use kg_doc_parser::runners::run_page_index_source_workflow;
 use serde_json::json;
 use std::path::PathBuf;
 
 fn usage() -> ! {
-    eprintln!("usage: kg-doc-parser <parse|page-index|page-index-workflow> --input <path> [--batch] [--mode snippet|delimiter|markdown|text] [--max-depth <depth>] [--output <path>] [--output-dir <dir>]");
+    eprintln!("usage: kg-doc-parser <parse|page-index|page-index-workflow|layerwise-workflow> --input <path> [--batch] [--mode snippet|delimiter|markdown|text] [--max-depth <depth>] [--output <path>] [--output-dir <dir>]");
     std::process::exit(2);
 }
 
@@ -22,6 +24,7 @@ fn main() -> Result<()> {
     if command != "parse"
         && command != "page-index"
         && command != "page-index-workflow"
+        && command != "layerwise-workflow"
         && command != "demo-summary"
     {
         usage();
@@ -118,6 +121,31 @@ fn main() -> Result<()> {
         } else {
             let result =
                 run_page_index_source_workflow(&input, output_dir.as_path(), source_format)?;
+            println!("{}", serde_json::to_string_pretty(&result.extra)?);
+        }
+        return Ok(());
+    }
+    if command == "layerwise-workflow" {
+        let parsing_mode = ParsingMode::parse(&mode)?;
+        let Some(output_dir) = output_dir else {
+            bail!("layerwise-workflow requires --output-dir");
+        };
+        if batch {
+            let results = run_layerwise_batch_workflow(
+                &[input],
+                output_dir.as_path(),
+                parsing_mode,
+                max_depth,
+            )?;
+            let payload = serde_json::to_value(&results)?;
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        } else {
+            let result = run_layerwise_source_workflow(
+                &input,
+                output_dir.as_path(),
+                parsing_mode,
+                max_depth,
+            )?;
             println!("{}", serde_json::to_string_pretty(&result.extra)?);
         }
         return Ok(());
