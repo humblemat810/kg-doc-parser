@@ -385,7 +385,7 @@ fn parse_pointer_override(pointers: &Value) -> Result<Vec<HydratedTextPointer>> 
         .map_err(|error| anyhow::anyhow!("atomic pointer override must be typed: {error}"))
 }
 
-fn atomic_pointer_override_errors(
+pub fn atomic_pointer_override_errors(
     parent_id: &str,
     current_layer_result: &CurrentLayerResult,
     parser_source_map: Option<&Value>,

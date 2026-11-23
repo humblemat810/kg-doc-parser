@@ -1,10 +1,14 @@
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
 
-use crate::parser_core::{CurrentLayerContext, CurrentLayerResult, LayerChildCandidate};
-use crate::parser_core_diagnostics::{child_pointer_fingerprint, normalize_text};
+use crate::parser_core::{
+    atomic_pointer_override_errors, CurrentLayerContext, CurrentLayerResult, LayerChildCandidate,
+};
+use crate::parser_core_diagnostics::{
+    child_pointer_fingerprint, layer_structural_issues, normalize_text, LayerStructuralIssue,
+};
 use crate::semantic::HydratedTextPointer;
 use crate::semantic_graph_import::pointer_source_validation_error;
 use crate::source_text::source_map_entry_text;
@@ -37,6 +41,31 @@ pub struct LayerDuplicateChildNote {
     pub child_node_id: String,
     pub duplicate_of_child_node_id: String,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerValidationDiagnostic {
+    pub phase: String,
+    pub error_type: String,
+    pub message: String,
+    pub location: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CurrentLayerReview {
+    pub updated_result: CurrentLayerResult,
+    pub coverage_ok: bool,
+    pub satisfied: bool,
+    pub strategy_used: crate::parser_core::SplitStrategy,
+    pub overlap_conflicts: Vec<LayerSpanConflict>,
+    pub coverage_gap_notes: Vec<LayerCoverageGap>,
+    pub duplicate_child_notes: Vec<LayerDuplicateChildNote>,
+    pub structural_issues: Vec<LayerStructuralIssue>,
+    pub validation_diagnostics: Vec<LayerValidationDiagnostic>,
+    pub review_notes: Vec<String>,
+    pub metadata: Map<String, Value>,
+    pub committable_parent_node_ids: Vec<String>,
+    pub failed_parent_node_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -445,6 +474,246 @@ pub fn detect_layer_invariants(
     })
 }
 
+fn diagnostic_applies_to_parent(
+    diagnostic: &LayerValidationDiagnostic,
+    parent_id: &str,
+    children: &[LayerChildCandidate],
+) -> bool {
+    if diagnostic.location.is_empty() {
+        return true;
+    }
+    if diagnostic.location.iter().any(|item| item == parent_id) {
+        return true;
+    }
+    children
+        .iter()
+        .filter(|child| child.parent_node_id == parent_id)
+        .any(|child| diagnostic.location.contains(&child.node_id))
+}
+
+fn structural_context(context: &CurrentLayerContext) -> Map<String, Value> {
+    let mut object = Map::new();
+    object.insert(
+        "parent_node_ids".to_string(),
+        json!(context.parent_node_ids),
+    );
+    object.insert(
+        "parent_content_pointers_by_id".to_string(),
+        serde_json::to_value(&context.parent_content_pointers_by_id)
+            .unwrap_or(Value::Object(Map::new())),
+    );
+    object
+}
+
+pub fn validate_layer_commit(
+    current_layer_context: &CurrentLayerContext,
+    current_layer_result: &CurrentLayerResult,
+    parser_source_map: Option<&Value>,
+) -> Result<CurrentLayerReview> {
+    let parent_ids = current_layer_context.parent_node_ids.clone();
+    let mut validation_diagnostics: Vec<LayerValidationDiagnostic> = current_layer_result
+        .validation_diagnostics
+        .iter()
+        .map(|value| serde_json::from_value::<LayerValidationDiagnostic>(value.clone()))
+        .collect::<Result<_, _>>()
+        .map_err(|error| anyhow::anyhow!("validation diagnostics must be typed: {error}"))?;
+    if parent_ids.is_empty() {
+        let invariants = detect_layer_invariants(
+            current_layer_context,
+            current_layer_result,
+            parser_source_map,
+        )?;
+        let satisfied = invariants.satisfied && validation_diagnostics.is_empty();
+        let structural_issues = layer_structural_issues(
+            &structural_context(current_layer_context),
+            current_layer_result,
+        )?;
+        let mut metadata = Map::new();
+        metadata.insert("commit_validation".to_string(), json!(true));
+        metadata.insert(
+            "validation_diagnostics".to_string(),
+            json!(validation_diagnostics),
+        );
+        let mut updated_result = current_layer_result.clone();
+        updated_result.satisfied = Some(satisfied);
+        return Ok(CurrentLayerReview {
+            updated_result,
+            coverage_ok: invariants.coverage_ok,
+            satisfied,
+            strategy_used: current_layer_context.split_strategy,
+            overlap_conflicts: invariants.overlap_conflicts,
+            coverage_gap_notes: invariants.coverage_gaps,
+            duplicate_child_notes: invariants.duplicate_notes,
+            structural_issues,
+            validation_diagnostics,
+            review_notes: ["post-repair pre-commit validation".to_string()]
+                .into_iter()
+                .chain(invariants.review_notes.iter().take(20).cloned())
+                .collect(),
+            metadata,
+            committable_parent_node_ids: if satisfied {
+                parent_ids.clone()
+            } else {
+                Vec::new()
+            },
+            failed_parent_node_ids: if satisfied { Vec::new() } else { parent_ids },
+        });
+    }
+    let mut child_parents: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for child in &current_layer_result.children {
+        child_parents
+            .entry(child.node_id.clone())
+            .or_default()
+            .push(child.parent_node_id.clone());
+    }
+    for (child_id, parents) in child_parents {
+        if parents.len() > 1 {
+            let mut sorted_parents = parents.clone();
+            sorted_parents.sort();
+            let diagnostic = LayerValidationDiagnostic {
+                phase: "commit".to_string(),
+                error_type: "duplicate_child_id".to_string(),
+                message: format!(
+                    "child node id {child_id:?} is proposed under multiple parents: {}",
+                    sorted_parents.join(", ")
+                ),
+                location: std::iter::once(child_id.clone())
+                    .chain(sorted_parents)
+                    .collect(),
+            };
+            if !validation_diagnostics.contains(&diagnostic) {
+                validation_diagnostics.push(diagnostic);
+            }
+        }
+    }
+    let mut valid_parent_ids = Vec::new();
+    let mut failed_parent_ids = Vec::new();
+    let mut valid_children = Vec::new();
+    let mut overlap_conflicts = Vec::new();
+    let mut coverage_gaps = Vec::new();
+    let mut duplicate_notes = Vec::new();
+    let mut structural_issues = Vec::new();
+    let mut notes = Vec::new();
+    for parent_id in &parent_ids {
+        let local_diagnostics = validation_diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic_applies_to_parent(diagnostic, parent_id, &current_layer_result.children)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let local_children = current_layer_result
+            .children
+            .iter()
+            .filter(|child| &child.parent_node_id == parent_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let local_context = CurrentLayerContext {
+            parent_node_ids: vec![parent_id.clone()],
+            parent_titles: vec![current_layer_context
+                .parent_titles
+                .iter()
+                .zip(&current_layer_context.parent_node_ids)
+                .find_map(|(title, id)| (id == parent_id).then(|| title.clone()))
+                .unwrap_or_else(|| parent_id.clone())],
+            parent_content_pointers_by_id: current_layer_context
+                .parent_content_pointers_by_id
+                .get(parent_id)
+                .map(|value| {
+                    let mut map = Map::new();
+                    map.insert(parent_id.clone(), value.clone());
+                    map
+                })
+                .unwrap_or_default(),
+            ..current_layer_context.clone()
+        };
+        let local_result = CurrentLayerResult {
+            children: local_children,
+            validation_diagnostics: local_diagnostics
+                .iter()
+                .map(|diagnostic| json!(diagnostic))
+                .collect(),
+            ..current_layer_result.clone()
+        };
+        let local = detect_layer_invariants(&local_context, &local_result, parser_source_map)?;
+        let mut local_notes = local.review_notes.clone();
+        let mut local_coverage_ok = local.coverage_ok;
+        let mut local_satisfied = local.satisfied;
+        let atomic_override_errors =
+            atomic_pointer_override_errors(parent_id, current_layer_result, parser_source_map)?;
+        if !atomic_override_errors.is_empty() {
+            local_coverage_ok = false;
+            local_satisfied = false;
+            local_notes.extend(atomic_override_errors);
+        }
+        overlap_conflicts.extend(local.overlap_conflicts);
+        coverage_gaps.extend(local.coverage_gaps);
+        duplicate_notes.extend(local.duplicate_notes);
+        structural_issues.extend(layer_structural_issues(
+            &structural_context(&local_context),
+            &local_result,
+        )?);
+        notes.extend(
+            local_notes
+                .iter()
+                .take(12)
+                .map(|note| format!("parent {parent_id}: {note}")),
+        );
+        if local_diagnostics.is_empty() && local_coverage_ok && local_satisfied {
+            valid_parent_ids.push(parent_id.clone());
+            valid_children.extend(local_result.children);
+        } else {
+            failed_parent_ids.push(parent_id.clone());
+        }
+    }
+    let partial_commit = !valid_parent_ids.is_empty() && !failed_parent_ids.is_empty();
+    let mut updated_result = current_layer_result.clone();
+    updated_result.children = valid_children;
+    updated_result.satisfied = Some(!valid_parent_ids.is_empty());
+    updated_result.validation_diagnostics = if valid_parent_ids.is_empty() {
+        validation_diagnostics
+            .iter()
+            .map(|diagnostic| json!(diagnostic))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut metadata = Map::new();
+    metadata.insert("commit_validation".to_string(), json!(true));
+    metadata.insert(
+        "committable_parent_node_ids".to_string(),
+        json!(valid_parent_ids),
+    );
+    metadata.insert(
+        "failed_parent_node_ids".to_string(),
+        json!(failed_parent_ids),
+    );
+    metadata.insert("partial_commit".to_string(), json!(partial_commit));
+    metadata.insert(
+        "validation_diagnostics".to_string(),
+        json!(validation_diagnostics),
+    );
+    Ok(CurrentLayerReview {
+        updated_result,
+        coverage_ok: failed_parent_ids.is_empty(),
+        satisfied: !valid_parent_ids.is_empty(),
+        strategy_used: current_layer_context.split_strategy,
+        overlap_conflicts,
+        coverage_gap_notes: coverage_gaps,
+        duplicate_child_notes: duplicate_notes,
+        structural_issues,
+        validation_diagnostics,
+        review_notes: ["post-repair pre-commit validation".to_string()]
+            .into_iter()
+            .chain(notes.into_iter().take(20))
+            .collect(),
+        metadata,
+        committable_parent_node_ids: valid_parent_ids,
+        failed_parent_node_ids: failed_parent_ids,
+    })
+}
+
 #[allow(dead_code)]
 fn unused_fingerprint(child: &LayerChildCandidate) -> Vec<(String, i64, i64, String)> {
     child_pointer_fingerprint(child)
@@ -617,6 +886,45 @@ mod tests {
         let invariants = detect_layer_invariants(&context, &unary, None).unwrap();
         assert!(!invariants.satisfied);
         assert!(bail_on_missing_id(&current).is_ok());
+    }
+
+    #[test]
+    fn validates_layer_commit_and_partial_parents() {
+        let context = serde_json::from_value::<CurrentLayerContext>(json!({
+            "depth": 0,
+            "parent_node_ids": ["good", "bad"],
+            "parent_titles": ["Good", "Bad"],
+            "parent_content_pointers_by_id": {
+                "good": [{"source_cluster_id": "p1", "start_char": 0, "end_char": 8, "verbatim_text": "AlphaBeta"}],
+                "bad": [{"source_cluster_id": "p1", "start_char": 0, "end_char": 8, "verbatim_text": "AlphaBeta"}]
+            },
+            "split_strategy": "excerpt_first",
+            "retry_count": 0,
+            "max_retries": 3,
+            "metadata": {}
+        }))
+        .unwrap();
+        let result = CurrentLayerResult {
+            children: vec![
+                child("good-left", "good", vec![pointer("p1", 0, 4, "Alpha")]),
+                child("good-right", "good", vec![pointer("p1", 5, 8, "Beta")]),
+                child("bad-left", "bad", vec![pointer("p1", 0, 2, "Alp")]),
+            ],
+            satisfied: None,
+            review_rounds: 0,
+            atomic_retained: false,
+            atomic_parent_ids: Vec::new(),
+            atomic_content_pointers_by_parent: Map::new(),
+            metadata: Map::new(),
+            validation_diagnostics: Vec::new(),
+        };
+        let source_map = json!({"p1": {"text": "AlphaBeta"}});
+        let review = validate_layer_commit(&context, &result, Some(&source_map)).unwrap();
+        assert_eq!(review.committable_parent_node_ids, vec!["good"]);
+        assert_eq!(review.failed_parent_node_ids, vec!["bad"]);
+        assert!(review.metadata["partial_commit"].as_bool().unwrap());
+        assert_eq!(review.updated_result.children.len(), 2);
+        assert!(review.updated_result.satisfied.unwrap());
     }
 
     fn bail_on_missing_id(_value: &CurrentLayerResult) -> Result<()> {
