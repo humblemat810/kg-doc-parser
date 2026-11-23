@@ -543,6 +543,24 @@ pub fn page_result_needs_recovery<G: PageArtifactGate>(
     root_page_checkpoint_incomplete(state, sources, legacy_dir, gate, document_id)
 }
 
+pub fn validate_existing_page_identities(
+    page_states: &std::collections::BTreeMap<u64, Option<String>>,
+    configuration_fingerprints: &[String],
+) -> Result<()> {
+    for (page_number, config_fingerprint) in page_states {
+        let Some(config_fingerprint) = config_fingerprint else {
+            continue;
+        };
+        if configuration_fingerprints.contains(config_fingerprint) {
+            continue;
+        }
+        bail!(
+            "OCR root checkpoint identity mismatch; refusing to mix persisted OCR configuration for page {page_number}"
+        );
+    }
+    Ok(())
+}
+
 pub fn recovery_generation(state: &Value) -> Result<u64> {
     match state.get("ocr_page_recovery_generation") {
         None | Some(Value::Null) => Ok(0),
@@ -1015,5 +1033,15 @@ mod tests {
         assert!(
             page_result_needs_recovery(&complete, &sources, temp.path(), &gate, "doc").unwrap()
         );
+    }
+
+    #[test]
+    fn validates_existing_page_identities() {
+        let mut states = std::collections::BTreeMap::new();
+        states.insert(1, Some("cfg-1".to_string()));
+        states.insert(2, None);
+        assert!(validate_existing_page_identities(&states, &["cfg-1".to_string()]).is_ok());
+        states.insert(2, Some("cfg-2".to_string()));
+        assert!(validate_existing_page_identities(&states, &["cfg-1".to_string()]).is_err());
     }
 }
