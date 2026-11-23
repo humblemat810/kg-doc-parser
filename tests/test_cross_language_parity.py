@@ -26,8 +26,14 @@ from kg_doc_parser.workflow_ingest.parser_core_session import source_map_fingerp
 from kg_doc_parser.workflow_ingest.ocr_artifacts import artifact_schema_error
 from kg_doc_parser.workflow_ingest.ocr_providers import list_ocr_provider_capabilities
 from kg_doc_parser.workflow_ingest.document_models import (
+    AdaptiveGroupingPolicy,
     BoundingBox,
     SourceLocation,
+)
+from kg_doc_parser.workflow_ingest.document_grouping import (
+    GroupProposal,
+    group_node_id,
+    grouping_policy_identity,
 )
 
 
@@ -171,6 +177,35 @@ def test_document_model_validation_matches_rust() -> None:
     assert source_location.page_index == 1
     assert source_location.bbox is not None
     assert source_location.accuracy == "region"
+
+
+def test_document_grouping_identities_match_rust() -> None:
+    policy = AdaptiveGroupingPolicy()
+    proposal = GroupProposal(kind="section", members=("a", "b"))
+    identity = grouping_policy_identity(
+        policy_version="grouping-v1",
+        policy=policy,
+        proposer_fingerprint="proposer",
+        summary_fingerprint="summary",
+    )
+    assert len(identity) == len("grouping-v1:adaptive-") + 16
+    assert identity == grouping_policy_identity(
+        policy_version="grouping-v1",
+        policy=policy,
+        proposer_fingerprint="proposer",
+        summary_fingerprint="summary",
+    )
+    node_id = group_node_id(
+        document_id="doc",
+        grouping_policy_version="grouping-v1",
+        proposal=proposal,
+    )
+    assert len(node_id) == len("merge:") + 24
+    assert node_id == group_node_id(
+        document_id="doc",
+        grouping_policy_version="grouping-v1",
+        proposal=proposal,
+    )
 
 
 def test_page_index_candidate_extraction_matches_rust() -> None:

@@ -1,3 +1,5 @@
+use kg_doc_parser::document_grouping::{group_node_id, grouping_policy_identity, GroupProposal};
+use kg_doc_parser::document_models::AdaptiveGroupingPolicy;
 use kg_doc_parser::document_models::{
     BoundingBox, CoordinateSystem, SourceAccuracy, SourceLocation,
 };
@@ -22,6 +24,32 @@ fn fixture() -> Value {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/semantic_contracts.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn document_grouping_identities_match_python() {
+    let policy = AdaptiveGroupingPolicy {
+        enabled: true,
+        maximum_rounds: 6,
+        window_size: 64,
+        window_overlap: 31,
+        maximum_evidence_items_per_candidate: 4,
+        maximum_text_chars_per_candidate: 300,
+    };
+    let proposal = GroupProposal {
+        kind: "section".to_string(),
+        members: vec!["a".to_string(), "b".to_string()],
+    };
+    let identity =
+        grouping_policy_identity("grouping-v1", &policy, Some("proposer"), Some("summary"));
+    assert_eq!(identity.len(), "grouping-v1:adaptive-".len() + 16);
+    assert_eq!(
+        identity,
+        grouping_policy_identity("grouping-v1", &policy, Some("proposer"), Some("summary"))
+    );
+    let node_id = group_node_id("doc", "grouping-v1", &proposal);
+    assert_eq!(node_id.len(), "merge:".len() + 24);
+    assert_eq!(node_id, group_node_id("doc", "grouping-v1", &proposal));
 }
 
 #[test]
