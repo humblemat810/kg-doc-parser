@@ -188,6 +188,9 @@
       "metadata": {},
       "expected": "unsupported OCR artifact schema version: missing"
     }
+  ],
+  "page_index_normalize_text": [
+    {"text": "  Alpha   Beta  ", "expected": "alpha beta"}
   ]
 }
 

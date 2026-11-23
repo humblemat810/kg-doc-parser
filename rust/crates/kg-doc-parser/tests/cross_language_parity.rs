@@ -2,6 +2,7 @@ use kg_doc_parser::ocr_artifacts::artifact_schema_error;
 use kg_doc_parser::page_index_classification::{classify_block, ClassifyBlockOptions};
 use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
 use kg_doc_parser::page_index_pipeline::heuristic_page_outline;
+use kg_doc_parser::page_index_tree::page_index_normalize_text;
 use kg_doc_parser::pointer_matching::{
     all_exact_occurrences, best_occurrence_by_proximity, safe_slice, soft_exact_positions,
     whitespace_collapse,
@@ -17,6 +18,17 @@ fn fixture() -> Value {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/semantic_contracts.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn page_index_normalize_text_matches_python() {
+    let payload = fixture();
+    for case in payload["page_index_normalize_text"].as_array().unwrap() {
+        assert_eq!(
+            page_index_normalize_text(case["text"].as_str().unwrap()),
+            case["expected"].as_str().unwrap(),
+        );
+    }
 }
 
 #[test]
