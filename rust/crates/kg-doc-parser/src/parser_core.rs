@@ -717,6 +717,133 @@ pub fn commit_layer_children(
     Ok(tree)
 }
 
+pub fn requeue_failed_frontier_items(
+    frontier_queue: &[LayerFrontierItem],
+    parent_node_ids: &[String],
+    depth: u64,
+) -> Vec<LayerFrontierItem> {
+    let mut queued = frontier_queue.to_vec();
+    let mut existing = queued
+        .iter()
+        .map(|item| (item.parent_node_id.clone(), item.depth))
+        .collect::<std::collections::HashSet<_>>();
+    let mut next_order = queued
+        .iter()
+        .map(|item| item.order)
+        .max()
+        .unwrap_or(u64::MAX)
+        .wrapping_add(1);
+    if queued.is_empty() {
+        next_order = 0;
+    }
+    for parent_id in parent_node_ids {
+        let key = (parent_id.clone(), depth);
+        if existing.contains(&key) {
+            continue;
+        }
+        queued.push(LayerFrontierItem {
+            parent_node_id: parent_id.clone(),
+            depth,
+            order: next_order,
+        });
+        existing.insert(key);
+        next_order += 1;
+    }
+    queued
+}
+
+fn parent_fingerprint_from_json(pointers: &Value) -> Vec<(String, i64, i64, String)> {
+    let Some(pointers) = pointers.as_array() else {
+        return Vec::new();
+    };
+    pointers
+        .iter()
+        .map(|pointer| {
+            (
+                pointer
+                    .get("source_cluster_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                pointer
+                    .get("start_char")
+                    .and_then(Value::as_i64)
+                    .unwrap_or_default(),
+                pointer
+                    .get("end_char")
+                    .and_then(Value::as_i64)
+                    .unwrap_or_default(),
+                crate::parser_core_diagnostics::normalize_text(
+                    pointer
+                        .get("verbatim_text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                ),
+            )
+        })
+        .collect()
+}
+
+pub fn enqueue_next_layer_frontier(
+    frontier_queue: &[LayerFrontierItem],
+    current_layer_context: &CurrentLayerContext,
+    current_layer_result: &CurrentLayerResult,
+    parse_session: &ParseSessionState,
+) -> Result<Vec<LayerFrontierItem>> {
+    let mut queued = frontier_queue.to_vec();
+    let next_depth = current_layer_context.depth + 1;
+    if next_depth >= parse_session.max_depth {
+        return Ok(queued);
+    }
+    let mut next_order = queued
+        .iter()
+        .map(|item| item.order)
+        .max()
+        .map(|order| order + 1)
+        .unwrap_or(0);
+    let mut existing_frontier = queued
+        .iter()
+        .map(|item| (item.parent_node_id.clone(), item.depth))
+        .collect::<std::collections::HashSet<_>>();
+    let mut children_by_parent: std::collections::BTreeMap<String, Vec<&LayerChildCandidate>> =
+        std::collections::BTreeMap::new();
+    for child in &current_layer_result.children {
+        children_by_parent
+            .entry(child.parent_node_id.clone())
+            .or_default()
+            .push(child);
+    }
+    for (parent_id, children) in &children_by_parent {
+        if children.len() == 1 {
+            anyhow::bail!("unary refinement cannot enter the frontier for {parent_id:?}");
+        }
+        let parent_fingerprint = parent_fingerprint_from_json(
+            current_layer_context
+                .parent_content_pointers_by_id
+                .get(parent_id)
+                .unwrap_or(&Value::Null),
+        );
+        if children.iter().any(|child| {
+            crate::parser_core_diagnostics::child_pointer_fingerprint(child) == parent_fingerprint
+        }) {
+            anyhow::bail!("unchanged refinement cannot enter the frontier for {parent_id:?}");
+        }
+    }
+    for child in &current_layer_result.children {
+        let frontier_key = (child.node_id.clone(), next_depth);
+        if child.expandable && !existing_frontier.contains(&frontier_key) {
+            queued.push(LayerFrontierItem {
+                parent_node_id: child.node_id.clone(),
+                depth: next_depth,
+                order: next_order,
+            });
+            existing_frontier.insert(frontier_key);
+            next_order += 1;
+        }
+    }
+    Ok(queued)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,5 +1003,91 @@ mod tests {
         assert_eq!(committed_parent.child_nodes.len(), 4);
         assert!(find_semantic_node(&committed, "new-a").is_some());
         assert!(find_semantic_node(&committed, "existing-a").is_some());
+    }
+
+    #[test]
+    fn requeues_and_enqueues_deduplicated_frontier_items() {
+        let queued = requeue_failed_frontier_items(
+            &[LayerFrontierItem {
+                parent_node_id: "existing".to_string(),
+                depth: 1,
+                order: 4,
+            }],
+            &["existing".to_string(), "failed".to_string()],
+            1,
+        );
+        assert_eq!(queued.len(), 2);
+        assert_eq!(queued[1].parent_node_id, "failed");
+        assert_eq!(queued[1].order, 5);
+
+        let context = CurrentLayerContext {
+            depth: 0,
+            parent_node_ids: vec!["parent".to_string()],
+            parent_titles: vec!["Parent".to_string()],
+            parent_content_pointers_by_id: serde_json::from_value(json!({
+                "parent": [{
+                    "source_cluster_id": "p1",
+                    "start_char": 0,
+                    "end_char": 8,
+                    "verbatim_text": "AlphaBeta"
+                }]
+            }))
+            .unwrap(),
+            split_strategy: SplitStrategy::ExcerptFirst,
+            retry_count: 0,
+            max_retries: 3,
+            metadata: Map::new(),
+        };
+        let current = CurrentLayerResult {
+            children: vec![
+                LayerChildCandidate {
+                    node_id: "child-a".to_string(),
+                    parent_node_id: "parent".to_string(),
+                    title: "A".to_string(),
+                    node_type: "TEXT_FLOW".to_string(),
+                    total_content_pointers: Vec::new(),
+                    expandable: true,
+                    metadata: Map::new(),
+                    child_candidates: Vec::new(),
+                },
+                LayerChildCandidate {
+                    node_id: "child-b".to_string(),
+                    parent_node_id: "parent".to_string(),
+                    title: "B".to_string(),
+                    node_type: "TEXT_FLOW".to_string(),
+                    total_content_pointers: Vec::new(),
+                    expandable: true,
+                    metadata: Map::new(),
+                    child_candidates: Vec::new(),
+                },
+            ],
+            satisfied: Some(true),
+            review_rounds: 0,
+            atomic_retained: false,
+            atomic_parent_ids: Vec::new(),
+            atomic_content_pointers_by_parent: Map::new(),
+            metadata: Map::new(),
+            validation_diagnostics: Vec::new(),
+        };
+        let session = ParseSessionState {
+            collection_id: "doc".to_string(),
+            root_node_id: "root".to_string(),
+            current_depth: 0,
+            max_depth: 2,
+            allow_review: true,
+            split_strategy: SplitStrategy::ExcerptFirst,
+            fallback_split_strategy: SplitStrategy::BoundaryFirst,
+            strategy_history: vec![SplitStrategy::ExcerptFirst],
+            strategy_switch_count: 0,
+            mode: "workflow_layered".to_string(),
+            layer_attempts: Map::new(),
+            last_review: Map::new(),
+            compat_full_tree: None,
+            metadata: Map::new(),
+        };
+        let next = enqueue_next_layer_frontier(&[], &context, &current, &session).unwrap();
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[0].depth, 1);
+        assert_eq!(next[0].order, 0);
     }
 }
