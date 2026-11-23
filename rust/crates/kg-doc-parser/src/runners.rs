@@ -329,7 +329,7 @@ fn read_legacy_ocr_pages(source_path: &Path) -> Result<(String, Vec<Value>)> {
     if page_files.is_empty() {
         anyhow::bail!("legacy OCR folder contains no page_*.json files");
     }
-    page_files.sort_by(|(left, _), (right, _)| left.cmp(right));
+    page_files.sort_by_key(|(left, _)| *left);
     let pages = page_files
         .iter()
         .map(|(_, path)| Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?))
