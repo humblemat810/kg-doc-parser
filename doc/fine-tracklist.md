@@ -34,5 +34,5 @@
 | Demo harness | Configuration, artifacts, fake layered tree, probe events and summary output | `rust/crates/kg-doc-parser/src/demo_harness.rs` | `kg_doc_parser/workflow_ingest/demo_harness.py` | IN PROGRESS | Demo artifact and fake-tree smoke tests |
 | Semantic graph import | Graph publication and pointer grounding | `rust/crates/kg-doc-parser/src/semantic_graph_import.rs` | `kg_doc_parser/semantic_graph_import.py`, `kg_doc_parser/semantic_pointer_matching.py` | DONE | Graph and grounding fixture tests |
 | Semantic source/index contracts | Source text and indexing boundaries | `rust/crates/kg-doc-parser/src/source_text.rs`, `rust/crates/kg-doc-parser/src/semantic_indexing.rs` | `kg_doc_parser/semantic_source_text.py`, `kg_doc_parser/semantic_indexing_contracts.py` | DONE | Contract tests |
-| Cross-language parity | Golden fixtures across text, page-index, layerwise and OCR lanes | `rust/crates/kg-doc-parser/tests/` | `tests/` | TODO | Python/Rust fixture suite |
+| Cross-language parity | Golden fixtures across text, page-index and layerwise CUD lanes | `rust/crates/kg-doc-parser/tests/` | `tests/` | IN PROGRESS | Python/Rust fixture suite |
 | CI | Add fmt, clippy, test and cross-language parity workflow | `.github/workflows/ci.yml` | `tests/` | DONE | Workflow green |
