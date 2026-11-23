@@ -36,6 +36,8 @@ fn main() -> Result<()> {
     };
     let mut max_depth = 10;
     let mut batch = false;
+    let mut title: Option<String> = None;
+    let mut text: Option<String> = None;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -79,6 +81,24 @@ fn main() -> Result<()> {
                 batch = true;
                 index += 1;
             }
+            "--title" => {
+                title = Some(
+                    arguments
+                        .get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--title requires a value"))?
+                        .to_string(),
+                );
+                index += 2;
+            }
+            "--text" => {
+                text = Some(
+                    arguments
+                        .get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--text requires a value"))?
+                        .to_string(),
+                );
+                index += 2;
+            }
             _ => bail!("unknown argument: {}", arguments[index]),
         }
     }
@@ -115,6 +135,12 @@ fn main() -> Result<()> {
             .and_then(std::ffi::OsStr::to_str)
             .unwrap_or("demo-doc")
             .to_string();
+        if let Some(title) = title {
+            config.title = title;
+        }
+        if let Some(text) = text {
+            config.text = text;
+        }
         config.parser_mode = match mode.as_str() {
             "fake_layered" => DemoParserMode::FakeLayered,
             "legacy_cached" => DemoParserMode::LegacyCached,
