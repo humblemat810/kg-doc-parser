@@ -1,3 +1,4 @@
+pub mod demo_harness;
 pub mod document_grouping;
 pub mod document_models;
 pub mod layerwise_edits;
