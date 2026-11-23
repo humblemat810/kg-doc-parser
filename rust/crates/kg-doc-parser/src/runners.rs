@@ -376,19 +376,15 @@ pub fn run_ocr_source_workflow(
         .and_then(std::ffi::OsStr::to_str)
         .map(|extension| format!(".{}", extension.to_lowercase()))
         .unwrap_or_default();
-    let source_kind;
-    let rendered_dir;
-    let render_configuration_fingerprint;
     let mut page_sources = Vec::new();
-    if extension == ".pdf" {
+    let (source_kind, render_configuration_fingerprint) = if extension == ".pdf" {
         if !source_path.is_file() {
             anyhow::bail!("OCR source must be an existing image or PDF");
         }
         let Some(rasterizer) = rasterizer else {
             anyhow::bail!("PDF OCR workflow requires a PDF rasterizer");
         };
-        source_kind = "pdf";
-        rendered_dir = output_dir.join("rendered_pages");
+        let rendered_dir = output_dir.join("rendered_pages");
         std::fs::create_dir_all(&rendered_dir)?;
         let rendered_paths = rasterizer.render_pdf(source_path, &rendered_dir)?;
         if rendered_paths.is_empty() {
@@ -405,7 +401,7 @@ pub fn run_ocr_source_workflow(
             }
             page_sources.push(((index + 1) as u64, image_path.clone()));
         }
-        render_configuration_fingerprint = rasterizer.identity().to_string();
+        ("pdf", rasterizer.identity().to_string())
     } else {
         if !OCR_IMAGE_SUFFIXES.contains(&extension.as_str()) {
             anyhow::bail!("OCR source must be an image or PDF");
@@ -413,12 +409,10 @@ pub fn run_ocr_source_workflow(
         if !source_path.is_file() {
             anyhow::bail!("OCR source must be an existing image or PDF");
         }
-        source_kind = "image";
-        rendered_dir = output_dir.join("rendered_pages");
-        std::fs::create_dir_all(&rendered_dir)?;
         page_sources.push((1, source_path.to_path_buf()));
-        render_configuration_fingerprint = "image-materialize-v1".to_string();
-    }
+        ("image", "image-materialize-v1".to_string())
+    };
+    let rendered_dir = output_dir.join("rendered_pages");
     let input_fingerprint = sha256_file(source_path)?;
     let legacy_dir = output_dir.join("legacy_split_pages");
     std::fs::create_dir_all(&legacy_dir)?;
