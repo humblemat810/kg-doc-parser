@@ -469,6 +469,143 @@ pub fn reconcile_page_checkpoint<G: PageArtifactGate>(
     Ok(None)
 }
 
+pub fn recovery_generation(state: &Value) -> Result<u64> {
+    match state.get("ocr_page_recovery_generation") {
+        None | Some(Value::Null) => Ok(0),
+        Some(value) => {
+            let Some(generation) = value.as_u64() else {
+                bail!("OCR page recovery generation must be a non-negative integer");
+            };
+            Ok(generation)
+        }
+    }
+}
+
+pub fn semantic_parse_generation(recovery_generation: u64) -> String {
+    if recovery_generation == 0 {
+        "semantic-v1".to_string()
+    } else {
+        format!("semantic-recovery-v{recovery_generation}")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvocationLineage {
+    pub workflow_id: String,
+    pub invocation_key: String,
+    pub child_run_id: String,
+}
+
+pub fn expected_invocation_lineages(
+    root_run_id: &str,
+    recovery_generation: u64,
+) -> Vec<InvocationLineage> {
+    let suffix = if recovery_generation == 0 {
+        String::new()
+    } else {
+        format!("|recovery-{recovery_generation}")
+    };
+    let invocation_key = |base: &str| {
+        if recovery_generation == 0 {
+            base.to_string()
+        } else {
+            format!("{base}-recovery-v{recovery_generation}")
+        }
+    };
+    vec![
+        InvocationLineage {
+            workflow_id: "kg_doc_parser.ocr_pages.v1".to_string(),
+            invocation_key: invocation_key("ocr-pages-v1"),
+            child_run_id: format!("{root_run_id}|ocr-pages{suffix}"),
+        },
+        InvocationLineage {
+            workflow_id: "kg_doc_parser.ocr_grouping.v1".to_string(),
+            invocation_key: invocation_key("grouping-v1"),
+            child_run_id: format!("{root_run_id}|grouping{suffix}"),
+        },
+        InvocationLineage {
+            workflow_id: "kg_doc_parser.ingest.v1".to_string(),
+            invocation_key: invocation_key("semantic-v1"),
+            child_run_id: format!("{root_run_id}|semantic{suffix}"),
+        },
+    ]
+}
+
+fn invocation_lineage_key(lineage: &InvocationLineage) -> (String, String, String) {
+    (
+        lineage.workflow_id.clone(),
+        lineage.invocation_key.clone(),
+        lineage.child_run_id.clone(),
+    )
+}
+
+pub fn validate_invocation_lineages(
+    edges: &[Value],
+    root_run_id: &str,
+    recovery_generation: u64,
+) -> Result<()> {
+    let expected = expected_invocation_lineages(root_run_id, recovery_generation);
+    let expected_keys = expected
+        .iter()
+        .map(invocation_lineage_key)
+        .collect::<std::collections::HashSet<_>>();
+    let mut counts: std::collections::HashMap<(String, String, String), usize> =
+        std::collections::HashMap::new();
+    for edge in edges {
+        let Some(metadata) = edge.get("metadata").and_then(Value::as_object) else {
+            continue;
+        };
+        if metadata.get("relation").and_then(Value::as_str) != Some("wf_invoked") {
+            continue;
+        }
+        if metadata.get("parent_run_id").and_then(Value::as_str) != Some(root_run_id) {
+            continue;
+        }
+        let Some(workflow_id) = metadata.get("workflow_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(invocation_key) = metadata.get("invocation_key").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(child_run_id) = metadata.get("child_run_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let key = (
+            workflow_id.to_string(),
+            invocation_key.to_string(),
+            child_run_id.to_string(),
+        );
+        if expected_keys.contains(&key) {
+            *counts.entry(key).or_default() += 1;
+        }
+    }
+    let mut missing = expected_keys
+        .difference(&counts.keys().cloned().collect())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut duplicate = counts
+        .iter()
+        .filter(|(_key, count)| **count != 1)
+        .map(|(key, _count)| key.clone())
+        .collect::<Vec<_>>();
+    missing.sort();
+    duplicate.sort();
+    if !missing.is_empty() || !duplicate.is_empty() {
+        let mut details = Vec::new();
+        if !missing.is_empty() {
+            details.push(format!("missing={missing:?}"));
+        }
+        if !duplicate.is_empty() {
+            details.push(format!("duplicate={duplicate:?}"));
+        }
+        bail!(
+            "OCR root persisted invocation lineage is invalid for {root_run_id:?}: {}",
+            details.join("; ")
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,5 +716,48 @@ mod tests {
         assert_eq!(repair["raw_pages"], json!([]));
 
         assert!(reconcile_page_checkpoint(&state, None, temp.path(), &gate, "doc", 2).is_err());
+    }
+
+    #[test]
+    fn validates_recovery_generation_and_invocation_lineage() {
+        assert_eq!(recovery_generation(&json!({})).unwrap(), 0);
+        assert_eq!(
+            recovery_generation(&json!({"ocr_page_recovery_generation": 2})).unwrap(),
+            2
+        );
+        assert!(recovery_generation(&json!({"ocr_page_recovery_generation": -1})).is_err());
+        assert_eq!(semantic_parse_generation(0), "semantic-v1");
+        assert_eq!(semantic_parse_generation(2), "semantic-recovery-v2");
+
+        let expected = expected_invocation_lineages("root", 0);
+        let edges = expected
+            .iter()
+            .map(|lineage| {
+                json!({
+                    "metadata": {
+                        "relation": "wf_invoked",
+                        "parent_run_id": "root",
+                        "workflow_id": lineage.workflow_id,
+                        "invocation_key": lineage.invocation_key,
+                        "child_run_id": lineage.child_run_id,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(validate_invocation_lineages(&edges, "root", 0).is_ok());
+
+        let mut incomplete = edges.clone();
+        incomplete.pop();
+        let error = validate_invocation_lineages(&incomplete, "root", 0)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing="));
+
+        let mut duplicate = edges.clone();
+        duplicate.push(edges[0].clone());
+        let error = validate_invocation_lineages(&duplicate, "root", 0)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate="));
     }
 }
