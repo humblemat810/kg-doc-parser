@@ -752,6 +752,182 @@ pub fn semantic_tree_to_kge_payload(
     }))
 }
 
+pub fn reconstruct_text_from_pointers(
+    pointers: &[HydratedTextPointer],
+    source_map: &Value,
+) -> String {
+    let mut text = String::new();
+    for pointer in pointers {
+        let Some(record) = source_map.get(&pointer.source_cluster_id) else {
+            continue;
+        };
+        let source_text = source_map_entry_text(record);
+        if source_text.is_empty() {
+            continue;
+        }
+        let end = if pointer.end_char == -1 {
+            source_text.chars().count()
+        } else {
+            (pointer.end_char + 1) as usize
+        };
+        let start = pointer.start_char.max(0) as usize;
+        if start < source_text.chars().count() {
+            text.extend(
+                source_text
+                    .chars()
+                    .skip(start)
+                    .take(end.saturating_sub(start)),
+            );
+        }
+    }
+    text
+}
+
+fn normalized_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn source_text_for_coverage(source_map: &Value) -> String {
+    let empty = Map::new();
+    let object = source_map.as_object().unwrap_or(&empty);
+    let mut entries = object
+        .iter()
+        .map(|(cluster_id, record)| (cluster_id.clone(), record))
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
+        .into_iter()
+        .map(|(_, record)| source_map_entry_text(record))
+        .collect()
+}
+
+fn lcs_length(left: &[char], right: &[char]) -> usize {
+    let mut previous = vec![0usize; right.len() + 1];
+    let mut current = vec![0usize; right.len() + 1];
+    for left_char in left {
+        for (index, right_char) in right.iter().enumerate() {
+            current[index + 1] = if left_char == right_char {
+                previous[index] + 1
+            } else {
+                previous[index + 1].max(current[index])
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+        current.iter_mut().for_each(|value| *value = 0);
+    }
+    previous[right.len()]
+}
+
+fn fuzzy_partial_ratio(query: &str, text: &str) -> f64 {
+    let query = normalized_text(query);
+    let text = normalized_text(text);
+    if query.is_empty() || text.is_empty() {
+        return 0.0;
+    }
+    let query_chars = query.chars().collect::<Vec<_>>();
+    let text_chars = text.chars().collect::<Vec<_>>();
+    if query_chars.len() >= text_chars.len() {
+        let length = query_chars.len().max(text_chars.len()) as f64;
+        return lcs_length(&query_chars, &text_chars) as f64 / length * 100.0;
+    }
+    let window = query_chars.len();
+    let mut best = 0.0f64;
+    for start in 0..=(text_chars.len() - window) {
+        let score = lcs_length(&query_chars, &text_chars[start..start + window]) as f64
+            / window as f64
+            * 100.0;
+        best = best.max(score);
+        if (100.0 - best).abs() < f64::EPSILON {
+            break;
+        }
+    }
+    best
+}
+
+fn sibling_overlaps_valid(node: &SemanticNode, source_map: &Value, allowed_overlap: i64) -> bool {
+    if node.child_nodes.is_empty() {
+        return true;
+    }
+    let mut ranges: BTreeMap<String, Vec<(i64, i64, String)>> = BTreeMap::new();
+    for (index, child) in node.child_nodes.iter().enumerate() {
+        let child_label = format!("{}-{index}", child.title);
+        for pointer in &child.total_content_pointers {
+            let Some(record) = source_map.get(&pointer.source_cluster_id) else {
+                continue;
+            };
+            let text = record
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let end = if pointer.end_char == -1 {
+                (text.chars().count() as i64 - 1).max(0)
+            } else {
+                pointer.end_char
+            };
+            ranges
+                .entry(pointer.source_cluster_id.clone())
+                .or_default()
+                .push((pointer.start_char, end, child_label.clone()));
+        }
+    }
+    for cluster_ranges in ranges.values() {
+        let mut ordered = cluster_ranges.clone();
+        ordered.sort_by(|left, right| (left.0, left.1, &left.2).cmp(&(right.0, right.1, &right.2)));
+        if ordered.is_empty() {
+            continue;
+        }
+        let mut previous_end = ordered[0].1;
+        let mut previous_child = ordered[0].2.clone();
+        for (start, end, child) in ordered.iter().skip(1) {
+            if *start <= previous_end {
+                let overlap_length = previous_end.min(*end) - *start + 1;
+                if *child != previous_child && overlap_length > allowed_overlap {
+                    return false;
+                }
+                previous_end = previous_end.max(*end);
+            } else {
+                previous_end = *end;
+                previous_child = child.clone();
+            }
+        }
+    }
+    node.child_nodes
+        .iter()
+        .all(|child| sibling_overlaps_valid(child, source_map, allowed_overlap))
+}
+
+pub fn analyze_and_validate_tree(
+    root: &SemanticNode,
+    source_map: &Value,
+    allowed_overlap_per_cluster: i64,
+    completeness_fuzz_threshold: f64,
+) -> bool {
+    if !sibling_overlaps_valid(root, source_map, allowed_overlap_per_cluster) {
+        return false;
+    }
+    let mut leaf_pointers = Vec::new();
+    fn collect_leaves<'a>(node: &'a SemanticNode, pointers: &mut Vec<&'a HydratedTextPointer>) {
+        if node.child_nodes.is_empty() && node.node_type != "DOCUMENT_ROOT" {
+            pointers.extend(node.total_content_pointers.iter());
+        } else {
+            for child in &node.child_nodes {
+                collect_leaves(child, pointers);
+            }
+        }
+    }
+    collect_leaves(root, &mut leaf_pointers);
+    let leaf_pointers = leaf_pointers.into_iter().cloned().collect::<Vec<_>>();
+    let reconstructed = reconstruct_text_from_pointers(&leaf_pointers, source_map);
+    let source = source_text_for_coverage(source_map);
+    let reconstructed_norm = normalized_text(&reconstructed);
+    let source_norm = normalized_text(&source);
+    reconstructed_norm == source_norm
+        || fuzzy_partial_ratio(&reconstructed_norm, &source_norm) >= completeness_fuzz_threshold
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -955,5 +1131,90 @@ mod tests {
             "DOCUMENT_ROOT"
         );
         assert!(crate::semantic_graph_import::kge_payload_to_semantic_tree(&payload).is_err());
+    }
+
+    #[test]
+    fn reconstructs_and_validates_tree_without_overlap_or_gap() {
+        let source_map = json!({
+            "p1_c0": {"id": "p1_c0", "text": "Alpha"},
+            "p1_c1": {"id": "p1_c1", "text": "Beta"}
+        });
+        let root = semantic_node(
+            "root",
+            "DOCUMENT_ROOT",
+            Vec::new(),
+            vec![
+                semantic_node(
+                    "alpha",
+                    "TEXT_FLOW",
+                    vec![semantic_pointer("p1_c0", 0, 4, "Alpha")],
+                    Vec::new(),
+                ),
+                semantic_node(
+                    "beta",
+                    "TEXT_FLOW",
+                    vec![semantic_pointer("p1_c1", 0, 3, "Beta")],
+                    Vec::new(),
+                ),
+            ],
+        );
+        assert!(analyze_and_validate_tree(&root, &source_map, 0, 98.0));
+        assert_eq!(
+            reconstruct_text_from_pointers(
+                &root.child_nodes[0].total_content_pointers,
+                &source_map
+            ),
+            "Alpha"
+        );
+    }
+
+    #[test]
+    fn rejects_overlap_and_incomplete_tree() {
+        let source_map = json!({
+            "p1_c0": {"id": "p1_c0", "text": "AlphaBeta"}
+        });
+        let overlapping = semantic_node(
+            "root",
+            "DOCUMENT_ROOT",
+            Vec::new(),
+            vec![
+                semantic_node(
+                    "left",
+                    "TEXT_FLOW",
+                    vec![semantic_pointer("p1_c0", 0, 5, "AlphaB")],
+                    Vec::new(),
+                ),
+                semantic_node(
+                    "right",
+                    "TEXT_FLOW",
+                    vec![semantic_pointer("p1_c0", 5, 8, "Beta")],
+                    Vec::new(),
+                ),
+            ],
+        );
+        assert!(!analyze_and_validate_tree(
+            &overlapping,
+            &source_map,
+            0,
+            98.0
+        ));
+
+        let incomplete = semantic_node(
+            "root",
+            "DOCUMENT_ROOT",
+            Vec::new(),
+            vec![semantic_node(
+                "left",
+                "TEXT_FLOW",
+                vec![semantic_pointer("p1_c0", 0, 2, "Alp")],
+                Vec::new(),
+            )],
+        );
+        assert!(!analyze_and_validate_tree(
+            &incomplete,
+            &source_map,
+            0,
+            101.0
+        ));
     }
 }
