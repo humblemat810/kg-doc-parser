@@ -158,6 +158,9 @@ pub fn initialize_parse_session(
             start_char: 0,
             end_char: -1,
             verbatim_text: source_text(Some(record)),
+            start_delimiter: None,
+            end_delimiter: None,
+            validation_method: None,
         });
     }
     pointers.sort_by(|left, right| left.source_cluster_id.cmp(&right.source_cluster_id));

@@ -153,6 +153,9 @@ pub fn parse_page_index_document_heuristic(
             start_char: 0,
             end_char: page_text.chars().count().saturating_sub(1) as i64,
             verbatim_text: page_text.clone(),
+            start_delimiter: None,
+            end_delimiter: None,
+            validation_method: None,
         };
         let mut page_node = make_semantic_node(
             &format!("Page {page_number}"),

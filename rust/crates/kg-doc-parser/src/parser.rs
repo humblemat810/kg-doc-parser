@@ -31,6 +31,9 @@ fn pointer(cluster_id: &str, text: &str) -> HydratedTextPointer {
         start_char: 0,
         end_char: text.chars().count().saturating_sub(1) as i64,
         verbatim_text: text.to_string(),
+        start_delimiter: None,
+        end_delimiter: None,
+        validation_method: None,
     }
 }
 

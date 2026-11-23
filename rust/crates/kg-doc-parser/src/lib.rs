@@ -16,6 +16,7 @@ pub mod parser_core;
 pub mod pointer_matching;
 pub mod providers;
 pub mod semantic;
+pub mod semantic_graph_import;
 pub mod semantic_indexing;
 pub mod source_text;
 pub mod strategy;
