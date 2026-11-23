@@ -14,6 +14,7 @@ pub mod page_index_source_text;
 pub mod page_index_tree;
 pub mod parser;
 pub mod parser_core;
+pub mod parser_core_diagnostics;
 pub mod pointer_matching;
 pub mod providers;
 pub mod semantic;

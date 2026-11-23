@@ -100,6 +100,8 @@ pub struct LayerChildCandidate {
     pub total_content_pointers: Vec<HydratedTextPointer>,
     pub expandable: bool,
     pub metadata: Map<String, Value>,
+    #[serde(default)]
+    pub child_candidates: Vec<LayerChildCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,6 +358,7 @@ pub fn legacy_children_for_context(
                 total_content_pointers: child.total_content_pointers.clone(),
                 expandable: !child.child_nodes.is_empty(),
                 metadata,
+                child_candidates: Vec::new(),
             });
         }
     }
