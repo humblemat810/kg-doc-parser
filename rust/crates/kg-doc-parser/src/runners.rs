@@ -320,4 +320,23 @@ mod tests {
         assert_eq!(results[0].input_path, input);
         assert!(results[0].summary_path.exists());
     }
+
+    #[test]
+    fn infers_page_index_source_format() {
+        let markdown = Path::new("inputs/page-index.md");
+        let text = Path::new("inputs/page-index.txt");
+        assert_eq!(
+            infer_page_index_source_format(markdown, "auto").unwrap(),
+            PageIndexSourceFormat::Markdown
+        );
+        assert_eq!(
+            infer_page_index_source_format(text, "auto").unwrap(),
+            PageIndexSourceFormat::Text
+        );
+        assert_eq!(
+            infer_page_index_source_format(text, "markdown").unwrap(),
+            PageIndexSourceFormat::Markdown
+        );
+        assert!(infer_page_index_source_format(text, "json").is_err());
+    }
 }
