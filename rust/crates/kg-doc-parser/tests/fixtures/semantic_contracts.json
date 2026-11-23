@@ -170,6 +170,24 @@
         "diagnostic": null
       }
     ]
-  }
+  },
+  "ocr_artifact_schema": [
+    {
+      "metadata": {"ocr_json_version": "workflow_ingest_v1"},
+      "expected": null
+    },
+    {
+      "metadata": {"ocr_json_version": "0.1"},
+      "expected": null
+    },
+    {
+      "metadata": {"ocr_json_version": "0.2"},
+      "expected": "unsupported OCR artifact schema version: '0.2'"
+    },
+    {
+      "metadata": {},
+      "expected": "unsupported OCR artifact schema version: missing"
+    }
+  ]
 }
 

@@ -72,7 +72,7 @@ pub fn artifact_schema_error(payload: &Value) -> Option<String> {
     match version {
         Some(version) if SUPPORTED_OCR_JSON_VERSIONS.contains(&version.as_str()) => None,
         Some(version) => Some(format!(
-            "unsupported OCR artifact schema version: {version}"
+            "unsupported OCR artifact schema version: '{version}'"
         )),
         None => Some("unsupported OCR artifact schema version: missing".to_string()),
     }
@@ -126,7 +126,7 @@ mod tests {
         let payload = json!({"metadata": {"ocr_json_version": "0.2"}});
         assert_eq!(
             artifact_schema_error(&payload).as_deref(),
-            Some("unsupported OCR artifact schema version: 0.2")
+            Some("unsupported OCR artifact schema version: '0.2'")
         );
         let payload = json!({"metadata": {}});
         assert_eq!(

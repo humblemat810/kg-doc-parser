@@ -20,6 +20,7 @@ from kg_doc_parser.semantic_pointer_matching import (
 from kg_doc_parser.workflow_ingest.page_index_source_text import _split_pages
 from kg_doc_parser.workflow_ingest.page_index_classification import _classify_block
 from kg_doc_parser.workflow_ingest.page_index import _heuristic_page_outline
+from kg_doc_parser.workflow_ingest.ocr_artifacts import artifact_schema_error
 
 
 FIXTURE = (
@@ -105,6 +106,12 @@ def test_pointer_matching_contracts_match_rust() -> None:
         )
         assert [list(span) for span in spans] == case["expected"]
         assert diagnostic == case["diagnostic"]
+
+
+def test_ocr_artifact_schema_errors_match_rust() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    for case in payload["ocr_artifact_schema"]:
+        assert artifact_schema_error(case) == case["expected"]
 
 
 def test_semantic_indexing_contracts_match_rust() -> None:
