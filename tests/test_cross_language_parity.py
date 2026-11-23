@@ -21,6 +21,7 @@ from kg_doc_parser.workflow_ingest.page_index_source_text import _split_pages
 from kg_doc_parser.workflow_ingest.page_index_classification import _classify_block
 from kg_doc_parser.workflow_ingest.page_index import _heuristic_page_outline
 from kg_doc_parser.workflow_ingest.page_index_tree import page_index_normalize_text
+from kg_doc_parser.workflow_ingest.parser_core_session import source_map_fingerprint
 from kg_doc_parser.workflow_ingest.ocr_artifacts import artifact_schema_error
 
 
@@ -119,6 +120,21 @@ def test_page_index_normalize_text_matches_rust() -> None:
     payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
     for case in payload["page_index_normalize_text"]:
         assert page_index_normalize_text(case["text"]) == case["expected"]
+
+
+def test_source_map_fingerprint_matches_rust() -> None:
+    source_map = {
+        "z": {"text": "second"},
+        "a": {"text": "first"},
+    }
+    fingerprint = source_map_fingerprint(source_map)
+    assert len(fingerprint) == 64
+    assert fingerprint == source_map_fingerprint(
+        {
+            "a": {"text": "first"},
+            "z": {"text": "second"},
+        }
+    )
 
 
 def test_semantic_indexing_contracts_match_rust() -> None:
