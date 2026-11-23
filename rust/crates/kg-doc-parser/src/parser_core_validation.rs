@@ -510,6 +510,7 @@ mod tests {
             atomic_parent_ids: Vec::new(),
             atomic_content_pointers_by_parent: Map::new(),
             metadata: Map::new(),
+            validation_diagnostics: Vec::new(),
         }
     }
 

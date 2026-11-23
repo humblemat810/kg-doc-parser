@@ -4,6 +4,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::semantic::{HydratedTextPointer, SemanticNode};
+use crate::semantic_graph_import::pointer_source_validation_error;
 use crate::source_text::source_map_entry_text;
 
 fn source_text(record: Option<&Value>) -> String {
@@ -113,6 +114,8 @@ pub struct CurrentLayerResult {
     pub atomic_parent_ids: Vec<String>,
     pub atomic_content_pointers_by_parent: Map<String, Value>,
     pub metadata: Map<String, Value>,
+    #[serde(default)]
+    pub validation_diagnostics: Vec<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -373,7 +376,345 @@ pub fn legacy_children_for_context(
         atomic_parent_ids,
         atomic_content_pointers_by_parent,
         metadata,
+        validation_diagnostics: Vec::new(),
     })
+}
+
+fn parse_pointer_override(pointers: &Value) -> Result<Vec<HydratedTextPointer>> {
+    serde_json::from_value::<Vec<HydratedTextPointer>>(pointers.clone())
+        .map_err(|error| anyhow::anyhow!("atomic pointer override must be typed: {error}"))
+}
+
+fn atomic_pointer_override_errors(
+    parent_id: &str,
+    current_layer_result: &CurrentLayerResult,
+    parser_source_map: Option<&Value>,
+) -> Result<Vec<String>> {
+    let Some(raw_pointers) = current_layer_result
+        .atomic_content_pointers_by_parent
+        .get(parent_id)
+    else {
+        return Ok(Vec::new());
+    };
+    if raw_pointers.is_null() {
+        return Ok(Vec::new());
+    }
+    if raw_pointers.as_array().is_some_and(Vec::is_empty) {
+        return Ok(vec![format!(
+            "parent {parent_id}: atomic pointer override must be a non-empty list"
+        )]);
+    }
+    let Some(source_map) = parser_source_map else {
+        return Ok(vec![format!(
+            "parent {parent_id}: atomic pointer override requires an authoritative source map"
+        )]);
+    };
+    let pointers = parse_pointer_override(raw_pointers)?;
+    let errors = pointers
+        .iter()
+        .enumerate()
+        .filter_map(|(index, pointer)| {
+            pointer_source_validation_error(pointer, source_map).map(|error| {
+                format!("parent {parent_id}: atomic pointer override {index}: {error}")
+            })
+        })
+        .collect();
+    Ok(errors)
+}
+
+fn ensure_unique_ids(tree: &SemanticNode) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = vec![tree];
+    while let Some(node) = pending.pop() {
+        let node_id = node
+            .node_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("semantic tree contains a node without an id"))?;
+        if !seen.insert(node_id.clone()) {
+            anyhow::bail!("duplicate node id {node_id:?}");
+        }
+        pending.extend(node.child_nodes.iter());
+    }
+    Ok(())
+}
+
+fn apply_atomic_retention(
+    node: &mut SemanticNode,
+    retained_parent_ids: &std::collections::HashSet<String>,
+    grouped_counts: &std::collections::HashMap<String, usize>,
+    atomic_retained: bool,
+    atomic_pointers_by_parent: &Map<String, Value>,
+) -> Result<()> {
+    let node_id = node.node_id.clone().unwrap_or_default();
+    if atomic_retained
+        && grouped_counts.get(&node_id).copied().unwrap_or(0) == 0
+        && retained_parent_ids.contains(&node_id)
+    {
+        if node.metadata.get("atomic_retained") != Some(&json!(true)) {
+            node.metadata["atomic_retained"] = json!(true);
+        }
+        if let Some(raw_pointers) = atomic_pointers_by_parent.get(&node_id) {
+            if !raw_pointers.is_null() {
+                node.total_content_pointers = parse_pointer_override(raw_pointers)?;
+            }
+        }
+    }
+    for child in &mut node.child_nodes {
+        apply_atomic_retention(
+            child,
+            retained_parent_ids,
+            grouped_counts,
+            atomic_retained,
+            atomic_pointers_by_parent,
+        )?;
+    }
+    Ok(())
+}
+
+fn build_proposed_children(
+    current_layer_result: &CurrentLayerResult,
+    current_depth: u64,
+) -> Result<std::collections::HashMap<String, Vec<SemanticNode>>> {
+    let mut children_by_parent: std::collections::HashMap<String, Vec<SemanticNode>> =
+        std::collections::HashMap::new();
+    for child in &current_layer_result.children {
+        let bucket = children_by_parent
+            .entry(child.parent_node_id.clone())
+            .or_default();
+        if bucket
+            .iter()
+            .any(|existing| existing.node_id.as_deref() == Some(child.node_id.as_str()))
+        {
+            anyhow::bail!("duplicate proposed child node id {:?}", child.node_id);
+        }
+        let mut materialized_ids = std::collections::HashSet::new();
+        let mut materialized_children = Vec::new();
+        for materialized in &child.child_candidates {
+            if !materialized_ids.insert(materialized.node_id.clone()) {
+                anyhow::bail!(
+                    "duplicate materialized child node id {:?}",
+                    materialized.node_id
+                );
+            }
+            materialized_children.push(SemanticNode {
+                node_id: Some(materialized.node_id.clone()),
+                parent_id: Some(child.node_id.clone()),
+                node_type: materialized.node_type.clone(),
+                title: materialized.title.clone(),
+                summary: String::new(),
+                total_content_pointers: materialized.total_content_pointers.clone(),
+                aggregate_content_pointers: Vec::new(),
+                child_nodes: Vec::new(),
+                level_from_root: current_depth + 2,
+                metadata: Value::Object(materialized.metadata.clone()),
+            });
+        }
+        bucket.push(SemanticNode {
+            node_id: Some(child.node_id.clone()),
+            parent_id: Some(child.parent_node_id.clone()),
+            node_type: child.node_type.clone(),
+            title: child.title.clone(),
+            summary: String::new(),
+            total_content_pointers: child.total_content_pointers.clone(),
+            aggregate_content_pointers: Vec::new(),
+            child_nodes: materialized_children,
+            level_from_root: current_depth + 1,
+            metadata: Value::Object(child.metadata.clone()),
+        });
+    }
+    Ok(children_by_parent)
+}
+
+fn insert_proposed_children(
+    node: &mut SemanticNode,
+    children_by_parent: &std::collections::HashMap<String, Vec<SemanticNode>>,
+) {
+    let node_id = node.node_id.clone().unwrap_or_default();
+    if let Some(proposed_children) = children_by_parent.get(&node_id) {
+        let mut updated_children = node.child_nodes.clone();
+        for proposed in proposed_children {
+            if let Some(existing) = updated_children
+                .iter_mut()
+                .find(|existing| existing.node_id == proposed.node_id)
+            {
+                if !existing.child_nodes.is_empty() && proposed.child_nodes.is_empty() {
+                    let preserved_children = existing.child_nodes.clone();
+                    *existing = proposed.clone();
+                    existing.child_nodes = preserved_children;
+                } else {
+                    *existing = proposed.clone();
+                }
+            } else {
+                updated_children.push(proposed.clone());
+            }
+        }
+        node.child_nodes = updated_children;
+    }
+    for child in &mut node.child_nodes {
+        insert_proposed_children(child, children_by_parent);
+    }
+}
+
+pub fn commit_layer_children(
+    semantic_tree: &SemanticNode,
+    current_layer_result: &CurrentLayerResult,
+    current_depth: u64,
+    parent_node_ids: Option<&[String]>,
+    parser_source_map: Option<&Value>,
+    max_depth: Option<u64>,
+) -> Result<SemanticNode> {
+    crate::semantic_graph_import::validate_semantic_tree_integrity(
+        semantic_tree,
+        parser_source_map,
+        max_depth,
+    )?;
+    let mut tree = semantic_tree.clone();
+    ensure_unique_ids(&tree)?;
+    if !current_layer_result.validation_diagnostics.is_empty() {
+        anyhow::bail!("layer contains validation diagnostics and cannot be committed");
+    }
+    let mut grouped_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for child in &current_layer_result.children {
+        *grouped_counts
+            .entry(child.parent_node_id.clone())
+            .or_default() += 1;
+        if child.child_candidates.len() == 1 {
+            anyhow::bail!(
+                "nested unary refinement under proposed child {:?}",
+                child.node_id
+            );
+        }
+    }
+    if !current_layer_result.children.is_empty() && grouped_counts.values().any(|count| *count == 1)
+    {
+        anyhow::bail!("unary refinement cannot be committed");
+    }
+    if current_layer_result.children.is_empty() && !current_layer_result.atomic_retained {
+        anyhow::bail!("empty layer requires explicit atomic retention");
+    }
+    let parent_node_ids = parent_node_ids.unwrap_or_default();
+    let children_by_parent = build_proposed_children(current_layer_result, current_depth)?;
+    insert_proposed_children(&mut tree, &children_by_parent);
+    if !parent_node_ids.is_empty()
+        && current_layer_result.children.is_empty()
+        && current_layer_result.atomic_retained
+        && parser_source_map.is_none()
+    {
+        anyhow::bail!("atomic retention requires an authoritative source map");
+    }
+    let atomic_retained = current_layer_result.atomic_retained;
+    if !parent_node_ids.is_empty() && atomic_retained {
+        let errors = parent_node_ids
+            .iter()
+            .map(|parent_id| {
+                atomic_pointer_override_errors(parent_id, current_layer_result, parser_source_map)
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if !errors.is_empty() {
+            anyhow::bail!(
+                "{}",
+                errors
+                    .iter()
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+        }
+    }
+    let omitted_parent_ids = parent_node_ids
+        .iter()
+        .filter(|parent_id| grouped_counts.get(*parent_id).copied().unwrap_or(0) == 0)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !omitted_parent_ids.is_empty()
+        && atomic_retained
+        && !current_layer_result.atomic_parent_ids.is_empty()
+    {
+        let undeclared = omitted_parent_ids
+            .iter()
+            .filter(|parent_id| !current_layer_result.atomic_parent_ids.contains(parent_id))
+            .collect::<Vec<_>>();
+        if !undeclared.is_empty() {
+            anyhow::bail!(
+                "layer omitted parents without an explicit atomic disposition: {}",
+                undeclared
+                    .iter()
+                    .map(|parent_id| parent_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+    if !omitted_parent_ids.is_empty() && !atomic_retained {
+        anyhow::bail!(
+            "layer omitted parents without atomic retention: {}",
+            omitted_parent_ids.join(", ")
+        );
+    }
+    if !omitted_parent_ids.is_empty() {
+        let Some(source_map) = parser_source_map else {
+            anyhow::bail!("atomic retention requires an authoritative source map");
+        };
+        for parent_id in &omitted_parent_ids {
+            let Some(parent) = crate::parser_core::find_semantic_node(&tree, parent_id) else {
+                anyhow::bail!("atomic parent does not exist: {parent_id}");
+            };
+            let pointers = if parent.total_content_pointers.is_empty() {
+                parent.aggregate_content_pointers.clone()
+            } else {
+                parent.total_content_pointers.clone()
+            };
+            if pointers.is_empty() {
+                anyhow::bail!("atomic parent {parent_id:?} has no verified source pointer");
+            }
+            let errors = pointers
+                .iter()
+                .filter_map(|pointer| pointer_source_validation_error(pointer, source_map))
+                .take(4)
+                .collect::<Vec<_>>();
+            if !errors.is_empty() {
+                anyhow::bail!(
+                    "atomic parent {parent_id:?} has invalid source pointer: {}",
+                    errors.join("; ")
+                );
+            }
+        }
+    }
+    for parent_id in grouped_counts.keys() {
+        if crate::parser_core::find_semantic_node(&tree, parent_id).is_none() {
+            anyhow::bail!("proposed child parent does not exist: {parent_id}");
+        }
+        if let Some(allowed_parent_ids) = Some(parent_node_ids) {
+            if !allowed_parent_ids.contains(parent_id) {
+                anyhow::bail!("proposed child parent is outside current layer: {parent_id}");
+            }
+        }
+    }
+    let retained_parent_ids = parent_node_ids
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let atomic_pointers_by_parent = current_layer_result
+        .atomic_content_pointers_by_parent
+        .clone();
+    apply_atomic_retention(
+        &mut tree,
+        &retained_parent_ids,
+        &grouped_counts,
+        atomic_retained,
+        &atomic_pointers_by_parent,
+    )?;
+    crate::semantic_graph_import::validate_semantic_tree_integrity(
+        &tree,
+        parser_source_map,
+        max_depth,
+    )?;
+    Ok(tree)
 }
 
 #[cfg(test)]
@@ -433,5 +774,107 @@ mod tests {
         assert!(result.children.is_empty());
         assert!(result.atomic_retained);
         assert_eq!(result.atomic_parent_ids, vec!["doc|root"]);
+    }
+
+    #[test]
+    fn commits_children_and_preserves_existing_subtrees() {
+        let child_a = SemanticNode {
+            node_id: Some("existing-a".to_string()),
+            parent_id: Some("parent".to_string()),
+            node_type: "TEXT_FLOW".to_string(),
+            title: "Existing A".to_string(),
+            summary: String::new(),
+            total_content_pointers: Vec::new(),
+            aggregate_content_pointers: Vec::new(),
+            child_nodes: Vec::new(),
+            level_from_root: 1,
+            metadata: json!({}),
+        };
+        let child_b = SemanticNode {
+            node_id: Some("existing-b".to_string()),
+            parent_id: Some("parent".to_string()),
+            node_type: "TEXT_FLOW".to_string(),
+            title: "Existing B".to_string(),
+            summary: String::new(),
+            total_content_pointers: Vec::new(),
+            aggregate_content_pointers: Vec::new(),
+            child_nodes: Vec::new(),
+            level_from_root: 1,
+            metadata: json!({}),
+        };
+        let parent = SemanticNode {
+            node_id: Some("parent".to_string()),
+            parent_id: Some("root".to_string()),
+            node_type: "SECTION".to_string(),
+            title: "Parent".to_string(),
+            summary: String::new(),
+            total_content_pointers: Vec::new(),
+            aggregate_content_pointers: Vec::new(),
+            child_nodes: vec![child_a, child_b],
+            level_from_root: 0,
+            metadata: json!({}),
+        };
+        let other_parent = SemanticNode {
+            node_id: Some("other-parent".to_string()),
+            parent_id: Some("root".to_string()),
+            node_type: "SECTION".to_string(),
+            title: "Other Parent".to_string(),
+            summary: String::new(),
+            total_content_pointers: Vec::new(),
+            aggregate_content_pointers: Vec::new(),
+            child_nodes: Vec::new(),
+            level_from_root: 0,
+            metadata: json!({}),
+        };
+        let root = SemanticNode {
+            node_id: Some("root".to_string()),
+            parent_id: None,
+            node_type: "DOCUMENT_ROOT".to_string(),
+            title: "Document".to_string(),
+            summary: String::new(),
+            total_content_pointers: Vec::new(),
+            aggregate_content_pointers: Vec::new(),
+            child_nodes: vec![parent, other_parent],
+            level_from_root: 0,
+            metadata: json!({}),
+        };
+        let proposed = CurrentLayerResult {
+            children: vec![
+                LayerChildCandidate {
+                    node_id: "new-a".to_string(),
+                    parent_node_id: "parent".to_string(),
+                    title: "New A".to_string(),
+                    node_type: "TEXT_FLOW".to_string(),
+                    total_content_pointers: Vec::new(),
+                    expandable: false,
+                    metadata: Map::new(),
+                    child_candidates: Vec::new(),
+                },
+                LayerChildCandidate {
+                    node_id: "new-b".to_string(),
+                    parent_node_id: "parent".to_string(),
+                    title: "New B".to_string(),
+                    node_type: "TEXT_FLOW".to_string(),
+                    total_content_pointers: Vec::new(),
+                    expandable: false,
+                    metadata: Map::new(),
+                    child_candidates: Vec::new(),
+                },
+            ],
+            satisfied: Some(true),
+            review_rounds: 0,
+            atomic_retained: false,
+            atomic_parent_ids: Vec::new(),
+            atomic_content_pointers_by_parent: Map::new(),
+            metadata: Map::new(),
+            validation_diagnostics: Vec::new(),
+        };
+        let parent_ids = vec!["parent".to_string()];
+        let committed =
+            commit_layer_children(&root, &proposed, 0, Some(&parent_ids), None, Some(2)).unwrap();
+        let committed_parent = find_semantic_node(&committed, "parent").unwrap();
+        assert_eq!(committed_parent.child_nodes.len(), 4);
+        assert!(find_semantic_node(&committed, "new-a").is_some());
+        assert!(find_semantic_node(&committed, "existing-a").is_some());
     }
 }

@@ -217,6 +217,7 @@ mod tests {
             atomic_parent_ids: Vec::new(),
             atomic_content_pointers_by_parent: Map::new(),
             metadata: Map::new(),
+            validation_diagnostics: Vec::new(),
         };
         let issues = layer_structural_issues(context.as_object().unwrap(), &result).unwrap();
         assert_eq!(issues.len(), 1);
