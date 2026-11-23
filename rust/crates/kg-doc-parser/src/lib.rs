@@ -18,6 +18,7 @@ pub mod parser_core_diagnostics;
 pub mod parser_core_validation;
 pub mod pointer_matching;
 pub mod providers;
+pub mod runners;
 pub mod semantic;
 pub mod semantic_graph_import;
 pub mod semantic_indexing;
