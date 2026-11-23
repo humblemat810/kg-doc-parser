@@ -12,6 +12,7 @@ from kg_doc_parser.semantic_indexing_contracts import (
 from kg_doc_parser.semantic_source_text import source_map_entry_text
 from kg_doc_parser.workflow_ingest.page_index_source_text import _split_pages
 from kg_doc_parser.workflow_ingest.page_index_classification import _classify_block
+from kg_doc_parser.workflow_ingest.page_index import _heuristic_page_outline
 
 
 FIXTURE = (
@@ -53,6 +54,18 @@ def test_page_index_classify_blocks_matches_rust() -> None:
         assert actual.title == expected["title"]
         assert actual.kind_hint == expected["kind_hint"]
         assert actual.heading_level == expected.get("heading_level")
+
+
+def test_page_index_heuristic_outlines_match_rust() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    for case in payload["page_index_outlines"]:
+        specs, diagnostics = _heuristic_page_outline(
+            case["page_text"],
+            page_number=case["page_number"],
+            source_format=case["source_format"],
+        )
+        assert [spec.model_dump(mode="json") for spec in specs] == case["expected_block_specs"]
+        assert diagnostics == case["expected_diagnostics"]
 
 
 def test_semantic_indexing_contracts_match_rust() -> None:

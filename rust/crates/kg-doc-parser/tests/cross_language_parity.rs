@@ -1,5 +1,6 @@
 use kg_doc_parser::page_index_classification::{classify_block, ClassifyBlockOptions};
 use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
+use kg_doc_parser::page_index_pipeline::heuristic_page_outline;
 use kg_doc_parser::{
     page_index_source_text::split_pages, semantic_indexing as indexing,
     source_text::source_map_entry_text,
@@ -11,6 +12,27 @@ fn fixture() -> Value {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/semantic_contracts.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn page_index_heuristic_outlines_match_python() {
+    let payload = fixture();
+    for case in payload["page_index_outlines"].as_array().unwrap() {
+        let source_format = match case["source_format"].as_str().unwrap() {
+            "markdown" => PageIndexSourceFormat::Markdown,
+            _ => PageIndexSourceFormat::Text,
+        };
+        let (block_specs, diagnostics) = heuristic_page_outline(
+            case["page_text"].as_str().unwrap(),
+            case["page_number"].as_u64().unwrap() as u32,
+            source_format,
+        );
+        assert_eq!(
+            serde_json::to_value(&block_specs).unwrap(),
+            case["expected_block_specs"]
+        );
+        assert_eq!(diagnostics, case["expected_diagnostics"]);
+    }
 }
 
 #[test]

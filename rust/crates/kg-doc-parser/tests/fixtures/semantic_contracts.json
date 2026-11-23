@@ -97,6 +97,42 @@
         "kind_hint": "term_list_item"
       }
     }
+  ],
+  "page_index_outlines": [
+    {
+      "page_text": "# Section One\n\nParagraph one.",
+      "page_number": 1,
+      "source_format": "markdown",
+      "expected_block_specs": [
+        {
+          "title": "Section One",
+          "node_type": "HEADING",
+          "excerpt": "# Section One",
+          "display_excerpt": null,
+          "summary": "",
+          "source_role": "heading",
+          "child_nodes": [
+            {
+              "title": "Paragraph one.",
+              "node_type": "PARAGRAPH",
+              "excerpt": "Paragraph one.",
+              "display_excerpt": null,
+              "summary": "",
+              "source_role": "content",
+              "child_nodes": []
+            }
+          ]
+        }
+      ],
+      "expected_diagnostics": {
+        "assignment_mode": "heuristic_deterministic",
+        "candidate_count": 2,
+        "assignment_count": 2,
+        "validation_errors": [],
+        "validation_warnings": [],
+        "fallback_reason": null
+      }
+    }
   ]
 }
 
