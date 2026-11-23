@@ -1,0 +1,55 @@
+{
+  "source_map_entry_text": [
+    {
+      "entry": {"text": "primary", "content": "fallback"},
+      "expected": "primary"
+    },
+    {
+      "entry": {"text": " ", "content": "fallback"},
+      "expected": "fallback"
+    },
+    {
+      "entry": 7,
+      "expected": ""
+    },
+    {
+      "entry": {
+        "OCR_text_clusters": [
+          {"text": 17, "content": "actual cluster"},
+          {"text": "second cluster"},
+          "not a cluster"
+        ],
+        "non_text_objects": [
+          {"description": false},
+          {"text": "Figure caption"}
+        ]
+      },
+      "expected": "actual cluster\nsecond cluster"
+    },
+    {
+      "entry": {"non_text_objects": [{"description": false}, {"text": "Figure caption"}]},
+      "expected": "Figure caption"
+    }
+  ],
+  "default_token_estimate": [
+    {"text": "", "expected": 1},
+    {"text": "abcd", "expected": 1},
+    {"text": "abcde", "expected": 2}
+  ],
+  "render_nodes_payload": [
+    {
+      "nodes": [{"b": 1, "a": 2}],
+      "expected": "{\"nodes\":[{\"a\":2,\"b\":1}]}"
+    }
+  ],
+  "batch_nodes": [
+    {
+      "items": [{"id": "one"}, {"id": "two"}, {"id": "three"}],
+      "max_nodes": 2,
+      "base_prompt_tokens": 0,
+      "per_node_overhead_tokens": 0,
+      "expected": [[{"id": "one"}, {"id": "two"}], [{"id": "three"}]]
+    }
+  ]
+}
+
