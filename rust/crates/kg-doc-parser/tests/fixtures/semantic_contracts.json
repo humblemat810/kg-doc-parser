@@ -1,0 +1,205 @@
+{
+  "source_map_entry_text": [
+    {
+      "entry": {"text": "primary", "content": "fallback"},
+      "expected": "primary"
+    },
+    {
+      "entry": {"text": " ", "content": "fallback"},
+      "expected": "fallback"
+    },
+    {
+      "entry": 7,
+      "expected": ""
+    },
+    {
+      "entry": {
+        "OCR_text_clusters": [
+          {"text": 17, "content": "actual cluster"},
+          {"text": "second cluster"},
+          "not a cluster"
+        ],
+        "non_text_objects": [
+          {"description": false},
+          {"text": "Figure caption"}
+        ]
+      },
+      "expected": "actual cluster\nsecond cluster"
+    },
+    {
+      "entry": {"non_text_objects": [{"description": false}, {"text": "Figure caption"}]},
+      "expected": "Figure caption"
+    }
+  ],
+  "default_token_estimate": [
+    {"text": "", "expected": 1},
+    {"text": "abcd", "expected": 1},
+    {"text": "abcde", "expected": 2}
+  ],
+  "render_nodes_payload": [
+    {
+      "nodes": [{"b": 1, "a": 2}],
+      "expected": "{\"nodes\":[{\"a\":2,\"b\":1}]}"
+    }
+  ],
+  "batch_nodes": [
+    {
+      "items": [{"id": "one"}, {"id": "two"}, {"id": "three"}],
+      "max_nodes": 2,
+      "base_prompt_tokens": 0,
+      "per_node_overhead_tokens": 0,
+      "expected": [[{"id": "one"}, {"id": "two"}], [{"id": "three"}]]
+    }
+  ],
+  "page_index_split_pages": [
+    {
+      "raw_text": "one\n\n--- PAGE BREAK ---\n\ntwo",
+      "expected": ["one", "two"]
+    },
+    {
+      "raw_text": "first\fform feed\tsecond",
+      "expected": ["first", "form feed\tsecond"]
+    }
+  ],
+  "page_index_classify_blocks": [
+    {
+      "text": "# Alpha",
+      "start_char": 0,
+      "end_char": 7,
+      "options": {"source_format": "markdown"},
+      "expected": {
+        "node_type": "HEADING",
+        "title": "Alpha",
+        "kind_hint": "heading_markdown",
+        "heading_level": 1
+      }
+    },
+    {
+      "text": "Section 1: Scope",
+      "start_char": 0,
+      "end_char": 16,
+      "options": {"source_format": "text", "is_first": true},
+      "expected": {
+        "node_type": "HEADING",
+        "title": "Section 1: Scope",
+        "kind_hint": "heading_plain",
+        "heading_level": 1
+      }
+    },
+    {
+      "text": "- Definition: Scope",
+      "start_char": 0,
+      "end_char": 19,
+      "options": {"source_format": "text"},
+      "expected": {
+        "node_type": "TERM",
+        "title": "Definition: Scope",
+        "kind_hint": "term_list_item"
+      }
+    }
+  ],
+  "page_index_outlines": [
+    {
+      "page_text": "# Section One\n\nParagraph one.",
+      "page_number": 1,
+      "source_format": "markdown",
+      "expected_block_specs": [
+        {
+          "title": "Section One",
+          "node_type": "HEADING",
+          "excerpt": "# Section One",
+          "display_excerpt": null,
+          "summary": "",
+          "source_role": "heading",
+          "child_nodes": [
+            {
+              "title": "Paragraph one.",
+              "node_type": "PARAGRAPH",
+              "excerpt": "Paragraph one.",
+              "display_excerpt": null,
+              "summary": "",
+              "source_role": "content",
+              "child_nodes": []
+            }
+          ]
+        }
+      ],
+      "expected_diagnostics": {
+        "assignment_mode": "heuristic_deterministic",
+        "candidate_count": 2,
+        "assignment_count": 2,
+        "validation_errors": [],
+        "validation_warnings": [],
+        "fallback_reason": null
+      }
+    }
+  ],
+  "pointer_matching": {
+    "safe_slice": [
+      {"text": "abcdef", "start": 1, "end_inclusive": 3, "expected": "bcd"},
+      {"text": "abcdef", "start": -1, "end_inclusive": -1, "expected": "abcdef"},
+      {"text": "abcdef", "start": 6, "end_inclusive": 9, "expected": ""}
+    ],
+    "all_exact_occurrences": [
+      {"haystack": "alpha beta alpha", "needle": "alpha", "expected": [[0,4],[11,15]]},
+      {"haystack": "alpha", "needle": "", "expected": []}
+    ],
+    "best_occurrence_by_proximity": [
+      {"occurrences": [[0,4],[11,15]], "proposed_start": 10, "expected": [11,15]}
+    ],
+    "whitespace_collapse": [
+      {"text": "  alpha   beta  ", "expected": "alpha beta"}
+    ],
+    "soft_exact_positions": [
+      {
+        "source_text": "alpha beta alpha",
+        "verbatim": "beta",
+        "expected": [[6,9]],
+        "diagnostic": {"name": "exact", "collapsed": false}
+      },
+      {
+        "source_text": "alpha   beta",
+        "verbatim": "alpha beta",
+        "expected": [[0,11]],
+        "diagnostic": {"name": "exact", "collapsed": true}
+      },
+      {
+        "source_text": "alpha beta",
+        "verbatim": "missing",
+        "expected": [],
+        "diagnostic": null
+      }
+    ]
+  },
+  "ocr_artifact_schema": [
+    {
+      "metadata": {"ocr_json_version": "workflow_ingest_v1"},
+      "expected": null
+    },
+    {
+      "metadata": {"ocr_json_version": "0.1"},
+      "expected": null
+    },
+    {
+      "metadata": {"ocr_json_version": "0.2"},
+      "expected": "unsupported OCR artifact schema version: '0.2'"
+    },
+    {
+      "metadata": {},
+      "expected": "unsupported OCR artifact schema version: missing"
+    }
+  ],
+  "page_index_normalize_text": [
+    {"text": "  Alpha   Beta  ", "expected": "alpha beta"}
+  ],
+  "page_index_candidates": [
+    {
+      "page_text": "# Section One\n\nParagraph one.",
+      "page_number": 1,
+      "source_format": "markdown",
+      "expected_texts": ["# Section One", "Paragraph one."],
+      "expected_kinds": ["heading_markdown", "paragraph"]
+    }
+  ]
+}
+

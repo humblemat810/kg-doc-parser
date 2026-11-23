@@ -7,7 +7,7 @@
 | Semantic-node model | DONE | Stable ID test |
 | Text/Markdown parser | DONE | Unit tests |
 | JSON CLI seam | DONE | CLI smoke |
-| Page-index parity | TODO | Golden files |
+| Page-index parity | DONE | Golden files |
 | Layerwise tree parity | TODO | Golden files |
 | OCR provider parity | TODO | Provider contract suite |
 | Workflow artifacts parity | TODO | Artifact schema suite |
