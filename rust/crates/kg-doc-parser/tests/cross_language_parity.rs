@@ -1,4 +1,5 @@
 use kg_doc_parser::ocr_artifacts::artifact_schema_error;
+use kg_doc_parser::page_index_candidates::extract_candidate_blocks;
 use kg_doc_parser::page_index_classification::{classify_block, ClassifyBlockOptions};
 use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
 use kg_doc_parser::page_index_pipeline::heuristic_page_outline;
@@ -18,6 +19,38 @@ fn fixture() -> Value {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/semantic_contracts.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn page_index_candidate_extraction_matches_python() {
+    let payload = fixture();
+    for case in payload["page_index_candidates"].as_array().unwrap() {
+        let actual = extract_candidate_blocks(
+            case["page_text"].as_str().unwrap(),
+            case["page_number"].as_u64().unwrap() as u32,
+            if case["source_format"].as_str().unwrap() == "markdown" {
+                PageIndexSourceFormat::Markdown
+            } else {
+                PageIndexSourceFormat::Text
+            },
+        );
+        let texts = actual
+            .iter()
+            .map(|candidate| candidate.text.clone())
+            .collect::<Vec<_>>();
+        let kinds = actual
+            .iter()
+            .map(|candidate| candidate.kind_hint.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            serde_json::to_value(&texts).unwrap(),
+            case["expected_texts"]
+        );
+        assert_eq!(
+            serde_json::to_value(&kinds).unwrap(),
+            case["expected_kinds"]
+        );
+    }
 }
 
 #[test]

@@ -191,6 +191,15 @@
   ],
   "page_index_normalize_text": [
     {"text": "  Alpha   Beta  ", "expected": "alpha beta"}
+  ],
+  "page_index_candidates": [
+    {
+      "page_text": "# Section One\n\nParagraph one.",
+      "page_number": 1,
+      "source_format": "markdown",
+      "expected_texts": ["# Section One", "Paragraph one."],
+      "expected_kinds": ["heading_markdown", "paragraph"]
+    }
   ]
 }
 

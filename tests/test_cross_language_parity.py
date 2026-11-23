@@ -21,6 +21,7 @@ from kg_doc_parser.workflow_ingest.page_index_source_text import _split_pages
 from kg_doc_parser.workflow_ingest.page_index_classification import _classify_block
 from kg_doc_parser.workflow_ingest.page_index import _heuristic_page_outline
 from kg_doc_parser.workflow_ingest.page_index_tree import page_index_normalize_text
+from kg_doc_parser.workflow_ingest.page_index_candidates import _extract_candidate_blocks
 from kg_doc_parser.workflow_ingest.parser_core_session import source_map_fingerprint
 from kg_doc_parser.workflow_ingest.ocr_artifacts import artifact_schema_error
 from kg_doc_parser.workflow_ingest.ocr_providers import list_ocr_provider_capabilities
@@ -144,6 +145,18 @@ def test_ocr_provider_inventory_shape_matches_rust() -> None:
     assert capabilities[0].provider == "docling"
     assert capabilities[6].provider == "rapidocr"
     assert capabilities[8].provider == "bonsai"
+
+
+def test_page_index_candidate_extraction_matches_rust() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    for case in payload["page_index_candidates"]:
+        candidates = _extract_candidate_blocks(
+            case["page_text"],
+            page_number=case["page_number"],
+            source_format=case["source_format"],
+        )
+        assert [candidate.text for candidate in candidates] == case["expected_texts"]
+        assert [candidate.kind_hint for candidate in candidates] == case["expected_kinds"]
 
 
 def test_semantic_indexing_contracts_match_rust() -> None:
