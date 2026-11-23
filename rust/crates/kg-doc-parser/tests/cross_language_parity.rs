@@ -1,3 +1,6 @@
+use kg_doc_parser::document_models::{
+    BoundingBox, CoordinateSystem, SourceAccuracy, SourceLocation,
+};
 use kg_doc_parser::ocr_artifacts::artifact_schema_error;
 use kg_doc_parser::page_index_candidates::extract_candidate_blocks;
 use kg_doc_parser::page_index_classification::{classify_block, ClassifyBlockOptions};
@@ -19,6 +22,46 @@ fn fixture() -> Value {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/semantic_contracts.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn document_model_validation_matches_python() {
+    let bounding_box = BoundingBox {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 1.0,
+        y1: 1.0,
+        coordinate_system: CoordinateSystem::Relative,
+    };
+    assert!(bounding_box.validate().is_ok());
+    let invalid_bounding_box = BoundingBox {
+        x0: 0.0,
+        y0: 0.0,
+        x1: 0.0,
+        y1: 1.0,
+        coordinate_system: CoordinateSystem::Relative,
+    };
+    assert!(invalid_bounding_box.validate().is_err());
+    let source_location = SourceLocation {
+        page_index: Some(1),
+        printed_page_label: Some("1".to_string()),
+        bbox: Some(bounding_box),
+        start_seconds: None,
+        end_seconds: None,
+        structural_path: None,
+        accuracy: SourceAccuracy::Region,
+    };
+    assert!(source_location.validate().is_ok());
+    let missing_bbox = SourceLocation {
+        page_index: Some(1),
+        printed_page_label: Some("1".to_string()),
+        bbox: None,
+        start_seconds: None,
+        end_seconds: None,
+        structural_path: None,
+        accuracy: SourceAccuracy::Region,
+    };
+    assert!(missing_bbox.validate().is_err());
 }
 
 #[test]

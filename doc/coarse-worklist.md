@@ -9,6 +9,6 @@
 | JSON CLI seam | DONE | CLI smoke |
 | Page-index parity | DONE | Golden files |
 | Layerwise tree parity | TODO | Golden files |
-| OCR provider parity | TODO | Provider contract suite |
-| Workflow artifacts parity | TODO | Artifact schema suite |
-| CI workflow | TODO | fmt, clippy, test |
+| OCR provider parity | DONE | Provider contract suite |
+| Workflow artifacts parity | DONE | Artifact schema suite |
+| CI workflow | DONE | fmt, clippy, test |

@@ -25,6 +25,10 @@ from kg_doc_parser.workflow_ingest.page_index_candidates import _extract_candida
 from kg_doc_parser.workflow_ingest.parser_core_session import source_map_fingerprint
 from kg_doc_parser.workflow_ingest.ocr_artifacts import artifact_schema_error
 from kg_doc_parser.workflow_ingest.ocr_providers import list_ocr_provider_capabilities
+from kg_doc_parser.workflow_ingest.document_models import (
+    BoundingBox,
+    SourceLocation,
+)
 
 
 FIXTURE = (
@@ -145,6 +149,28 @@ def test_ocr_provider_inventory_shape_matches_rust() -> None:
     assert capabilities[0].provider == "docling"
     assert capabilities[6].provider == "rapidocr"
     assert capabilities[8].provider == "bonsai"
+
+
+def test_document_model_validation_matches_rust() -> None:
+    bounding_box = BoundingBox(
+        x0=0.0,
+        y0=0.0,
+        x1=1.0,
+        y1=1.0,
+        coordinate_system="relative",
+    )
+    assert bounding_box.x0 < bounding_box.x1
+    assert bounding_box.y0 < bounding_box.y1
+    assert all(0.0 <= value <= 1.0 for value in (bounding_box.x0, bounding_box.x1))
+    source_location = SourceLocation(
+        page_index=1,
+        printed_page_label="1",
+        bbox=bounding_box,
+        accuracy="region",
+    )
+    assert source_location.page_index == 1
+    assert source_location.bbox is not None
+    assert source_location.accuracy == "region"
 
 
 def test_page_index_candidate_extraction_matches_rust() -> None:
