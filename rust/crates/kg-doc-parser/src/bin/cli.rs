@@ -2,12 +2,13 @@ use anyhow::{bail, Result};
 use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
 use kg_doc_parser::page_index_pipeline::parse_page_index_document_heuristic;
 use kg_doc_parser::parser::{parse_file, ParsingMode};
+use kg_doc_parser::runners::run_page_index_batch_workflow;
 use kg_doc_parser::runners::run_page_index_source_workflow;
 use serde_json::json;
 use std::path::PathBuf;
 
 fn usage() -> ! {
-    eprintln!("usage: kg-doc-parser <parse|page-index|page-index-workflow> --input <path> [--mode snippet|delimiter|markdown|text] [--max-depth <depth>] [--output <path>] [--output-dir <dir>]");
+    eprintln!("usage: kg-doc-parser <parse|page-index|page-index-workflow> --input <path> [--batch] [--mode snippet|delimiter|markdown|text] [--max-depth <depth>] [--output <path>] [--output-dir <dir>]");
     std::process::exit(2);
 }
 
@@ -26,6 +27,7 @@ fn main() -> Result<()> {
         "snippet".to_string()
     };
     let mut max_depth = 10;
+    let mut batch = false;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -65,6 +67,10 @@ fn main() -> Result<()> {
                     .parse()?;
                 index += 2;
             }
+            "--batch" => {
+                batch = true;
+                index += 1;
+            }
             _ => bail!("unknown argument: {}", arguments[index]),
         }
     }
@@ -80,8 +86,16 @@ fn main() -> Result<()> {
         let Some(output_dir) = output_dir else {
             bail!("page-index-workflow requires --output-dir");
         };
-        let result = run_page_index_source_workflow(&input, output_dir.as_path(), source_format)?;
-        println!("{}", serde_json::to_string_pretty(&result.extra)?);
+        if batch {
+            let results =
+                run_page_index_batch_workflow(&[input], output_dir.as_path(), source_format)?;
+            let payload = serde_json::to_value(&results)?;
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        } else {
+            let result =
+                run_page_index_source_workflow(&input, output_dir.as_path(), source_format)?;
+            println!("{}", serde_json::to_string_pretty(&result.extra)?);
+        }
         return Ok(());
     }
     let payload = if command == "page-index" {
