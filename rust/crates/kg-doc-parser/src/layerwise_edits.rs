@@ -1,10 +1,12 @@
 use anyhow::{bail, Result};
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
 
 use crate::pointer_matching::{
     all_exact_occurrences, best_occurrence_by_proximity, safe_slice, soft_exact_positions,
 };
+use crate::semantic::{HydratedTextPointer, SemanticNode};
 use crate::source_text::source_map_entry_text;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -499,10 +501,263 @@ fn unused_map(value: &Value) -> Option<&Map<String, Value>> {
     value.as_object()
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PointerCoverage {
+    pub per_cluster: BTreeMap<String, f64>,
+    pub overall: f64,
+}
+
+fn merge_ranges(mut ranges: Vec<(i64, i64)>) -> Vec<(i64, i64)> {
+    ranges.sort_unstable();
+    let mut merged: Vec<(i64, i64)> = Vec::new();
+    for (start, end) in ranges {
+        match merged.last_mut() {
+            Some((_, previous_end)) if start <= *previous_end + 1 => {
+                *previous_end = (*previous_end).max(end);
+            }
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+}
+
+pub fn compute_pointer_coverage(
+    root: &SemanticNode,
+    source_map: &Value,
+    clamp_to_cluster: bool,
+) -> PointerCoverage {
+    let mut pointers = Vec::new();
+    fn walk<'a>(node: &'a SemanticNode, pointers: &mut Vec<&'a HydratedTextPointer>) {
+        if node.node_type != "DOCUMENT_ROOT" {
+            pointers.extend(node.total_content_pointers.iter());
+        }
+        for child in &node.child_nodes {
+            walk(child, pointers);
+        }
+    }
+    walk(root, &mut pointers);
+    let mut cluster_ranges: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
+    for pointer in pointers {
+        let Some(record) = source_map.get(&pointer.source_cluster_id) else {
+            continue;
+        };
+        let text = record
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let maximum_index = (text.chars().count() as i64 - 1).max(0);
+        let start = pointer.start_char.max(0);
+        let mut end = pointer.end_char;
+        if end == -1 {
+            end = maximum_index;
+        }
+        if clamp_to_cluster {
+            end = end.min(maximum_index);
+        }
+        if start > end {
+            continue;
+        }
+        cluster_ranges
+            .entry(pointer.source_cluster_id.clone())
+            .or_default()
+            .push((start, end));
+    }
+    let mut per_cluster = BTreeMap::new();
+    let mut total_length = 0i64;
+    let mut total_covered = 0i64;
+    for (cluster_id, ranges) in &cluster_ranges {
+        let Some(record) = source_map.get(cluster_id) else {
+            continue;
+        };
+        let text = record
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let cluster_length = text.chars().count() as i64;
+        if cluster_length == 0 {
+            continue;
+        }
+        let covered = merge_ranges(ranges.clone())
+            .into_iter()
+            .map(|(start, end)| end - start + 1)
+            .sum::<i64>();
+        per_cluster.insert(cluster_id.clone(), covered as f64 / cluster_length as f64);
+        total_length += cluster_length;
+        total_covered += covered;
+    }
+    PointerCoverage {
+        overall: if total_length == 0 {
+            1.0
+        } else {
+            total_covered as f64 / total_length as f64
+        },
+        per_cluster,
+    }
+}
+
+fn pointer_payload(pointer: &HydratedTextPointer) -> Value {
+    serde_json::to_value(pointer).unwrap_or_else(|_| json!({}))
+}
+
+fn semantic_node_uuid(node_id: &str) -> String {
+    crate::layerwise_parser::stable_id("legacy.semantic_tree_node", &[node_id])
+}
+
+fn pointers_to_spans(
+    doc_id: &str,
+    insertion_method: &str,
+    pointers: &[HydratedTextPointer],
+) -> Vec<Value> {
+    pointers
+        .iter()
+        .map(|pointer| {
+            json!({
+                "doc_id": doc_id,
+                "collection_page_url": format!("doc://{doc_id}"),
+                "document_page_url": format!("doc://{doc_id}#{}", pointer.source_cluster_id),
+                "insertion_method": insertion_method,
+                "page_number": pointer
+                    .source_cluster_id
+                    .split('_')
+                    .next()
+                    .and_then(|page| page.strip_prefix('p'))
+                    .and_then(|page| page.parse::<u64>().ok()),
+                "start_char": pointer.start_char,
+                "end_char": pointer.end_char,
+                "excerpt": pointer.verbatim_text,
+                "context_before": "",
+                "context_after": "",
+                "source_cluster_id": pointer.source_cluster_id,
+                "verification": Value::Null,
+            })
+        })
+        .collect()
+}
+
+fn mentions_from_pointers(
+    doc_id: &str,
+    insertion_method: &str,
+    pointers: &[HydratedTextPointer],
+) -> Value {
+    json!([{
+        "spans": pointers_to_spans(doc_id, insertion_method, pointers)
+    }])
+}
+
+pub fn semantic_tree_to_kge_payload(
+    root: &SemanticNode,
+    parser_source_map: Option<&Value>,
+    doc_id: Option<&str>,
+    insertion_method: &str,
+) -> Result<Value> {
+    let mut pending_nodes = vec![root];
+    let mut has_source_pointers = false;
+    while let Some(node) = pending_nodes.pop() {
+        if !node.total_content_pointers.is_empty() {
+            has_source_pointers = true;
+            break;
+        }
+        pending_nodes.extend(node.child_nodes.iter());
+    }
+    if parser_source_map.is_none() && has_source_pointers {
+        bail!("source-grounded graph export requires parser_source_map");
+    }
+    crate::semantic_graph_import::validate_semantic_tree_integrity(root, parser_source_map, None)?;
+    let doc_id = doc_id.map(ToString::to_string).unwrap_or_else(|| {
+        crate::layerwise_parser::stable_id(
+            "legacy.semantic_tree_doc",
+            &[
+                root.node_id.as_deref().unwrap_or_default(),
+                insertion_method,
+            ],
+        )
+    });
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    fn walk(
+        node: &SemanticNode,
+        depth: u64,
+        doc_id: &str,
+        insertion_method: &str,
+        nodes: &mut Vec<Value>,
+        edges: &mut Vec<Value>,
+    ) {
+        let pointers = node.total_content_pointers.clone();
+        let summary_text = pointers
+            .iter()
+            .map(|pointer| pointer.verbatim_text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut node_payload = json!({
+            "id": semantic_node_uuid(node.node_id.as_deref().unwrap_or_default()),
+            "label": node.title,
+            "type": "entity",
+            "summary": format!("{}:\n{}", node.title, summary_text),
+            "metadata": {
+                "semantic_node_type": node.node_type,
+                "doc_id": doc_id,
+                "parent_id": node.parent_id,
+                "pointers": pointers.iter().map(pointer_payload).collect::<Vec<_>>(),
+                "insertion_method": insertion_method,
+                "level_from_root": depth,
+            },
+            "mentions": mentions_from_pointers(doc_id, insertion_method, &pointers),
+        });
+        if nodes.is_empty() {
+            node_payload["properties"] = json!({"kind": "document_root"});
+        }
+        nodes.push(node_payload);
+        for child in &node.child_nodes {
+            let child_id = child.node_id.clone().unwrap_or_default();
+            edges.push(json!({
+                "id": crate::layerwise_parser::stable_id(
+                    "legacy.semantic_tree_edge",
+                    &[
+                        "HAS_CHILD",
+                    &semantic_node_uuid(node.node_id.as_deref().unwrap_or_default()),
+                        &semantic_node_uuid(&child_id),
+                        doc_id,
+                        insertion_method,
+                    ],
+                ),
+                "label": "parent-child",
+                "type": "relationship",
+                "summary": format!(
+                    "{} -> {} (HAS_CHILD)",
+                    semantic_node_uuid(node.node_id.as_deref().unwrap_or_default()),
+                    child_id
+                ),
+                "relation": "HAS_CHILD",
+                "source_ids": [semantic_node_uuid(node.node_id.as_deref().unwrap_or_default())],
+                "target_ids": [semantic_node_uuid(&child_id)],
+                "source_edge_ids": [],
+                "target_edge_ids": [],
+                "mentions": mentions_from_pointers(doc_id, insertion_method, &pointers),
+                "metadata": {
+                    "doc_id": doc_id,
+                    "insertion_method": insertion_method,
+                },
+            }));
+        }
+        for child in &node.child_nodes {
+            walk(child, depth + 1, doc_id, insertion_method, nodes, edges);
+        }
+    }
+    walk(root, 0, &doc_id, insertion_method, &mut nodes, &mut edges);
+    Ok(json!({
+        "doc_id": doc_id,
+        "insertion_method": insertion_method,
+        "nodes": nodes,
+        "edges": edges,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    use crate::semantic::{HydratedTextPointer, SemanticNode};
 
     fn pointer(start: i64, end: i64, text: &str) -> LayerwisePointer {
         LayerwisePointer {
@@ -622,5 +877,83 @@ mod tests {
         assert_eq!(applied.proposal_errors.len(), 1);
         assert_eq!(applied.children.len(), 1);
         assert_eq!(applied.children[0].title, "Alpha");
+    }
+
+    fn semantic_pointer(cluster_id: &str, start: i64, end: i64, text: &str) -> HydratedTextPointer {
+        HydratedTextPointer {
+            source_cluster_id: cluster_id.to_string(),
+            start_char: start,
+            end_char: end,
+            verbatim_text: text.to_string(),
+            start_delimiter: None,
+            end_delimiter: None,
+            validation_method: None,
+        }
+    }
+
+    fn semantic_node(
+        node_id: &str,
+        node_type: &str,
+        pointers: Vec<HydratedTextPointer>,
+        children: Vec<SemanticNode>,
+    ) -> SemanticNode {
+        SemanticNode {
+            node_id: Some(node_id.to_string()),
+            parent_id: if node_type == "DOCUMENT_ROOT" {
+                None
+            } else {
+                Some("root".to_string())
+            },
+            node_type: node_type.to_string(),
+            title: node_id.to_string(),
+            summary: String::new(),
+            total_content_pointers: pointers,
+            aggregate_content_pointers: Vec::new(),
+            child_nodes: children,
+            level_from_root: 0,
+            metadata: json!({}),
+        }
+    }
+
+    #[test]
+    fn computes_pointer_coverage_and_exports_kge() {
+        let source_map = json!({
+            "p1_c0": {"id": "p1_c0", "text": "Alpha Beta"},
+            "p1_c1": {"id": "p1_c1", "text": "Gamma"}
+        });
+        let leaf_alpha = semantic_node(
+            "alpha",
+            "TEXT_FLOW",
+            vec![semantic_pointer("p1_c0", 0, 4, "Alpha")],
+            Vec::new(),
+        );
+        let leaf_gamma = semantic_node(
+            "gamma",
+            "TEXT_FLOW",
+            vec![semantic_pointer("p1_c1", 0, 4, "Gamma")],
+            Vec::new(),
+        );
+        let root = semantic_node(
+            "root",
+            "DOCUMENT_ROOT",
+            vec![],
+            vec![leaf_alpha, leaf_gamma],
+        );
+        let coverage = compute_pointer_coverage(&root, &source_map, true);
+        assert_eq!(coverage.per_cluster["p1_c0"], 5.0 / 10.0);
+        assert_eq!(coverage.per_cluster["p1_c1"], 1.0);
+        assert!((coverage.overall - (10.0 / 15.0)).abs() < f64::EPSILON);
+
+        let payload =
+            semantic_tree_to_kge_payload(&root, Some(&source_map), Some("doc"), "test-v1").unwrap();
+        assert_eq!(payload["doc_id"], "doc");
+        assert_eq!(payload["nodes"].as_array().unwrap().len(), 3);
+        assert_eq!(payload["edges"].as_array().unwrap().len(), 2);
+        assert_eq!(payload["nodes"][0]["properties"]["kind"], "document_root");
+        assert_eq!(
+            payload["nodes"][0]["metadata"]["semantic_node_type"],
+            "DOCUMENT_ROOT"
+        );
+        assert!(crate::semantic_graph_import::kge_payload_to_semantic_tree(&payload).is_err());
     }
 }
