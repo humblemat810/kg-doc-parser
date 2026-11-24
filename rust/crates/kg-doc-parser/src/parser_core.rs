@@ -140,6 +140,41 @@ pub fn assert_source_map_matches_session(
     Ok(())
 }
 
+pub fn switch_split_strategy(
+    parse_session: &ParseSessionState,
+    current_layer_context: &CurrentLayerContext,
+) -> Result<(ParseSessionState, CurrentLayerContext)> {
+    let next_strategy = parse_session.fallback_split_strategy;
+    anyhow::ensure!(
+        current_layer_context.split_strategy != next_strategy,
+        "fallback split strategy already exhausted"
+    );
+    let mut history = parse_session.strategy_history.clone();
+    if history.last() != Some(&current_layer_context.split_strategy) {
+        history.push(current_layer_context.split_strategy);
+    }
+    if history.last() != Some(&next_strategy) {
+        history.push(next_strategy);
+    }
+    let mut updated_session = parse_session.clone();
+    updated_session.split_strategy = next_strategy;
+    updated_session.strategy_history = history;
+    updated_session.strategy_switch_count += 1;
+
+    let mut updated_context = current_layer_context.clone();
+    updated_context.split_strategy = next_strategy;
+    updated_context.retry_count = 0;
+    updated_context.metadata.insert(
+        "split_strategy_switch_from".to_string(),
+        serde_json::to_value(current_layer_context.split_strategy)?,
+    );
+    updated_context.metadata.insert(
+        "split_strategy_switch_to".to_string(),
+        serde_json::to_value(next_strategy)?,
+    );
+    Ok((updated_session, updated_context))
+}
+
 pub fn initialize_parse_session(
     collection: &SourceCollection,
     parser_source_map: &Value,
@@ -870,6 +905,60 @@ mod tests {
                 "a": {"text": "first"},
                 "z": {"text": "second"},
             }))
+        );
+    }
+
+    #[test]
+    fn switches_split_strategy_once_with_history() {
+        let session = ParseSessionState {
+            collection_id: "doc".to_string(),
+            root_node_id: "root".to_string(),
+            current_depth: 0,
+            max_depth: 2,
+            allow_review: true,
+            split_strategy: SplitStrategy::ExcerptFirst,
+            fallback_split_strategy: SplitStrategy::BoundaryFirst,
+            strategy_history: vec![SplitStrategy::ExcerptFirst],
+            strategy_switch_count: 0,
+            mode: "workflow_layered".to_string(),
+            layer_attempts: Map::new(),
+            last_review: Map::new(),
+            compat_full_tree: None,
+            metadata: Map::new(),
+        };
+        let context = CurrentLayerContext {
+            depth: 0,
+            parent_node_ids: vec!["root".to_string()],
+            parent_titles: vec!["Document".to_string()],
+            parent_node_types: vec!["DOCUMENT_ROOT".to_string()],
+            parent_content_pointers_by_id: Map::new(),
+            split_strategy: SplitStrategy::ExcerptFirst,
+            retry_count: 2,
+            max_retries: 3,
+            metadata: Map::new(),
+        };
+        let (session, context) = switch_split_strategy(&session, &context).unwrap();
+        assert_eq!(session.split_strategy, SplitStrategy::BoundaryFirst);
+        assert_eq!(
+            session.strategy_history,
+            vec![SplitStrategy::ExcerptFirst, SplitStrategy::BoundaryFirst]
+        );
+        assert_eq!(session.strategy_switch_count, 1);
+        assert_eq!(context.split_strategy, SplitStrategy::BoundaryFirst);
+        assert_eq!(context.retry_count, 0);
+        assert_eq!(
+            context.metadata["split_strategy_switch_from"],
+            json!("excerpt_first")
+        );
+        assert_eq!(
+            context.metadata["split_strategy_switch_to"],
+            json!("boundary_first")
+        );
+
+        let error = switch_split_strategy(&session, &context).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "fallback split strategy already exhausted"
         );
     }
 
