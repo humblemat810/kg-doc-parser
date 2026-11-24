@@ -17,6 +17,7 @@ from kg_doc_parser.semantic_pointer_matching import (
     soft_exact_positions,
     whitespace_collapse,
 )
+from kg_doc_parser.semantic_document_splitting_layerwise_edits import SemanticNode, semantic_tree_to_kge_payload
 from kg_doc_parser.workflow_ingest.page_index_source_text import _split_pages
 from kg_doc_parser.workflow_ingest.page_index_classification import _classify_block
 from kg_doc_parser.workflow_ingest.page_index import _heuristic_page_outline
@@ -206,6 +207,19 @@ def test_document_grouping_identities_match_rust() -> None:
         grouping_policy_version="grouping-v1",
         proposal=proposal,
     )
+
+
+def test_semantic_tree_kge_export_matches_rust() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    for case in payload["semantic_tree_kge_export"]:
+        tree = SemanticNode.model_validate(case["tree"])
+        actual = semantic_tree_to_kge_payload(
+            tree,
+            parser_source_map=case["parser_source_map"],
+            doc_id=case["doc_id"],
+            insertion_method=case["insertion_method"],
+        )
+        assert actual == case["expected"]
 
 
 def test_page_index_candidate_extraction_matches_rust() -> None:

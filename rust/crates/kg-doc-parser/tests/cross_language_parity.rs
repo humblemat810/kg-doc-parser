@@ -3,7 +3,9 @@ use kg_doc_parser::document_models::AdaptiveGroupingPolicy;
 use kg_doc_parser::document_models::{
     BoundingBox, CoordinateSystem, SourceAccuracy, SourceLocation,
 };
-use kg_doc_parser::layerwise_edits::{apply_proposals, LayerwiseChild, LayerwisePointer};
+use kg_doc_parser::layerwise_edits::{
+    apply_proposals, semantic_tree_to_kge_payload, LayerwiseChild, LayerwisePointer,
+};
 use kg_doc_parser::ocr_artifacts::artifact_schema_error;
 use kg_doc_parser::page_index_candidates::extract_candidate_blocks;
 use kg_doc_parser::page_index_classification::{classify_block, ClassifyBlockOptions};
@@ -14,6 +16,7 @@ use kg_doc_parser::pointer_matching::{
     all_exact_occurrences, best_occurrence_by_proximity, safe_slice, soft_exact_positions,
     whitespace_collapse,
 };
+use kg_doc_parser::semantic::SemanticNode;
 use kg_doc_parser::{
     page_index_source_text::split_pages, semantic_indexing as indexing,
     source_text::source_map_entry_text,
@@ -51,6 +54,22 @@ fn document_grouping_identities_match_python() {
     let node_id = group_node_id("doc", "grouping-v1", &proposal);
     assert_eq!(node_id.len(), "merge:".len() + 24);
     assert_eq!(node_id, group_node_id("doc", "grouping-v1", &proposal));
+}
+
+#[test]
+fn semantic_tree_kge_export_matches_python() {
+    let payload = fixture();
+    for case in payload["semantic_tree_kge_export"].as_array().unwrap() {
+        let tree: SemanticNode = serde_json::from_value(case["tree"].clone()).unwrap();
+        let actual = semantic_tree_to_kge_payload(
+            &tree,
+            Some(&case["parser_source_map"]),
+            Some(case["doc_id"].as_str().unwrap()),
+            case["insertion_method"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(actual, case["expected"]);
+    }
 }
 
 #[test]

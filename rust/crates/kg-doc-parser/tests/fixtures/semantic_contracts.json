@@ -31,6 +31,208 @@
       "expected": "Figure caption"
     }
   ],
+  "semantic_tree_kge_export": [
+    {
+      "tree": {
+        "node_id": "e4948298-72ab-5dc4-8920-fd426e9bed75",
+        "parent_id": null,
+        "node_type": "DOCUMENT_ROOT",
+        "title": "root",
+        "total_content_pointers": [],
+        "child_nodes": [
+          {
+            "node_id": "79c78d9c-ec92-5cd1-8936-acd49f4d526a",
+            "parent_id": "e4948298-72ab-5dc4-8920-fd426e9bed75",
+            "node_type": "TEXT_FLOW",
+            "title": "alpha",
+            "total_content_pointers": [
+              {
+                "source_cluster_id": "p1_c0",
+                "start_char": 0,
+                "end_char": 4,
+                "verbatim_text": "Alpha",
+                "start_delimiter": null,
+                "end_delimiter": null,
+                "validation_method": null
+              }
+            ],
+            "child_nodes": [],
+            "level_from_root": 1
+          },
+          {
+            "node_id": "6b09c400-6263-538f-97a6-662da3c83c50",
+            "parent_id": "e4948298-72ab-5dc4-8920-fd426e9bed75",
+            "node_type": "TEXT_FLOW",
+            "title": "gamma",
+            "total_content_pointers": [
+              {
+                "source_cluster_id": "p1_c1",
+                "start_char": 0,
+                "end_char": 4,
+                "verbatim_text": "Gamma",
+                "start_delimiter": null,
+                "end_delimiter": null,
+                "validation_method": null
+              }
+            ],
+            "child_nodes": [],
+            "level_from_root": 1
+          }
+        ],
+        "level_from_root": 0
+      },
+      "parser_source_map": {
+        "p1_c0": {"id": "p1_c0", "text": "Alpha Beta"},
+        "p1_c1": {"id": "p1_c1", "text": "Gamma"}
+      },
+      "doc_id": "doc",
+      "insertion_method": "test-v1",
+      "expected": {
+        "doc_id": "doc",
+        "insertion_method": "test-v1",
+        "nodes": [
+          {
+            "id": "e4948298-72ab-5dc4-8920-fd426e9bed75",
+            "label": "root",
+            "type": "entity",
+            "summary": "root:\n",
+            "metadata": {
+              "semantic_node_type": "DOCUMENT_ROOT",
+              "doc_id": "doc",
+              "parent_id": null,
+              "pointers": [],
+              "insertion_method": "test-v1",
+              "level_from_root": 0
+            },
+            "mentions": [{"spans": []}],
+            "properties": {"kind": "document_root"}
+          },
+          {
+            "id": "79c78d9c-ec92-5cd1-8936-acd49f4d526a",
+            "label": "alpha",
+            "type": "entity",
+            "summary": "alpha:\nAlpha",
+            "metadata": {
+              "semantic_node_type": "TEXT_FLOW",
+              "doc_id": "doc",
+              "parent_id": "e4948298-72ab-5dc4-8920-fd426e9bed75",
+              "pointers": [
+                {
+                  "source_cluster_id": "p1_c0",
+                  "start_char": 0,
+                  "end_char": 4,
+                  "verbatim_text": "Alpha",
+                  "start_delimiter": null,
+                  "end_delimiter": null,
+                  "validation_method": null
+                }
+              ],
+              "insertion_method": "test-v1",
+              "level_from_root": 1
+            },
+            "mentions": [
+              {
+                "spans": [
+                  {
+                    "doc_id": "doc",
+                    "collection_page_url": "doc://doc",
+                    "document_page_url": "doc://doc#p1_c0",
+                    "insertion_method": "test-v1",
+                    "page_number": 1,
+                    "start_char": 0,
+                    "end_char": 4,
+                    "excerpt": "Alpha",
+                    "context_before": "",
+                    "context_after": "",
+                    "source_cluster_id": "p1_c0",
+                    "verification": null
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "6b09c400-6263-538f-97a6-662da3c83c50",
+            "label": "gamma",
+            "type": "entity",
+            "summary": "gamma:\nGamma",
+            "metadata": {
+              "semantic_node_type": "TEXT_FLOW",
+              "doc_id": "doc",
+              "parent_id": "e4948298-72ab-5dc4-8920-fd426e9bed75",
+              "pointers": [
+                {
+                  "source_cluster_id": "p1_c1",
+                  "start_char": 0,
+                  "end_char": 4,
+                  "verbatim_text": "Gamma",
+                  "start_delimiter": null,
+                  "end_delimiter": null,
+                  "validation_method": null
+                }
+              ],
+              "insertion_method": "test-v1",
+              "level_from_root": 1
+            },
+            "mentions": [
+              {
+                "spans": [
+                  {
+                    "doc_id": "doc",
+                    "collection_page_url": "doc://doc",
+                    "document_page_url": "doc://doc#p1_c1",
+                    "insertion_method": "test-v1",
+                    "page_number": 1,
+                    "start_char": 0,
+                    "end_char": 4,
+                    "excerpt": "Gamma",
+                    "context_before": "",
+                    "context_after": "",
+                    "source_cluster_id": "p1_c1",
+                    "verification": null
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "edges": [
+          {
+            "id": "57ae6da0-abc3-5344-ab1d-2fd48a4e2953",
+            "label": "parent-child",
+            "type": "relationship",
+            "summary": "e4948298-72ab-5dc4-8920-fd426e9bed75 -> 79c78d9c-ec92-5cd1-8936-acd49f4d526a (HAS_CHILD)",
+            "relation": "HAS_CHILD",
+            "source_ids": ["e4948298-72ab-5dc4-8920-fd426e9bed75"],
+            "target_ids": ["79c78d9c-ec92-5cd1-8936-acd49f4d526a"],
+            "source_edge_ids": [],
+            "target_edge_ids": [],
+            "mentions": [{"spans": []}],
+            "metadata": {
+              "doc_id": "doc",
+              "insertion_method": "test-v1"
+            }
+          },
+          {
+            "id": "8f1e3647-8fc9-5a3f-a904-f2f8da148fa9",
+            "label": "parent-child",
+            "type": "relationship",
+            "summary": "e4948298-72ab-5dc4-8920-fd426e9bed75 -> 6b09c400-6263-538f-97a6-662da3c83c50 (HAS_CHILD)",
+            "relation": "HAS_CHILD",
+            "source_ids": ["e4948298-72ab-5dc4-8920-fd426e9bed75"],
+            "target_ids": ["6b09c400-6263-538f-97a6-662da3c83c50"],
+            "source_edge_ids": [],
+            "target_edge_ids": [],
+            "mentions": [{"spans": []}],
+            "metadata": {
+              "doc_id": "doc",
+              "insertion_method": "test-v1"
+            }
+          }
+        ]
+      }
+    }
+  ],
   "default_token_estimate": [
     {"text": "", "expected": 1},
     {"text": "abcd", "expected": 1},
