@@ -11,6 +11,7 @@ const OCR_STATE_SCHEMA_VERSION: i64 = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OcrStage {
     Ocr,
+    Render,
     Grouping,
     Summary,
 }
@@ -19,6 +20,7 @@ impl OcrStage {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Ocr => "ocr",
+            Self::Render => "render",
             Self::Grouping => "grouping",
             Self::Summary => "summary",
         }
@@ -135,6 +137,14 @@ fn unix_time() -> f64 {
         .unwrap_or_default()
 }
 
+fn status_str(status: OcrPageStatus) -> &'static str {
+    match status {
+        OcrPageStatus::Pending => "pending",
+        OcrPageStatus::Completed => "completed",
+        OcrPageStatus::Failed => "failed",
+    }
+}
+
 fn sha256_file(path: &Path) -> Result<String> {
     let contents = std::fs::read(path)?;
     let mut digest = Sha256::new();
@@ -173,6 +183,53 @@ fn metadata_field<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
 }
 
+fn scan_rendered_pages(rendered_dir: &Path) -> Vec<(i64, PathBuf)> {
+    let mut pages = Vec::new();
+    let Ok(entries) = std::fs::read_dir(rendered_dir) else {
+        return pages;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(stem) = path.file_stem().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
+        let Some(page_number) = stem
+            .rsplit_once('_')
+            .and_then(|(_, suffix)| suffix.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        pages.push((page_number, path));
+    }
+    pages.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    pages
+}
+
+fn scan_legacy_json_pages(legacy_dir: &Path) -> Vec<(i64, PathBuf)> {
+    let mut pages = Vec::new();
+    let Ok(entries) = std::fs::read_dir(legacy_dir) else {
+        return pages;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("json") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
+        let Some(page_number) = stem
+            .rsplit_once('_')
+            .and_then(|(_, suffix)| suffix.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        pages.push((page_number, path));
+    }
+    pages.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    pages
+}
+
 impl OcrWorkflowStateStore {
     pub fn open(db_path: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
@@ -183,6 +240,105 @@ impl OcrWorkflowStateStore {
         };
         store.initialize()?;
         Ok(store)
+    }
+
+    pub fn rebuild_from_artifacts(
+        &self,
+        identity: &DocumentIdentity,
+        rendered_dir: &Path,
+        legacy_dir: &Path,
+        render_configuration_fingerprint: &str,
+    ) -> Result<bool> {
+        self.ensure_document(identity)?;
+        let mut rebuilt_any = false;
+        let rendered_pages = scan_rendered_pages(rendered_dir);
+        for (page_number, rendered_path) in &rendered_pages {
+            if *page_number > identity.total_pages {
+                continue;
+            }
+            rebuilt_any = true;
+            self.upsert_page_state(
+                identity.document_id.as_str(),
+                *page_number,
+                OcrStage::Render,
+                1,
+                OcrPageStatus::Completed,
+                Some(sha256_file(rendered_path)?),
+                Some(rendered_path.to_string_lossy().into_owned()),
+                None,
+                None,
+                Some(render_configuration_fingerprint.to_string()),
+                None,
+            )?;
+        }
+        for (page_number, json_path) in scan_legacy_json_pages(legacy_dir) {
+            if page_number > identity.total_pages {
+                continue;
+            }
+            rebuilt_any = true;
+            let content_hash = rendered_pages
+                .iter()
+                .find(|(candidate_page, _)| *candidate_page == page_number)
+                .map(|(_, path)| sha256_file(path))
+                .transpose()?;
+            let persisted = std::fs::read_to_string(&json_path)
+                .ok()
+                .and_then(|contents| serde_json::from_str::<Value>(&contents).ok());
+            let mut artifact_error = if persisted.is_none() {
+                Some("invalid OCR artifact during state rebuild".to_string())
+            } else {
+                None
+            };
+            let mut config_fingerprint = None;
+            let mut artifact_sha256 = None;
+            let mut valid = persisted.is_some();
+            if let Some(payload) = persisted.as_ref() {
+                if let Some(error) = artifact_schema_error(payload) {
+                    valid = false;
+                    artifact_error = Some(error);
+                }
+                config_fingerprint =
+                    metadata_field(payload, "ocr_configuration_fingerprint").map(str::to_string);
+                let source_digest = metadata_field(payload, "source_image_sha256");
+                if valid
+                    && (artifact_page_number(payload) != Some(page_number)
+                        || source_digest != content_hash.as_deref())
+                {
+                    valid = false;
+                    artifact_error = Some(
+                        "OCR artifact identity does not match the current rendered page"
+                            .to_string(),
+                    );
+                }
+                if valid {
+                    artifact_sha256 = Some(sha256_file(&json_path)?);
+                }
+            }
+            if content_hash.is_none() {
+                valid = false;
+                artifact_error = artifact_error.or(Some(
+                    "OCR artifact has no authoritative source-image digest".to_string(),
+                ));
+            }
+            self.upsert_page_state(
+                identity.document_id.as_str(),
+                page_number,
+                OcrStage::Ocr,
+                1,
+                if valid {
+                    OcrPageStatus::Completed
+                } else {
+                    OcrPageStatus::Pending
+                },
+                content_hash,
+                Some(json_path.to_string_lossy().into_owned()),
+                artifact_error,
+                None,
+                config_fingerprint,
+                artifact_sha256,
+            )?;
+        }
+        Ok(rebuilt_any)
     }
 
     fn connection(&self) -> Result<Connection> {
@@ -533,6 +689,60 @@ impl OcrWorkflowStateStore {
                 == state.config_fingerprint.as_deref())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_page_state(
+        &self,
+        document_id: &str,
+        page_number: i64,
+        stage: OcrStage,
+        attempt_count: i64,
+        status: OcrPageStatus,
+        content_hash: Option<String>,
+        artifact_path: Option<String>,
+        last_error: Option<String>,
+        last_model: Option<String>,
+        config_fingerprint: Option<String>,
+        artifact_sha256: Option<String>,
+    ) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            r#"
+            INSERT INTO page_state (
+                document_id, page_number, stage, attempt_count, status, content_hash,
+                artifact_path, last_error, last_model, config_fingerprint,
+                artifact_sha256, last_attempted_ts
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ON CONFLICT(document_id, page_number, stage) DO UPDATE SET
+                attempt_count = excluded.attempt_count,
+                status = excluded.status,
+                content_hash = excluded.content_hash,
+                artifact_path = excluded.artifact_path,
+                last_error = excluded.last_error,
+                last_model = excluded.last_model,
+                config_fingerprint = excluded.config_fingerprint,
+                artifact_sha256 = excluded.artifact_sha256,
+                last_attempted_ts = excluded.last_attempted_ts
+            "#,
+            rusqlite::params![
+                document_id,
+                page_number,
+                stage.as_str(),
+                attempt_count,
+                status_str(status),
+                content_hash,
+                artifact_path,
+                last_error,
+                last_model,
+                config_fingerprint,
+                artifact_sha256,
+                unix_time(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn publish_ocr_page(
         &self,
         document_id: &str,
@@ -761,6 +971,66 @@ mod tests {
                 1,
                 OcrStage::Ocr,
                 "hash",
+                Some(&artifact),
+                &["config"]
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn rebuilds_render_and_ocr_state_from_matching_artifacts() {
+        let temp = tempfile::tempdir().unwrap();
+        let rendered = temp.path().join("rendered_pages");
+        let legacy = temp.path().join("legacy_split_pages");
+        std::fs::create_dir_all(&rendered).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        let rendered_page = rendered.join("page_1.png");
+        std::fs::write(&rendered_page, b"page image").unwrap();
+        let rendered_hash = sha256_file(&rendered_page).unwrap();
+        let artifact = legacy.join("page_1.json");
+        std::fs::write(
+            &artifact,
+            serde_json::json!({
+                "metadata": {
+                    "ocr_json_version": "0.1",
+                    "ocr_model_name": "model",
+                    "source_image_sha256": rendered_hash,
+                    "ocr_configuration_fingerprint": "config",
+                },
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [{"text": "page"}],
+                "non_text_objects": [],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let store = OcrWorkflowStateStore::open(&temp.path().join("ocr-state.sqlite")).unwrap();
+        let rebuilt = store
+            .rebuild_from_artifacts(&identity("one"), &rendered, &legacy, "render-v1")
+            .unwrap();
+        assert!(rebuilt);
+        assert_eq!(
+            store
+                .get_page_state("doc", 1, OcrStage::Render)
+                .unwrap()
+                .unwrap()
+                .status,
+            OcrPageStatus::Completed
+        );
+        assert_eq!(
+            store
+                .get_page_state("doc", 1, OcrStage::Ocr)
+                .unwrap()
+                .unwrap()
+                .status,
+            OcrPageStatus::Completed
+        );
+        assert!(store
+            .should_skip_page(
+                "doc",
+                1,
+                OcrStage::Ocr,
+                &rendered_hash,
                 Some(&artifact),
                 &["config"]
             )
