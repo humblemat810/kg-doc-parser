@@ -1,13 +1,13 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::layerwise_edits::semantic_tree_to_kge_payload;
-use crate::layerwise_parser::{prepare_document_for_llm, stable_id};
+use crate::layerwise_parser::{layerwise_root_node, prepare_document_for_llm, stable_id};
 use crate::ocr_artifacts::artifact_schema_error;
 use crate::ocr_state_store::{
     DocumentIdentity, OcrAttemptRequest, OcrPagePublication, OcrWorkflowStateStore,
@@ -15,6 +15,10 @@ use crate::ocr_state_store::{
 use crate::page_index_contracts::PageIndexSourceFormat;
 use crate::page_index_pipeline::parse_page_index_document_heuristic;
 use crate::parser::ParsingMode;
+use crate::parser_core::{
+    commit_layer_children, enqueue_next_layer_frontier, prepare_layer_frontier,
+    CurrentLayerContext, CurrentLayerResult, LayerFrontierItem, ParseSessionState, SplitStrategy,
+};
 use crate::semantic::{HydratedTextPointer, SemanticNode};
 use crate::source_text::source_map_entry_text;
 
@@ -193,6 +197,33 @@ pub trait PdfRasterizer {
     }
 
     fn render_pdf(&self, pdf_path: &Path, rendered_dir: &Path) -> Result<Vec<PathBuf>>;
+}
+
+pub trait LayerwiseLevelProvider {
+    fn provider_name(&self) -> &str {
+        "layerwise-provider"
+    }
+
+    fn parse_level(
+        &self,
+        context: &CurrentLayerContext,
+        source_map: &Value,
+        document: &Value,
+    ) -> Result<CurrentLayerResult>;
+}
+
+impl<F> LayerwiseLevelProvider for F
+where
+    F: Fn(&CurrentLayerContext, &Value, &Value) -> Result<CurrentLayerResult>,
+{
+    fn parse_level(
+        &self,
+        context: &CurrentLayerContext,
+        source_map: &Value,
+        document: &Value,
+    ) -> Result<CurrentLayerResult> {
+        self(context, source_map, document)
+    }
 }
 
 impl<F> PdfRasterizer for F
@@ -832,6 +863,120 @@ pub fn run_layerwise_source_workflow(
     })
 }
 
+pub fn run_layerwise_recursive_workflow(
+    source_path: &Path,
+    output_dir: &Path,
+    max_depth: u64,
+    provider: &dyn LayerwiseLevelProvider,
+) -> Result<WorkflowCommandResult> {
+    let output_dir = output_dir.to_path_buf();
+    std::fs::create_dir_all(&output_dir)?;
+    let probe_path = output_dir.join("workflow-events.jsonl");
+    let (name, pages) = read_legacy_ocr_pages(source_path)?;
+    let raw_document = serde_json::json!({name.clone(): pages});
+    probe_event(
+        &probe_path,
+        "workflow.file_started",
+        serde_json::json!({
+            "workflow_kind": "layerwise",
+            "source_path": source_path,
+            "output_dir": output_dir,
+            "builder": provider.provider_name(),
+        }),
+    )?;
+    let prepared = prepare_document_for_llm(&raw_document)?;
+    let source_map = Value::Object(prepared.source_map.clone());
+    let root_value = layerwise_root_node(&name, &prepared.source_map);
+    let mut tree = serde_json::from_value::<SemanticNode>(root_value.clone())?;
+    let mut session = ParseSessionState {
+        collection_id: name.clone(),
+        root_node_id: tree
+            .node_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("layerwise root node is missing an id"))?,
+        current_depth: 0,
+        max_depth,
+        allow_review: false,
+        split_strategy: SplitStrategy::ExcerptFirst,
+        fallback_split_strategy: SplitStrategy::BoundaryFirst,
+        strategy_history: vec![SplitStrategy::ExcerptFirst],
+        strategy_switch_count: 0,
+        mode: "workflow_layered".to_string(),
+        layer_attempts: Map::new(),
+        last_review: Map::new(),
+        compat_full_tree: None,
+        metadata: Map::new(),
+    };
+    session.metadata.insert(
+        "source_map_fingerprint".to_string(),
+        json!(crate::parser_core::source_map_fingerprint(&source_map)),
+    );
+    let mut frontier = vec![LayerFrontierItem {
+        parent_node_id: session.root_node_id.clone(),
+        depth: 0,
+        order: 0,
+    }];
+    let mut visited_depth = 0;
+    while !frontier.is_empty() && visited_depth < max_depth {
+        let (context, remaining, next_session) =
+            prepare_layer_frontier(&session, &frontier, &tree, max_depth, None)?;
+        let result = provider.parse_level(&context, &source_map, &raw_document)?;
+        tree = commit_layer_children(
+            &tree,
+            &result,
+            context.depth,
+            Some(&context.parent_node_ids),
+            Some(&source_map),
+            Some(max_depth),
+        )?;
+        frontier = enqueue_next_layer_frontier(&remaining, &context, &result, &next_session)?;
+        visited_depth = visited_depth.max(context.depth + 1);
+        session = next_session;
+    }
+    let graph_payload = semantic_tree_to_kge_payload(
+        &tree,
+        Some(&source_map),
+        Some(&name),
+        "semantic_document_parser_v1",
+    )?;
+    let graph_path = output_dir.join("layerwise-graph.json");
+    std::fs::write(&graph_path, serde_json::to_string_pretty(&graph_payload)?)?;
+    let summary = serde_json::json!({
+        "kind": "layerwise",
+        "builder": provider.provider_name(),
+        "recursive": true,
+        "source_path": source_path,
+        "node_count": graph_payload["nodes"].as_array().map(Vec::len).unwrap_or(0),
+        "edge_count": graph_payload["edges"].as_array().map(Vec::len).unwrap_or(0),
+        "source_count": source_map.as_object().map(Map::len).unwrap_or(0),
+        "visited_depth": visited_depth,
+        "graph_path": graph_path,
+    });
+    let summary_path = output_dir.join("layerwise-summary.json");
+    std::fs::write(&summary_path, serde_json::to_string_pretty(&summary)?)?;
+    probe_event(
+        &probe_path,
+        "workflow.file_finished",
+        serde_json::json!({
+            "workflow_kind": "layerwise",
+            "source_path": source_path,
+            "output_dir": output_dir,
+            "builder": provider.provider_name(),
+            "status": "succeeded",
+            "summary_path": summary_path,
+        }),
+    )?;
+    Ok(WorkflowCommandResult {
+        kind: "layerwise".to_string(),
+        input_path: source_path.to_path_buf(),
+        output_dir,
+        status: "succeeded".to_string(),
+        probe_path,
+        summary_path,
+        extra: summary,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,6 +1132,61 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].input_path, document);
         assert!(results[0].summary_path.exists());
+    }
+
+    #[test]
+    fn runs_layerwise_recursive_provider_workflow() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = temp.path().join("legacy-doc");
+        std::fs::create_dir_all(&document).unwrap();
+        std::fs::write(
+            document.join("page_1.json"),
+            serde_json::json!({"pdf_page_num": 1, "OCR_text_clusters": [{"text": "Alpha page"}], "non_text_objects": []}).to_string(),
+        )
+        .unwrap();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let provider = |context: &CurrentLayerContext,
+                        _source_map: &Value,
+                        _document: &Value|
+         -> Result<CurrentLayerResult> {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            anyhow::ensure!(!context.parent_node_ids.is_empty());
+            Ok(CurrentLayerResult {
+                children: ["child-a", "child-b"]
+                    .iter()
+                    .map(|node_id| crate::parser_core::LayerChildCandidate {
+                        node_id: node_id.to_string(),
+                        parent_node_id: context.parent_node_ids[0].clone(),
+                        title: node_id.to_uppercase(),
+                        node_type: "TEXT_FLOW".to_string(),
+                        total_content_pointers: Vec::new(),
+                        expandable: false,
+                        metadata: Map::new(),
+                        child_candidates: Vec::new(),
+                    })
+                    .collect(),
+                satisfied: Some(true),
+                review_rounds: 0,
+                atomic_retained: false,
+                atomic_parent_ids: Vec::new(),
+                atomic_content_pointers_by_parent: Map::new(),
+                metadata: Map::new(),
+                validation_diagnostics: Vec::new(),
+            })
+        };
+        let result = run_layerwise_recursive_workflow(
+            &document,
+            &temp.path().join("recursive"),
+            2,
+            &provider,
+        )
+        .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(result.extra["recursive"], true);
+        assert_eq!(result.extra["visited_depth"], 1);
+        assert_eq!(result.extra["node_count"], 3);
+        assert_eq!(result.extra["edge_count"], 2);
+        assert!(result.summary_path.exists());
     }
 
     #[test]
