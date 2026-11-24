@@ -627,6 +627,23 @@ pub fn semantic_parse_generation(recovery_generation: u64) -> String {
     }
 }
 
+pub fn next_root_recovery_run_id<F>(
+    base_run_id: &str,
+    mut completed_exists: F,
+) -> Result<(String, u64)>
+where
+    F: FnMut(&str) -> Result<bool>,
+{
+    let mut generation = 1;
+    loop {
+        let candidate = format!("{base_run_id}|recovery-{generation}");
+        if !completed_exists(&candidate)? {
+            return Ok((candidate, generation));
+        }
+        generation += 1;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvocationLineage {
     pub workflow_id: String,
@@ -901,6 +918,15 @@ mod tests {
         assert_eq!(repair["raw_pages"], json!([]));
 
         assert!(reconcile_page_checkpoint(&state, None, temp.path(), &gate, "doc", 2).is_err());
+    }
+
+    #[test]
+    fn chooses_first_unused_recovery_run_id() {
+        let used = ["root|recovery-1", "root|recovery-2"];
+        let (run_id, generation) =
+            next_root_recovery_run_id("root", |candidate| Ok(used.contains(&candidate))).unwrap();
+        assert_eq!(run_id, "root|recovery-3");
+        assert_eq!(generation, 3);
     }
 
     #[test]
