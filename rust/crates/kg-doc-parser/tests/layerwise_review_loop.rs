@@ -1,6 +1,8 @@
 use kg_doc_parser::layerwise_llm::{
-    run_layerwise_review_loop, LayerwiseLlmChildResponse, LayerwiseReviewResponse,
+    run_layerwise_review_loop, LayerwiseLlmChildResponse, LayerwiseReviewContext,
+    LayerwiseReviewResponse,
 };
+use kg_doc_parser::parser_core::{CurrentLayerContext, SplitStrategy};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -43,10 +45,26 @@ fn review_loop_applies_delete_then_stops_on_empty_round() {
         },
     ];
     let calls = AtomicUsize::new(0);
+    let context = CurrentLayerContext {
+        depth: 1,
+        parent_node_ids: vec!["root".to_string()],
+        parent_titles: vec!["Parent".to_string()],
+        parent_node_types: vec!["DOCUMENT_ROOT".to_string()],
+        parent_content_pointers_by_id: serde_json::from_value(json!({
+            "root": [{"source_cluster_id": "p1_c0", "start_char": 0, "end_char": -1, "verbatim_text": "Alpha page"}]
+        }))
+        .unwrap(),
+        split_strategy: SplitStrategy::ExcerptFirst,
+        retry_count: 0,
+        max_retries: 3,
+        metadata: serde_json::Map::new(),
+    };
     let invoker = |request: &kg_doc_parser::layerwise_llm::LayerwiseReviewRequest| -> Result<Value, anyhow::Error> {
         let invocation = calls.fetch_add(1, Ordering::SeqCst) + 1;
         anyhow::ensure!(request.doc_id == "doc");
         anyhow::ensure!(request.current_depth == 1);
+        anyhow::ensure!(request.last_layer[0]["node_id"] == "root");
+        anyhow::ensure!(request.last_layer[0]["content"] == "Alpha page");
         if invocation == 1 {
             anyhow::ensure!(request.children.len() == 2);
             return Ok(json!(LayerwiseReviewResponse {
@@ -69,16 +87,16 @@ fn review_loop_applies_delete_then_stops_on_empty_round() {
             dproposals: vec![],
         }))
     };
-    let outcome = run_layerwise_review_loop(
-        children,
-        &source_map,
-        r#"{"pages":[]}"#,
-        "doc",
-        1,
-        &["model".to_string()],
-        &invoker,
-    )
-    .unwrap();
+    let review_context = LayerwiseReviewContext {
+        source_map: &source_map,
+        full_document_json: r#"{"pages":[]}"#,
+        doc_id: "doc",
+        current_depth: 1,
+        model_names: vec!["model".to_string()],
+        layer_context: &context,
+        invoker: &invoker,
+    };
+    let outcome = run_layerwise_review_loop(children, &review_context).unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(outcome.rounds, 1);
     assert!(outcome.edited);

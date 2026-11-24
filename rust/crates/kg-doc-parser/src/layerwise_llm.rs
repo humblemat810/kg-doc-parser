@@ -191,6 +191,90 @@ pub struct LayerwiseReviewRequest {
     pub last_layer: Vec<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LayerwiseParentSignature {
+    pub node_type: String,
+    pub title: String,
+    pub spans: Vec<(String, i64, i64)>,
+}
+
+pub fn build_parent_signatures(context: &CurrentLayerContext) -> Vec<LayerwiseParentSignature> {
+    context
+        .parent_node_ids
+        .iter()
+        .enumerate()
+        .map(|(index, parent_node_id)| {
+            let pointers = context
+                .parent_content_pointers_by_id
+                .get(parent_node_id)
+                .cloned()
+                .unwrap_or(Value::Null);
+            let pointers: Vec<HydratedTextPointer> = serde_json::from_value(pointers)
+                .map_err(|error| anyhow::anyhow!("parent pointers must be typed: {error}"))
+                .unwrap_or_default();
+            let mut spans = pointers
+                .iter()
+                .map(|pointer| {
+                    (
+                        pointer.source_cluster_id.clone(),
+                        pointer.start_char,
+                        pointer.end_char,
+                    )
+                })
+                .collect::<Vec<_>>();
+            spans.sort();
+            LayerwiseParentSignature {
+                node_type: context
+                    .parent_node_types
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| "TEXT_FLOW".to_string()),
+                title: context
+                    .parent_titles
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_else(|| parent_node_id.clone()),
+                spans,
+            }
+        })
+        .collect()
+}
+
+pub fn guard_children_with_parent_signatures(
+    children: Vec<LayerwiseLlmChildResponse>,
+    parents: &[LayerwiseParentSignature],
+) -> Vec<LayerwiseLlmChildResponse> {
+    let parent_types = parents.iter().map(|parent| parent.node_type.as_str());
+    let rejects_key_value_pair_under_key_value_pair = parent_types
+        .clone()
+        .any(|parent_type| parent_type == "KEY_VALUE_PAIR");
+    children
+        .into_iter()
+        .filter(|child| {
+            if rejects_key_value_pair_under_key_value_pair && child.node_type == "KEY_VALUE_PAIR" {
+                return false;
+            }
+            let mut child_spans = child
+                .pointers
+                .iter()
+                .map(|pointer| {
+                    (
+                        pointer.source_cluster_id.clone(),
+                        pointer.start_char,
+                        pointer.end_char,
+                    )
+                })
+                .collect::<Vec<_>>();
+            child_spans.sort();
+            !parents.iter().any(|parent| {
+                parent.node_type == child.node_type
+                    && normalized_title(&parent.title) == normalized_title(&child.title)
+                    && parent.spans == child_spans
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerwiseReviewResponse {
     pub reasoning: String,
@@ -212,6 +296,16 @@ pub struct LayerwiseReviewOutcome {
 
 pub trait LayerwiseReviewInvoker {
     fn review(&self, request: &LayerwiseReviewRequest) -> Result<Value>;
+}
+
+pub struct LayerwiseReviewContext<'a> {
+    pub source_map: &'a Value,
+    pub full_document_json: &'a str,
+    pub doc_id: &'a str,
+    pub current_depth: u64,
+    pub model_names: Vec<String>,
+    pub layer_context: &'a CurrentLayerContext,
+    pub invoker: &'a dyn LayerwiseReviewInvoker,
 }
 
 impl<F> LayerwiseReviewInvoker for F
@@ -273,34 +367,55 @@ fn review_proposals(response: &LayerwiseReviewResponse) -> Vec<Value> {
 
 pub fn run_layerwise_review_loop(
     mut children: Vec<LayerwiseLlmChildResponse>,
-    source_map: &Value,
-    full_document_json: &str,
-    doc_id: &str,
-    current_depth: u64,
-    model_names: &[String],
-    invoker: &dyn LayerwiseReviewInvoker,
+    review_context: &LayerwiseReviewContext,
 ) -> Result<LayerwiseReviewOutcome> {
     let mut reasoning_history = Vec::new();
     let mut edited = false;
     let mut rounds = 0;
+    let source_map = review_context.source_map;
+    let parent_signatures = build_parent_signatures(review_context.layer_context);
     while rounds < 3 {
-        children = dedupe_children(children);
+        children = dedupe_children(guard_children_with_parent_signatures(
+            children,
+            &parent_signatures,
+        ));
         let request = LayerwiseReviewRequest {
-            doc_id: doc_id.to_string(),
-            current_depth,
+            doc_id: review_context.doc_id.to_string(),
+            current_depth: review_context.current_depth,
             attempt: rounds,
-            model_names: model_names.to_vec(),
-            full_document_json: if current_depth == 0 {
+            model_names: review_context.model_names.clone(),
+            full_document_json: if review_context.current_depth == 0 {
                 "[Now at root level, root node content is full doc, omitted to prevent duplication]"
                     .to_string()
             } else {
-                full_document_json.to_string()
+                review_context.full_document_json.to_string()
             },
             children: children.clone(),
             reasoning_history: reasoning_history.clone(),
-            last_layer: Vec::new(),
+            last_layer: review_context
+                .layer_context
+                .parent_node_ids
+                .iter()
+                .map(|parent_node_id| {
+                    let pointers = review_context
+                        .layer_context
+                        .parent_content_pointers_by_id
+                        .get(parent_node_id)
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    let pointers: Vec<HydratedTextPointer> = serde_json::from_value(pointers)
+                        .map_err(|error| {
+                            anyhow::anyhow!("parent pointers must be typed: {error}")
+                        })?;
+                    Ok(json!({
+                        "node_id": parent_node_id,
+                        "content": reconstruct_text_from_pointers(&pointers, source_map),
+                    }))
+                })
+                .collect::<Result<Vec<_>>>()?,
         };
-        let response: LayerwiseReviewResponse = serde_json::from_value(invoker.review(&request)?)?;
+        let response: LayerwiseReviewResponse =
+            serde_json::from_value(review_context.invoker.review(&request)?)?;
         reasoning_history.push(json!({"role": "ai_assistant", "content": response.reasoning}));
         let proposals = review_proposals(&response);
         if proposals.is_empty() {
@@ -358,7 +473,10 @@ pub fn run_layerwise_review_loop(
                     .collect(),
             })
             .collect();
-        children = dedupe_children(children);
+        children = dedupe_children(guard_children_with_parent_signatures(
+            children,
+            &parent_signatures,
+        ));
         edited = true;
         rounds += 1;
     }
@@ -380,6 +498,7 @@ mod tests {
             depth: 0,
             parent_node_ids: vec!["root".to_string()],
             parent_titles: vec!["Document".to_string()],
+            parent_node_types: vec!["DOCUMENT_ROOT".to_string()],
             parent_content_pointers_by_id: serde_json::from_value(json!({
                 "root": [{
                     "source_cluster_id": "p1_c0",
@@ -437,5 +556,47 @@ mod tests {
         assert_eq!(result.children.len(), 1);
         assert!(result.children[0].expandable);
         assert!(!result.children[0].node_id.is_empty());
+    }
+
+    #[test]
+    fn parent_signatures_reject_self_recursion_and_self_like_children() {
+        let parents = vec![LayerwiseParentSignature {
+            node_type: "KEY_VALUE_PAIR".to_string(),
+            title: "Config".to_string(),
+            spans: vec![("p1_c0".to_string(), 0, 4)],
+        }];
+        let children = vec![
+            LayerwiseLlmChildResponse {
+                id: None,
+                parent_node_id: "root".to_string(),
+                node_type: "KEY_VALUE_PAIR".to_string(),
+                title: "Config".to_string(),
+                pointers: Vec::new(),
+            },
+            LayerwiseLlmChildResponse {
+                id: None,
+                parent_node_id: "root".to_string(),
+                node_type: "KEY_VALUE_PAIR".to_string(),
+                title: "Other".to_string(),
+                pointers: Vec::new(),
+            },
+            LayerwiseLlmChildResponse {
+                id: None,
+                parent_node_id: "root".to_string(),
+                node_type: "KEY_VALUE_PAIR".to_string(),
+                title: "Config".to_string(),
+                pointers: vec![HydratedTextPointer {
+                    source_cluster_id: "p1_c0".to_string(),
+                    start_char: 0,
+                    end_char: 4,
+                    verbatim_text: "Alpha".to_string(),
+                    start_delimiter: None,
+                    end_delimiter: None,
+                    validation_method: None,
+                }],
+            },
+        ];
+        let accepted = guard_children_with_parent_signatures(children, &parents);
+        assert!(accepted.is_empty());
     }
 }
