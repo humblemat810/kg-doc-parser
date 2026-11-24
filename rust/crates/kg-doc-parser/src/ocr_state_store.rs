@@ -1,8 +1,10 @@
 use anyhow::{bail, Result};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+
+use crate::ocr_artifacts::artifact_schema_error;
 
 const OCR_STATE_SCHEMA_VERSION: i64 = 2;
 
@@ -69,6 +71,57 @@ struct ExistingPageAttempt {
     config_fingerprint: Option<String>,
     artifact_path: Option<String>,
     artifact_sha256: Option<String>,
+}
+
+pub struct OcrPagePublication<'a> {
+    pub page_number: i64,
+    pub content_hash: &'a str,
+    pub artifact_path: &'a Path,
+    pub payload: Value,
+    pub model_name: &'a str,
+    pub attempt_index: i64,
+    pub config_fingerprint: &'a str,
+}
+
+fn write_atomic(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension(format!(
+        "{}tmp-{}",
+        path.extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .map(|value| format!("{value}."))
+            .unwrap_or_default(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    std::fs::write(&temporary, contents)?;
+    std::fs::rename(temporary, path)?;
+    Ok(())
+}
+
+fn validate_publication(publication: &OcrPagePublication) -> Result<()> {
+    if !publication.payload.is_object() {
+        bail!("OCR page payload must be a JSON object");
+    }
+    if let Some(error) = artifact_schema_error(&publication.payload) {
+        bail!(error);
+    }
+    if artifact_page_number(&publication.payload) != Some(publication.page_number) {
+        bail!("OCR page payload page number does not match publication");
+    }
+    if metadata_field(&publication.payload, "source_image_sha256") != Some(publication.content_hash)
+    {
+        bail!("OCR page payload source hash does not match publication");
+    }
+    if metadata_field(&publication.payload, "ocr_configuration_fingerprint")
+        != Some(publication.config_fingerprint)
+    {
+        bail!("OCR page payload configuration does not match publication");
+    }
+    Ok(())
 }
 
 pub struct OcrWorkflowStateStore {
@@ -479,6 +532,73 @@ impl OcrWorkflowStateStore {
             && metadata_field(&payload, "ocr_configuration_fingerprint")
                 == state.config_fingerprint.as_deref())
     }
+
+    pub fn publish_ocr_page(
+        &self,
+        document_id: &str,
+        publication: &OcrPagePublication,
+    ) -> Result<bool> {
+        validate_publication(publication)?;
+        write_atomic(
+            publication.artifact_path,
+            &serde_json::to_string_pretty(&publication.payload)?,
+        )?;
+        let artifact_sha256 = sha256_file(publication.artifact_path)?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = transaction.execute(
+            r#"
+            UPDATE page_state
+            SET status = 'completed', artifact_path = ?1, last_error = NULL,
+                last_model = ?2, config_fingerprint = ?3, artifact_sha256 = ?4,
+                last_attempted_ts = ?5
+            WHERE document_id = ?6 AND page_number = ?7 AND stage = 'ocr'
+              AND status = 'pending'
+              AND content_hash = ?8 AND config_fingerprint = ?3
+              AND attempt_count = ?9
+            "#,
+            rusqlite::params![
+                publication.artifact_path.to_string_lossy(),
+                publication.model_name,
+                publication.config_fingerprint,
+                artifact_sha256,
+                unix_time(),
+                document_id,
+                publication.page_number,
+                publication.content_hash,
+                publication.attempt_index,
+            ],
+        )?;
+        if updated == 1 {
+            transaction.execute(
+                r#"
+                UPDATE model_attempts
+                SET status = 'failed', error_message = 'superseded by accepted duplicate'
+                WHERE document_id = ?1 AND page_number = ?2 AND stage = 'ocr'
+                  AND status = 'pending' AND attempt_index <> ?3
+                "#,
+                rusqlite::params![
+                    document_id,
+                    publication.page_number,
+                    publication.attempt_index,
+                ],
+            )?;
+            transaction.execute(
+                r#"
+                UPDATE model_attempts
+                SET status = 'completed', error_message = NULL, retry_feedback = NULL
+                WHERE document_id = ?1 AND page_number = ?2 AND stage = 'ocr' AND attempt_index = ?3
+                "#,
+                rusqlite::params![
+                    document_id,
+                    publication.page_number,
+                    publication.attempt_index,
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(updated == 1)
+    }
 }
 
 #[cfg(test)]
@@ -508,6 +628,7 @@ mod tests {
                 &OcrAttemptRequest {
                     content_hash: Some("hash".to_string()),
                     model_name: "model".to_string(),
+                    config_fingerprint: Some("config".to_string()),
                     ..Default::default()
                 },
             )
@@ -579,6 +700,62 @@ mod tests {
         )
         .unwrap();
         assert!(!store
+            .should_skip_page(
+                "doc",
+                1,
+                OcrStage::Ocr,
+                "hash",
+                Some(&artifact),
+                &["config"]
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn publish_ocr_page_accepts_pending_identity_and_enables_skip() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = temp.path().join("page_1.json");
+        let store = OcrWorkflowStateStore::open(&temp.path().join("ocr-state.sqlite")).unwrap();
+        store.ensure_document(&identity("one")).unwrap();
+        let attempt = store
+            .record_attempt(
+                "doc",
+                1,
+                OcrStage::Ocr,
+                &OcrAttemptRequest {
+                    content_hash: Some("hash".to_string()),
+                    model_name: "model".to_string(),
+                    config_fingerprint: Some("config".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let accepted = store
+            .publish_ocr_page(
+                "doc",
+                &OcrPagePublication {
+                    page_number: 1,
+                    content_hash: "hash",
+                    artifact_path: &artifact,
+                    payload: serde_json::json!({
+                        "metadata": {
+                            "ocr_json_version": "0.1",
+                            "ocr_model_name": "model",
+                            "source_image_sha256": "hash",
+                            "ocr_configuration_fingerprint": "config",
+                        },
+                        "pdf_page_num": 1,
+                        "OCR_text_clusters": [{"text": "page"}],
+                        "non_text_objects": [],
+                    }),
+                    model_name: "model",
+                    attempt_index: attempt,
+                    config_fingerprint: "config",
+                },
+            )
+            .unwrap();
+        assert!(accepted);
+        assert!(store
             .should_skip_page(
                 "doc",
                 1,
