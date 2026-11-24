@@ -325,6 +325,20 @@ fn pointer_matching_contracts_match_python() {
             case["diagnostic"]
         );
     }
+    for case in payload["soft_exact_positions_fuzzy"].as_array().unwrap() {
+        let (actual, diagnostic) = soft_exact_positions(
+            case["source_text"].as_str().unwrap(),
+            case["verbatim"].as_str().unwrap(),
+            Some(case["fuzzy_threshold"].as_f64().unwrap()),
+            case["fuzzy_len_stretch"].as_f64().unwrap(),
+            case["fuzzy_stride_frac"].as_f64().unwrap(),
+        );
+        assert_eq!(serde_json::to_value(&actual).unwrap(), case["expected"]);
+        assert_eq!(
+            serde_json::to_value(diagnostic).unwrap(),
+            case["diagnostic"]
+        );
+    }
 }
 
 #[test]

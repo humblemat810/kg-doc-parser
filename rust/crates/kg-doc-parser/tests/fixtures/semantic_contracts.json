@@ -371,6 +371,17 @@
         "expected": [],
         "diagnostic": null
       }
+    ],
+    "soft_exact_positions_fuzzy": [
+      {
+        "source_text": "Alpha page",
+        "verbatim": "missing text",
+        "fuzzy_threshold": 0.95,
+        "fuzzy_len_stretch": 0.25,
+        "fuzzy_stride_frac": 0.10,
+        "expected": [],
+        "diagnostic": null
+      }
     ]
   },
   "ocr_artifact_schema": [

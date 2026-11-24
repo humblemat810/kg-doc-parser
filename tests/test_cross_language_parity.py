@@ -124,6 +124,16 @@ def test_pointer_matching_contracts_match_rust() -> None:
         )
         assert [list(span) for span in spans] == case["expected"]
         assert diagnostic == case["diagnostic"]
+    for case in payload["soft_exact_positions_fuzzy"]:
+        spans, diagnostic = soft_exact_positions(
+            case["source_text"],
+            case["verbatim"],
+            fuzzy_threshold=case["fuzzy_threshold"],
+            fuzzy_len_stretch=case["fuzzy_len_stretch"],
+            fuzzy_stride_frac=case["fuzzy_stride_frac"],
+        )
+        assert [list(span) for span in spans] == case["expected"]
+        assert diagnostic == case["diagnostic"]
 
 
 def test_ocr_artifact_schema_errors_match_rust() -> None:

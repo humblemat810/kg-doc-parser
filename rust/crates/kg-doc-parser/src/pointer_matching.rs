@@ -180,12 +180,7 @@ pub fn soft_exact_positions(
     }
 
     if let Some(span) = longest_common_substring(verbatim, source_text) {
-        let window_start = span.1 + 1 - span.0;
-        let window: String = if window_start <= collapsed_length {
-            collapsed_chars[span.0..window_start].iter().collect()
-        } else {
-            String::new()
-        };
+        let window: String = collapsed_chars[span.0..span.1 + 1].iter().collect();
         best_score = ratio_similarity(verbatim, &window) * 100.0;
         if best_score >= threshold {
             return (
