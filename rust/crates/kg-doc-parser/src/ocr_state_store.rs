@@ -1,10 +1,14 @@
 use anyhow::{bail, Result};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+use crate::document_models::{Summary, SummaryStatus};
 use crate::ocr_artifacts::artifact_schema_error;
+use crate::semantic_indexing::json_compact;
+use std::collections::{BTreeMap, BTreeSet};
 
 const OCR_STATE_SCHEMA_VERSION: i64 = 2;
 
@@ -56,6 +60,45 @@ pub struct DocumentIdentity {
     pub source_kind: String,
     pub input_fingerprint: String,
     pub total_pages: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OcrProgressPage {
+    pub page_number: i64,
+    pub image_path: String,
+    pub image_sha256: String,
+    pub json_path: String,
+    pub status: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OcrProgressPayload {
+    pub document_id: String,
+    pub title: String,
+    pub source_kind: String,
+    pub total_pages: i64,
+    pub pages: BTreeMap<String, OcrProgressPage>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SummaryAttemptRequest {
+    pub document_id: String,
+    pub node_id: String,
+    pub input_fingerprint: String,
+    pub status: SummaryStatus,
+    pub summary: Option<Summary>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SummaryAttemptRecord {
+    pub node_id: String,
+    pub input_fingerprint: String,
+    pub attempt_index: i64,
+    pub status: String,
+    pub summary_json: Option<Value>,
+    pub error_message: Option<String>,
+    pub last_updated_ts: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -143,6 +186,55 @@ fn status_str(status: OcrPageStatus) -> &'static str {
         OcrPageStatus::Completed => "completed",
         OcrPageStatus::Failed => "failed",
     }
+}
+
+fn summary_status_str(status: SummaryStatus) -> &'static str {
+    match status {
+        SummaryStatus::Pending => "pending",
+        SummaryStatus::Generated => "generated",
+        SummaryStatus::Verified => "verified",
+        SummaryStatus::Failed => "failed",
+        SummaryStatus::Skipped => "skipped",
+    }
+}
+
+fn validate_summary(summary: Option<&Summary>, status: SummaryStatus) -> Result<()> {
+    let Some(summary) = summary else {
+        if matches!(status, SummaryStatus::Generated | SummaryStatus::Verified) {
+            bail!("generated summaries require a Summary payload");
+        }
+        return Ok(());
+    };
+    let generated = matches!(status, SummaryStatus::Generated | SummaryStatus::Verified);
+    if generated
+        && (summary.text.as_deref().unwrap_or_default().is_empty()
+            || summary.evidence_item_ids.is_empty()
+            || summary.provider_model.is_none()
+            || summary.prompt_revision.is_none()
+            || summary.input_fingerprint.is_none())
+    {
+        bail!("generated summaries require text, evidence, and provenance");
+    }
+    if !generated && summary.text.is_some() {
+        bail!("unavailable summaries cannot contain text");
+    }
+    if summary
+        .evidence_item_ids
+        .iter()
+        .collect::<BTreeSet<_>>()
+        .len()
+        != summary.evidence_item_ids.len()
+    {
+        bail!("summary evidence items must be unique");
+    }
+    if summary
+        .generation_fingerprint
+        .as_deref()
+        .is_some_and(str::is_empty)
+    {
+        bail!("summary generation fingerprint must not be blank");
+    }
+    Ok(())
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
@@ -339,6 +431,242 @@ impl OcrWorkflowStateStore {
             )?;
         }
         Ok(rebuilt_any)
+    }
+
+    pub fn mark_document_completed(&self, document_id: &str, is_completed: bool) -> Result<()> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE document_state SET is_completed = ?1, last_updated_ts = ?2 WHERE document_id = ?3",
+            rusqlite::params![i64::from(is_completed), unix_time(), document_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn refresh_document_completion(&self, document_id: &str) -> Result<bool> {
+        let connection = self.connection()?;
+        let total_pages: i64 = connection
+            .query_row(
+                "SELECT total_pages FROM document_state WHERE document_id = ?1",
+                [document_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        if total_pages < 0 {
+            bail!("OCR state total_pages cannot be negative");
+        }
+        let mut statement = connection.prepare(
+            "SELECT page_number FROM page_state WHERE document_id = ?1 AND stage = 'ocr' AND status = 'completed'",
+        )?;
+        let mut rows = statement.query([document_id])?;
+        let mut completed_pages = BTreeSet::new();
+        while let Some(row) = rows.next()? {
+            let page_number: i64 = row.get(0)?;
+            if page_number < 1 {
+                bail!("OCR state page numbers must be positive");
+            }
+            completed_pages.insert(page_number);
+        }
+        let expected_pages: BTreeSet<i64> = (1..=total_pages).collect();
+        let is_completed = total_pages > 0 && completed_pages == expected_pages;
+        self.mark_document_completed(document_id, is_completed)?;
+        Ok(is_completed)
+    }
+
+    pub fn export_progress_payload(
+        &self,
+        document_id: &str,
+        title: &str,
+        source_kind: &str,
+        total_pages: i64,
+    ) -> Result<OcrProgressPayload> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT page_number, content_hash, artifact_path, status
+            FROM page_state WHERE document_id = ?1 AND stage = 'ocr' ORDER BY page_number
+            "#,
+        )?;
+        let mut rows = statement.query([document_id])?;
+        let mut pages = BTreeMap::new();
+        while let Some(row) = rows.next()? {
+            let artifact_path: Option<String> = row.get(2)?;
+            let Some(artifact_path) = artifact_path else {
+                continue;
+            };
+            let page_number: i64 = row.get(0)?;
+            if page_number < 1 {
+                bail!("OCR state page numbers must be positive");
+            }
+            pages.insert(
+                page_number.to_string(),
+                OcrProgressPage {
+                    page_number,
+                    image_path: String::new(),
+                    image_sha256: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    json_path: artifact_path,
+                    status: match row.get::<_, String>(3)?.as_str() {
+                        "pending" => "pending",
+                        "completed" => "completed",
+                        "failed" => "failed",
+                        invalid => bail!("unknown OCR page status: {invalid}"),
+                    },
+                },
+            );
+        }
+        Ok(OcrProgressPayload {
+            document_id: document_id.to_string(),
+            title: title.to_string(),
+            source_kind: source_kind.to_string(),
+            total_pages,
+            pages,
+        })
+    }
+
+    pub fn read_document_completed(&self, document_id: &str) -> Result<bool> {
+        let connection = self.connection()?;
+        let is_completed: Option<i64> = connection
+            .query_row(
+                "SELECT is_completed FROM document_state WHERE document_id = ?1",
+                [document_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(match is_completed {
+            Some(0) => false,
+            Some(1) => true,
+            Some(value) => bail!("OCR state is_completed must be 0 or 1: {value}"),
+            None => false,
+        })
+    }
+
+    pub fn record_summary_attempt(&self, request: &SummaryAttemptRequest) -> Result<i64> {
+        validate_summary(request.summary.as_ref(), request.status)?;
+        let summary_json = match request.summary.as_ref() {
+            Some(summary) => Some(json_compact(&serde_json::to_value(summary)?)),
+            None => None,
+        };
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if matches!(
+            request.status,
+            SummaryStatus::Generated | SummaryStatus::Verified
+        ) {
+            let accepted: Option<i64> = transaction
+                .query_row(
+                    r#"
+                    SELECT attempt_index FROM summary_attempts
+                    WHERE document_id = ?1 AND node_id = ?2 AND input_fingerprint = ?3
+                      AND status IN ('generated', 'verified')
+                    ORDER BY attempt_index DESC LIMIT 1
+                    "#,
+                    rusqlite::params![
+                        request.document_id,
+                        request.node_id,
+                        request.input_fingerprint
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(attempt_index) = accepted {
+                transaction.commit()?;
+                return Ok(attempt_index);
+            }
+        }
+        let last_attempt: i64 = transaction.query_row(
+            r#"
+            SELECT COALESCE(MAX(attempt_index), 0) FROM summary_attempts
+            WHERE document_id = ?1 AND node_id = ?2 AND input_fingerprint = ?3
+            "#,
+            rusqlite::params![
+                request.document_id,
+                request.node_id,
+                request.input_fingerprint
+            ],
+            |row| row.get(0),
+        )?;
+        let attempt_index = last_attempt + 1;
+        transaction.execute(
+            r#"
+            INSERT INTO summary_attempts (
+                document_id, node_id, input_fingerprint, attempt_index, status,
+                summary_json, error_message, last_updated_ts
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            rusqlite::params![
+                request.document_id,
+                request.node_id,
+                request.input_fingerprint,
+                attempt_index,
+                summary_status_str(request.status),
+                summary_json,
+                request.error_message,
+                unix_time(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(attempt_index)
+    }
+
+    pub fn load_completed_summary(
+        &self,
+        document_id: &str,
+        node_id: &str,
+        input_fingerprint: &str,
+    ) -> Result<Option<Summary>> {
+        let connection = self.connection()?;
+        let summary_json: Option<Option<String>> = connection
+            .query_row(
+                r#"
+                SELECT summary_json FROM summary_attempts
+                WHERE document_id = ?1 AND node_id = ?2 AND input_fingerprint = ?3
+                  AND status IN ('generated', 'verified') AND summary_json IS NOT NULL
+                ORDER BY attempt_index DESC LIMIT 1
+                "#,
+                [document_id, node_id, input_fingerprint],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(Some(summary_json)) = summary_json else {
+            return Ok(None);
+        };
+        let summary: Summary = match serde_json::from_str(&summary_json) {
+            Ok(summary) => summary,
+            Err(_) => return Ok(None),
+        };
+        Ok(validate_summary(Some(&summary), summary.status)
+            .ok()
+            .and(Some(summary)))
+    }
+
+    pub fn list_summary_attempts(&self, document_id: &str) -> Result<Vec<SummaryAttemptRecord>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            r#"
+            SELECT node_id, input_fingerprint, attempt_index, status, summary_json,
+                   error_message, last_updated_ts
+            FROM summary_attempts WHERE document_id = ?1
+            ORDER BY node_id, input_fingerprint, attempt_index
+            "#,
+        )?;
+        let mut rows = statement.query([document_id])?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.next()? {
+            records.push(SummaryAttemptRecord {
+                node_id: row.get(0)?,
+                input_fingerprint: row.get(1)?,
+                attempt_index: row.get(2)?,
+                status: row.get(3)?,
+                summary_json: row
+                    .get::<_, Option<String>>(4)?
+                    .and_then(|payload| serde_json::from_str(&payload).ok()),
+                error_message: row.get(5)?,
+                last_updated_ts: row.get(6)?,
+            });
+        }
+        Ok(records)
     }
 
     fn connection(&self) -> Result<Connection> {
@@ -1035,5 +1363,124 @@ mod tests {
                 &["config"]
             )
             .unwrap());
+    }
+
+    #[test]
+    fn refreshes_completion_and_exports_progress_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = OcrWorkflowStateStore::open(&temp.path().join("ocr-state.sqlite")).unwrap();
+        let mut complete_identity = identity("one");
+        complete_identity.total_pages = 2;
+        store.ensure_document(&complete_identity).unwrap();
+        assert!(!store.refresh_document_completion("doc").unwrap());
+        store
+            .upsert_page_state(
+                "doc",
+                1,
+                OcrStage::Ocr,
+                1,
+                OcrPageStatus::Completed,
+                Some("hash".to_string()),
+                Some("p1".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .upsert_page_state(
+                "doc",
+                2,
+                OcrStage::Ocr,
+                1,
+                OcrPageStatus::Pending,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(!store.refresh_document_completion("doc").unwrap());
+        store
+            .upsert_page_state(
+                "doc",
+                2,
+                OcrStage::Ocr,
+                1,
+                OcrPageStatus::Completed,
+                Some("hash".to_string()),
+                Some("p2".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(store.refresh_document_completion("doc").unwrap());
+        assert!(store.read_document_completed("doc").unwrap());
+        let progress = store
+            .export_progress_payload("doc", "Doc", "image", 2)
+            .unwrap();
+        assert_eq!(progress.total_pages, 2);
+        assert_eq!(progress.pages["1"].status, "completed");
+        assert_eq!(progress.pages["2"].json_path, "p2");
+    }
+
+    #[test]
+    fn summary_journal_is_idempotent_and_validates_payloads() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = OcrWorkflowStateStore::open(&temp.path().join("ocr-state.sqlite")).unwrap();
+        store.ensure_document(&identity("one")).unwrap();
+        let summary = Summary {
+            status: SummaryStatus::Generated,
+            text: Some("summary".to_string()),
+            evidence_item_ids: vec!["item".to_string()],
+            provider_model: Some("model".to_string()),
+            prompt_revision: Some("prompt".to_string()),
+            generation_fingerprint: Some("generation".to_string()),
+            input_fingerprint: Some("input".to_string()),
+            evidence_slice_fingerprint: None,
+        };
+        let request = SummaryAttemptRequest {
+            document_id: "doc".to_string(),
+            node_id: "node".to_string(),
+            input_fingerprint: "input".to_string(),
+            status: SummaryStatus::Generated,
+            summary: Some(summary.clone()),
+            error_message: None,
+        };
+        assert_eq!(store.record_summary_attempt(&request).unwrap(), 1);
+        assert_eq!(store.record_summary_attempt(&request).unwrap(), 1);
+        let failed = SummaryAttemptRequest {
+            document_id: "doc".to_string(),
+            node_id: "node".to_string(),
+            input_fingerprint: "input".to_string(),
+            status: SummaryStatus::Failed,
+            summary: None,
+            error_message: Some("provider failed".to_string()),
+        };
+        assert_eq!(store.record_summary_attempt(&failed).unwrap(), 2);
+        assert_eq!(store.record_summary_attempt(&failed).unwrap(), 3);
+        let loaded = store
+            .load_completed_summary("doc", "node", "input")
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(loaded).unwrap(),
+            serde_json::to_value(&summary).unwrap()
+        );
+        assert_eq!(store.list_summary_attempts("doc").unwrap().len(), 3);
+        assert!(store
+            .record_summary_attempt(&SummaryAttemptRequest {
+                document_id: "doc".to_string(),
+                node_id: "node".to_string(),
+                input_fingerprint: "input".to_string(),
+                status: SummaryStatus::Pending,
+                summary: Some(summary),
+                error_message: None,
+            })
+            .is_err());
     }
 }
