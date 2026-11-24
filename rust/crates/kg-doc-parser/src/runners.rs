@@ -23,8 +23,98 @@ use crate::parser_core::{
     CurrentLayerContext, CurrentLayerResult, LayerFrontierItem, ParseSessionState, SplitStrategy,
 };
 use crate::parser_core_validation::{propose_layer_breakdown, review_layer};
+use crate::providers::WorkflowProviderSettings;
 use crate::semantic::{HydratedTextPointer, SemanticNode};
 use crate::source_text::source_map_entry_text;
+
+pub type TemporaryEnvOverrides = BTreeMap<String, Option<String>>;
+
+#[derive(Debug)]
+pub struct TemporaryEnvGuard {
+    previous: TemporaryEnvOverrides,
+    restored: bool,
+}
+
+impl TemporaryEnvGuard {
+    pub fn restore(mut self) {
+        self.restored = true;
+        let previous = std::mem::take(&mut self.previous);
+        for (name, value) in previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
+impl Drop for TemporaryEnvGuard {
+    fn drop(&mut self) {
+        if self.restored {
+            return;
+        }
+        let previous = std::mem::take(&mut self.previous);
+        for (name, value) in previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        self.restored = true;
+    }
+}
+
+pub fn temporary_env(overrides: TemporaryEnvOverrides) -> Result<TemporaryEnvGuard> {
+    let mut previous = TemporaryEnvOverrides::new();
+    for (name, value) in overrides {
+        previous.insert(name.clone(), std::env::var(&name).ok());
+        match value {
+            Some(value) => std::env::set_var(&name, value),
+            None => std::env::remove_var(&name),
+        }
+    }
+    Ok(TemporaryEnvGuard {
+        previous,
+        restored: false,
+    })
+}
+
+pub fn build_legacy_parse_env_overrides(
+    provider_settings: &WorkflowProviderSettings,
+) -> TemporaryEnvOverrides {
+    let parser = &provider_settings.parser;
+    BTreeMap::from([
+        (
+            "KG_DOC_PARSER_PROVIDER".to_string(),
+            Some(parser.provider.clone()),
+        ),
+        (
+            "KG_DOC_PARSER_MODEL".to_string(),
+            Some(parser.model.clone()),
+        ),
+        (
+            "KG_DOC_PARSER_TEMPERATURE".to_string(),
+            Some(parser.temperature.to_string()),
+        ),
+        (
+            "KG_DOC_PARSER_BASE_URL".to_string(),
+            parser.base_url.clone(),
+        ),
+        (
+            "KG_DOC_PARSER_API_KEY_ENV".to_string(),
+            parser.api_key_env.clone(),
+        ),
+        ("KG_DOC_PARSER_PROJECT".to_string(), parser.project.clone()),
+        (
+            "KG_DOC_PARSER_LOCATION".to_string(),
+            parser.location.clone(),
+        ),
+        (
+            "KG_DOC_PARSER_MAX_RETRIES".to_string(),
+            Some(parser.max_retries.to_string()),
+        ),
+    ])
+}
 
 pub fn infer_page_index_source_format(
     source_path: &Path,
@@ -1045,6 +1135,61 @@ mod tests {
         let shallow =
             discover_input_files(&[temp.path().to_path_buf()], &[".md", ".txt"], false).unwrap();
         assert_eq!(shallow, vec![alpha]);
+    }
+
+    #[test]
+    fn applies_and_restores_temporary_environment() {
+        let set_name = "KG_DOC_PARSER_TEMPORARY_ENV_SET".to_string();
+        let removed_name = "KG_DOC_PARSER_TEMPORARY_ENV_REMOVED".to_string();
+        std::env::set_var(&removed_name, "old");
+        let guard = temporary_env(BTreeMap::from([
+            (set_name.clone(), Some("new".to_string())),
+            (removed_name.clone(), None),
+        ]))
+        .unwrap();
+
+        assert_eq!(std::env::var(&set_name).unwrap(), "new");
+        assert!(std::env::var(&removed_name).is_err());
+        drop(guard);
+
+        assert!(std::env::var(&set_name).is_err());
+        assert_eq!(std::env::var(&removed_name).unwrap(), "old");
+    }
+
+    #[test]
+    fn builds_legacy_parse_provider_environment() {
+        let settings = serde_json::from_value(json!({
+            "parser": {
+                "provider": "ollama",
+                "model": "gemma4:e2b",
+                "temperature": 0.2,
+                "base_url": "http://127.0.0.1:11434",
+                "max_retries": 1
+            }
+        }))
+        .unwrap();
+        let overrides = build_legacy_parse_env_overrides(&settings);
+
+        assert_eq!(
+            overrides["KG_DOC_PARSER_PROVIDER"],
+            Some("ollama".to_string())
+        );
+        assert_eq!(
+            overrides["KG_DOC_PARSER_MODEL"],
+            Some("gemma4:e2b".to_string())
+        );
+        assert_eq!(
+            overrides["KG_DOC_PARSER_TEMPERATURE"],
+            Some("0.2".to_string())
+        );
+        assert_eq!(
+            overrides["KG_DOC_PARSER_BASE_URL"],
+            Some("http://127.0.0.1:11434".to_string())
+        );
+        assert_eq!(
+            overrides["KG_DOC_PARSER_MAX_RETRIES"],
+            Some("1".to_string())
+        );
     }
 
     #[test]
