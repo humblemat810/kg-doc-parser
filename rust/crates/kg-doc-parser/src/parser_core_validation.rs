@@ -842,6 +842,99 @@ pub fn apply_cud_update(
     updated
 }
 
+pub fn check_layer_coverage(
+    current_layer_context: &CurrentLayerContext,
+    current_layer_result: &crate::parser_core::CurrentLayerResult,
+    current_layer_review: Option<&CurrentLayerReview>,
+) -> (bool, Vec<String>) {
+    if let Some(review) = current_layer_review {
+        if review
+            .metadata
+            .get("review_failure")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return (
+                false,
+                vec!["layer review unavailable; quality is unknown".to_string()],
+            );
+        }
+        let mut notes = review.review_notes.clone();
+        for item in &review.overlap_conflicts {
+            notes.push(format!(
+                "overlap conflict: {} vs {} @ {}:{}-{}",
+                item.left_child_id,
+                item.right_child_id,
+                item.source_cluster_id,
+                item.overlap_start,
+                item.overlap_end
+            ));
+        }
+        for item in &review.coverage_gap_notes {
+            notes.push(format!(
+                "coverage gap: {} {}:{}-{}",
+                item.parent_node_id, item.source_cluster_id, item.gap_start, item.gap_end
+            ));
+        }
+        for item in &review.duplicate_child_notes {
+            notes.push(format!(
+                "duplicate child: {} duplicates {}",
+                item.child_node_id, item.duplicate_of_child_node_id
+            ));
+        }
+        return (review.coverage_ok, notes);
+    }
+
+    let metadata_flag = current_layer_result
+        .metadata
+        .get("layer_coverage_ok")
+        .and_then(Value::as_bool);
+    if let Some(metadata_flag) = metadata_flag {
+        let notes = current_layer_result
+            .metadata
+            .get("review_notes")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| item.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        return (metadata_flag, notes);
+    }
+    if current_layer_result.atomic_retained {
+        return (true, Vec::new());
+    }
+    let parent_ids: HashSet<&String> = current_layer_context.parent_node_ids.iter().collect();
+    let mut missing: Vec<&String> = parent_ids
+        .difference(
+            &current_layer_result
+                .children
+                .iter()
+                .filter(|child| parent_ids.contains(&&child.parent_node_id))
+                .map(|child| &child.parent_node_id)
+                .collect::<HashSet<_>>(),
+        )
+        .cloned()
+        .collect();
+    missing.sort();
+    if !missing.is_empty() {
+        return (
+            false,
+            vec![format!(
+                "missing children for parent ids: {}",
+                missing
+                    .iter()
+                    .map(|item| item.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )],
+        );
+    }
+    (true, Vec::new())
+}
+
 fn pointer_repair_context(pointer: &HydratedTextPointer, parser_source_map: &Value) -> String {
     let source = parser_source_map.get(&pointer.source_cluster_id);
     let text = source.map(source_map_entry_text).unwrap_or_default();
@@ -1207,6 +1300,58 @@ mod tests {
         assert_eq!(updated.metadata["split_strategy"], json!("boundary_first"));
         assert_eq!(updated.metadata["layer_coverage_ok"], json!(true));
         assert_eq!(updated.metadata["review_notes"], json!(["review passed"]));
+    }
+
+    #[test]
+    fn checks_layer_coverage_from_review_metadata_or_children() {
+        let context = context(json!([{
+            "source_cluster_id": "p1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Alpha"
+        }]));
+        let mut current = result(vec![child(
+            "left",
+            "parent",
+            vec![pointer("p1", 0, 4, "Alpha")],
+        )]);
+        current.satisfied = Some(true);
+        let review = CurrentLayerReview {
+            updated_result: current.clone(),
+            coverage_ok: true,
+            satisfied: true,
+            strategy_used: crate::parser_core::SplitStrategy::ExcerptFirst,
+            overlap_conflicts: Vec::new(),
+            coverage_gap_notes: Vec::new(),
+            duplicate_child_notes: Vec::new(),
+            structural_issues: Vec::new(),
+            validation_diagnostics: Vec::new(),
+            review_notes: vec!["review passed".to_string()],
+            metadata: Map::new(),
+            committable_parent_node_ids: vec!["parent".to_string()],
+            failed_parent_node_ids: Vec::new(),
+        };
+        let (coverage_ok, notes) = check_layer_coverage(&context, &current, Some(&review));
+        assert!(coverage_ok);
+        assert_eq!(notes, vec!["review passed"]);
+
+        let mut failed_review = review;
+        failed_review
+            .metadata
+            .insert("review_failure".to_string(), json!("provider"));
+        let (coverage_ok, notes) = check_layer_coverage(&context, &current, Some(&failed_review));
+        assert!(!coverage_ok);
+        assert_eq!(notes, vec!["layer review unavailable; quality is unknown"]);
+
+        current
+            .metadata
+            .insert("layer_coverage_ok".to_string(), json!(false));
+        current
+            .metadata
+            .insert("review_notes".to_string(), json!(["prior note"]));
+        let (coverage_ok, notes) = check_layer_coverage(&context, &current, None);
+        assert!(!coverage_ok);
+        assert_eq!(notes, vec!["prior note"]);
     }
 
     #[test]
