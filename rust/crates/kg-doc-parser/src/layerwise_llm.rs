@@ -38,6 +38,19 @@ pub struct LayerwiseLlmLevelResponse {
     pub children: Vec<LayerwiseLlmChildResponse>,
 }
 
+pub trait LayerwiseLlmInvoker {
+    fn invoke(&self, request: &LayerwiseLlmLevelRequest) -> Result<Value>;
+}
+
+impl<F> LayerwiseLlmInvoker for F
+where
+    F: Fn(&LayerwiseLlmLevelRequest) -> Result<Value>,
+{
+    fn invoke(&self, request: &LayerwiseLlmLevelRequest) -> Result<Value> {
+        self(request)
+    }
+}
+
 pub fn build_layerwise_llm_level_request(
     doc_id: &str,
     context: &CurrentLayerContext,

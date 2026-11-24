@@ -7,6 +7,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::layerwise_edits::semantic_tree_to_kge_payload;
+use crate::layerwise_llm::{
+    build_layerwise_llm_level_request, decode_layerwise_llm_level_response, LayerwiseLlmInvoker,
+};
 use crate::layerwise_parser::{layerwise_root_node, prepare_document_for_llm, stable_id};
 use crate::ocr_artifacts::artifact_schema_error;
 use crate::ocr_state_store::{
@@ -223,6 +226,38 @@ where
         document: &Value,
     ) -> Result<CurrentLayerResult> {
         self(context, source_map, document)
+    }
+}
+
+pub struct LayerwiseLlmLevelProvider<'a> {
+    pub doc_id: String,
+    pub parsing_mode: ParsingMode,
+    pub model_names: Vec<String>,
+    pub invoker: &'a dyn LayerwiseLlmInvoker,
+}
+
+impl LayerwiseLevelProvider for LayerwiseLlmLevelProvider<'_> {
+    fn provider_name(&self) -> &str {
+        "layerwise-llm"
+    }
+
+    fn parse_level(
+        &self,
+        context: &CurrentLayerContext,
+        source_map: &Value,
+        document: &Value,
+    ) -> Result<CurrentLayerResult> {
+        let full_document_json = serde_json::to_string(document)?;
+        let request = build_layerwise_llm_level_request(
+            &self.doc_id,
+            context,
+            source_map,
+            &full_document_json,
+            self.parsing_mode,
+            &self.model_names,
+        )?;
+        let response = self.invoker.invoke(&request)?;
+        decode_layerwise_llm_level_response(&response, context, context.depth)
     }
 }
 
@@ -1187,6 +1222,51 @@ mod tests {
         assert_eq!(result.extra["node_count"], 3);
         assert_eq!(result.extra["edge_count"], 2);
         assert!(result.summary_path.exists());
+    }
+
+    #[test]
+    fn invokes_layerwise_llm_provider_across_frontiers() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = temp.path().join("legacy-doc");
+        std::fs::create_dir_all(&document).unwrap();
+        std::fs::write(
+            document.join("page_1.json"),
+            serde_json::json!({"pdf_page_num": 1, "OCR_text_clusters": [{"text": "Alpha page"}], "non_text_objects": []}).to_string(),
+        )
+        .unwrap();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let invoker = |request: &crate::layerwise_llm::LayerwiseLlmLevelRequest| -> Result<Value> {
+            let invocation = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            anyhow::ensure!(request.doc_id == "legacy-doc");
+            anyhow::ensure!(!request.model_names.is_empty());
+            if invocation == 1 {
+                anyhow::ensure!(request.parent_sections.len() == 1);
+                anyhow::ensure!(request.parent_sections[0]
+                    .text_to_analyze
+                    .contains("Alpha page"));
+                return Ok(serde_json::json!({
+                    "children": [
+                        {"parent_node_id": request.parent_sections[0].parent_node_id, "node_type": "TEXT_FLOW", "title": "A", "pointers": [{"source_cluster_id": "p1_c0", "start_char": 0, "end_char": 4, "verbatim_text": "Alpha"}]},
+                        {"parent_node_id": request.parent_sections[0].parent_node_id, "node_type": "TEXT_FLOW", "title": "B", "pointers": [{"source_cluster_id": "p1_c0", "start_char": 6, "end_char": 9, "verbatim_text": "page"}]}
+                    ]
+                }));
+            }
+            anyhow::ensure!(request.parent_sections.len() == 2);
+            Ok(serde_json::json!({"children": []}))
+        };
+        let provider = LayerwiseLlmLevelProvider {
+            doc_id: "legacy-doc".to_string(),
+            parsing_mode: ParsingMode::Snippet,
+            model_names: vec!["parser-model".to_string()],
+            invoker: &invoker,
+        };
+        let result =
+            run_layerwise_recursive_workflow(&document, &temp.path().join("llm"), 2, &provider)
+                .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(result.extra["builder"], "layerwise-llm");
+        assert_eq!(result.extra["visited_depth"], 2);
+        assert_eq!(result.extra["node_count"], 3);
     }
 
     #[test]
