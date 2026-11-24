@@ -8,13 +8,36 @@ use kg_doc_parser::parser::{parse_file, ParsingMode};
 use kg_doc_parser::runners::infer_page_index_source_format;
 use kg_doc_parser::runners::run_layerwise_batch_workflow;
 use kg_doc_parser::runners::run_layerwise_source_workflow;
+use kg_doc_parser::runners::run_ocr_batch_workflow;
+use kg_doc_parser::runners::run_ocr_source_workflow;
 use kg_doc_parser::runners::run_page_index_batch_workflow;
 use kg_doc_parser::runners::run_page_index_source_workflow;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
+struct IdentityOcrRunner;
+
+impl kg_doc_parser::runners::OcrRunner for IdentityOcrRunner {
+    fn provider_name(&self) -> &str {
+        "fake"
+    }
+
+    fn run_page(&self, image_path: &std::path::Path, page_number: u64) -> anyhow::Result<Value> {
+        Ok(json!({
+            "metadata": {
+                "ocr_json_version": "0.1",
+                "ocr_model_name": "identity",
+                "source_image_path": image_path,
+            },
+            "pdf_page_num": page_number,
+            "OCR_text_clusters": [{"text": ""}],
+            "non_text_objects": [],
+        }))
+    }
+}
+
 fn usage() -> ! {
-    eprintln!("usage: kg-doc-parser <parse|page-index|page-index-workflow|layerwise-workflow> --input <path> [--batch] [--mode snippet|delimiter|markdown|text] [--max-depth <depth>] [--output <path>] [--output-dir <dir>]");
+    eprintln!("usage: kg-doc-parser <parse|page-index|page-index-workflow|layerwise-workflow|ocr-workflow> --input <path> [--batch] [--mode snippet|delimiter|markdown|text] [--max-depth <depth>] [--provider fake] [--output <path>] [--output-dir <dir>]");
     std::process::exit(2);
 }
 
@@ -25,6 +48,7 @@ fn main() -> Result<()> {
         && command != "page-index"
         && command != "page-index-workflow"
         && command != "layerwise-workflow"
+        && command != "ocr-workflow"
         && command != "demo-summary"
     {
         usage();
@@ -41,6 +65,7 @@ fn main() -> Result<()> {
     let mut batch = false;
     let mut title: Option<String> = None;
     let mut text: Option<String> = None;
+    let mut provider: Option<String> = None;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -102,12 +127,50 @@ fn main() -> Result<()> {
                 );
                 index += 2;
             }
+            "--provider" => {
+                provider = Some(
+                    arguments
+                        .get(index + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--provider requires a value"))?
+                        .to_string(),
+                );
+                index += 2;
+            }
             _ => bail!("unknown argument: {}", arguments[index]),
         }
     }
     let Some(input) = input else {
         usage();
     };
+    if command == "ocr-workflow" {
+        let Some(output_dir) = output_dir else {
+            bail!("ocr-workflow requires --output-dir");
+        };
+        let runner = match provider.as_deref().unwrap_or("fake") {
+            "fake" => IdentityOcrRunner,
+            unsupported => bail!("unsupported OCR provider: {unsupported}"),
+        };
+        if batch {
+            let results = run_ocr_batch_workflow(
+                std::slice::from_ref(&input),
+                output_dir.as_path(),
+                &runner,
+                None,
+            )?;
+            let payload = serde_json::to_value(&results)?;
+            println!("{}", serde_json::to_string_pretty(&payload)?);
+        } else {
+            let result = run_ocr_source_workflow(
+                &input,
+                output_dir.as_path(),
+                &runner,
+                None,
+                &output_dir.join("workflow-events.jsonl"),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result.extra)?);
+        }
+        return Ok(());
+    }
     if command == "page-index-workflow" {
         let source_format = infer_page_index_source_format(&input, &mode)?;
         let Some(output_dir) = output_dir else {
