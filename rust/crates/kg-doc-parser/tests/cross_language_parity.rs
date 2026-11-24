@@ -7,6 +7,7 @@ use kg_doc_parser::layerwise_edits::{
     apply_proposals, semantic_tree_to_kge_payload, LayerwiseChild, LayerwisePointer,
 };
 use kg_doc_parser::ocr_artifacts::artifact_schema_error;
+use kg_doc_parser::ocr_quality::ocr_artifact_quality_error;
 use kg_doc_parser::page_index_candidates::extract_candidate_blocks;
 use kg_doc_parser::page_index_classification::{classify_block, ClassifyBlockOptions};
 use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
@@ -236,6 +237,16 @@ fn ocr_artifact_schema_errors_match_python() {
     let payload = fixture();
     for case in payload["ocr_artifact_schema"].as_array().unwrap() {
         let actual = artifact_schema_error(case);
+        let expected = case["expected"].as_str().map(str::to_string);
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn ocr_artifact_quality_errors_match_python() {
+    let payload = fixture();
+    for case in payload["ocr_artifact_quality"].as_array().unwrap() {
+        let actual = ocr_artifact_quality_error(&case["payload"]);
         let expected = case["expected"].as_str().map(str::to_string);
         assert_eq!(actual, expected);
     }

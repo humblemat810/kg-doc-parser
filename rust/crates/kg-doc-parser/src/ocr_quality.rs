@@ -93,6 +93,75 @@ pub struct OCRClusterResponse {
     pub non_text_objects: Vec<OCRCluster>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OCRQualityDiagnosticSeverity {
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OCRQualityDiagnostic {
+    pub code: String,
+    pub severity: OCRQualityDiagnosticSeverity,
+    pub message: String,
+}
+
+pub fn ocr_artifact_quality_error(payload: &serde_json::Value) -> Option<String> {
+    let metadata = payload
+        .as_object()
+        .and_then(|payload| payload.get("metadata"))
+        .and_then(|value| value.as_object())?;
+    let has_status = metadata.contains_key("ocr_quality_status");
+    let has_diagnostics = metadata.contains_key("ocr_quality_diagnostics");
+    if !has_status && !has_diagnostics {
+        return None;
+    }
+    let status = metadata
+        .get("ocr_quality_status")
+        .and_then(|value| value.as_str());
+    if has_status
+        && !matches!(
+            status,
+            Some("accepted") | Some("flagged") | Some("rejected")
+        )
+    {
+        return Some("invalid OCR quality status".to_string());
+    }
+    if status == Some("rejected") {
+        return Some("OCR quality status is rejected".to_string());
+    }
+    if !has_diagnostics {
+        return None;
+    }
+    let Some(raw_diagnostics) = metadata
+        .get("ocr_quality_diagnostics")
+        .and_then(|value| value.as_array())
+    else {
+        return Some("OCR quality diagnostics must be a list".to_string());
+    };
+    let Ok(diagnostics) = raw_diagnostics
+        .iter()
+        .map(|value| serde_json::from_value::<OCRQualityDiagnostic>(value.clone()))
+        .collect::<std::result::Result<Vec<_>, _>>()
+    else {
+        return Some("OCR quality diagnostics are malformed".to_string());
+    };
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == OCRQualityDiagnosticSeverity::Error)
+    {
+        return Some("OCR artifact contains error-severity quality diagnostics".to_string());
+    }
+    if status == Some("accepted") && !diagnostics.is_empty() {
+        return Some("accepted OCR quality status cannot include diagnostics".to_string());
+    }
+    if status == Some("flagged") && diagnostics.is_empty() {
+        return Some("flagged OCR quality status requires diagnostics".to_string());
+    }
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OCRGroundTruthReport {
     pub expected_item_count: usize,
@@ -423,5 +492,57 @@ mod tests {
         assert_eq!(report.missing_item_ids, vec!["image-1"]);
         assert!(report.extra_cluster_numbers.is_empty());
         assert_eq!(report.text_mismatch_item_ids, vec!["text-1"]);
+    }
+
+    #[test]
+    fn validates_artifact_quality_metadata() {
+        assert_eq!(ocr_artifact_quality_error(&json!({"text": "Alpha"})), None);
+        assert_eq!(
+            ocr_artifact_quality_error(&json!({"metadata": {"ocr_quality_status": "bad"}})),
+            Some("invalid OCR quality status".to_string())
+        );
+        assert_eq!(
+            ocr_artifact_quality_error(&json!({"metadata": {"ocr_quality_status": "rejected"}})),
+            Some("OCR quality status is rejected".to_string())
+        );
+        assert_eq!(
+            ocr_artifact_quality_error(&json!({
+                "metadata": {
+                    "ocr_quality_status": "accepted",
+                    "ocr_quality_diagnostics": [{
+                        "code": "unresolved_items",
+                        "severity": "warning",
+                        "message": "provider unresolved item"
+                    }]
+                }
+            })),
+            Some("accepted OCR quality status cannot include diagnostics".to_string())
+        );
+        assert_eq!(
+            ocr_artifact_quality_error(&json!({
+                "metadata": {
+                    "ocr_quality_status": "flagged",
+                    "ocr_quality_diagnostics": [{
+                        "code": "empty_ocr_output",
+                        "severity": "warning",
+                        "message": "provider reported no OCR evidence"
+                    }]
+                }
+            })),
+            None
+        );
+        assert_eq!(
+            ocr_artifact_quality_error(&json!({
+                "metadata": {
+                    "ocr_quality_status": "flagged",
+                    "ocr_quality_diagnostics": [{
+                        "code": "invalid",
+                        "severity": "error",
+                        "message": "invalid evidence"
+                    }]
+                }
+            })),
+            Some("OCR artifact contains error-severity quality diagnostics".to_string())
+        );
     }
 }

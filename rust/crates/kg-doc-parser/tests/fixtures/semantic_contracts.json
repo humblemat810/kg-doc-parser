@@ -391,6 +391,50 @@
       "expected": "unsupported OCR artifact schema version: missing"
     }
   ],
+  "ocr_artifact_quality": [
+    {"payload": {"text": "Alpha"}, "expected": null},
+    {"payload": {"metadata": {"ocr_quality_status": "bad"}}, "expected": "invalid OCR quality status"},
+    {"payload": {"metadata": {"ocr_quality_status": "rejected"}}, "expected": "OCR quality status is rejected"},
+    {
+      "payload": {
+        "metadata": {
+          "ocr_quality_status": "accepted",
+          "ocr_quality_diagnostics": [{
+            "code": "unresolved_items",
+            "severity": "warning",
+            "message": "provider unresolved item"
+          }]
+        }
+      },
+      "expected": "accepted OCR quality status cannot include diagnostics"
+    },
+    {
+      "payload": {
+        "metadata": {
+          "ocr_quality_status": "flagged",
+          "ocr_quality_diagnostics": [{
+            "code": "empty_ocr_output",
+            "severity": "warning",
+            "message": "provider reported no OCR evidence"
+          }]
+        }
+      },
+      "expected": null
+    },
+    {
+      "payload": {
+        "metadata": {
+          "ocr_quality_status": "flagged",
+          "ocr_quality_diagnostics": [{
+            "code": "invalid",
+            "severity": "error",
+            "message": "invalid evidence"
+          }]
+        }
+      },
+      "expected": "OCR artifact contains error-severity quality diagnostics"
+    }
+  ],
   "page_index_normalize_text": [
     {"text": "  Alpha   Beta  ", "expected": "alpha beta"}
   ],

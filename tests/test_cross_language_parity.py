@@ -25,6 +25,7 @@ from kg_doc_parser.workflow_ingest.page_index_tree import page_index_normalize_t
 from kg_doc_parser.workflow_ingest.page_index_candidates import _extract_candidate_blocks
 from kg_doc_parser.workflow_ingest.parser_core_session import source_map_fingerprint
 from kg_doc_parser.workflow_ingest.ocr_artifacts import artifact_schema_error
+from kg_doc_parser.workflow_ingest.ocr_quality_policy import ocr_artifact_quality_error
 from kg_doc_parser.workflow_ingest.ocr_providers import list_ocr_provider_capabilities
 from kg_doc_parser.workflow_ingest.document_models import (
     AdaptiveGroupingPolicy,
@@ -127,6 +128,12 @@ def test_ocr_artifact_schema_errors_match_rust() -> None:
     payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
     for case in payload["ocr_artifact_schema"]:
         assert artifact_schema_error(case) == case["expected"]
+
+
+def test_ocr_artifact_quality_errors_match_rust() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    for case in payload["ocr_artifact_quality"]:
+        assert ocr_artifact_quality_error(case["payload"]) == case["expected"]
 
 
 def test_page_index_normalize_text_matches_rust() -> None:
