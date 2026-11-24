@@ -328,6 +328,134 @@ pub fn invoke_openai_compatible_chat(
     unreachable!("provider retry loop must return or continue")
 }
 
+pub fn build_anthropic_chat_request(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+) -> Result<ProviderHttpRequest> {
+    if config.provider != "anthropic" {
+        bail!("Anthropic provider requires provider=anthropic");
+    }
+    let base_url = config
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("https://api.anthropic.com/v1");
+    let api_key = match config.api_key_env.as_deref() {
+        Some(name) => std::env::var(name).map_err(|_| {
+            anyhow::anyhow!("provider API key environment {name:?} is not configured")
+        })?,
+        None => bail!("Anthropic provider requires api_key_env"),
+    };
+    let (system_messages, chat_messages): (Vec<&ProviderChatMessage>, Vec<&ProviderChatMessage>) =
+        messages
+            .iter()
+            .partition(|message| message.role.eq_ignore_ascii_case("system"));
+    let mut body = json!({
+        "model": config.model,
+        "max_tokens": config.max_output_tokens.unwrap_or(1024),
+        "messages": chat_messages.iter().map(|message| json!({
+            "role": message.role,
+            "content": message.content,
+        })).collect::<Vec<_>>(),
+    });
+    if !system_messages.is_empty() {
+        body["system"] = json!(system_messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"));
+    }
+    let mut headers = BTreeMap::new();
+    headers.insert("Content-Type".to_string(), "application/json".to_string());
+    headers.insert("Accept".to_string(), "application/json".to_string());
+    headers.insert("x-api-key".to_string(), api_key);
+    headers.insert("anthropic-version".to_string(), "2023-06-01".to_string());
+    Ok(ProviderHttpRequest {
+        url: format!("{}/messages", base_url.trim_end_matches('/')),
+        headers,
+        body,
+        timeout_seconds: config.timeout_seconds,
+    })
+}
+
+fn anthropic_content(payload: &Value) -> Result<String> {
+    let content = payload
+        .get("content")
+        .ok_or_else(|| anyhow::anyhow!("Anthropic response is missing content"))?;
+    if let Some(text) = content.as_str() {
+        return Ok(text.to_string());
+    }
+    let content = content.as_array().ok_or_else(|| {
+        anyhow::anyhow!("Anthropic response content must be a string or block list")
+    })?;
+    let mut text = String::new();
+    for block in content {
+        let block_text = block
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Anthropic content block is missing text"))?;
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(block_text);
+    }
+    Ok(text)
+}
+
+fn retry_provider_request(
+    config: &ProviderEndpointConfig,
+    request: &ProviderHttpRequest,
+    transport: &dyn ProviderTransport,
+    extract_content: impl Fn(&Value) -> Result<String>,
+) -> Result<String> {
+    let attempts = config.max_retries.saturating_add(1).max(1);
+    let mut backoff = config.retry_backoff_seconds.max(0.0);
+    for attempt in 1..=attempts {
+        let response = match transport.send(request) {
+            Ok(response) => response,
+            Err(error) => {
+                if attempt == attempts {
+                    return Err(error);
+                }
+                std::thread::sleep(std::time::Duration::from_secs_f64(backoff));
+                backoff = (backoff * 2.0).min(config.retry_backoff_max_seconds.max(0.0));
+                continue;
+            }
+        };
+        if (response.status == 429 || response.status >= 500) && attempt < attempts {
+            std::thread::sleep(std::time::Duration::from_secs_f64(backoff));
+            backoff = (backoff * 2.0).min(config.retry_backoff_max_seconds.max(0.0));
+            continue;
+        }
+        let payload = parse_provider_http_response(&response)?;
+        return extract_content(&payload);
+    }
+    unreachable!("provider retry loop must return or continue")
+}
+
+pub fn invoke_anthropic_chat(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    transport: &dyn ProviderTransport,
+) -> Result<String> {
+    let request = build_anthropic_chat_request(config, messages)?;
+    retry_provider_request(config, &request, transport, anthropic_content)
+}
+
+pub fn invoke_provider_chat(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    response_format: Option<Value>,
+    transport: &dyn ProviderTransport,
+) -> Result<String> {
+    if config.provider == "anthropic" {
+        invoke_anthropic_chat(config, messages, transport)
+    } else {
+        invoke_openai_compatible_chat(config, messages, response_format, transport)
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -467,6 +595,68 @@ mod tests {
         let content =
             invoke_openai_compatible_chat(&config(), &messages(), None, &transport).unwrap();
         assert_eq!(content, "structured result");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    fn anthropic_config() -> ProviderEndpointConfig {
+        serde_json::from_value(json!({
+            "provider": "anthropic",
+            "model": "claude-test",
+            "temperature": 0.2,
+            "base_url": "http://localhost",
+            "api_key_env": "KG_DOC_PARSER_TEST_ANTHROPIC_KEY",
+            "max_output_tokens": 64,
+            "max_retries": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_backoff_max_seconds": 0.0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn builds_anthropic_chat_request_with_system_header_and_max_tokens() {
+        std::env::set_var("KG_DOC_PARSER_TEST_ANTHROPIC_KEY", "anthropic-secret");
+        let request = build_anthropic_chat_request(
+            &anthropic_config(),
+            &[
+                ProviderChatMessage {
+                    role: "system".to_string(),
+                    content: "be precise".to_string(),
+                },
+                ProviderChatMessage {
+                    role: "user".to_string(),
+                    content: "parse this".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(request.url, "http://localhost/messages");
+        assert_eq!(request.headers["x-api-key"], "anthropic-secret");
+        assert_eq!(request.headers["anthropic-version"], "2023-06-01");
+        assert_eq!(request.body["system"], "be precise");
+        assert_eq!(request.body["max_tokens"], 64);
+        assert_eq!(request.body["messages"][0]["role"], "user");
+    }
+
+    #[test]
+    fn invokes_anthropic_blocks_and_retries_server_errors() {
+        std::env::set_var("KG_DOC_PARSER_TEST_ANTHROPIC_KEY", "anthropic-secret");
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let transport = |_request: &ProviderHttpRequest| -> Result<ProviderHttpResponse> {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Ok(ProviderHttpResponse {
+                    status: 503,
+                    body: json!({"error": "temporary"}).to_string(),
+                });
+            }
+            Ok(ProviderHttpResponse {
+                status: 200,
+                body: json!({"content":[{"type":"text","text":"part one"},{"type":"text","text":"part two"}]}).to_string(),
+            })
+        };
+        let content =
+            invoke_provider_chat(&anthropic_config(), &messages(), None, &transport).unwrap();
+        assert_eq!(content, "part one\npart two");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 

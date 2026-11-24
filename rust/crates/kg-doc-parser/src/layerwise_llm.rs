@@ -7,7 +7,7 @@ use crate::layerwise_parser::stable_id;
 use crate::parser::ParsingMode;
 use crate::parser_core::{CurrentLayerContext, CurrentLayerResult, LayerChildCandidate};
 use crate::providers::{
-    invoke_openai_compatible_chat, ProviderChatMessage, ProviderEndpointConfig, ProviderTransport,
+    invoke_provider_chat, ProviderChatMessage, ProviderEndpointConfig, ProviderTransport,
 };
 use crate::semantic::HydratedTextPointer;
 
@@ -47,7 +47,7 @@ pub trait LayerwiseLlmInvoker {
     fn invoke(&self, request: &LayerwiseLlmLevelRequest) -> Result<Value>;
 }
 
-pub struct OpenAiCompatibleLayerwiseLlmInvoker<'a> {
+pub struct ProviderChatLayerwiseLlmInvoker<'a> {
     pub config: ProviderEndpointConfig,
     pub transport: &'a dyn ProviderTransport,
     pub response_format: Option<Value>,
@@ -72,9 +72,9 @@ pub fn build_layerwise_llm_messages(
     ]
 }
 
-impl LayerwiseLlmInvoker for OpenAiCompatibleLayerwiseLlmInvoker<'_> {
+impl LayerwiseLlmInvoker for ProviderChatLayerwiseLlmInvoker<'_> {
     fn invoke(&self, request: &LayerwiseLlmLevelRequest) -> Result<Value> {
-        let content = invoke_openai_compatible_chat(
+        let content = invoke_provider_chat(
             &self.config,
             &build_layerwise_llm_messages(request),
             self.response_format.clone(),
@@ -629,7 +629,7 @@ mod tests {
                 body: json!({"choices":[{"message":{"content":r#"{"children":[]}"#}}]}).to_string(),
             })
         };
-        let invoker = OpenAiCompatibleLayerwiseLlmInvoker {
+        let invoker = ProviderChatLayerwiseLlmInvoker {
             config,
             transport: &transport,
             response_format: Some(json!({"type": "json_object"})),
