@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from kg_doc_parser.semantic_indexing_contracts import (
     batch_nodes,
     default_token_estimate,
@@ -39,6 +41,8 @@ from kg_doc_parser.workflow_ingest.document_grouping import (
     group_node_id,
     grouping_policy_identity,
 )
+
+pytestmark = pytest.mark.ci
 
 
 FIXTURE = (
