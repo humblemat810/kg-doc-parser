@@ -78,6 +78,22 @@ pub fn state_string(state: &Value, key: &str, default: &str) -> String {
         .to_string()
 }
 
+pub fn state_optional_string(state: &Value, key: &str) -> Result<Option<String>> {
+    match state.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.to_string())),
+        _ => bail!("OCR workflow state field {key:?} must be a string"),
+    }
+}
+
+pub fn document_tree_from_state(state: &Value) -> Result<crate::document_models::DocumentTree> {
+    let Some(Value::Object(payload)) = state.get("tree") else {
+        bail!("OCR grouping runtime state has no tree");
+    };
+    serde_json::from_value(Value::Object(payload.clone()))
+        .map_err(|error| anyhow::anyhow!("OCR grouping runtime state has an invalid tree: {error}"))
+}
+
 pub fn page_cursor(state: &Value) -> u64 {
     state
         .get("page_cursor")
@@ -830,6 +846,32 @@ mod tests {
         assert_eq!(int_list(&state, "completed_pages").unwrap(), vec![1, 2]);
         assert!(state_bool(&state, "adaptive_grouping_complete", false));
         assert_eq!(state_string(&state, "missing", "fallback"), "fallback");
+    }
+
+    #[test]
+    fn decodes_optional_string_and_document_tree() {
+        let state = json!({
+            "checkpoint_revision": "tree-v1",
+            "tree": {
+                "schema_version": "1.0",
+                "document_id": "doc",
+                "source_revision": "source",
+                "tree_revision": 1,
+                "root_id": "root",
+                "source_items": [],
+                "nodes": [],
+                "references": []
+            }
+        });
+        assert_eq!(
+            state_optional_string(&state, "checkpoint_revision").unwrap(),
+            Some("tree-v1".to_string())
+        );
+        let tree = document_tree_from_state(&state).unwrap();
+        assert_eq!(tree.root_id, "root");
+        assert!(state_optional_string(&state, "missing").unwrap().is_none());
+        let invalid = json!({"checkpoint_revision": 1});
+        assert!(state_optional_string(&invalid, "checkpoint_revision").is_err());
     }
 
     #[test]
