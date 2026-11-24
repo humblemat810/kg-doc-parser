@@ -443,6 +443,63 @@ pub fn invoke_anthropic_chat(
     retry_provider_request(config, &request, transport, anthropic_content)
 }
 
+pub fn build_ollama_chat_request(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+) -> Result<ProviderHttpRequest> {
+    if config.provider != "ollama" {
+        bail!("Ollama provider requires provider=ollama");
+    }
+    let base_url = config
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http://127.0.0.1:11434");
+    let mut options = json!({"temperature": config.temperature});
+    if let Some(max_output_tokens) = config.max_output_tokens {
+        options["num_predict"] = json!(max_output_tokens);
+    }
+    if let Some(num_ctx) = config.ollama_num_ctx {
+        options["num_ctx"] = json!(num_ctx);
+    }
+    let mut headers = BTreeMap::new();
+    headers.insert("Content-Type".to_string(), "application/json".to_string());
+    headers.insert("Accept".to_string(), "application/json".to_string());
+    Ok(ProviderHttpRequest {
+        url: format!("{}/api/chat", base_url.trim_end_matches('/')),
+        headers,
+        body: json!({
+            "model": config.model,
+            "messages": messages.iter().map(|message| json!({
+                "role": message.role,
+                "content": message.content,
+            })).collect::<Vec<_>>(),
+            "stream": false,
+            "options": options,
+        }),
+        timeout_seconds: config.timeout_seconds,
+    })
+}
+
+fn ollama_content(payload: &Value) -> Result<String> {
+    payload
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("Ollama response is missing message.content"))
+}
+
+pub fn invoke_ollama_chat(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    transport: &dyn ProviderTransport,
+) -> Result<String> {
+    let request = build_ollama_chat_request(config, messages)?;
+    retry_provider_request(config, &request, transport, ollama_content)
+}
+
 pub fn invoke_provider_chat(
     config: &ProviderEndpointConfig,
     messages: &[ProviderChatMessage],
@@ -451,6 +508,8 @@ pub fn invoke_provider_chat(
 ) -> Result<String> {
     if config.provider == "anthropic" {
         invoke_anthropic_chat(config, messages, transport)
+    } else if config.provider == "ollama" {
+        invoke_ollama_chat(config, messages, transport)
     } else {
         invoke_openai_compatible_chat(config, messages, response_format, transport)
     }
@@ -657,6 +716,54 @@ mod tests {
         let content =
             invoke_provider_chat(&anthropic_config(), &messages(), None, &transport).unwrap();
         assert_eq!(content, "part one\npart two");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    fn ollama_config() -> ProviderEndpointConfig {
+        serde_json::from_value(json!({
+            "provider": "ollama",
+            "model": "llama-test",
+            "temperature": 0.2,
+            "base_url": "http://localhost:11434",
+            "max_output_tokens": 64,
+            "ollama_num_ctx": 2048,
+            "max_retries": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_backoff_max_seconds": 0.0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn builds_ollama_chat_request_with_options() {
+        let request = build_ollama_chat_request(&ollama_config(), &messages()).unwrap();
+        assert_eq!(request.url, "http://localhost:11434/api/chat");
+        assert_eq!(request.body["model"], "llama-test");
+        assert_eq!(request.body["stream"], false);
+        assert_eq!(request.body["options"]["num_predict"], 64);
+        assert_eq!(request.body["options"]["num_ctx"], 2048);
+        assert_eq!(request.body["options"]["temperature"], 0.2);
+    }
+
+    #[test]
+    fn invokes_ollama_chat_and_retries_server_errors() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let transport = |_request: &ProviderHttpRequest| -> Result<ProviderHttpResponse> {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Ok(ProviderHttpResponse {
+                    status: 503,
+                    body: json!({"error": "temporary"}).to_string(),
+                });
+            }
+            Ok(ProviderHttpResponse {
+                status: 200,
+                body: json!({"message": {"role": "assistant", "content": "ollama result"}})
+                    .to_string(),
+            })
+        };
+        let content =
+            invoke_provider_chat(&ollama_config(), &messages(), None, &transport).unwrap();
+        assert_eq!(content, "ollama result");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
