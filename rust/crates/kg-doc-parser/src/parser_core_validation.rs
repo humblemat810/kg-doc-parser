@@ -778,6 +778,142 @@ pub fn dedupe_and_filter_layer(
     }
 }
 
+fn pointer_repair_context(pointer: &HydratedTextPointer, parser_source_map: &Value) -> String {
+    let source = parser_source_map.get(&pointer.source_cluster_id);
+    let text = source.map(source_map_entry_text).unwrap_or_default();
+    let preview = text.replace('\n', "\\n").replace('\t', "\\t");
+    let preview = if preview.chars().count() > 120 {
+        format!("{}...", preview.chars().take(117).collect::<String>())
+    } else {
+        preview
+    };
+    format!(
+        "source_cluster_id={:?}, span=({},{}) verbatim_text={:?}, source_text={:?}",
+        pointer.source_cluster_id,
+        pointer.start_char,
+        pointer.end_char,
+        pointer.verbatim_text,
+        preview
+    )
+}
+
+pub fn repair_layer_candidates<F>(
+    current_layer_result: &CurrentLayerResult,
+    parser_source_map: &Value,
+    correct_pointer_fn: F,
+) -> (CurrentLayerResult, usize)
+where
+    F: Fn(&HydratedTextPointer, &Value) -> Result<Option<HydratedTextPointer>>,
+{
+    let mut repaired_children = Vec::with_capacity(current_layer_result.children.len());
+    let mut repair_failures = Vec::new();
+    let mut repair_diagnostics = Vec::new();
+    let mut repaired_count = 0;
+
+    for child in &current_layer_result.children {
+        let mut repaired_pointers = Vec::with_capacity(child.total_content_pointers.len());
+        let mut child_failed = false;
+        for pointer in &child.total_content_pointers {
+            let fixed = match correct_pointer_fn(pointer, parser_source_map) {
+                Ok(Some(fixed)) => Some(fixed),
+                Ok(None) => {
+                    let message = format!(
+                        "unrecoverable pointer for child {:?} (parent={:?}, node_id={:?}); {}",
+                        child.title,
+                        child.parent_node_id,
+                        child.node_id,
+                        pointer_repair_context(pointer, parser_source_map)
+                    );
+                    repair_failures.push(message);
+                    child_failed = true;
+                    None
+                }
+                Err(error) => {
+                    let diagnostic = LayerValidationDiagnostic {
+                        phase: "repair".to_string(),
+                        error_type: "repair_error".to_string(),
+                        message: error.to_string(),
+                        location: Vec::new(),
+                    };
+                    let diagnostic = serde_json::to_value(diagnostic).unwrap_or_default();
+                    if !repair_diagnostics.contains(&diagnostic) {
+                        repair_diagnostics.push(diagnostic);
+                    }
+                    let message = format!(
+                        "pointer repair validation failed for child {:?} (parent={:?}, node_id={:?}); RepairError: {error}",
+                        child.title,
+                        child.parent_node_id,
+                        child.node_id
+                    );
+                    repair_failures.push(message);
+                    child_failed = true;
+                    None
+                }
+            };
+            let Some(fixed) = fixed else { break };
+            if fixed != *pointer {
+                repaired_count += 1;
+            }
+            repaired_pointers.push(fixed);
+        }
+        if child_failed {
+            continue;
+        }
+        repaired_children.push(LayerChildCandidate {
+            node_id: child.node_id.clone(),
+            parent_node_id: child.parent_node_id.clone(),
+            title: child.title.clone(),
+            node_type: child.node_type.clone(),
+            total_content_pointers: repaired_pointers,
+            expandable: child.expandable,
+            metadata: child.metadata.clone(),
+            child_candidates: child.child_candidates.clone(),
+        });
+    }
+
+    let mut metadata = current_layer_result.metadata.clone();
+    if !repair_failures.is_empty() {
+        metadata.insert(
+            "repair_failures".to_string(),
+            serde_json::to_value(repair_failures.iter().take(32).cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+        );
+        metadata.insert(
+            "repair_failure_scope".to_string(),
+            json!("child_replacement"),
+        );
+        metadata.insert("failure_type".to_string(), json!("repair_failure"));
+        metadata.insert("rollback".to_string(), json!("verified_parent_retained"));
+        metadata.insert("retryable".to_string(), json!(true));
+    }
+    let mut validation_diagnostics = current_layer_result.validation_diagnostics.clone();
+    for diagnostic in repair_diagnostics {
+        if !validation_diagnostics.contains(&diagnostic) {
+            validation_diagnostics.push(diagnostic);
+        }
+    }
+    let satisfied = if validation_diagnostics.is_empty() {
+        current_layer_result.satisfied
+    } else {
+        Some(false)
+    };
+    (
+        CurrentLayerResult {
+            children: repaired_children,
+            satisfied,
+            review_rounds: current_layer_result.review_rounds,
+            atomic_retained: current_layer_result.atomic_retained,
+            atomic_parent_ids: current_layer_result.atomic_parent_ids.clone(),
+            atomic_content_pointers_by_parent: current_layer_result
+                .atomic_content_pointers_by_parent
+                .clone(),
+            metadata,
+            validation_diagnostics,
+        },
+        repaired_count,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,6 +1101,53 @@ mod tests {
             "foreign_parent"
         );
         assert_eq!(filtered.satisfied, Some(false));
+    }
+
+    #[test]
+    fn repairs_layer_candidates_without_erasing_verified_siblings() {
+        let source_map = json!({"p1": {"id": "p1", "text": "AlphaBeta"}});
+        let mut current = result(vec![
+            child("bad", "parent", vec![pointer("missing", 0, 4, "Alpha")]),
+            child("good", "parent", vec![pointer("p1", 8, 12, "Beta")]),
+        ]);
+        current.satisfied = Some(true);
+        let (repaired, repaired_count) =
+            repair_layer_candidates(&current, &source_map, |pointer, _| {
+                Ok(
+                    (pointer.source_cluster_id == "p1").then(|| HydratedTextPointer {
+                        source_cluster_id: "p1".to_string(),
+                        start_char: 5,
+                        end_char: 8,
+                        verbatim_text: "Beta".to_string(),
+                        start_delimiter: None,
+                        end_delimiter: None,
+                        validation_method: Some("repair".to_string()),
+                    }),
+                )
+            });
+        assert_eq!(repaired_count, 1);
+        assert_eq!(repaired.children.len(), 1);
+        assert_eq!(repaired.children[0].node_id, "good");
+        assert_eq!(repaired.children[0].total_content_pointers[0].start_char, 5);
+        assert_eq!(repaired.metadata["retryable"], json!(true));
+        assert_eq!(repaired.metadata["failure_type"], json!("repair_failure"));
+        assert!(repaired.validation_diagnostics.is_empty());
+        assert_eq!(repaired.satisfied, Some(true));
+
+        let (failed, _) = repair_layer_candidates(&current, &source_map, |pointer, _| {
+            if pointer.source_cluster_id == "p1" {
+                return Ok(Some(pointer.clone()));
+            }
+            Err(anyhow::anyhow!("validation failed"))
+        });
+        assert_eq!(failed.children.len(), 1);
+        assert_eq!(failed.children[0].node_id, "good");
+        assert_eq!(
+            failed.validation_diagnostics[0]["error_type"],
+            "repair_error"
+        );
+        assert_eq!(failed.validation_diagnostics[0]["phase"], "repair");
+        assert_eq!(failed.satisfied, Some(false));
     }
 
     #[test]
