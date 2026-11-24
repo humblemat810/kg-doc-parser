@@ -18,6 +18,7 @@ use kg_doc_parser::pointer_matching::{
     whitespace_collapse,
 };
 use kg_doc_parser::semantic::SemanticNode;
+use kg_doc_parser::service::evaluate_workflow_predicate;
 use kg_doc_parser::{
     page_index_source_text::split_pages, semantic_indexing as indexing,
     source_text::source_map_entry_text,
@@ -249,6 +250,19 @@ fn ocr_artifact_quality_errors_match_python() {
         let actual = ocr_artifact_quality_error(&case["payload"]);
         let expected = case["expected"].as_str().map(str::to_string);
         assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn service_workflow_predicates_match_python() {
+    let payload = fixture();
+    for case in payload["service_workflow_predicates"].as_array().unwrap() {
+        let edge = kg_doc_parser::service::WorkflowEdgeInfo {
+            dst: case["edge"]["dst"].as_str().unwrap().to_string(),
+        };
+        let actual =
+            evaluate_workflow_predicate(case["name"].as_str().unwrap(), &edge, &case["state"]);
+        assert_eq!(actual, case["expected"].as_bool().unwrap());
     }
 }
 

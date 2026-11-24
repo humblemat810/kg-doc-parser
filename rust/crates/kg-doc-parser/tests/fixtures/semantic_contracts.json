@@ -435,6 +435,118 @@
       "expected": "OCR artifact contains error-severity quality diagnostics"
     }
   ],
+  "service_workflow_predicates": [
+    {
+      "name": "parse_strategy_layer_excerpt",
+      "edge": {"name": "edge", "edge_id": "edge-1", "src": "root", "dst": "workflow|layer_excerpt_method", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {"current_layer_context": {"metadata": {"parse_strategy": "layer_excerpt", "disabled_strategies": []}}},
+      "expected": true
+    },
+    {
+      "name": "parse_strategy_layer_boundary",
+      "edge": {"name": "edge", "edge_id": "edge-2", "src": "root", "dst": "workflow|layer_boundary_method", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {"current_layer_context": {"metadata": {"parse_strategy": "layer_boundary", "disabled_strategies": []}}},
+      "expected": true
+    },
+    {
+      "name": "parse_strategy_page_index",
+      "edge": {"name": "edge", "edge_id": "edge-3", "src": "root", "dst": "workflow|page_index_layer", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {"current_layer_context": {"metadata": {"parse_strategy": "page_index", "disabled_strategies": []}}},
+      "expected": true
+    },
+    {
+      "name": "strategy_attempted",
+      "edge": {"name": "edge", "edge_id": "edge-4", "src": "root", "dst": "workflow|any", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {},
+      "expected": true
+    },
+    {
+      "name": "layer_satisfied",
+      "edge": {"name": "edge", "edge_id": "edge-5", "src": "root", "dst": "workflow|any", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {
+        "current_layer_review": {
+          "coverage_ok": true,
+          "satisfied": true,
+          "metadata": {},
+          "overlap_conflicts": [],
+          "coverage_gap_notes": [],
+          "duplicate_child_notes": [],
+          "structural_issues": [],
+          "validation_diagnostics": []
+        },
+        "current_layer_result": {"satisfied": true}
+      },
+      "expected": true
+    },
+    {
+      "name": "layer_satisfied",
+      "edge": {"name": "edge", "edge_id": "edge-6", "src": "root", "dst": "workflow|any", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {
+        "current_layer_review": {
+          "coverage_ok": true,
+          "satisfied": true,
+          "metadata": {},
+          "overlap_conflicts": [{"source_cluster_id": "p1_c0"}],
+          "coverage_gap_notes": [],
+          "duplicate_child_notes": [],
+          "structural_issues": [],
+          "validation_diagnostics": []
+        },
+        "current_layer_result": {"satisfied": true}
+      },
+      "expected": false
+    },
+    {
+      "name": "strategy_failed_with_remaining",
+      "edge": {"name": "edge", "edge_id": "edge-7", "src": "root", "dst": "workflow|any", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {"current_layer_context": {"metadata": {"disabled_strategies": ["layer_excerpt", "layer_boundary"]}}},
+      "expected": true
+    },
+    {
+      "name": "all_strategies_exhausted",
+      "edge": {"name": "edge", "edge_id": "edge-8", "src": "root", "dst": "workflow|any", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {"current_layer_context": {"metadata": {"disabled_strategies": ["layer_excerpt", "layer_boundary", "page_index"]}}},
+      "expected": true
+    },
+    {
+      "name": "strategy_selection_failed",
+      "edge": {"name": "edge", "edge_id": "edge-9", "src": "root", "dst": "workflow|any", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {"strategy_selection_error": "no strategy selected"},
+      "expected": true
+    },
+    {
+      "name": "commit_candidates_valid",
+      "edge": {"name": "edge", "edge_id": "edge-10", "src": "root", "dst": "workflow|any", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {"current_layer_review": {"satisfied": true, "metadata": {"commit_validation": true}}},
+      "expected": true
+    },
+    {
+      "name": "commit_candidates_invalid",
+      "edge": {"name": "edge", "edge_id": "edge-11", "src": "root", "dst": "workflow|any", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {"current_layer_review": {"satisfied": false, "metadata": {"commit_validation": true}}},
+      "expected": true
+    },
+    {
+      "name": "batch_has_repair_candidates",
+      "edge": {"name": "edge", "edge_id": "edge-12", "src": "root", "dst": "workflow|any", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {
+        "current_layer_context": {"parent_node_ids": ["p1", "p2"]},
+        "current_layer_review": {"metadata": {}},
+        "current_layer_result": {"children": [{"parent_node_id": "p1"}]}
+      },
+      "expected": true
+    },
+    {
+      "name": "batch_has_repair_candidates",
+      "edge": {"name": "edge", "edge_id": "edge-13", "src": "root", "dst": "workflow|any", "predicate": null, "priority": 100, "is_default": false, "multiplicity": "one"},
+      "state": {
+        "current_layer_context": {"parent_node_ids": ["p1", "p2"]},
+        "current_layer_review": {"metadata": {"review_failure": "provider"}},
+        "current_layer_result": {"children": [{"parent_node_id": "p1"}]}
+      },
+      "expected": false
+    }
+  ],
   "page_index_normalize_text": [
     {"text": "  Alpha   Beta  ", "expected": "alpha beta"}
   ],
