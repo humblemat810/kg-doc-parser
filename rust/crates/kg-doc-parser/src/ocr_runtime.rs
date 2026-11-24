@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 use crate::document_models::DocumentTree;
+use crate::ocr_state_store::{OcrStage, OcrWorkflowStateStore};
 
 pub const OCR_ROOT_STATE_VERSION: &str = "ocr-root-v3";
 pub const OCR_PAGE_STATE_VERSION: &str = "ocr-page-v2";
@@ -77,6 +78,249 @@ pub fn state_string(state: &Value, key: &str, default: &str) -> String {
         .to_string()
 }
 
+pub fn state_optional_string(state: &Value, key: &str) -> Result<Option<String>> {
+    match state.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.to_string())),
+        _ => bail!("OCR workflow state field {key:?} must be a string"),
+    }
+}
+
+pub fn document_tree_from_state(state: &Value) -> Result<crate::document_models::DocumentTree> {
+    let Some(Value::Object(payload)) = state.get("tree") else {
+        bail!("OCR grouping runtime state has no tree");
+    };
+    serde_json::from_value(Value::Object(payload.clone()))
+        .map_err(|error| anyhow::anyhow!("OCR grouping runtime state has an invalid tree: {error}"))
+}
+
+fn is_json_integer(value: &Value) -> bool {
+    value.is_i64() || value.is_u64()
+}
+
+pub fn typed_state(value: &Value) -> Result<Value> {
+    let Some(Value::Object(input)) = Some(value) else {
+        bail!("OCR workflow state must be an object");
+    };
+    let mut state = input.clone();
+
+    for key in [
+        "ocr_page_state_version",
+        "ocr_root_state_version",
+        "document_id",
+        "source_fingerprint",
+        "source_namespace",
+        "grouping_policy_version",
+        "parse_generation",
+        "legacy_dir",
+        "checkpoint_revision",
+    ] {
+        if let Some(field) = state.get(key) {
+            if !field.is_null() && !field.is_string() {
+                bail!("OCR workflow state field {key:?} must be a string");
+            }
+        }
+    }
+
+    for key in [
+        "pass_index",
+        "adaptive_grouping_round",
+        "adaptive_grouping_window",
+        "ocr_page_recovery_generation",
+        "page_cursor",
+        "last_failed_page",
+        "last_reused_page",
+    ] {
+        if let Some(field) = state.get(key) {
+            if !field.is_null() && !is_json_integer(field) {
+                bail!("OCR workflow state field {key:?} must be an integer");
+            }
+        }
+    }
+
+    for key in [
+        "checkpoint_restored",
+        "checkpoint_absent",
+        "summaries_generated",
+        "adaptive_grouping_complete",
+    ] {
+        if let Some(field) = state.get(key) {
+            if !field.is_null() && !field.is_boolean() {
+                bail!("OCR workflow state field {key:?} must be a boolean");
+            }
+        }
+    }
+
+    for key in [
+        "tree",
+        "workflow_input",
+        "grouping_result",
+        "semantic_result",
+        "semantic_tree",
+        "ocr_page_result",
+        "export_bundle",
+    ] {
+        if let Some(field) = state.get(key) {
+            if !field.is_null() && !field.is_object() {
+                bail!("OCR workflow state field {key:?} must be a JSON object");
+            }
+        }
+    }
+
+    if let Some(Value::Array(passes)) = state.get_mut("grouping_passes") {
+        for pass in passes {
+            if !pass.is_array() {
+                bail!("OCR workflow state grouping_passes pass must be a list");
+            }
+            let Some(Value::Array(items)) = Some(pass) else {
+                continue;
+            };
+            for item in items {
+                if !item.is_object() {
+                    bail!("OCR workflow state grouping_passes item must be a JSON object");
+                }
+            }
+        }
+    } else if state
+        .get("grouping_passes")
+        .is_some_and(|value| !value.is_null())
+    {
+        bail!("OCR workflow state field grouping_passes must be a list of passes");
+    }
+
+    for key in [
+        "adaptive_grouping_history",
+        "adaptive_grouping_window_proposals",
+    ] {
+        if let Some(Value::Array(items)) = state.get_mut(key) {
+            for item in items {
+                if !item.is_object() {
+                    bail!("OCR workflow state {key} item must be a JSON object");
+                }
+            }
+        } else if state.get(key).is_some_and(|value| !value.is_null()) {
+            bail!("OCR workflow state {key} must be a list");
+        }
+    }
+
+    for key in ["completed_pages", "reused_pages"] {
+        if let Some(Value::Array(items)) = state.get(key) {
+            if items.iter().any(|item| !is_json_integer(item)) {
+                bail!("OCR workflow state field {key:?} must be a list of integers");
+            }
+        } else if state.get(key).is_some_and(|value| !value.is_null()) {
+            bail!("OCR workflow state field {key:?} must be a list of integers");
+        }
+    }
+
+    if let Some(Value::Array(items)) = state.get_mut("raw_pages") {
+        for (index, item) in items.iter_mut().enumerate() {
+            *item = validated_page_json(item, None, true).map_err(|error| {
+                anyhow::anyhow!("OCR workflow state raw_pages[{index}]: {error}")
+            })?;
+        }
+    } else if state.get("raw_pages").is_some_and(|value| !value.is_null()) {
+        bail!("OCR workflow state field raw_pages must be a list or null");
+    }
+
+    if let Some(Value::Array(items)) = state.get_mut("page_sources") {
+        for item in items {
+            page_source_state(item)?;
+        }
+    } else if state
+        .get("page_sources")
+        .is_some_and(|value| !value.is_null())
+    {
+        bail!("OCR workflow state field page_sources must be a list");
+    }
+
+    Ok(Value::Object(state))
+}
+
+pub fn typed_child_state(value: &Value, label: &str) -> Result<Value> {
+    if !value.is_object() {
+        bail!("{label} did not return a JSON object state");
+    }
+    typed_state(value)
+        .map_err(|error| anyhow::anyhow!("{label} returned invalid typed state: {error}"))
+}
+
+pub fn reused_pages_from_trace(nodes: &[Value], run_id: &str) -> Result<Vec<i64>> {
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    struct TraceKey {
+        step_sequence: i64,
+        attempt: i64,
+        update_index: usize,
+    }
+    let mut outcomes: std::collections::BTreeMap<i64, (TraceKey, bool)> =
+        std::collections::BTreeMap::new();
+    for node in nodes {
+        let Some(metadata) = node.get("metadata").and_then(Value::as_object) else {
+            continue;
+        };
+        if metadata.get("run_id").and_then(Value::as_str) != Some(run_id) {
+            continue;
+        }
+        let Some(result_raw) = metadata.get("result_json").and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok(result) = serde_json::from_str::<Value>(result_raw) else {
+            continue;
+        };
+        let Some(Value::Array(updates)) = result.get("state_update") else {
+            continue;
+        };
+        let step_sequence = metadata
+            .get("step_seq")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let attempt = metadata.get("attempt").and_then(Value::as_i64).unwrap_or(0);
+        for (update_index, update) in updates.iter().enumerate() {
+            let Some(Value::Array(update)) = Some(update) else {
+                continue;
+            };
+            if update.len() != 2 {
+                continue;
+            }
+            let operation = update[0].as_str().unwrap_or_default();
+            let Some(payload) = update[1].as_object() else {
+                continue;
+            };
+            let key = TraceKey {
+                step_sequence,
+                attempt,
+                update_index,
+            };
+            if let Some(page_cursor_value) = payload.get("page_cursor").and_then(Value::as_i64) {
+                if page_cursor_value >= 1 && payload.contains_key("last_reused_page") {
+                    let was_reused = payload.get("last_reused_page").and_then(Value::as_i64)
+                        == Some(page_cursor_value);
+                    outcomes.insert(page_cursor_value, (key, was_reused));
+                }
+            }
+            if let Some(reused_page) = payload.get("last_reused_page").and_then(Value::as_i64) {
+                if reused_page >= 1 {
+                    outcomes.insert(reused_page, (key, true));
+                }
+            }
+            if operation == "a" {
+                if let Some(legacy_page) = payload.get("reused_pages").and_then(Value::as_i64) {
+                    if legacy_page >= 1 {
+                        outcomes.insert(legacy_page, (key, true));
+                    }
+                }
+            }
+        }
+    }
+    let mut outcomes = outcomes.into_iter().collect::<Vec<_>>();
+    outcomes.sort_by_key(|(_page_number, (key, _was_reused))| *key);
+    Ok(outcomes
+        .into_iter()
+        .filter(|(_page_number, (_key, was_reused))| *was_reused)
+        .map(|(page_number, _)| page_number)
+        .collect())
+}
+
 pub fn page_cursor(state: &Value) -> u64 {
     state
         .get("page_cursor")
@@ -94,6 +338,13 @@ pub fn page_workflow_initial_state(
         "legacy_dir": legacy_dir,
         "page_cursor": 0,
     })
+}
+
+pub fn checkpoint_repair_cursor(patch: &Value) -> Result<u64> {
+    let Some(cursor) = patch.get("page_cursor").and_then(Value::as_u64) else {
+        bail!("OCR checkpoint repair requires a non-negative page_cursor");
+    };
+    Ok(cursor)
 }
 
 pub fn resume_identity_value(state: &Value, key: &str) -> Result<ResumeIdentity> {
@@ -561,6 +812,51 @@ pub fn validate_existing_page_identities(
     Ok(())
 }
 
+pub struct RootArtifactRecoveryRequest<'a> {
+    pub state_store: &'a OcrWorkflowStateStore,
+    pub document_id: &'a str,
+    pub sources: &'a [PageSourceState],
+    pub legacy_dir: &'a std::path::Path,
+    pub configuration_fingerprints: &'a [String],
+}
+
+pub fn root_page_artifacts_need_recovery(
+    request: &RootArtifactRecoveryRequest<'_>,
+) -> Result<bool> {
+    let configuration_fingerprints = request
+        .configuration_fingerprints
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    for source in request.sources {
+        let image_digest = Sha256::digest(std::fs::read(&source.image_path)?)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let page_path = request
+            .legacy_dir
+            .join(format!("page_{}.json", source.page_number));
+        request.state_store.reconcile_orphan_artifact(
+            request.document_id,
+            source.page_number as i64,
+            &image_digest,
+            &page_path,
+            &configuration_fingerprints,
+        )?;
+        if !request.state_store.should_skip_page(
+            request.document_id,
+            source.page_number as i64,
+            OcrStage::Ocr,
+            &image_digest,
+            Some(&page_path),
+            &configuration_fingerprints,
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn recovery_generation(state: &Value) -> Result<u64> {
     match state.get("ocr_page_recovery_generation") {
         None | Some(Value::Null) => Ok(0),
@@ -578,6 +874,23 @@ pub fn semantic_parse_generation(recovery_generation: u64) -> String {
         "semantic-v1".to_string()
     } else {
         format!("semantic-recovery-v{recovery_generation}")
+    }
+}
+
+pub fn next_root_recovery_run_id<F>(
+    base_run_id: &str,
+    mut completed_exists: F,
+) -> Result<(String, u64)>
+where
+    F: FnMut(&str) -> Result<bool>,
+{
+    let mut generation = 1;
+    loop {
+        let candidate = format!("{base_run_id}|recovery-{generation}");
+        if !completed_exists(&candidate)? {
+            return Ok((candidate, generation));
+        }
+        generation += 1;
     }
 }
 
@@ -747,6 +1060,7 @@ pub fn validated_grouping_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ocr_state_store::{sha256_hex, DocumentIdentity, OcrAttemptRequest};
     use serde_json::json;
 
     #[test]
@@ -766,6 +1080,126 @@ mod tests {
         assert_eq!(int_list(&state, "completed_pages").unwrap(), vec![1, 2]);
         assert!(state_bool(&state, "adaptive_grouping_complete", false));
         assert_eq!(state_string(&state, "missing", "fallback"), "fallback");
+    }
+
+    #[test]
+    fn decodes_optional_string_and_document_tree() {
+        let state = json!({
+            "checkpoint_revision": "tree-v1",
+            "tree": {
+                "schema_version": "1.0",
+                "document_id": "doc",
+                "source_revision": "source",
+                "tree_revision": 1,
+                "root_id": "root",
+                "source_items": [],
+                "nodes": [],
+                "references": []
+            }
+        });
+        assert_eq!(
+            state_optional_string(&state, "checkpoint_revision").unwrap(),
+            Some("tree-v1".to_string())
+        );
+        let tree = document_tree_from_state(&state).unwrap();
+        assert_eq!(tree.root_id, "root");
+        assert!(state_optional_string(&state, "missing").unwrap().is_none());
+        let invalid = json!({"checkpoint_revision": 1});
+        assert!(state_optional_string(&invalid, "checkpoint_revision").is_err());
+    }
+
+    #[test]
+    fn reconstructs_reused_pages_from_trace() {
+        let nodes = vec![
+            json!({
+                "metadata": {
+                    "run_id": "root",
+                    "step_seq": 1,
+                    "attempt": 0,
+                    "result_json": "{\"state_update\":[[\"a\", {\"page_cursor\": 1, \"last_reused_page\": 1}]]}"
+                }
+            }),
+            json!({
+                "metadata": {
+                    "run_id": "root",
+                    "step_seq": 2,
+                    "attempt": 0,
+                    "result_json": "{\"state_update\":[[\"a\", {\"reused_pages\": 2}]]}"
+                }
+            }),
+            json!({
+                "metadata": {
+                    "run_id": "other",
+                    "step_seq": 3,
+                    "attempt": 0,
+                    "result_json": "{\"state_update\":[[\"a\", {\"page_cursor\": 4, \"last_reused_page\": 4}]]}"
+                }
+            }),
+            json!({
+                "metadata": {
+                    "run_id": "root",
+                    "step_seq": 4,
+                    "attempt": 0,
+                    "result_json": "{\"state_update\":[[\"a\", {\"page_cursor\": 5, \"last_reused_page\": 4}]]}"
+                }
+            }),
+        ];
+        let reused = reused_pages_from_trace(&nodes, "root").unwrap();
+        assert_eq!(reused, vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn validates_and_narrows_typed_state() {
+        let state = json!({
+            "_opaque": {"nested": {"value": 1}},
+            "ocr_page_state_version": OCR_PAGE_STATE_VERSION,
+            "document_id": "doc",
+            "source_fingerprint": "source",
+            "grouping_policy_version": "grouping-v1",
+            "parse_generation": "semantic-v1",
+            "page_cursor": 2,
+            "adaptive_grouping_complete": true,
+            "tree": {
+                "schema_version": "1.0",
+                "document_id": "doc",
+                "source_revision": "source",
+                "tree_revision": 1,
+                "root_id": "root",
+                "source_items": [],
+                "nodes": [],
+                "references": []
+            },
+            "grouping_passes": [[{"kind": "section"}]],
+            "adaptive_grouping_history": [{"round": 1}],
+            "completed_pages": [1, 2],
+            "reused_pages": [1]
+        });
+        let typed = typed_state(&state).unwrap();
+        assert_eq!(typed["page_cursor"], json!(2));
+        assert_eq!(typed["_opaque"]["nested"]["value"], json!(1));
+        assert_eq!(typed["completed_pages"], json!([1, 2]));
+        assert_eq!(typed["reused_pages"], json!([1]));
+        assert_eq!(typed_child_state(&state, "page child").unwrap(), typed);
+
+        let invalid_string = json!({"document_id": 1});
+        assert!(typed_state(&invalid_string).is_err());
+        let invalid_boolean = json!({"adaptive_grouping_complete": "true"});
+        assert!(typed_state(&invalid_boolean).is_err());
+        let invalid_pages = json!({"completed_pages": [1, "two"]});
+        assert!(typed_state(&invalid_pages).is_err());
+        let invalid_child = json!([]);
+        assert!(typed_child_state(&invalid_child, "page child").is_err());
+    }
+
+    #[test]
+    fn reads_checkpoint_repair_cursor() {
+        assert_eq!(
+            checkpoint_repair_cursor(&json!({"page_cursor": 3})).unwrap(),
+            3
+        );
+        assert!(checkpoint_repair_cursor(&json!({"page_cursor": -1})).is_err());
+        assert!(checkpoint_repair_cursor(&json!({"page_cursor": "3"})).is_err());
+        assert!(checkpoint_repair_cursor(&json!({})).is_err());
     }
 
     #[test]
@@ -854,6 +1288,77 @@ mod tests {
         assert_eq!(repair["raw_pages"], json!([]));
 
         assert!(reconcile_page_checkpoint(&state, None, temp.path(), &gate, "doc", 2).is_err());
+    }
+
+    #[test]
+    fn chooses_first_unused_recovery_run_id() {
+        let used = ["root|recovery-1", "root|recovery-2"];
+        let (run_id, generation) =
+            next_root_recovery_run_id("root", |candidate| Ok(used.contains(&candidate))).unwrap();
+        assert_eq!(run_id, "root|recovery-3");
+        assert_eq!(generation, 3);
+    }
+
+    #[test]
+    fn detects_root_artifact_recovery_before_terminal_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("page_1.png");
+        std::fs::write(&image, b"page one").unwrap();
+        let artifact = temp.path().join("page_1.json");
+        let store = OcrWorkflowStateStore::open(&temp.path().join("ocr-state.sqlite")).unwrap();
+        store
+            .ensure_document(&DocumentIdentity {
+                document_id: "doc".to_string(),
+                title: "Doc".to_string(),
+                source_kind: "image".to_string(),
+                input_fingerprint: "source".to_string(),
+                total_pages: 1,
+            })
+            .unwrap();
+        store
+            .record_attempt(
+                "doc",
+                1,
+                OcrStage::Ocr,
+                &OcrAttemptRequest {
+                    content_hash: Some(sha256_hex(&std::fs::read(&image).unwrap())),
+                    model_name: "model".to_string(),
+                    config_fingerprint: Some("config".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let sources = vec![PageSourceState {
+            page_number: 1,
+            image_path: image.to_string_lossy().to_string(),
+        }];
+        let configuration_fingerprints = vec!["config".to_string()];
+        let request = RootArtifactRecoveryRequest {
+            state_store: &store,
+            document_id: "doc",
+            sources: &sources,
+            legacy_dir: temp.path(),
+            configuration_fingerprints: &configuration_fingerprints,
+        };
+        assert!(root_page_artifacts_need_recovery(&request).unwrap());
+
+        std::fs::write(
+            &artifact,
+            serde_json::json!({
+                "metadata": {
+                    "ocr_json_version": "0.1",
+                    "ocr_model_name": "model",
+                    "source_image_sha256": sha256_hex(&std::fs::read(&image).unwrap()),
+                    "ocr_configuration_fingerprint": "config",
+                },
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [{"text": "page one"}],
+                "non_text_objects": [],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(!root_page_artifacts_need_recovery(&request).unwrap());
     }
 
     #[test]

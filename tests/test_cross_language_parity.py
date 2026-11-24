@@ -17,6 +17,7 @@ from kg_doc_parser.semantic_pointer_matching import (
     soft_exact_positions,
     whitespace_collapse,
 )
+from kg_doc_parser.semantic_document_splitting_layerwise_edits import SemanticNode, semantic_tree_to_kge_payload
 from kg_doc_parser.workflow_ingest.page_index_source_text import _split_pages
 from kg_doc_parser.workflow_ingest.page_index_classification import _classify_block
 from kg_doc_parser.workflow_ingest.page_index import _heuristic_page_outline
@@ -24,6 +25,9 @@ from kg_doc_parser.workflow_ingest.page_index_tree import page_index_normalize_t
 from kg_doc_parser.workflow_ingest.page_index_candidates import _extract_candidate_blocks
 from kg_doc_parser.workflow_ingest.parser_core_session import source_map_fingerprint
 from kg_doc_parser.workflow_ingest.ocr_artifacts import artifact_schema_error
+from kg_doc_parser.workflow_ingest.ocr_quality_policy import ocr_artifact_quality_error
+from kg_doc_parser.workflow_ingest.service import workflow_predicates
+from kogwistar.runtime.contract import WorkflowEdgeInfo
 from kg_doc_parser.workflow_ingest.ocr_providers import list_ocr_provider_capabilities
 from kg_doc_parser.workflow_ingest.document_models import (
     AdaptiveGroupingPolicy,
@@ -120,12 +124,39 @@ def test_pointer_matching_contracts_match_rust() -> None:
         )
         assert [list(span) for span in spans] == case["expected"]
         assert diagnostic == case["diagnostic"]
+    for case in payload["soft_exact_positions_fuzzy"]:
+        spans, diagnostic = soft_exact_positions(
+            case["source_text"],
+            case["verbatim"],
+            fuzzy_threshold=case["fuzzy_threshold"],
+            fuzzy_len_stretch=case["fuzzy_len_stretch"],
+            fuzzy_stride_frac=case["fuzzy_stride_frac"],
+        )
+        assert [list(span) for span in spans] == case["expected"]
+        assert diagnostic == case["diagnostic"]
 
 
 def test_ocr_artifact_schema_errors_match_rust() -> None:
     payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
     for case in payload["ocr_artifact_schema"]:
         assert artifact_schema_error(case) == case["expected"]
+
+
+def test_ocr_artifact_quality_errors_match_rust() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    for case in payload["ocr_artifact_quality"]:
+        assert ocr_artifact_quality_error(case["payload"]) == case["expected"]
+
+
+def test_service_workflow_predicates_match_rust() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    predicates = workflow_predicates()
+    for case in payload["service_workflow_predicates"]:
+        assert predicates[case["name"]](
+            WorkflowEdgeInfo(**case["edge"]),
+            case["state"],
+            None,
+        ) == case["expected"]
 
 
 def test_page_index_normalize_text_matches_rust() -> None:
@@ -206,6 +237,19 @@ def test_document_grouping_identities_match_rust() -> None:
         grouping_policy_version="grouping-v1",
         proposal=proposal,
     )
+
+
+def test_semantic_tree_kge_export_matches_rust() -> None:
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    for case in payload["semantic_tree_kge_export"]:
+        tree = SemanticNode.model_validate(case["tree"])
+        actual = semantic_tree_to_kge_payload(
+            tree,
+            parser_source_map=case["parser_source_map"],
+            doc_id=case["doc_id"],
+            insertion_method=case["insertion_method"],
+        )
+        assert actual == case["expected"]
 
 
 def test_page_index_candidate_extraction_matches_rust() -> None:

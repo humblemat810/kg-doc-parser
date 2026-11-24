@@ -596,11 +596,15 @@ pub fn compute_pointer_coverage(
 }
 
 fn pointer_payload(pointer: &HydratedTextPointer) -> Value {
-    serde_json::to_value(pointer).unwrap_or_else(|_| json!({}))
-}
-
-fn semantic_node_uuid(node_id: &str) -> String {
-    crate::layerwise_parser::stable_id("legacy.semantic_tree_node", &[node_id])
+    json!({
+        "source_cluster_id": pointer.source_cluster_id,
+        "start_char": pointer.start_char,
+        "end_char": pointer.end_char,
+        "verbatim_text": pointer.verbatim_text,
+        "start_delimiter": pointer.start_delimiter,
+        "end_delimiter": pointer.end_delimiter,
+        "validation_method": pointer.validation_method,
+    })
 }
 
 fn pointers_to_spans(
@@ -687,9 +691,12 @@ pub fn semantic_tree_to_kge_payload(
             .iter()
             .map(|pointer| pointer.verbatim_text.as_str())
             .collect::<Vec<_>>()
-            .join("\n");
+            .join("\n")
+            .chars()
+            .take(4000)
+            .collect::<String>();
         let mut node_payload = json!({
-            "id": semantic_node_uuid(node.node_id.as_deref().unwrap_or_default()),
+            "id": node.node_id.as_deref().unwrap_or_default(),
             "label": node.title,
             "type": "entity",
             "summary": format!("{}:\n{}", node.title, summary_text),
@@ -714,8 +721,8 @@ pub fn semantic_tree_to_kge_payload(
                     "legacy.semantic_tree_edge",
                     &[
                         "HAS_CHILD",
-                    &semantic_node_uuid(node.node_id.as_deref().unwrap_or_default()),
-                        &semantic_node_uuid(&child_id),
+                        node.node_id.as_deref().unwrap_or_default(),
+                        &child_id,
                         doc_id,
                         insertion_method,
                     ],
@@ -724,12 +731,12 @@ pub fn semantic_tree_to_kge_payload(
                 "type": "relationship",
                 "summary": format!(
                     "{} -> {} (HAS_CHILD)",
-                    semantic_node_uuid(node.node_id.as_deref().unwrap_or_default()),
+                    node.node_id.as_deref().unwrap_or_default(),
                     child_id
                 ),
                 "relation": "HAS_CHILD",
-                "source_ids": [semantic_node_uuid(node.node_id.as_deref().unwrap_or_default())],
-                "target_ids": [semantic_node_uuid(&child_id)],
+                "source_ids": [node.node_id.as_deref().unwrap_or_default()],
+                "target_ids": [child_id],
                 "source_edge_ids": [],
                 "target_edge_ids": [],
                 "mentions": mentions_from_pointers(doc_id, insertion_method, &pointers),
@@ -1123,6 +1130,29 @@ mod tests {
         let payload =
             semantic_tree_to_kge_payload(&root, Some(&source_map), Some("doc"), "test-v1").unwrap();
         assert_eq!(payload["doc_id"], "doc");
+        assert_eq!(payload["nodes"][0]["id"], "root");
+        assert_eq!(payload["nodes"][1]["id"], "alpha");
+        assert_eq!(payload["nodes"][2]["id"], "gamma");
+        assert_eq!(
+            payload["nodes"][1]["metadata"]["pointers"][0],
+            json!({
+                "source_cluster_id": "p1_c0",
+                "start_char": 0,
+                "end_char": 4,
+                "verbatim_text": "Alpha",
+                "start_delimiter": null,
+                "end_delimiter": null,
+                "validation_method": null,
+            })
+        );
+        assert_eq!(
+            payload["edges"][0]["id"],
+            "9e4c25a7-6fbf-59bc-b508-58b6925c28f4"
+        );
+        assert_eq!(
+            payload["edges"][1]["id"],
+            "17e23e52-c2aa-59fa-a47a-0f2d103a5525"
+        );
         assert_eq!(payload["nodes"].as_array().unwrap().len(), 3);
         assert_eq!(payload["edges"].as_array().unwrap().len(), 2);
         assert_eq!(payload["nodes"][0]["properties"]["kind"], "document_root");

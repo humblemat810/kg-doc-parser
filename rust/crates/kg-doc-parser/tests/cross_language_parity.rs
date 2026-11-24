@@ -3,8 +3,11 @@ use kg_doc_parser::document_models::AdaptiveGroupingPolicy;
 use kg_doc_parser::document_models::{
     BoundingBox, CoordinateSystem, SourceAccuracy, SourceLocation,
 };
-use kg_doc_parser::layerwise_edits::{apply_proposals, LayerwiseChild, LayerwisePointer};
+use kg_doc_parser::layerwise_edits::{
+    apply_proposals, semantic_tree_to_kge_payload, LayerwiseChild, LayerwisePointer,
+};
 use kg_doc_parser::ocr_artifacts::artifact_schema_error;
+use kg_doc_parser::ocr_quality::ocr_artifact_quality_error;
 use kg_doc_parser::page_index_candidates::extract_candidate_blocks;
 use kg_doc_parser::page_index_classification::{classify_block, ClassifyBlockOptions};
 use kg_doc_parser::page_index_contracts::PageIndexSourceFormat;
@@ -14,6 +17,8 @@ use kg_doc_parser::pointer_matching::{
     all_exact_occurrences, best_occurrence_by_proximity, safe_slice, soft_exact_positions,
     whitespace_collapse,
 };
+use kg_doc_parser::semantic::SemanticNode;
+use kg_doc_parser::service::evaluate_workflow_predicate;
 use kg_doc_parser::{
     page_index_source_text::split_pages, semantic_indexing as indexing,
     source_text::source_map_entry_text,
@@ -51,6 +56,22 @@ fn document_grouping_identities_match_python() {
     let node_id = group_node_id("doc", "grouping-v1", &proposal);
     assert_eq!(node_id.len(), "merge:".len() + 24);
     assert_eq!(node_id, group_node_id("doc", "grouping-v1", &proposal));
+}
+
+#[test]
+fn semantic_tree_kge_export_matches_python() {
+    let payload = fixture();
+    for case in payload["semantic_tree_kge_export"].as_array().unwrap() {
+        let tree: SemanticNode = serde_json::from_value(case["tree"].clone()).unwrap();
+        let actual = semantic_tree_to_kge_payload(
+            &tree,
+            Some(&case["parser_source_map"]),
+            Some(case["doc_id"].as_str().unwrap()),
+            case["insertion_method"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(actual, case["expected"]);
+    }
 }
 
 #[test]
@@ -223,6 +244,29 @@ fn ocr_artifact_schema_errors_match_python() {
 }
 
 #[test]
+fn ocr_artifact_quality_errors_match_python() {
+    let payload = fixture();
+    for case in payload["ocr_artifact_quality"].as_array().unwrap() {
+        let actual = ocr_artifact_quality_error(&case["payload"]);
+        let expected = case["expected"].as_str().map(str::to_string);
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn service_workflow_predicates_match_python() {
+    let payload = fixture();
+    for case in payload["service_workflow_predicates"].as_array().unwrap() {
+        let edge = kg_doc_parser::service::WorkflowEdgeInfo {
+            dst: case["edge"]["dst"].as_str().unwrap().to_string(),
+        };
+        let actual =
+            evaluate_workflow_predicate(case["name"].as_str().unwrap(), &edge, &case["state"]);
+        assert_eq!(actual, case["expected"].as_bool().unwrap());
+    }
+}
+
+#[test]
 fn pointer_matching_contracts_match_python() {
     let payload = fixture()["pointer_matching"].clone();
     for case in payload["safe_slice"].as_array().unwrap() {
@@ -274,6 +318,20 @@ fn pointer_matching_contracts_match_python() {
             None,
             0.25,
             0.10,
+        );
+        assert_eq!(serde_json::to_value(&actual).unwrap(), case["expected"]);
+        assert_eq!(
+            serde_json::to_value(diagnostic).unwrap(),
+            case["diagnostic"]
+        );
+    }
+    for case in payload["soft_exact_positions_fuzzy"].as_array().unwrap() {
+        let (actual, diagnostic) = soft_exact_positions(
+            case["source_text"].as_str().unwrap(),
+            case["verbatim"].as_str().unwrap(),
+            Some(case["fuzzy_threshold"].as_f64().unwrap()),
+            case["fuzzy_len_stretch"].as_f64().unwrap(),
+            case["fuzzy_stride_frac"].as_f64().unwrap(),
         );
         assert_eq!(serde_json::to_value(&actual).unwrap(), case["expected"]);
         assert_eq!(

@@ -724,6 +724,534 @@ fn unused_json() -> Map<String, Value> {
     json!({}).as_object().unwrap().clone()
 }
 
+pub fn review_layer(
+    parse_session: &crate::parser_core::ParseSessionState,
+    current_layer_context: &CurrentLayerContext,
+    current_layer_result: &CurrentLayerResult,
+    parser_source_map: Option<&Value>,
+) -> Result<(CurrentLayerReview, crate::parser_core::ParseSessionState)> {
+    let legacy_compat = parse_session.mode == "legacy_compat";
+    let review_skipped = legacy_compat || !parse_session.allow_review;
+    let invariants = detect_layer_invariants(
+        current_layer_context,
+        current_layer_result,
+        parser_source_map,
+    )?;
+    let structural_issues = layer_structural_issues(
+        &structural_context(current_layer_context),
+        current_layer_result,
+    )?;
+    let validation_diagnostics = current_layer_result
+        .validation_diagnostics
+        .iter()
+        .map(|value| serde_json::from_value::<LayerValidationDiagnostic>(value.clone()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| anyhow::anyhow!("validation diagnostics must be typed: {error}"))?;
+    let satisfied =
+        invariants.satisfied && structural_issues.is_empty() && validation_diagnostics.is_empty();
+    let mut updated_result = current_layer_result.clone();
+    updated_result.satisfied = Some(satisfied);
+
+    let mut metadata = Map::new();
+    if review_skipped {
+        metadata.insert("review_skipped".to_string(), json!(true));
+        metadata.insert("deterministic_validation".to_string(), json!(true));
+        if legacy_compat {
+            metadata.insert("legacy_compat".to_string(), json!(true));
+        }
+    }
+
+    let mut review_notes = if legacy_compat {
+        vec!["semantic review skipped for legacy compatibility".to_string()]
+    } else if !parse_session.allow_review {
+        vec!["semantic review disabled".to_string()]
+    } else {
+        Vec::new()
+    };
+    review_notes.extend(invariants.review_notes.iter().take(20).cloned());
+
+    let review = CurrentLayerReview {
+        updated_result,
+        coverage_ok: invariants.coverage_ok,
+        satisfied,
+        strategy_used: current_layer_context.split_strategy,
+        overlap_conflicts: invariants.overlap_conflicts,
+        coverage_gap_notes: invariants.coverage_gaps,
+        duplicate_child_notes: invariants.duplicate_notes,
+        structural_issues,
+        validation_diagnostics,
+        review_notes,
+        metadata,
+        committable_parent_node_ids: if satisfied {
+            current_layer_context.parent_node_ids.clone()
+        } else {
+            Vec::new()
+        },
+        failed_parent_node_ids: if satisfied {
+            Vec::new()
+        } else {
+            current_layer_context.parent_node_ids.clone()
+        },
+    };
+
+    let mut updated_session = parse_session.clone();
+    let frontier_identity = current_layer_context
+        .metadata
+        .get("frontier_identity")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "depth={};parents={}",
+                current_layer_context.depth,
+                current_layer_context.parent_node_ids.join(",")
+            )
+        });
+    updated_session.layer_attempts.insert(
+        frontier_identity.clone(),
+        json!(current_layer_context.retry_count + 1),
+    );
+    updated_session.last_review.insert(
+        "strategy".to_string(),
+        serde_json::to_value(review.strategy_used).unwrap_or_default(),
+    );
+    updated_session
+        .last_review
+        .insert("coverage_ok".to_string(), json!(review.coverage_ok));
+    updated_session
+        .last_review
+        .insert("satisfied".to_string(), json!(review.satisfied));
+    updated_session
+        .last_review
+        .insert("review_notes".to_string(), json!(review.review_notes));
+    updated_session.last_review.insert(
+        "metadata".to_string(),
+        serde_json::to_value(review.metadata.clone()).unwrap_or_default(),
+    );
+    Ok((review, updated_session))
+}
+
+pub fn invalid_layer_result(
+    phase: &str,
+    error: &anyhow::Error,
+) -> crate::parser_core::CurrentLayerResult {
+    crate::parser_core::CurrentLayerResult {
+        children: Vec::new(),
+        satisfied: Some(false),
+        review_rounds: 0,
+        atomic_retained: false,
+        atomic_parent_ids: Vec::new(),
+        atomic_content_pointers_by_parent: Map::new(),
+        metadata: {
+            let mut metadata = Map::new();
+            metadata.insert("validation_failure".to_string(), json!(phase));
+            metadata.insert("retryable".to_string(), json!(true));
+            metadata.insert("validation_error".to_string(), json!(error.to_string()));
+            metadata
+        },
+        validation_diagnostics: Vec::new(),
+    }
+}
+
+pub fn propose_layer_breakdown<F>(
+    parse_session: &crate::parser_core::ParseSessionState,
+    current_layer_context: &CurrentLayerContext,
+    propose_layer_fn: F,
+) -> Result<crate::parser_core::CurrentLayerResult>
+where
+    F: FnOnce() -> Result<Value>,
+{
+    if parse_session.mode == "legacy_compat" {
+        return crate::parser_core::legacy_children_for_context(
+            parse_session,
+            current_layer_context,
+        );
+    }
+    let proposed = match propose_layer_fn() {
+        Ok(proposed) => proposed,
+        Err(error) => {
+            return Ok(invalid_layer_result(
+                "proposal",
+                &anyhow::anyhow!("{error}"),
+            ))
+        }
+    };
+    match proposed {
+        Value::Null => Err(anyhow::anyhow!("unsupported proposed layer result")),
+        Value::Object(_) => {
+            serde_json::from_value::<crate::parser_core::CurrentLayerResult>(proposed.clone())
+                .map_err(|error| anyhow::anyhow!("invalid proposed layer result: {error}"))
+        }
+        Value::Array(items) => {
+            let children = items
+                .iter()
+                .map(|item| {
+                    serde_json::from_value::<crate::parser_core::LayerChildCandidate>(item.clone())
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| anyhow::anyhow!("invalid proposed layer child: {error}"))?;
+            Ok(crate::parser_core::CurrentLayerResult {
+                children,
+                satisfied: None,
+                review_rounds: 0,
+                atomic_retained: false,
+                atomic_parent_ids: Vec::new(),
+                atomic_content_pointers_by_parent: Map::new(),
+                metadata: Map::new(),
+                validation_diagnostics: Vec::new(),
+            })
+        }
+        _ => Err(anyhow::anyhow!("unsupported proposed layer result")),
+    }
+}
+
+pub fn dedupe_and_filter_layer(
+    current_layer_context: &CurrentLayerContext,
+    current_layer_result: &CurrentLayerResult,
+) -> CurrentLayerResult {
+    let parent_ids = current_layer_context
+        .parent_node_ids
+        .iter()
+        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    let mut filtered = Vec::new();
+    let mut validation_diagnostics = current_layer_result.validation_diagnostics.clone();
+    for child in &current_layer_result.children {
+        if !parent_ids.contains(&&child.parent_node_id) {
+            let diagnostic = LayerValidationDiagnostic {
+                phase: "commit".to_string(),
+                error_type: "foreign_parent".to_string(),
+                message: format!(
+                    "child {:?} references parent {:?} outside the current layer",
+                    child.node_id, child.parent_node_id
+                ),
+                location: vec![child.node_id.clone(), child.parent_node_id.clone()],
+            };
+            let diagnostic = serde_json::to_value(diagnostic).unwrap_or_default();
+            if !validation_diagnostics.contains(&diagnostic) {
+                validation_diagnostics.push(diagnostic);
+            }
+            continue;
+        }
+        let key = (
+            child.parent_node_id.clone(),
+            child.node_type.clone(),
+            child.title.trim().to_lowercase(),
+            child_pointer_fingerprint(child),
+        );
+        if seen.insert(key) {
+            filtered.push(child.clone());
+        }
+    }
+    CurrentLayerResult {
+        children: filtered,
+        satisfied: current_layer_result
+            .satisfied
+            .map(|satisfied| satisfied && validation_diagnostics.is_empty()),
+        review_rounds: current_layer_result.review_rounds,
+        atomic_retained: current_layer_result.atomic_retained,
+        atomic_parent_ids: current_layer_result.atomic_parent_ids.clone(),
+        atomic_content_pointers_by_parent: current_layer_result
+            .atomic_content_pointers_by_parent
+            .clone(),
+        metadata: current_layer_result.metadata.clone(),
+        validation_diagnostics,
+    }
+}
+
+pub fn apply_cud_update(
+    _current_layer_result: &crate::parser_core::CurrentLayerResult,
+    current_layer_review: &CurrentLayerReview,
+) -> crate::parser_core::CurrentLayerResult {
+    let mut updated = current_layer_review.updated_result.clone();
+    let mut metadata = updated.metadata.clone();
+    for (key, value) in &current_layer_review.metadata {
+        metadata.insert(key.clone(), value.clone());
+    }
+    metadata.insert(
+        "split_strategy".to_string(),
+        serde_json::to_value(current_layer_review.strategy_used).unwrap_or_default(),
+    );
+    metadata.insert(
+        "layer_coverage_ok".to_string(),
+        serde_json::to_value(current_layer_review.coverage_ok).unwrap_or_default(),
+    );
+    if !current_layer_review.review_notes.is_empty() {
+        metadata.insert(
+            "review_notes".to_string(),
+            serde_json::to_value(current_layer_review.review_notes.clone()).unwrap_or_default(),
+        );
+    }
+    if !current_layer_review.overlap_conflicts.is_empty() {
+        metadata.insert(
+            "overlap_conflicts".to_string(),
+            serde_json::to_value(current_layer_review.overlap_conflicts.clone())
+                .unwrap_or_default(),
+        );
+    }
+    if !current_layer_review.coverage_gap_notes.is_empty() {
+        metadata.insert(
+            "coverage_gap_notes".to_string(),
+            serde_json::to_value(current_layer_review.coverage_gap_notes.clone())
+                .unwrap_or_default(),
+        );
+    }
+    if !current_layer_review.duplicate_child_notes.is_empty() {
+        metadata.insert(
+            "duplicate_child_notes".to_string(),
+            serde_json::to_value(current_layer_review.duplicate_child_notes.clone())
+                .unwrap_or_default(),
+        );
+    }
+    if !current_layer_review.structural_issues.is_empty() {
+        metadata.insert(
+            "structural_issues".to_string(),
+            serde_json::to_value(current_layer_review.structural_issues.clone())
+                .unwrap_or_default(),
+        );
+    }
+    if !current_layer_review.validation_diagnostics.is_empty() {
+        metadata.insert(
+            "validation_diagnostics".to_string(),
+            serde_json::to_value(current_layer_review.validation_diagnostics.clone())
+                .unwrap_or_default(),
+        );
+    }
+    updated.satisfied = Some(current_layer_review.satisfied);
+    updated.review_rounds += 1;
+    updated.metadata = metadata;
+    updated
+}
+
+pub fn check_layer_coverage(
+    current_layer_context: &CurrentLayerContext,
+    current_layer_result: &crate::parser_core::CurrentLayerResult,
+    current_layer_review: Option<&CurrentLayerReview>,
+) -> (bool, Vec<String>) {
+    if let Some(review) = current_layer_review {
+        if review
+            .metadata
+            .get("review_failure")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return (
+                false,
+                vec!["layer review unavailable; quality is unknown".to_string()],
+            );
+        }
+        let mut notes = review.review_notes.clone();
+        for item in &review.overlap_conflicts {
+            notes.push(format!(
+                "overlap conflict: {} vs {} @ {}:{}-{}",
+                item.left_child_id,
+                item.right_child_id,
+                item.source_cluster_id,
+                item.overlap_start,
+                item.overlap_end
+            ));
+        }
+        for item in &review.coverage_gap_notes {
+            notes.push(format!(
+                "coverage gap: {} {}:{}-{}",
+                item.parent_node_id, item.source_cluster_id, item.gap_start, item.gap_end
+            ));
+        }
+        for item in &review.duplicate_child_notes {
+            notes.push(format!(
+                "duplicate child: {} duplicates {}",
+                item.child_node_id, item.duplicate_of_child_node_id
+            ));
+        }
+        return (review.coverage_ok, notes);
+    }
+
+    let metadata_flag = current_layer_result
+        .metadata
+        .get("layer_coverage_ok")
+        .and_then(Value::as_bool);
+    if let Some(metadata_flag) = metadata_flag {
+        let notes = current_layer_result
+            .metadata
+            .get("review_notes")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| item.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        return (metadata_flag, notes);
+    }
+    if current_layer_result.atomic_retained {
+        return (true, Vec::new());
+    }
+    let parent_ids: HashSet<&String> = current_layer_context.parent_node_ids.iter().collect();
+    let mut missing: Vec<&String> = parent_ids
+        .difference(
+            &current_layer_result
+                .children
+                .iter()
+                .filter(|child| parent_ids.contains(&&child.parent_node_id))
+                .map(|child| &child.parent_node_id)
+                .collect::<HashSet<_>>(),
+        )
+        .cloned()
+        .collect();
+    missing.sort();
+    if !missing.is_empty() {
+        return (
+            false,
+            vec![format!(
+                "missing children for parent ids: {}",
+                missing
+                    .iter()
+                    .map(|item| item.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )],
+        );
+    }
+    (true, Vec::new())
+}
+
+fn pointer_repair_context(pointer: &HydratedTextPointer, parser_source_map: &Value) -> String {
+    let source = parser_source_map.get(&pointer.source_cluster_id);
+    let text = source.map(source_map_entry_text).unwrap_or_default();
+    let preview = text.replace('\n', "\\n").replace('\t', "\\t");
+    let preview = if preview.chars().count() > 120 {
+        format!("{}...", preview.chars().take(117).collect::<String>())
+    } else {
+        preview
+    };
+    format!(
+        "source_cluster_id={:?}, span=({},{}) verbatim_text={:?}, source_text={:?}",
+        pointer.source_cluster_id,
+        pointer.start_char,
+        pointer.end_char,
+        pointer.verbatim_text,
+        preview
+    )
+}
+
+pub fn repair_layer_candidates<F>(
+    current_layer_result: &CurrentLayerResult,
+    parser_source_map: &Value,
+    correct_pointer_fn: F,
+) -> (CurrentLayerResult, usize)
+where
+    F: Fn(&HydratedTextPointer, &Value) -> Result<Option<HydratedTextPointer>>,
+{
+    let mut repaired_children = Vec::with_capacity(current_layer_result.children.len());
+    let mut repair_failures = Vec::new();
+    let mut repair_diagnostics = Vec::new();
+    let mut repaired_count = 0;
+
+    for child in &current_layer_result.children {
+        let mut repaired_pointers = Vec::with_capacity(child.total_content_pointers.len());
+        let mut child_failed = false;
+        for pointer in &child.total_content_pointers {
+            let fixed = match correct_pointer_fn(pointer, parser_source_map) {
+                Ok(Some(fixed)) => Some(fixed),
+                Ok(None) => {
+                    let message = format!(
+                        "unrecoverable pointer for child {:?} (parent={:?}, node_id={:?}); {}",
+                        child.title,
+                        child.parent_node_id,
+                        child.node_id,
+                        pointer_repair_context(pointer, parser_source_map)
+                    );
+                    repair_failures.push(message);
+                    child_failed = true;
+                    None
+                }
+                Err(error) => {
+                    let diagnostic = LayerValidationDiagnostic {
+                        phase: "repair".to_string(),
+                        error_type: "repair_error".to_string(),
+                        message: error.to_string(),
+                        location: Vec::new(),
+                    };
+                    let diagnostic = serde_json::to_value(diagnostic).unwrap_or_default();
+                    if !repair_diagnostics.contains(&diagnostic) {
+                        repair_diagnostics.push(diagnostic);
+                    }
+                    let message = format!(
+                        "pointer repair validation failed for child {:?} (parent={:?}, node_id={:?}); RepairError: {error}",
+                        child.title,
+                        child.parent_node_id,
+                        child.node_id
+                    );
+                    repair_failures.push(message);
+                    child_failed = true;
+                    None
+                }
+            };
+            let Some(fixed) = fixed else { break };
+            if fixed != *pointer {
+                repaired_count += 1;
+            }
+            repaired_pointers.push(fixed);
+        }
+        if child_failed {
+            continue;
+        }
+        repaired_children.push(LayerChildCandidate {
+            node_id: child.node_id.clone(),
+            parent_node_id: child.parent_node_id.clone(),
+            title: child.title.clone(),
+            node_type: child.node_type.clone(),
+            total_content_pointers: repaired_pointers,
+            expandable: child.expandable,
+            metadata: child.metadata.clone(),
+            child_candidates: child.child_candidates.clone(),
+        });
+    }
+
+    let mut metadata = current_layer_result.metadata.clone();
+    if !repair_failures.is_empty() {
+        metadata.insert(
+            "repair_failures".to_string(),
+            serde_json::to_value(repair_failures.iter().take(32).cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+        );
+        metadata.insert(
+            "repair_failure_scope".to_string(),
+            json!("child_replacement"),
+        );
+        metadata.insert("failure_type".to_string(), json!("repair_failure"));
+        metadata.insert("rollback".to_string(), json!("verified_parent_retained"));
+        metadata.insert("retryable".to_string(), json!(true));
+    }
+    let mut validation_diagnostics = current_layer_result.validation_diagnostics.clone();
+    for diagnostic in repair_diagnostics {
+        if !validation_diagnostics.contains(&diagnostic) {
+            validation_diagnostics.push(diagnostic);
+        }
+    }
+    let satisfied = if validation_diagnostics.is_empty() {
+        current_layer_result.satisfied
+    } else {
+        Some(false)
+    };
+    (
+        CurrentLayerResult {
+            children: repaired_children,
+            satisfied,
+            review_rounds: current_layer_result.review_rounds,
+            atomic_retained: current_layer_result.atomic_retained,
+            atomic_parent_ids: current_layer_result.atomic_parent_ids.clone(),
+            atomic_content_pointers_by_parent: current_layer_result
+                .atomic_content_pointers_by_parent
+                .clone(),
+            metadata,
+            validation_diagnostics,
+        },
+        repaired_count,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -886,6 +1414,317 @@ mod tests {
         let invariants = detect_layer_invariants(&context, &unary, None).unwrap();
         assert!(!invariants.satisfied);
         assert!(bail_on_missing_id(&current).is_ok());
+    }
+
+    #[test]
+    fn dedupes_and_filters_layer_for_commit() {
+        let context = context(json!([{
+            "source_cluster_id": "p1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Alpha"
+        }]));
+        let mut current = result(vec![
+            child("left", "parent", vec![pointer("p1", 0, 4, "Alpha")]),
+            child("duplicate", "parent", vec![pointer("p1", 0, 4, "Alpha")]),
+            child("foreign", "other", vec![pointer("p1", 0, 4, "Alpha")]),
+        ]);
+        current.satisfied = Some(true);
+        let filtered = dedupe_and_filter_layer(&context, &current);
+        assert_eq!(filtered.children.len(), 1);
+        assert_eq!(filtered.children[0].node_id, "left");
+        assert_eq!(filtered.validation_diagnostics.len(), 1);
+        assert_eq!(
+            filtered.validation_diagnostics[0]["error_type"],
+            "foreign_parent"
+        );
+        assert_eq!(filtered.satisfied, Some(false));
+    }
+
+    #[test]
+    fn applies_cud_review_update() {
+        let current = result(vec![child(
+            "left",
+            "parent",
+            vec![pointer("p1", 0, 4, "Alpha")],
+        )]);
+        let mut current = current;
+        current.satisfied = Some(false);
+        current.review_rounds = 2;
+        current
+            .metadata
+            .insert("previous".to_string(), json!("value"));
+        let mut review = CurrentLayerReview {
+            updated_result: current.clone(),
+            coverage_ok: true,
+            satisfied: true,
+            strategy_used: crate::parser_core::SplitStrategy::BoundaryFirst,
+            overlap_conflicts: Vec::new(),
+            coverage_gap_notes: Vec::new(),
+            duplicate_child_notes: Vec::new(),
+            structural_issues: Vec::new(),
+            validation_diagnostics: Vec::new(),
+            review_notes: vec!["review passed".to_string()],
+            metadata: Map::new(),
+            committable_parent_node_ids: vec!["parent".to_string()],
+            failed_parent_node_ids: Vec::new(),
+        };
+        review
+            .metadata
+            .insert("review_key".to_string(), json!("review-value"));
+
+        let updated = apply_cud_update(&current, &review);
+        assert_eq!(updated.satisfied, Some(true));
+        assert_eq!(updated.review_rounds, 3);
+        assert_eq!(updated.metadata["previous"], json!("value"));
+        assert_eq!(updated.metadata["review_key"], json!("review-value"));
+        assert_eq!(updated.metadata["split_strategy"], json!("boundary_first"));
+        assert_eq!(updated.metadata["layer_coverage_ok"], json!(true));
+        assert_eq!(updated.metadata["review_notes"], json!(["review passed"]));
+    }
+
+    #[test]
+    fn checks_layer_coverage_from_review_metadata_or_children() {
+        let context = context(json!([{
+            "source_cluster_id": "p1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Alpha"
+        }]));
+        let mut current = result(vec![child(
+            "left",
+            "parent",
+            vec![pointer("p1", 0, 4, "Alpha")],
+        )]);
+        current.satisfied = Some(true);
+        let review = CurrentLayerReview {
+            updated_result: current.clone(),
+            coverage_ok: true,
+            satisfied: true,
+            strategy_used: crate::parser_core::SplitStrategy::ExcerptFirst,
+            overlap_conflicts: Vec::new(),
+            coverage_gap_notes: Vec::new(),
+            duplicate_child_notes: Vec::new(),
+            structural_issues: Vec::new(),
+            validation_diagnostics: Vec::new(),
+            review_notes: vec!["review passed".to_string()],
+            metadata: Map::new(),
+            committable_parent_node_ids: vec!["parent".to_string()],
+            failed_parent_node_ids: Vec::new(),
+        };
+        let (coverage_ok, notes) = check_layer_coverage(&context, &current, Some(&review));
+        assert!(coverage_ok);
+        assert_eq!(notes, vec!["review passed"]);
+
+        let mut failed_review = review;
+        failed_review
+            .metadata
+            .insert("review_failure".to_string(), json!("provider"));
+        let (coverage_ok, notes) = check_layer_coverage(&context, &current, Some(&failed_review));
+        assert!(!coverage_ok);
+        assert_eq!(notes, vec!["layer review unavailable; quality is unknown"]);
+
+        current
+            .metadata
+            .insert("layer_coverage_ok".to_string(), json!(false));
+        current
+            .metadata
+            .insert("review_notes".to_string(), json!(["prior note"]));
+        let (coverage_ok, notes) = check_layer_coverage(&context, &current, None);
+        assert!(!coverage_ok);
+        assert_eq!(notes, vec!["prior note"]);
+    }
+
+    #[test]
+    fn reviews_layer_and_updates_session() {
+        let context = context(json!([{
+            "source_cluster_id": "p1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Alpha"
+        }]));
+        let current = result(vec![
+            child("left", "parent", vec![pointer("p1", 0, 1, "Al")]),
+            child("right", "parent", vec![pointer("p1", 2, 4, "pha")]),
+        ]);
+        let session = crate::parser_core::ParseSessionState {
+            collection_id: "collection".to_string(),
+            root_node_id: "root".to_string(),
+            current_depth: 0,
+            max_depth: 2,
+            allow_review: true,
+            split_strategy: crate::parser_core::SplitStrategy::ExcerptFirst,
+            fallback_split_strategy: crate::parser_core::SplitStrategy::BoundaryFirst,
+            strategy_history: vec![crate::parser_core::SplitStrategy::ExcerptFirst],
+            strategy_switch_count: 0,
+            mode: "workflow_layered".to_string(),
+            layer_attempts: Map::new(),
+            last_review: Map::new(),
+            compat_full_tree: None,
+            metadata: Map::new(),
+        };
+        let source_map = json!({"p1": {"text": "Alpha"}});
+        let (review, updated_session) =
+            review_layer(&session, &context, &current, Some(&source_map)).unwrap();
+        assert!(review.satisfied);
+        assert_eq!(review.committable_parent_node_ids, vec!["parent"]);
+        assert_eq!(
+            updated_session.layer_attempts["depth=0;parents=parent"],
+            json!(1)
+        );
+        assert_eq!(updated_session.last_review["satisfied"], json!(true));
+
+        let mut disabled = session;
+        disabled.allow_review = false;
+        let (review, updated_session) =
+            review_layer(&disabled, &context, &current, Some(&source_map)).unwrap();
+        assert!(review.satisfied);
+        assert_eq!(review.review_notes[0], "semantic review disabled");
+        assert_eq!(review.metadata["review_skipped"], json!(true));
+        assert_eq!(
+            updated_session.last_review["metadata"]["review_skipped"],
+            json!(true)
+        );
+    }
+
+    #[test]
+    fn coerces_layer_proposals() {
+        let session = crate::parser_core::ParseSessionState {
+            collection_id: "collection".to_string(),
+            root_node_id: "root".to_string(),
+            current_depth: 0,
+            max_depth: 2,
+            allow_review: true,
+            split_strategy: crate::parser_core::SplitStrategy::ExcerptFirst,
+            fallback_split_strategy: crate::parser_core::SplitStrategy::BoundaryFirst,
+            strategy_history: vec![crate::parser_core::SplitStrategy::ExcerptFirst],
+            strategy_switch_count: 0,
+            mode: "workflow_layered".to_string(),
+            layer_attempts: Map::new(),
+            last_review: Map::new(),
+            compat_full_tree: None,
+            metadata: Map::new(),
+        };
+        let context = context(json!([{
+            "source_cluster_id": "p1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Alpha"
+        }]));
+        let object = json!({
+            "children": [{
+                "node_id": "left",
+                "parent_node_id": "parent",
+                "title": "Left",
+                "node_type": "TEXT_FLOW",
+                "total_content_pointers": [{
+                    "source_cluster_id": "p1",
+                    "start_char": 0,
+                    "end_char": 2,
+                    "verbatim_text": "Al"
+                }],
+                "expandable": true,
+                "metadata": {}
+            }],
+            "satisfied": true
+        });
+        let proposed = propose_layer_breakdown(&session, &context, || Ok(object)).unwrap();
+        assert_eq!(proposed.children.len(), 1);
+        assert_eq!(proposed.children[0].node_id, "left");
+        assert_eq!(proposed.satisfied, Some(true));
+
+        let array = json!([{
+            "node_id": "left",
+            "parent_node_id": "parent",
+            "title": "Left",
+            "node_type": "TEXT_FLOW",
+            "total_content_pointers": [{
+                "source_cluster_id": "p1",
+                "start_char": 0,
+                "end_char": 2,
+                "verbatim_text": "Al"
+            }],
+            "expandable": true,
+            "metadata": {}
+        }]);
+        let proposed = propose_layer_breakdown(&session, &context, || Ok(array)).unwrap();
+        assert_eq!(proposed.children.len(), 1);
+        assert_eq!(proposed.children[0].node_id, "left");
+        assert_eq!(proposed.satisfied, None);
+    }
+
+    #[test]
+    fn rejects_unsupported_layer_proposal() {
+        let session = crate::parser_core::ParseSessionState {
+            collection_id: "collection".to_string(),
+            root_node_id: "root".to_string(),
+            current_depth: 0,
+            max_depth: 2,
+            allow_review: true,
+            split_strategy: crate::parser_core::SplitStrategy::ExcerptFirst,
+            fallback_split_strategy: crate::parser_core::SplitStrategy::BoundaryFirst,
+            strategy_history: vec![crate::parser_core::SplitStrategy::ExcerptFirst],
+            strategy_switch_count: 0,
+            mode: "workflow_layered".to_string(),
+            layer_attempts: Map::new(),
+            last_review: Map::new(),
+            compat_full_tree: None,
+            metadata: Map::new(),
+        };
+        let context = context(json!([{
+            "source_cluster_id": "p1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Alpha"
+        }]));
+        assert!(propose_layer_breakdown(&session, &context, || Ok(json!(true))).is_err());
+    }
+
+    #[test]
+    fn repairs_layer_candidates_without_erasing_verified_siblings() {
+        let source_map = json!({"p1": {"id": "p1", "text": "AlphaBeta"}});
+        let mut current = result(vec![
+            child("bad", "parent", vec![pointer("missing", 0, 4, "Alpha")]),
+            child("good", "parent", vec![pointer("p1", 8, 12, "Beta")]),
+        ]);
+        current.satisfied = Some(true);
+        let (repaired, repaired_count) =
+            repair_layer_candidates(&current, &source_map, |pointer, _| {
+                Ok(
+                    (pointer.source_cluster_id == "p1").then(|| HydratedTextPointer {
+                        source_cluster_id: "p1".to_string(),
+                        start_char: 5,
+                        end_char: 8,
+                        verbatim_text: "Beta".to_string(),
+                        start_delimiter: None,
+                        end_delimiter: None,
+                        validation_method: Some("repair".to_string()),
+                    }),
+                )
+            });
+        assert_eq!(repaired_count, 1);
+        assert_eq!(repaired.children.len(), 1);
+        assert_eq!(repaired.children[0].node_id, "good");
+        assert_eq!(repaired.children[0].total_content_pointers[0].start_char, 5);
+        assert_eq!(repaired.metadata["retryable"], json!(true));
+        assert_eq!(repaired.metadata["failure_type"], json!("repair_failure"));
+        assert!(repaired.validation_diagnostics.is_empty());
+        assert_eq!(repaired.satisfied, Some(true));
+
+        let (failed, _) = repair_layer_candidates(&current, &source_map, |pointer, _| {
+            if pointer.source_cluster_id == "p1" {
+                return Ok(Some(pointer.clone()));
+            }
+            Err(anyhow::anyhow!("validation failed"))
+        });
+        assert_eq!(failed.children.len(), 1);
+        assert_eq!(failed.children[0].node_id, "good");
+        assert_eq!(
+            failed.validation_diagnostics[0]["error_type"],
+            "repair_error"
+        );
+        assert_eq!(failed.validation_diagnostics[0]["phase"], "repair");
+        assert_eq!(failed.satisfied, Some(false));
     }
 
     #[test]

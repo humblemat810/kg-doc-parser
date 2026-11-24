@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::document_models::{DocumentTree, Summary, SummaryStatus};
 use crate::ocr_artifacts::artifact_schema_error;
+use crate::ocr_quality::ocr_artifact_quality_error;
 use crate::semantic_indexing::json_compact;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -209,7 +210,7 @@ fn status_str(status: OcrPageStatus) -> &'static str {
     }
 }
 
-fn sha256_hex(contents: &[u8]) -> String {
+pub(crate) fn sha256_hex(contents: &[u8]) -> String {
     let mut digest = Sha256::new();
     digest.update(contents);
     digest
@@ -1499,6 +1500,65 @@ impl OcrWorkflowStateStore {
                 == state.config_fingerprint.as_deref())
     }
 
+    pub fn reconcile_orphan_artifact(
+        &self,
+        document_id: &str,
+        page_number: i64,
+        content_hash: &str,
+        artifact_path: &Path,
+        config_fingerprints: &[&str],
+    ) -> Result<bool> {
+        let state = self.get_page_state(document_id, page_number, OcrStage::Ocr)?;
+        if state
+            .as_ref()
+            .is_some_and(|state| state.status == OcrPageStatus::Completed)
+        {
+            return Ok(false);
+        }
+        if !artifact_path.is_file() {
+            return Ok(false);
+        }
+        let Ok(payload) = std::fs::read(artifact_path)
+            .map_err(anyhow::Error::from)
+            .and_then(|contents| {
+                serde_json::from_slice::<Value>(&contents).map_err(anyhow::Error::from)
+            })
+        else {
+            return Ok(false);
+        };
+        if artifact_page_number(&payload) != Some(page_number) {
+            return Ok(false);
+        }
+        if artifact_schema_error(&payload).is_some()
+            || ocr_artifact_quality_error(&payload).is_some()
+        {
+            return Ok(false);
+        }
+        let source_digest = metadata_field(&payload, "source_image_sha256");
+        let config_fingerprint = metadata_field(&payload, "ocr_configuration_fingerprint");
+        if source_digest != Some(content_hash)
+            || config_fingerprint.is_none_or(|value| !config_fingerprints.contains(&value))
+        {
+            return Ok(false);
+        }
+        let model_name = metadata_field(&payload, "ocr_model_name");
+        let artifact_sha256 = sha256_file(artifact_path)?;
+        self.upsert_page_state(
+            document_id,
+            page_number,
+            OcrStage::Ocr,
+            state.as_ref().map_or(1, |state| state.attempt_count),
+            OcrPageStatus::Completed,
+            Some(content_hash.to_string()),
+            Some(artifact_path.to_string_lossy().to_string()),
+            None,
+            model_name.map(ToString::to_string),
+            config_fingerprint.map(ToString::to_string),
+            Some(artifact_sha256),
+        )?;
+        Ok(true)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn upsert_page_state(
         &self,
@@ -1728,6 +1788,61 @@ mod tests {
                 Some(&artifact),
                 &["config"]
             )
+            .unwrap());
+    }
+
+    #[test]
+    fn reconciles_orphan_artifact_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = temp.path().join("page_1.json");
+        std::fs::write(
+            &artifact,
+            serde_json::json!({
+                "metadata": {
+                    "ocr_json_version": "0.1",
+                    "ocr_model_name": "model",
+                    "source_image_sha256": "hash",
+                    "ocr_configuration_fingerprint": "config",
+                    "ocr_quality_status": "flagged",
+                    "ocr_quality_diagnostics": [{
+                        "code": "unresolved_items",
+                        "severity": "warning",
+                        "message": "provider unresolved item"
+                    }]
+                },
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [{"text": "page"}],
+                "non_text_objects": [],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let store = OcrWorkflowStateStore::open(&temp.path().join("ocr-state.sqlite")).unwrap();
+        store.ensure_document(&identity("one")).unwrap();
+        store
+            .record_attempt(
+                "doc",
+                1,
+                OcrStage::Ocr,
+                &OcrAttemptRequest {
+                    content_hash: Some("hash".to_string()),
+                    model_name: "model".to_string(),
+                    config_fingerprint: Some("config".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(store
+            .reconcile_orphan_artifact("doc", 1, "hash", &artifact, &["config"])
+            .unwrap());
+        let state = store
+            .get_page_state("doc", 1, OcrStage::Ocr)
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.status, OcrPageStatus::Completed);
+        assert_eq!(state.config_fingerprint.as_deref(), Some("config"));
+        assert!(!store
+            .reconcile_orphan_artifact("doc", 1, "hash", &artifact, &["config"])
             .unwrap());
     }
 

@@ -6,7 +6,9 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::layerwise_edits::semantic_tree_to_kge_payload;
+use crate::layerwise_edits::{
+    correct_and_validate_pointer, semantic_tree_to_kge_payload, LayerwisePointer,
+};
 use crate::layerwise_llm::{
     build_layerwise_llm_level_request, decode_layerwise_llm_level_response, LayerwiseLlmInvoker,
 };
@@ -20,10 +22,105 @@ use crate::page_index_pipeline::parse_page_index_document_heuristic;
 use crate::parser::ParsingMode;
 use crate::parser_core::{
     commit_layer_children, enqueue_next_layer_frontier, prepare_layer_frontier,
-    CurrentLayerContext, CurrentLayerResult, LayerFrontierItem, ParseSessionState, SplitStrategy,
+    switch_split_strategy, CurrentLayerContext, CurrentLayerResult, LayerFrontierItem,
+    ParseSessionState, SplitStrategy,
 };
+use crate::parser_core_validation::{
+    dedupe_and_filter_layer, repair_layer_candidates, validate_layer_commit,
+};
+use crate::parser_core_validation::{propose_layer_breakdown, review_layer};
+use crate::providers::WorkflowProviderSettings;
 use crate::semantic::{HydratedTextPointer, SemanticNode};
 use crate::source_text::source_map_entry_text;
+
+pub type TemporaryEnvOverrides = BTreeMap<String, Option<String>>;
+
+#[derive(Debug)]
+pub struct TemporaryEnvGuard {
+    previous: TemporaryEnvOverrides,
+    restored: bool,
+}
+
+impl TemporaryEnvGuard {
+    pub fn restore(mut self) {
+        self.restored = true;
+        let previous = std::mem::take(&mut self.previous);
+        for (name, value) in previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
+}
+
+impl Drop for TemporaryEnvGuard {
+    fn drop(&mut self) {
+        if self.restored {
+            return;
+        }
+        let previous = std::mem::take(&mut self.previous);
+        for (name, value) in previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        self.restored = true;
+    }
+}
+
+pub fn temporary_env(overrides: TemporaryEnvOverrides) -> Result<TemporaryEnvGuard> {
+    let mut previous = TemporaryEnvOverrides::new();
+    for (name, value) in overrides {
+        previous.insert(name.clone(), std::env::var(&name).ok());
+        match value {
+            Some(value) => std::env::set_var(&name, value),
+            None => std::env::remove_var(&name),
+        }
+    }
+    Ok(TemporaryEnvGuard {
+        previous,
+        restored: false,
+    })
+}
+
+pub fn build_legacy_parse_env_overrides(
+    provider_settings: &WorkflowProviderSettings,
+) -> TemporaryEnvOverrides {
+    let parser = &provider_settings.parser;
+    BTreeMap::from([
+        (
+            "KG_DOC_PARSER_PROVIDER".to_string(),
+            Some(parser.provider.clone()),
+        ),
+        (
+            "KG_DOC_PARSER_MODEL".to_string(),
+            Some(parser.model.clone()),
+        ),
+        (
+            "KG_DOC_PARSER_TEMPERATURE".to_string(),
+            Some(parser.temperature.to_string()),
+        ),
+        (
+            "KG_DOC_PARSER_BASE_URL".to_string(),
+            parser.base_url.clone(),
+        ),
+        (
+            "KG_DOC_PARSER_API_KEY_ENV".to_string(),
+            parser.api_key_env.clone(),
+        ),
+        ("KG_DOC_PARSER_PROJECT".to_string(), parser.project.clone()),
+        (
+            "KG_DOC_PARSER_LOCATION".to_string(),
+            parser.location.clone(),
+        ),
+        (
+            "KG_DOC_PARSER_MAX_RETRIES".to_string(),
+            Some(parser.max_retries.to_string()),
+        ),
+    ])
+}
 
 pub fn infer_page_index_source_format(
     source_path: &Path,
@@ -234,6 +331,66 @@ pub struct LayerwiseLlmLevelProvider<'a> {
     pub parsing_mode: ParsingMode,
     pub model_names: Vec<String>,
     pub invoker: &'a dyn LayerwiseLlmInvoker,
+}
+
+pub type PointerCorrector<'a> =
+    &'a dyn Fn(&HydratedTextPointer, &Value) -> Result<Option<HydratedTextPointer>>;
+
+pub fn default_pointer_corrector(
+    pointer: &HydratedTextPointer,
+    source_map: &Value,
+) -> Result<Option<HydratedTextPointer>> {
+    let legacy_pointer = LayerwisePointer {
+        source_cluster_id: pointer.source_cluster_id.clone(),
+        start_char: pointer.start_char,
+        end_char: pointer.end_char,
+        verbatim_text: pointer.verbatim_text.clone(),
+        start_delimiter: pointer.start_delimiter.clone(),
+        end_delimiter: pointer.end_delimiter.clone(),
+        validation_method: pointer.validation_method.clone(),
+    };
+    Ok(
+        correct_and_validate_pointer(&legacy_pointer, source_map).map(|fixed| {
+            HydratedTextPointer {
+                source_cluster_id: fixed.source_cluster_id,
+                start_char: fixed.start_char,
+                end_char: fixed.end_char,
+                verbatim_text: fixed.verbatim_text,
+                start_delimiter: fixed.start_delimiter,
+                end_delimiter: fixed.end_delimiter,
+                validation_method: fixed.validation_method,
+            }
+        }),
+    )
+}
+
+fn normalized_layer_result<P>(
+    provider: &P,
+    parse_session: &ParseSessionState,
+    context: &CurrentLayerContext,
+    source_map: &Value,
+    document: &Value,
+    pointer_corrector: PointerCorrector,
+) -> Result<(CurrentLayerResult, ParseSessionState)>
+where
+    P: LayerwiseLevelProvider + ?Sized,
+{
+    let provider_result = provider.parse_level(context, source_map, document)?;
+    let proposed = propose_layer_breakdown(parse_session, context, || {
+        serde_json::to_value(&provider_result).map_err(|error| anyhow::anyhow!("{error}"))
+    })?;
+    let (repaired, _repaired_count) =
+        repair_layer_candidates(&proposed, source_map, |pointer, source_map| {
+            pointer_corrector(pointer, source_map)
+        });
+    let deduped = dedupe_and_filter_layer(context, &repaired);
+    let (review, updated_session) =
+        review_layer(parse_session, context, &deduped, Some(source_map))?;
+    if review.updated_result.children.is_empty() {
+        return Ok((review.updated_result, updated_session));
+    }
+    let validated = validate_layer_commit(context, &review.updated_result, Some(source_map))?;
+    Ok((validated.updated_result, updated_session))
 }
 
 impl LayerwiseLevelProvider for LayerwiseLlmLevelProvider<'_> {
@@ -903,6 +1060,7 @@ pub fn run_layerwise_recursive_workflow(
     output_dir: &Path,
     max_depth: u64,
     provider: &dyn LayerwiseLevelProvider,
+    pointer_corrector: PointerCorrector,
 ) -> Result<WorkflowCommandResult> {
     let output_dir = output_dir.to_path_buf();
     std::fs::create_dir_all(&output_dir)?;
@@ -931,7 +1089,7 @@ pub fn run_layerwise_recursive_workflow(
             .ok_or_else(|| anyhow::anyhow!("layerwise root node is missing an id"))?,
         current_depth: 0,
         max_depth,
-        allow_review: false,
+        allow_review: true,
         split_strategy: SplitStrategy::ExcerptFirst,
         fallback_split_strategy: SplitStrategy::BoundaryFirst,
         strategy_history: vec![SplitStrategy::ExcerptFirst],
@@ -955,7 +1113,30 @@ pub fn run_layerwise_recursive_workflow(
     while !frontier.is_empty() && visited_depth < max_depth {
         let (context, remaining, next_session) =
             prepare_layer_frontier(&session, &frontier, &tree, max_depth, None)?;
-        let result = provider.parse_level(&context, &source_map, &raw_document)?;
+        let (mut result, _attempted_session) = normalized_layer_result(
+            provider,
+            &session,
+            &context,
+            &source_map,
+            &raw_document,
+            pointer_corrector,
+        )?;
+        if result.satisfied != Some(true) {
+            let (switched_session, switched_context) = switch_split_strategy(&session, &context)?;
+            let (retry_result, _retry_session) = normalized_layer_result(
+                provider,
+                &switched_session,
+                &switched_context,
+                &source_map,
+                &raw_document,
+                pointer_corrector,
+            )?;
+            anyhow::ensure!(
+                retry_result.satisfied == Some(true),
+                "fallback layer commit validation failed"
+            );
+            result = retry_result;
+        }
         tree = commit_layer_children(
             &tree,
             &result,
@@ -966,7 +1147,6 @@ pub fn run_layerwise_recursive_workflow(
         )?;
         frontier = enqueue_next_layer_frontier(&remaining, &context, &result, &next_session)?;
         visited_depth = visited_depth.max(context.depth + 1);
-        session = next_session;
     }
     let graph_payload = semantic_tree_to_kge_payload(
         &tree,
@@ -1038,6 +1218,61 @@ mod tests {
         let shallow =
             discover_input_files(&[temp.path().to_path_buf()], &[".md", ".txt"], false).unwrap();
         assert_eq!(shallow, vec![alpha]);
+    }
+
+    #[test]
+    fn applies_and_restores_temporary_environment() {
+        let set_name = "KG_DOC_PARSER_TEMPORARY_ENV_SET".to_string();
+        let removed_name = "KG_DOC_PARSER_TEMPORARY_ENV_REMOVED".to_string();
+        std::env::set_var(&removed_name, "old");
+        let guard = temporary_env(BTreeMap::from([
+            (set_name.clone(), Some("new".to_string())),
+            (removed_name.clone(), None),
+        ]))
+        .unwrap();
+
+        assert_eq!(std::env::var(&set_name).unwrap(), "new");
+        assert!(std::env::var(&removed_name).is_err());
+        drop(guard);
+
+        assert!(std::env::var(&set_name).is_err());
+        assert_eq!(std::env::var(&removed_name).unwrap(), "old");
+    }
+
+    #[test]
+    fn builds_legacy_parse_provider_environment() {
+        let settings = serde_json::from_value(json!({
+            "parser": {
+                "provider": "ollama",
+                "model": "gemma4:e2b",
+                "temperature": 0.2,
+                "base_url": "http://127.0.0.1:11434",
+                "max_retries": 1
+            }
+        }))
+        .unwrap();
+        let overrides = build_legacy_parse_env_overrides(&settings);
+
+        assert_eq!(
+            overrides["KG_DOC_PARSER_PROVIDER"],
+            Some("ollama".to_string())
+        );
+        assert_eq!(
+            overrides["KG_DOC_PARSER_MODEL"],
+            Some("gemma4:e2b".to_string())
+        );
+        assert_eq!(
+            overrides["KG_DOC_PARSER_TEMPERATURE"],
+            Some("0.2".to_string())
+        );
+        assert_eq!(
+            overrides["KG_DOC_PARSER_BASE_URL"],
+            Some("http://127.0.0.1:11434".to_string())
+        );
+        assert_eq!(
+            overrides["KG_DOC_PARSER_MAX_RETRIES"],
+            Some("1".to_string())
+        );
     }
 
     #[test]
@@ -1186,20 +1421,37 @@ mod tests {
          -> Result<CurrentLayerResult> {
             calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             anyhow::ensure!(!context.parent_node_ids.is_empty());
-            Ok(CurrentLayerResult {
-                children: ["child-a", "child-b"]
-                    .iter()
-                    .map(|node_id| crate::parser_core::LayerChildCandidate {
-                        node_id: node_id.to_string(),
+            let children = ["A", "B"]
+                .iter()
+                .enumerate()
+                .map(|(index, title)| {
+                    let (start, end) = if index == 0 { (0, 4) } else { (6, 9) };
+                    crate::parser_core::LayerChildCandidate {
+                        node_id: format!("child-{index}"),
                         parent_node_id: context.parent_node_ids[0].clone(),
-                        title: node_id.to_uppercase(),
+                        title: title.to_string(),
                         node_type: "TEXT_FLOW".to_string(),
-                        total_content_pointers: Vec::new(),
+                        total_content_pointers: vec![HydratedTextPointer {
+                            source_cluster_id: "p1_c0".to_string(),
+                            start_char: start,
+                            end_char: end,
+                            verbatim_text: if index == 0 {
+                                "Alpha".to_string()
+                            } else {
+                                "page".to_string()
+                            },
+                            start_delimiter: None,
+                            end_delimiter: None,
+                            validation_method: None,
+                        }],
                         expandable: false,
                         metadata: Map::new(),
                         child_candidates: Vec::new(),
-                    })
-                    .collect(),
+                    }
+                })
+                .collect();
+            Ok(CurrentLayerResult {
+                children,
                 satisfied: Some(true),
                 review_rounds: 0,
                 atomic_retained: false,
@@ -1214,6 +1466,7 @@ mod tests {
             &temp.path().join("recursive"),
             2,
             &provider,
+            &default_pointer_corrector,
         )
         .unwrap();
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -1222,6 +1475,271 @@ mod tests {
         assert_eq!(result.extra["node_count"], 3);
         assert_eq!(result.extra["edge_count"], 2);
         assert!(result.summary_path.exists());
+    }
+
+    #[test]
+    fn normalizes_commit_layer_candidates() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = temp.path().join("legacy-doc");
+        std::fs::create_dir_all(&document).unwrap();
+        std::fs::write(
+            document.join("page_1.json"),
+            serde_json::json!({"pdf_page_num": 1, "OCR_text_clusters": [{"text": "Alpha page"}], "non_text_objects": []}).to_string(),
+        )
+        .unwrap();
+        let provider = |context: &CurrentLayerContext,
+                        _source_map: &Value,
+                        _document: &Value|
+         -> Result<CurrentLayerResult> {
+            let parent = context.parent_node_ids[0].clone();
+            let pointer = |start: i64, end: i64, text: &str| HydratedTextPointer {
+                source_cluster_id: "p1_c0".to_string(),
+                start_char: start,
+                end_char: end,
+                verbatim_text: text.to_string(),
+                start_delimiter: None,
+                end_delimiter: None,
+                validation_method: None,
+            };
+            let child =
+                |node_id: &str, title: &str, parent_id: &str, start: i64, end: i64, text: &str| {
+                    crate::parser_core::LayerChildCandidate {
+                        node_id: node_id.to_string(),
+                        parent_node_id: parent_id.to_string(),
+                        title: title.to_string(),
+                        node_type: "TEXT_FLOW".to_string(),
+                        total_content_pointers: vec![pointer(start, end, text)],
+                        expandable: false,
+                        metadata: Map::new(),
+                        child_candidates: Vec::new(),
+                    }
+                };
+            Ok(CurrentLayerResult {
+                children: vec![
+                    child("child-a", "Alpha", &parent, 0, 4, "Alpha"),
+                    child("child-b", "Page", &parent, 6, 9, "page"),
+                    child("child-duplicate", "alpha", &parent, 0, 4, "Alpha"),
+                    child("child-foreign", "Foreign", "foreign-parent", 0, 4, "Alpha"),
+                ],
+                satisfied: Some(true),
+                review_rounds: 0,
+                atomic_retained: false,
+                atomic_parent_ids: Vec::new(),
+                atomic_content_pointers_by_parent: Map::new(),
+                metadata: Map::new(),
+                validation_diagnostics: Vec::new(),
+            })
+        };
+        let result = run_layerwise_recursive_workflow(
+            &document,
+            &temp.path().join("normalized"),
+            1,
+            &provider,
+            &default_pointer_corrector,
+        )
+        .unwrap();
+        let graph = serde_json::from_str::<Value>(
+            &std::fs::read_to_string(result.extra["graph_path"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(graph["nodes"].as_array().unwrap().len(), 3);
+        assert_eq!(graph["edges"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn repairs_recursive_layer_pointers() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = temp.path().join("legacy-doc");
+        std::fs::create_dir_all(&document).unwrap();
+        std::fs::write(
+            document.join("page_1.json"),
+            serde_json::json!({"pdf_page_num": 1, "OCR_text_clusters": [{"text": "Alpha page"}], "non_text_objects": []}).to_string(),
+        )
+        .unwrap();
+        let provider = |context: &CurrentLayerContext,
+                        _source_map: &Value,
+                        _document: &Value|
+         -> Result<CurrentLayerResult> {
+            Ok(CurrentLayerResult {
+                children: vec![
+                    crate::parser_core::LayerChildCandidate {
+                        node_id: "child-alpha".to_string(),
+                        parent_node_id: context.parent_node_ids[0].clone(),
+                        title: "Alpha".to_string(),
+                        node_type: "TEXT_FLOW".to_string(),
+                        total_content_pointers: vec![HydratedTextPointer {
+                            source_cluster_id: "p1_c0".to_string(),
+                            start_char: 0,
+                            end_char: 4,
+                            verbatim_text: "Alpha".to_string(),
+                            start_delimiter: None,
+                            end_delimiter: None,
+                            validation_method: None,
+                        }],
+                        expandable: false,
+                        metadata: Map::new(),
+                        child_candidates: Vec::new(),
+                    },
+                    crate::parser_core::LayerChildCandidate {
+                        node_id: "child-repair".to_string(),
+                        parent_node_id: context.parent_node_ids[0].clone(),
+                        title: "Repair".to_string(),
+                        node_type: "TEXT_FLOW".to_string(),
+                        total_content_pointers: vec![HydratedTextPointer {
+                            source_cluster_id: "p1_c0".to_string(),
+                            start_char: 8,
+                            end_char: 12,
+                            verbatim_text: "page".to_string(),
+                            start_delimiter: None,
+                            end_delimiter: None,
+                            validation_method: None,
+                        }],
+                        expandable: false,
+                        metadata: Map::new(),
+                        child_candidates: Vec::new(),
+                    },
+                ],
+                satisfied: Some(true),
+                review_rounds: 0,
+                atomic_retained: false,
+                atomic_parent_ids: Vec::new(),
+                atomic_content_pointers_by_parent: Map::new(),
+                metadata: Map::new(),
+                validation_diagnostics: Vec::new(),
+            })
+        };
+        let result = run_layerwise_recursive_workflow(
+            &document,
+            &temp.path().join("repair"),
+            1,
+            &provider,
+            &default_pointer_corrector,
+        )
+        .unwrap();
+        let graph = serde_json::from_str::<Value>(
+            &std::fs::read_to_string(result.extra["graph_path"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        let child = graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["label"] == "Repair")
+            .unwrap();
+        let pointer = &child["metadata"]["pointers"][0];
+        assert_eq!(pointer["start_char"], 6);
+        assert_eq!(pointer["end_char"], 9);
+    }
+
+    #[test]
+    fn retries_layer_with_fallback_strategy() {
+        let temp = tempfile::tempdir().unwrap();
+        let document = temp.path().join("legacy-doc");
+        std::fs::create_dir_all(&document).unwrap();
+        std::fs::write(
+            document.join("page_1.json"),
+            serde_json::json!({"pdf_page_num": 1, "OCR_text_clusters": [{"text": "Alpha page"}], "non_text_objects": []}).to_string(),
+        )
+        .unwrap();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let strategies = std::sync::Mutex::new(Vec::new());
+        let provider = |context: &CurrentLayerContext,
+                        _source_map: &Value,
+                        _document: &Value|
+         -> Result<CurrentLayerResult> {
+            strategies.lock().unwrap().push(context.split_strategy);
+            let invocation = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if invocation == 0 {
+                return Ok(CurrentLayerResult {
+                    children: vec![crate::parser_core::LayerChildCandidate {
+                        node_id: "unrecoverable".to_string(),
+                        parent_node_id: context.parent_node_ids[0].clone(),
+                        title: "Unrecoverable".to_string(),
+                        node_type: "TEXT_FLOW".to_string(),
+                        total_content_pointers: vec![HydratedTextPointer {
+                            source_cluster_id: "p1_c0".to_string(),
+                            start_char: 0,
+                            end_char: 0,
+                            verbatim_text: "missing text".to_string(),
+                            start_delimiter: None,
+                            end_delimiter: None,
+                            validation_method: None,
+                        }],
+                        expandable: false,
+                        metadata: Map::new(),
+                        child_candidates: Vec::new(),
+                    }],
+                    satisfied: Some(true),
+                    review_rounds: 0,
+                    atomic_retained: false,
+                    atomic_parent_ids: Vec::new(),
+                    atomic_content_pointers_by_parent: Map::new(),
+                    metadata: Map::new(),
+                    validation_diagnostics: Vec::new(),
+                });
+            }
+            Ok(CurrentLayerResult {
+                children: vec![
+                    crate::parser_core::LayerChildCandidate {
+                        node_id: "child-a".to_string(),
+                        parent_node_id: context.parent_node_ids[0].clone(),
+                        title: "A".to_string(),
+                        node_type: "TEXT_FLOW".to_string(),
+                        total_content_pointers: vec![HydratedTextPointer {
+                            source_cluster_id: "p1_c0".to_string(),
+                            start_char: 0,
+                            end_char: 4,
+                            verbatim_text: "Alpha".to_string(),
+                            start_delimiter: None,
+                            end_delimiter: None,
+                            validation_method: None,
+                        }],
+                        expandable: false,
+                        metadata: Map::new(),
+                        child_candidates: Vec::new(),
+                    },
+                    crate::parser_core::LayerChildCandidate {
+                        node_id: "child-b".to_string(),
+                        parent_node_id: context.parent_node_ids[0].clone(),
+                        title: "B".to_string(),
+                        node_type: "TEXT_FLOW".to_string(),
+                        total_content_pointers: vec![HydratedTextPointer {
+                            source_cluster_id: "p1_c0".to_string(),
+                            start_char: 6,
+                            end_char: 9,
+                            verbatim_text: "page".to_string(),
+                            start_delimiter: None,
+                            end_delimiter: None,
+                            validation_method: None,
+                        }],
+                        expandable: false,
+                        metadata: Map::new(),
+                        child_candidates: Vec::new(),
+                    },
+                ],
+                satisfied: Some(true),
+                review_rounds: 0,
+                atomic_retained: false,
+                atomic_parent_ids: Vec::new(),
+                atomic_content_pointers_by_parent: Map::new(),
+                metadata: Map::new(),
+                validation_diagnostics: Vec::new(),
+            })
+        };
+        let result = run_layerwise_recursive_workflow(
+            &document,
+            &temp.path().join("fallback"),
+            1,
+            &provider,
+            &default_pointer_corrector,
+        )
+        .unwrap();
+        let observed = strategies.lock().unwrap().clone();
+        assert_eq!(
+            observed,
+            vec![SplitStrategy::ExcerptFirst, SplitStrategy::BoundaryFirst]
+        );
+        assert_eq!(result.extra["visited_depth"], 1);
     }
 
     #[test]
@@ -1260,9 +1778,14 @@ mod tests {
             model_names: vec!["parser-model".to_string()],
             invoker: &invoker,
         };
-        let result =
-            run_layerwise_recursive_workflow(&document, &temp.path().join("llm"), 2, &provider)
-                .unwrap();
+        let result = run_layerwise_recursive_workflow(
+            &document,
+            &temp.path().join("llm"),
+            2,
+            &provider,
+            &default_pointer_corrector,
+        )
+        .unwrap();
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(result.extra["builder"], "layerwise-llm");
         assert_eq!(result.extra["visited_depth"], 2);
