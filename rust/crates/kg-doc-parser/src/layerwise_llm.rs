@@ -27,6 +27,8 @@ pub struct LayerwiseLlmLevelRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerwiseLlmChildResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub parent_node_id: String,
     pub node_type: String,
     pub title: String,
@@ -146,7 +148,7 @@ pub fn decode_layerwise_llm_level_response(
             ],
         );
         children.push(LayerChildCandidate {
-            node_id,
+            node_id: child.id.clone().unwrap_or(node_id),
             parent_node_id: child.parent_node_id,
             title: child.title,
             node_type: child.node_type,
@@ -174,6 +176,197 @@ pub fn decode_layerwise_llm_level_response(
             .cloned()
             .unwrap_or_default(),
         validation_diagnostics: Vec::new(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerwiseReviewRequest {
+    pub doc_id: String,
+    pub current_depth: u64,
+    pub attempt: u64,
+    pub model_names: Vec<String>,
+    pub full_document_json: String,
+    pub children: Vec<LayerwiseLlmChildResponse>,
+    pub reasoning_history: Vec<Value>,
+    pub last_layer: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayerwiseReviewResponse {
+    pub reasoning: String,
+    #[serde(default)]
+    pub cproposals: Vec<Value>,
+    #[serde(default)]
+    pub uproposals: Vec<Value>,
+    #[serde(default)]
+    pub dproposals: Vec<Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LayerwiseReviewOutcome {
+    pub children: Vec<LayerwiseLlmChildResponse>,
+    pub rounds: u64,
+    pub edited: bool,
+    pub reasoning_steps: usize,
+}
+
+pub trait LayerwiseReviewInvoker {
+    fn review(&self, request: &LayerwiseReviewRequest) -> Result<Value>;
+}
+
+impl<F> LayerwiseReviewInvoker for F
+where
+    F: Fn(&LayerwiseReviewRequest) -> Result<Value>,
+{
+    fn review(&self, request: &LayerwiseReviewRequest) -> Result<Value> {
+        self(request)
+    }
+}
+
+fn normalized_title(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn child_identity(child: &LayerwiseLlmChildResponse) -> String {
+    format!(
+        "{}:{}:{}",
+        child.node_type,
+        normalized_title(&child.title),
+        serde_json::to_string(&child.pointers).unwrap_or_default()
+    )
+}
+
+fn dedupe_children(children: Vec<LayerwiseLlmChildResponse>) -> Vec<LayerwiseLlmChildResponse> {
+    let mut seen = std::collections::HashSet::new();
+    children
+        .into_iter()
+        .filter(|child| seen.insert(child_identity(child)))
+        .collect()
+}
+
+fn review_proposals(response: &LayerwiseReviewResponse) -> Vec<Value> {
+    let mut proposals = Vec::new();
+    for mut proposal in response.cproposals.clone() {
+        if let Some(object) = proposal.as_object_mut() {
+            object.insert("edit_type".to_string(), json!("ADD_NODE"));
+        }
+        proposals.push(proposal);
+    }
+    for mut proposal in response.uproposals.clone() {
+        if let Some(object) = proposal.as_object_mut() {
+            object.insert("edit_type".to_string(), json!("EDIT_NODE"));
+        }
+        proposals.push(proposal);
+    }
+    for mut proposal in response.dproposals.clone() {
+        if let Some(object) = proposal.as_object_mut() {
+            object.insert("edit_type".to_string(), json!("DELETE_NODE"));
+        }
+        proposals.push(proposal);
+    }
+    proposals
+}
+
+pub fn run_layerwise_review_loop(
+    mut children: Vec<LayerwiseLlmChildResponse>,
+    source_map: &Value,
+    full_document_json: &str,
+    doc_id: &str,
+    current_depth: u64,
+    model_names: &[String],
+    invoker: &dyn LayerwiseReviewInvoker,
+) -> Result<LayerwiseReviewOutcome> {
+    let mut reasoning_history = Vec::new();
+    let mut edited = false;
+    let mut rounds = 0;
+    while rounds < 3 {
+        children = dedupe_children(children);
+        let request = LayerwiseReviewRequest {
+            doc_id: doc_id.to_string(),
+            current_depth,
+            attempt: rounds,
+            model_names: model_names.to_vec(),
+            full_document_json: if current_depth == 0 {
+                "[Now at root level, root node content is full doc, omitted to prevent duplication]"
+                    .to_string()
+            } else {
+                full_document_json.to_string()
+            },
+            children: children.clone(),
+            reasoning_history: reasoning_history.clone(),
+            last_layer: Vec::new(),
+        };
+        let response: LayerwiseReviewResponse = serde_json::from_value(invoker.review(&request)?)?;
+        reasoning_history.push(json!({"role": "ai_assistant", "content": response.reasoning}));
+        let proposals = review_proposals(&response);
+        if proposals.is_empty() {
+            break;
+        }
+        let layerwise_children = children
+            .iter()
+            .map(|child| crate::layerwise_edits::LayerwiseChild {
+                parent_node_id: Some(child.parent_node_id.clone()),
+                node_type: child.node_type.clone(),
+                title: child.title.clone(),
+                pointers: child
+                    .pointers
+                    .iter()
+                    .map(|pointer| crate::layerwise_edits::LayerwisePointer {
+                        source_cluster_id: pointer.source_cluster_id.clone(),
+                        start_char: pointer.start_char,
+                        end_char: pointer.end_char,
+                        verbatim_text: pointer.verbatim_text.clone(),
+                        start_delimiter: pointer.start_delimiter.clone(),
+                        end_delimiter: pointer.end_delimiter.clone(),
+                        validation_method: pointer.validation_method.clone(),
+                    })
+                    .collect(),
+            })
+            .collect::<Vec<_>>();
+        let applied =
+            crate::layerwise_edits::apply_proposals(&proposals, &layerwise_children, source_map)?;
+        if !applied.proposal_errors.is_empty() {
+            reasoning_history.push(json!({
+                "role": "system",
+                "content": applied.proposal_errors.join("; ")
+            }));
+        }
+        children = applied
+            .children
+            .into_iter()
+            .map(|child| LayerwiseLlmChildResponse {
+                id: None,
+                parent_node_id: child.parent_node_id.unwrap_or_default(),
+                node_type: child.node_type,
+                title: child.title,
+                pointers: child
+                    .pointers
+                    .into_iter()
+                    .map(|pointer| HydratedTextPointer {
+                        source_cluster_id: pointer.source_cluster_id,
+                        start_char: pointer.start_char,
+                        end_char: pointer.end_char,
+                        verbatim_text: pointer.verbatim_text,
+                        start_delimiter: pointer.start_delimiter,
+                        end_delimiter: pointer.end_delimiter,
+                        validation_method: pointer.validation_method,
+                    })
+                    .collect(),
+            })
+            .collect();
+        children = dedupe_children(children);
+        edited = true;
+        rounds += 1;
+    }
+    Ok(LayerwiseReviewOutcome {
+        children,
+        rounds,
+        edited,
+        reasoning_steps: reasoning_history.len(),
     })
 }
 
