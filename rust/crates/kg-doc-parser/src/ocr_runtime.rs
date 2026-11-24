@@ -94,6 +94,82 @@ pub fn document_tree_from_state(state: &Value) -> Result<crate::document_models:
         .map_err(|error| anyhow::anyhow!("OCR grouping runtime state has an invalid tree: {error}"))
 }
 
+pub fn reused_pages_from_trace(nodes: &[Value], run_id: &str) -> Result<Vec<i64>> {
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    struct TraceKey {
+        step_sequence: i64,
+        attempt: i64,
+        update_index: usize,
+    }
+    let mut outcomes: std::collections::BTreeMap<i64, (TraceKey, bool)> =
+        std::collections::BTreeMap::new();
+    for node in nodes {
+        let Some(metadata) = node.get("metadata").and_then(Value::as_object) else {
+            continue;
+        };
+        if metadata.get("run_id").and_then(Value::as_str) != Some(run_id) {
+            continue;
+        }
+        let Some(result_raw) = metadata.get("result_json").and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok(result) = serde_json::from_str::<Value>(result_raw) else {
+            continue;
+        };
+        let Some(Value::Array(updates)) = result.get("state_update") else {
+            continue;
+        };
+        let step_sequence = metadata
+            .get("step_seq")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let attempt = metadata.get("attempt").and_then(Value::as_i64).unwrap_or(0);
+        for (update_index, update) in updates.iter().enumerate() {
+            let Some(Value::Array(update)) = Some(update) else {
+                continue;
+            };
+            if update.len() != 2 {
+                continue;
+            }
+            let operation = update[0].as_str().unwrap_or_default();
+            let Some(payload) = update[1].as_object() else {
+                continue;
+            };
+            let key = TraceKey {
+                step_sequence,
+                attempt,
+                update_index,
+            };
+            if let Some(page_cursor_value) = payload.get("page_cursor").and_then(Value::as_i64) {
+                if page_cursor_value >= 1 && payload.contains_key("last_reused_page") {
+                    let was_reused = payload.get("last_reused_page").and_then(Value::as_i64)
+                        == Some(page_cursor_value);
+                    outcomes.insert(page_cursor_value, (key, was_reused));
+                }
+            }
+            if let Some(reused_page) = payload.get("last_reused_page").and_then(Value::as_i64) {
+                if reused_page >= 1 {
+                    outcomes.insert(reused_page, (key, true));
+                }
+            }
+            if operation == "a" {
+                if let Some(legacy_page) = payload.get("reused_pages").and_then(Value::as_i64) {
+                    if legacy_page >= 1 {
+                        outcomes.insert(legacy_page, (key, true));
+                    }
+                }
+            }
+        }
+    }
+    let mut outcomes = outcomes.into_iter().collect::<Vec<_>>();
+    outcomes.sort_by_key(|(_page_number, (key, _was_reused))| *key);
+    Ok(outcomes
+        .into_iter()
+        .filter(|(_page_number, (_key, was_reused))| *was_reused)
+        .map(|(page_number, _)| page_number)
+        .collect())
+}
+
 pub fn page_cursor(state: &Value) -> u64 {
     state
         .get("page_cursor")
@@ -872,6 +948,46 @@ mod tests {
         assert!(state_optional_string(&state, "missing").unwrap().is_none());
         let invalid = json!({"checkpoint_revision": 1});
         assert!(state_optional_string(&invalid, "checkpoint_revision").is_err());
+    }
+
+    #[test]
+    fn reconstructs_reused_pages_from_trace() {
+        let nodes = vec![
+            json!({
+                "metadata": {
+                    "run_id": "root",
+                    "step_seq": 1,
+                    "attempt": 0,
+                    "result_json": "{\"state_update\":[[\"a\", {\"page_cursor\": 1, \"last_reused_page\": 1}]]}"
+                }
+            }),
+            json!({
+                "metadata": {
+                    "run_id": "root",
+                    "step_seq": 2,
+                    "attempt": 0,
+                    "result_json": "{\"state_update\":[[\"a\", {\"reused_pages\": 2}]]}"
+                }
+            }),
+            json!({
+                "metadata": {
+                    "run_id": "other",
+                    "step_seq": 3,
+                    "attempt": 0,
+                    "result_json": "{\"state_update\":[[\"a\", {\"page_cursor\": 4, \"last_reused_page\": 4}]]}"
+                }
+            }),
+            json!({
+                "metadata": {
+                    "run_id": "root",
+                    "step_seq": 4,
+                    "attempt": 0,
+                    "result_json": "{\"state_update\":[[\"a\", {\"page_cursor\": 5, \"last_reused_page\": 4}]]}"
+                }
+            }),
+        ];
+        let reused = reused_pages_from_trace(&nodes, "root").unwrap();
+        assert_eq!(reused, vec![1, 2, 4]);
     }
 
     #[test]
