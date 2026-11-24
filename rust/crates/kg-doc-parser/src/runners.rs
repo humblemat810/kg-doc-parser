@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use crate::layerwise_edits::semantic_tree_to_kge_payload;
 use crate::layerwise_parser::{prepare_document_for_llm, stable_id};
 use crate::ocr_artifacts::artifact_schema_error;
+use crate::ocr_state_store::{
+    DocumentIdentity, OcrAttemptRequest, OcrPagePublication, OcrWorkflowStateStore,
+};
 use crate::page_index_contracts::PageIndexSourceFormat;
 use crate::page_index_pipeline::parse_page_index_document_heuristic;
 use crate::parser::ParsingMode;
@@ -168,6 +171,10 @@ pub trait OcrRunner {
         "provider"
     }
 
+    fn configuration_fingerprint(&self) -> &str {
+        "provider-v1"
+    }
+
     fn run_page(&self, image_path: &Path, page_number: u64) -> Result<Value>;
 }
 
@@ -221,6 +228,7 @@ fn validate_ocr_artifact(
     image_path: &Path,
     page_number: u64,
     provider_name: &str,
+    configuration_fingerprint: &str,
 ) -> Result<Value> {
     let object = artifact
         .as_object_mut()
@@ -238,6 +246,9 @@ fn validate_ocr_artifact(
     metadata
         .entry("ocr_provider".to_string())
         .or_insert_with(|| serde_json::json!(provider_name));
+    metadata
+        .entry("ocr_configuration_fingerprint".to_string())
+        .or_insert_with(|| serde_json::json!(configuration_fingerprint));
     if !metadata.contains_key("source_image_sha256") {
         metadata.insert(
             "source_image_sha256".to_string(),
@@ -376,6 +387,7 @@ pub fn run_ocr_source_workflow(
         .and_then(std::ffi::OsStr::to_str)
         .map(|extension| format!(".{}", extension.to_lowercase()))
         .unwrap_or_default();
+    let rendered_dir = output_dir.join("rendered_pages");
     let mut page_sources = Vec::new();
     let (source_kind, render_configuration_fingerprint) = if extension == ".pdf" {
         if !source_path.is_file() {
@@ -409,13 +421,36 @@ pub fn run_ocr_source_workflow(
         if !source_path.is_file() {
             anyhow::bail!("OCR source must be an existing image or PDF");
         }
-        page_sources.push((1, source_path.to_path_buf()));
+        std::fs::create_dir_all(&rendered_dir)?;
+        let rendered_path = rendered_dir.join(format!("page_1{}", extension));
+        std::fs::copy(source_path, &rendered_path)?;
+        page_sources.push((1, rendered_path));
         ("image", "image-materialize-v1".to_string())
     };
-    let rendered_dir = output_dir.join("rendered_pages");
     let input_fingerprint = sha256_file(source_path)?;
     let legacy_dir = output_dir.join("legacy_split_pages");
+    let state_db_path = output_dir.join("ocr-state.sqlite");
     std::fs::create_dir_all(&legacy_dir)?;
+    let store = OcrWorkflowStateStore::open(&state_db_path)?;
+    let configuration_fingerprint = format!(
+        "{}:{}:{}",
+        runner.provider_name(),
+        runner.configuration_fingerprint(),
+        render_configuration_fingerprint
+    );
+    let identity = DocumentIdentity {
+        document_id: document_id.clone(),
+        title: document_id.clone(),
+        source_kind: source_kind.to_string(),
+        input_fingerprint: input_fingerprint.clone(),
+        total_pages: page_sources.len() as i64,
+    };
+    store.rebuild_from_artifacts(
+        &identity,
+        &rendered_dir,
+        &legacy_dir,
+        &render_configuration_fingerprint,
+    )?;
     probe_event(
         probe_path,
         "workflow.file_started",
@@ -428,11 +463,63 @@ pub fn run_ocr_source_workflow(
     )?;
     let mut pages = Vec::with_capacity(page_sources.len());
     for (page_number, image_path) in page_sources {
-        let artifact = runner.run_page(&image_path, page_number)?;
-        let artifact =
-            validate_ocr_artifact(artifact, &image_path, page_number, runner.provider_name())?;
         let artifact_path = legacy_dir.join(format!("page_{page_number}.json"));
-        std::fs::write(&artifact_path, serde_json::to_string_pretty(&artifact)?)?;
+        let content_hash = sha256_file(&image_path)?;
+        let page_number_i64 = page_number as i64;
+        if store.should_skip_page(
+            &document_id,
+            page_number_i64,
+            crate::ocr_state_store::OcrStage::Ocr,
+            &content_hash,
+            Some(&artifact_path),
+            &[configuration_fingerprint.as_str()],
+        )? {
+            pages.push(serde_json::json!({
+                "page_number": page_number,
+                "image_path": image_path,
+                "json_path": artifact_path,
+                "status": "completed",
+            }));
+            continue;
+        }
+        let attempt_index = store.record_attempt(
+            &document_id,
+            page_number_i64,
+            crate::ocr_state_store::OcrStage::Ocr,
+            &OcrAttemptRequest {
+                content_hash: Some(content_hash.clone()),
+                model_name: format!(
+                    "{}-{}",
+                    runner.provider_name(),
+                    runner.configuration_fingerprint()
+                ),
+                artifact_path: Some(artifact_path.clone()),
+                config_fingerprint: Some(configuration_fingerprint.clone()),
+            },
+        )?;
+        let artifact = runner.run_page(&image_path, page_number)?;
+        let artifact = validate_ocr_artifact(
+            artifact,
+            &image_path,
+            page_number,
+            runner.provider_name(),
+            &configuration_fingerprint,
+        )?;
+        let accepted = store.publish_ocr_page(
+            &document_id,
+            &OcrPagePublication {
+                page_number: page_number_i64,
+                content_hash: &content_hash,
+                artifact_path: &artifact_path,
+                payload: artifact,
+                model_name: runner.provider_name(),
+                attempt_index,
+                config_fingerprint: &configuration_fingerprint,
+            },
+        )?;
+        if !accepted {
+            anyhow::bail!("failed to publish OCR page {page_number} for {document_id}");
+        }
         pages.push(serde_json::json!({
             "page_number": page_number,
             "image_path": image_path,
@@ -448,6 +535,8 @@ pub fn run_ocr_source_workflow(
         "render_configuration_fingerprint": render_configuration_fingerprint,
         "total_pages": pages.len(),
         "pages": pages,
+        "is_completed": store.refresh_document_completion(&document_id)?,
+        "state_db_path": state_db_path,
     });
     let progress_path = output_dir.join("ocr-progress.json");
     std::fs::write(&progress_path, serde_json::to_string_pretty(&progress)?)?;
@@ -463,6 +552,8 @@ pub fn run_ocr_source_workflow(
         "legacy_dir": legacy_dir,
         "rendered_dir": rendered_dir,
         "progress_path": progress_path,
+        "state_db_path": state_db_path,
+        "is_completed": store.refresh_document_completion(&document_id)?,
     });
     let summary_path = output_dir.join("ocr-summary.json");
     std::fs::write(&summary_path, serde_json::to_string_pretty(&summary)?)?;
@@ -925,6 +1016,45 @@ mod tests {
         assert!(output.join("legacy_split_pages/page_1.json").exists());
         assert!(output.join("ocr-summary.json").exists());
         assert!(output.join("ocr-progress.json").exists());
+    }
+
+    #[test]
+    fn resumes_ocr_image_workflow_from_durable_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("sample.png");
+        std::fs::write(&source, b"fake image").unwrap();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let runner = |_image_path: &Path, page_number: u64| -> Result<Value> {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(serde_json::json!({
+                "metadata": {"ocr_json_version": "0.1", "ocr_model_name": "fake"},
+                "pdf_page_num": page_number,
+                "OCR_text_clusters": [{"text": format!("page {page_number}")}],
+                "non_text_objects": []
+            }))
+        };
+        let output = temp.path().join("single");
+        let first = run_ocr_source_workflow(
+            &source,
+            &output,
+            &runner,
+            None,
+            &output.join("workflow-events.jsonl"),
+        )
+        .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(first.extra["is_completed"], true);
+        assert!(output.join("ocr-state.sqlite").exists());
+        let second = run_ocr_source_workflow(
+            &source,
+            &output,
+            &runner,
+            None,
+            &output.join("workflow-events.jsonl"),
+        )
+        .unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(second.extra["is_completed"], true);
     }
 
     #[test]
