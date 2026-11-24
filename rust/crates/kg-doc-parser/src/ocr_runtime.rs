@@ -94,6 +94,157 @@ pub fn document_tree_from_state(state: &Value) -> Result<crate::document_models:
         .map_err(|error| anyhow::anyhow!("OCR grouping runtime state has an invalid tree: {error}"))
 }
 
+fn is_json_integer(value: &Value) -> bool {
+    value.is_i64() || value.is_u64()
+}
+
+pub fn typed_state(value: &Value) -> Result<Value> {
+    let Some(Value::Object(input)) = Some(value) else {
+        bail!("OCR workflow state must be an object");
+    };
+    let mut state = input.clone();
+
+    for key in [
+        "ocr_page_state_version",
+        "ocr_root_state_version",
+        "document_id",
+        "source_fingerprint",
+        "source_namespace",
+        "grouping_policy_version",
+        "parse_generation",
+        "legacy_dir",
+        "checkpoint_revision",
+    ] {
+        if let Some(field) = state.get(key) {
+            if !field.is_null() && !field.is_string() {
+                bail!("OCR workflow state field {key:?} must be a string");
+            }
+        }
+    }
+
+    for key in [
+        "pass_index",
+        "adaptive_grouping_round",
+        "adaptive_grouping_window",
+        "ocr_page_recovery_generation",
+        "page_cursor",
+        "last_failed_page",
+        "last_reused_page",
+    ] {
+        if let Some(field) = state.get(key) {
+            if !field.is_null() && !is_json_integer(field) {
+                bail!("OCR workflow state field {key:?} must be an integer");
+            }
+        }
+    }
+
+    for key in [
+        "checkpoint_restored",
+        "checkpoint_absent",
+        "summaries_generated",
+        "adaptive_grouping_complete",
+    ] {
+        if let Some(field) = state.get(key) {
+            if !field.is_null() && !field.is_boolean() {
+                bail!("OCR workflow state field {key:?} must be a boolean");
+            }
+        }
+    }
+
+    for key in [
+        "tree",
+        "workflow_input",
+        "grouping_result",
+        "semantic_result",
+        "semantic_tree",
+        "ocr_page_result",
+        "export_bundle",
+    ] {
+        if let Some(field) = state.get(key) {
+            if !field.is_null() && !field.is_object() {
+                bail!("OCR workflow state field {key:?} must be a JSON object");
+            }
+        }
+    }
+
+    if let Some(Value::Array(passes)) = state.get_mut("grouping_passes") {
+        for pass in passes {
+            if !pass.is_array() {
+                bail!("OCR workflow state grouping_passes pass must be a list");
+            }
+            let Some(Value::Array(items)) = Some(pass) else {
+                continue;
+            };
+            for item in items {
+                if !item.is_object() {
+                    bail!("OCR workflow state grouping_passes item must be a JSON object");
+                }
+            }
+        }
+    } else if state
+        .get("grouping_passes")
+        .is_some_and(|value| !value.is_null())
+    {
+        bail!("OCR workflow state field grouping_passes must be a list of passes");
+    }
+
+    for key in [
+        "adaptive_grouping_history",
+        "adaptive_grouping_window_proposals",
+    ] {
+        if let Some(Value::Array(items)) = state.get_mut(key) {
+            for item in items {
+                if !item.is_object() {
+                    bail!("OCR workflow state {key} item must be a JSON object");
+                }
+            }
+        } else if state.get(key).is_some_and(|value| !value.is_null()) {
+            bail!("OCR workflow state {key} must be a list");
+        }
+    }
+
+    for key in ["completed_pages", "reused_pages"] {
+        if let Some(Value::Array(items)) = state.get(key) {
+            if items.iter().any(|item| !is_json_integer(item)) {
+                bail!("OCR workflow state field {key:?} must be a list of integers");
+            }
+        } else if state.get(key).is_some_and(|value| !value.is_null()) {
+            bail!("OCR workflow state field {key:?} must be a list of integers");
+        }
+    }
+
+    if let Some(Value::Array(items)) = state.get_mut("raw_pages") {
+        for (index, item) in items.iter_mut().enumerate() {
+            *item = validated_page_json(item, None, true).map_err(|error| {
+                anyhow::anyhow!("OCR workflow state raw_pages[{index}]: {error}")
+            })?;
+        }
+    } else if state.get("raw_pages").is_some_and(|value| !value.is_null()) {
+        bail!("OCR workflow state field raw_pages must be a list or null");
+    }
+
+    if let Some(Value::Array(items)) = state.get_mut("page_sources") {
+        for item in items {
+            page_source_state(item)?;
+        }
+    } else if state
+        .get("page_sources")
+        .is_some_and(|value| !value.is_null())
+    {
+        bail!("OCR workflow state field page_sources must be a list");
+    }
+
+    Ok(Value::Object(state))
+}
+
+pub fn typed_child_state(value: &Value, label: &str) -> Result<Value> {
+    if !value.is_object() {
+        bail!("{label} did not return a JSON object state");
+    }
+    typed_state(value)
+        .map_err(|error| anyhow::anyhow!("{label} returned invalid typed state: {error}"))
+}
+
 pub fn reused_pages_from_trace(nodes: &[Value], run_id: &str) -> Result<Vec<i64>> {
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     struct TraceKey {
@@ -988,6 +1139,49 @@ mod tests {
         ];
         let reused = reused_pages_from_trace(&nodes, "root").unwrap();
         assert_eq!(reused, vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn validates_and_narrows_typed_state() {
+        let state = json!({
+            "_opaque": {"nested": {"value": 1}},
+            "ocr_page_state_version": OCR_PAGE_STATE_VERSION,
+            "document_id": "doc",
+            "source_fingerprint": "source",
+            "grouping_policy_version": "grouping-v1",
+            "parse_generation": "semantic-v1",
+            "page_cursor": 2,
+            "adaptive_grouping_complete": true,
+            "tree": {
+                "schema_version": "1.0",
+                "document_id": "doc",
+                "source_revision": "source",
+                "tree_revision": 1,
+                "root_id": "root",
+                "source_items": [],
+                "nodes": [],
+                "references": []
+            },
+            "grouping_passes": [[{"kind": "section"}]],
+            "adaptive_grouping_history": [{"round": 1}],
+            "completed_pages": [1, 2],
+            "reused_pages": [1]
+        });
+        let typed = typed_state(&state).unwrap();
+        assert_eq!(typed["page_cursor"], json!(2));
+        assert_eq!(typed["_opaque"]["nested"]["value"], json!(1));
+        assert_eq!(typed["completed_pages"], json!([1, 2]));
+        assert_eq!(typed["reused_pages"], json!([1]));
+        assert_eq!(typed_child_state(&state, "page child").unwrap(), typed);
+
+        let invalid_string = json!({"document_id": 1});
+        assert!(typed_state(&invalid_string).is_err());
+        let invalid_boolean = json!({"adaptive_grouping_complete": "true"});
+        assert!(typed_state(&invalid_boolean).is_err());
+        let invalid_pages = json!({"completed_pages": [1, "two"]});
+        assert!(typed_state(&invalid_pages).is_err());
+        let invalid_child = json!([]);
+        assert!(typed_child_state(&invalid_child, "page child").is_err());
     }
 
     #[test]
