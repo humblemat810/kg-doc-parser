@@ -22,6 +22,7 @@ use crate::parser_core::{
     commit_layer_children, enqueue_next_layer_frontier, prepare_layer_frontier,
     CurrentLayerContext, CurrentLayerResult, LayerFrontierItem, ParseSessionState, SplitStrategy,
 };
+use crate::parser_core_validation::{propose_layer_breakdown, review_layer};
 use crate::semantic::{HydratedTextPointer, SemanticNode};
 use crate::source_text::source_map_entry_text;
 
@@ -931,7 +932,7 @@ pub fn run_layerwise_recursive_workflow(
             .ok_or_else(|| anyhow::anyhow!("layerwise root node is missing an id"))?,
         current_depth: 0,
         max_depth,
-        allow_review: false,
+        allow_review: true,
         split_strategy: SplitStrategy::ExcerptFirst,
         fallback_split_strategy: SplitStrategy::BoundaryFirst,
         strategy_history: vec![SplitStrategy::ExcerptFirst],
@@ -955,7 +956,13 @@ pub fn run_layerwise_recursive_workflow(
     while !frontier.is_empty() && visited_depth < max_depth {
         let (context, remaining, next_session) =
             prepare_layer_frontier(&session, &frontier, &tree, max_depth, None)?;
-        let result = provider.parse_level(&context, &source_map, &raw_document)?;
+        let provider_result = provider.parse_level(&context, &source_map, &raw_document)?;
+        let result = propose_layer_breakdown(&session, &context, || {
+            serde_json::to_value(&provider_result).map_err(|error| anyhow::anyhow!("{error}"))
+        })?;
+        let (review, reviewed_session) =
+            review_layer(&session, &context, &result, Some(&source_map))?;
+        let result = review.updated_result.clone();
         tree = commit_layer_children(
             &tree,
             &result,
@@ -966,7 +973,7 @@ pub fn run_layerwise_recursive_workflow(
         )?;
         frontier = enqueue_next_layer_frontier(&remaining, &context, &result, &next_session)?;
         visited_depth = visited_depth.max(context.depth + 1);
-        session = next_session;
+        session = reviewed_session;
     }
     let graph_payload = semantic_tree_to_kge_payload(
         &tree,
