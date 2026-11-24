@@ -3,6 +3,7 @@ use kg_doc_parser::document_models::AdaptiveGroupingPolicy;
 use kg_doc_parser::document_models::{
     BoundingBox, CoordinateSystem, SourceAccuracy, SourceLocation,
 };
+use kg_doc_parser::layerwise_edits::{apply_proposals, LayerwiseChild, LayerwisePointer};
 use kg_doc_parser::ocr_artifacts::artifact_schema_error;
 use kg_doc_parser::page_index_candidates::extract_candidate_blocks;
 use kg_doc_parser::page_index_classification::{classify_block, ClassifyBlockOptions};
@@ -90,6 +91,82 @@ fn document_model_validation_matches_python() {
         accuracy: SourceAccuracy::Region,
     };
     assert!(missing_bbox.validate().is_err());
+}
+
+#[test]
+fn layerwise_cud_matches_python() {
+    let source_map = serde_json::json!({
+        "p1_c0": {"id": "p1_c0", "text": "Alpha Beta"}
+    });
+    let pointer = LayerwisePointer {
+        source_cluster_id: "p1_c0".to_string(),
+        start_char: 0,
+        end_char: 4,
+        verbatim_text: "Alpha".to_string(),
+        start_delimiter: None,
+        end_delimiter: None,
+        validation_method: None,
+    };
+    let beta_pointer = LayerwisePointer {
+        source_cluster_id: "p1_c0".to_string(),
+        start_char: 6,
+        end_char: 9,
+        verbatim_text: "Beta".to_string(),
+        start_delimiter: None,
+        end_delimiter: None,
+        validation_method: None,
+    };
+    let children = vec![
+        LayerwiseChild {
+            parent_node_id: Some("parent".to_string()),
+            node_type: "TEXT_FLOW".to_string(),
+            title: "Alpha".to_string(),
+            pointers: vec![pointer],
+        },
+        LayerwiseChild {
+            parent_node_id: Some("parent".to_string()),
+            node_type: "TEXT_FLOW".to_string(),
+            title: "Beta".to_string(),
+            pointers: vec![beta_pointer.clone()],
+        },
+    ];
+    let proposals = vec![
+        serde_json::json!({
+            "edit_type": "ADD_NODE",
+            "add": {
+                "parent_node_id": "parent",
+                "node_type": "TEXT_FLOW",
+                "title": "Gamma",
+                "pointers": [{
+                    "source_cluster_id": "p1_c0",
+                    "start_char": 6,
+                    "end_char": 9,
+                    "verbatim_text": "Beta"
+                }]
+            },
+            "reasoning_create": "test"
+        }),
+        serde_json::json!({
+            "edit_type": "DELETE_NODE",
+            "target": {"node_id": "1"},
+            "reasoning_delete": "test"
+        }),
+        serde_json::json!({
+            "edit_type": "EDIT_NODE",
+            "target": {"node_id": "0"},
+            "patch": {"title": "Alpha"},
+            "reasoning_update": "test"
+        }),
+    ];
+    let applied = apply_proposals(&proposals, &children, &source_map).unwrap();
+    assert!(applied.proposal_errors.is_empty());
+    assert_eq!(applied.children.len(), 2);
+    assert_eq!(applied.children[0].title, "Alpha");
+    assert_eq!(applied.children[1].title, "Gamma");
+    assert_eq!(
+        applied.children[1].pointers[0].verbatim_text,
+        beta_pointer.verbatim_text
+    );
 }
 
 #[test]

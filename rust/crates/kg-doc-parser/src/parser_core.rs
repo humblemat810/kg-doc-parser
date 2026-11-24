@@ -85,6 +85,8 @@ pub struct CurrentLayerContext {
     pub depth: u64,
     pub parent_node_ids: Vec<String>,
     pub parent_titles: Vec<String>,
+    #[serde(default)]
+    pub parent_node_types: Vec<String>,
     pub parent_content_pointers_by_id: Map<String, Value>,
     pub split_strategy: SplitStrategy,
     pub retry_count: u64,
@@ -313,6 +315,13 @@ pub fn prepare_layer_frontier(
             .map(|item| item.parent_node_id.clone())
             .collect(),
         parent_titles,
+        parent_node_types: selected_items
+            .iter()
+            .filter_map(|item| {
+                find_semantic_node(semantic_tree, &item.parent_node_id)
+                    .map(|node| node.node_type.clone())
+            })
+            .collect(),
         parent_content_pointers_by_id,
         split_strategy,
         retry_count,
@@ -385,7 +394,7 @@ fn parse_pointer_override(pointers: &Value) -> Result<Vec<HydratedTextPointer>> 
         .map_err(|error| anyhow::anyhow!("atomic pointer override must be typed: {error}"))
 }
 
-fn atomic_pointer_override_errors(
+pub fn atomic_pointer_override_errors(
     parent_id: &str,
     current_layer_result: &CurrentLayerResult,
     parser_source_map: Option<&Value>,
@@ -1024,6 +1033,7 @@ mod tests {
             depth: 0,
             parent_node_ids: vec!["parent".to_string()],
             parent_titles: vec!["Parent".to_string()],
+            parent_node_types: vec!["DOCUMENT_ROOT".to_string()],
             parent_content_pointers_by_id: serde_json::from_value(json!({
                 "parent": [{
                     "source_cluster_id": "p1",

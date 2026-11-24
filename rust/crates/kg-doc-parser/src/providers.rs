@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -172,6 +174,447 @@ pub struct WorkflowProviderSettings {
     pub parser: ProviderEndpointConfig,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderHttpRequest {
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Value,
+    pub timeout_seconds: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderHttpResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+pub trait ProviderTransport {
+    fn send(&self, request: &ProviderHttpRequest) -> Result<ProviderHttpResponse>;
+}
+
+impl<F> ProviderTransport for F
+where
+    F: Fn(&ProviderHttpRequest) -> Result<ProviderHttpResponse>,
+{
+    fn send(&self, request: &ProviderHttpRequest) -> Result<ProviderHttpResponse> {
+        self(request)
+    }
+}
+
+pub struct UreqProviderTransport;
+
+impl ProviderTransport for UreqProviderTransport {
+    fn send(&self, request: &ProviderHttpRequest) -> Result<ProviderHttpResponse> {
+        let timeout = std::time::Duration::from_secs_f64(request.timeout_seconds);
+        let agent = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .timeout_global(Some(timeout))
+                .http_status_as_error(false)
+                .build(),
+        );
+        let mut builder = agent.post(request.url.as_str());
+        for (name, value) in &request.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        let mut response = builder.send(request.body.to_string().as_bytes())?;
+        Ok(ProviderHttpResponse {
+            status: response.status().as_u16(),
+            body: response.body_mut().read_to_string()?,
+        })
+    }
+}
+
+pub struct ProviderChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+fn parse_provider_http_response(response: &ProviderHttpResponse) -> Result<Value> {
+    let payload: Value = serde_json::from_str(&response.body)
+        .map_err(|error| anyhow::anyhow!("provider returned malformed JSON: {error}"))?;
+    if response.status >= 400 {
+        bail!(
+            "provider HTTP {}: {}",
+            response.status,
+            serde_json::to_string(&payload)?
+        );
+    }
+    Ok(payload)
+}
+
+pub fn build_openai_compatible_chat_request(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    response_format: Option<Value>,
+) -> Result<ProviderHttpRequest> {
+    if config.provider != "openai" && config.provider != "custom" && config.provider != "bonsai" {
+        bail!("OpenAI-compatible provider requires openai, custom, or bonsai");
+    }
+    let Some(base_url) = config
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        bail!("OpenAI-compatible provider requires base_url");
+    };
+    let api_key = match config.api_key_env.as_deref() {
+        Some(name) => std::env::var(name).map_err(|_| {
+            anyhow::anyhow!("provider API key environment {name:?} is not configured")
+        })?,
+        None => bail!("OpenAI-compatible provider requires api_key_env"),
+    };
+    let mut body = json!({
+        "model": config.model,
+        "temperature": config.temperature,
+        "messages": messages.iter().map(|message| json!({
+            "role": message.role,
+            "content": message.content,
+        })).collect::<Vec<_>>(),
+    });
+    if let Some(max_output_tokens) = config.max_output_tokens {
+        body["max_tokens"] = json!(max_output_tokens);
+    }
+    if let Some(response_format) = response_format {
+        body["response_format"] = response_format;
+    }
+    let mut headers = BTreeMap::new();
+    headers.insert("Content-Type".to_string(), "application/json".to_string());
+    headers.insert("Accept".to_string(), "application/json".to_string());
+    headers.insert("Authorization".to_string(), format!("Bearer {api_key}"));
+    Ok(ProviderHttpRequest {
+        url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+        headers,
+        body,
+        timeout_seconds: config.timeout_seconds,
+    })
+}
+
+pub fn invoke_openai_compatible_chat(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    response_format: Option<Value>,
+    transport: &dyn ProviderTransport,
+) -> Result<String> {
+    let request = build_openai_compatible_chat_request(config, messages, response_format)?;
+    let attempts = config.max_retries.saturating_add(1).max(1);
+    let mut backoff = config.retry_backoff_seconds.max(0.0);
+    for attempt in 1..=attempts {
+        let response = match transport.send(&request) {
+            Ok(response) => response,
+            Err(error) => {
+                if attempt == attempts {
+                    return Err(error);
+                }
+                std::thread::sleep(std::time::Duration::from_secs_f64(backoff));
+                backoff = (backoff * 2.0).min(config.retry_backoff_max_seconds.max(0.0));
+                continue;
+            }
+        };
+        if (response.status == 429 || response.status >= 500) && attempt < attempts {
+            std::thread::sleep(std::time::Duration::from_secs_f64(backoff));
+            backoff = (backoff * 2.0).min(config.retry_backoff_max_seconds.max(0.0));
+            continue;
+        }
+        let payload = parse_provider_http_response(&response)?;
+        let content = payload
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!("provider response is missing choices[0].message.content")
+            })?;
+        return Ok(content.to_string());
+    }
+    unreachable!("provider retry loop must return or continue")
+}
+
+pub fn build_anthropic_chat_request(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+) -> Result<ProviderHttpRequest> {
+    if config.provider != "anthropic" {
+        bail!("Anthropic provider requires provider=anthropic");
+    }
+    let base_url = config
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("https://api.anthropic.com/v1");
+    let api_key = match config.api_key_env.as_deref() {
+        Some(name) => std::env::var(name).map_err(|_| {
+            anyhow::anyhow!("provider API key environment {name:?} is not configured")
+        })?,
+        None => bail!("Anthropic provider requires api_key_env"),
+    };
+    let (system_messages, chat_messages): (Vec<&ProviderChatMessage>, Vec<&ProviderChatMessage>) =
+        messages
+            .iter()
+            .partition(|message| message.role.eq_ignore_ascii_case("system"));
+    let mut body = json!({
+        "model": config.model,
+        "max_tokens": config.max_output_tokens.unwrap_or(1024),
+        "messages": chat_messages.iter().map(|message| json!({
+            "role": message.role,
+            "content": message.content,
+        })).collect::<Vec<_>>(),
+    });
+    if !system_messages.is_empty() {
+        body["system"] = json!(system_messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n"));
+    }
+    let mut headers = BTreeMap::new();
+    headers.insert("Content-Type".to_string(), "application/json".to_string());
+    headers.insert("Accept".to_string(), "application/json".to_string());
+    headers.insert("x-api-key".to_string(), api_key);
+    headers.insert("anthropic-version".to_string(), "2023-06-01".to_string());
+    Ok(ProviderHttpRequest {
+        url: format!("{}/messages", base_url.trim_end_matches('/')),
+        headers,
+        body,
+        timeout_seconds: config.timeout_seconds,
+    })
+}
+
+fn anthropic_content(payload: &Value) -> Result<String> {
+    let content = payload
+        .get("content")
+        .ok_or_else(|| anyhow::anyhow!("Anthropic response is missing content"))?;
+    if let Some(text) = content.as_str() {
+        return Ok(text.to_string());
+    }
+    let content = content.as_array().ok_or_else(|| {
+        anyhow::anyhow!("Anthropic response content must be a string or block list")
+    })?;
+    let mut text = String::new();
+    for block in content {
+        let block_text = block
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Anthropic content block is missing text"))?;
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(block_text);
+    }
+    Ok(text)
+}
+
+fn retry_provider_request(
+    config: &ProviderEndpointConfig,
+    request: &ProviderHttpRequest,
+    transport: &dyn ProviderTransport,
+    extract_content: impl Fn(&Value) -> Result<String>,
+) -> Result<String> {
+    let attempts = config.max_retries.saturating_add(1).max(1);
+    let mut backoff = config.retry_backoff_seconds.max(0.0);
+    for attempt in 1..=attempts {
+        let response = match transport.send(request) {
+            Ok(response) => response,
+            Err(error) => {
+                if attempt == attempts {
+                    return Err(error);
+                }
+                std::thread::sleep(std::time::Duration::from_secs_f64(backoff));
+                backoff = (backoff * 2.0).min(config.retry_backoff_max_seconds.max(0.0));
+                continue;
+            }
+        };
+        if (response.status == 429 || response.status >= 500) && attempt < attempts {
+            std::thread::sleep(std::time::Duration::from_secs_f64(backoff));
+            backoff = (backoff * 2.0).min(config.retry_backoff_max_seconds.max(0.0));
+            continue;
+        }
+        let payload = parse_provider_http_response(&response)?;
+        return extract_content(&payload);
+    }
+    unreachable!("provider retry loop must return or continue")
+}
+
+pub fn invoke_anthropic_chat(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    transport: &dyn ProviderTransport,
+) -> Result<String> {
+    let request = build_anthropic_chat_request(config, messages)?;
+    retry_provider_request(config, &request, transport, anthropic_content)
+}
+
+pub fn build_ollama_chat_request(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+) -> Result<ProviderHttpRequest> {
+    if config.provider != "ollama" {
+        bail!("Ollama provider requires provider=ollama");
+    }
+    let base_url = config
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http://127.0.0.1:11434");
+    let mut options = json!({"temperature": config.temperature});
+    if let Some(max_output_tokens) = config.max_output_tokens {
+        options["num_predict"] = json!(max_output_tokens);
+    }
+    if let Some(num_ctx) = config.ollama_num_ctx {
+        options["num_ctx"] = json!(num_ctx);
+    }
+    let mut headers = BTreeMap::new();
+    headers.insert("Content-Type".to_string(), "application/json".to_string());
+    headers.insert("Accept".to_string(), "application/json".to_string());
+    Ok(ProviderHttpRequest {
+        url: format!("{}/api/chat", base_url.trim_end_matches('/')),
+        headers,
+        body: json!({
+            "model": config.model,
+            "messages": messages.iter().map(|message| json!({
+                "role": message.role,
+                "content": message.content,
+            })).collect::<Vec<_>>(),
+            "stream": false,
+            "options": options,
+        }),
+        timeout_seconds: config.timeout_seconds,
+    })
+}
+
+fn ollama_content(payload: &Value) -> Result<String> {
+    payload
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| anyhow::anyhow!("Ollama response is missing message.content"))
+}
+
+pub fn invoke_ollama_chat(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    transport: &dyn ProviderTransport,
+) -> Result<String> {
+    let request = build_ollama_chat_request(config, messages)?;
+    retry_provider_request(config, &request, transport, ollama_content)
+}
+
+pub fn build_gemini_chat_request(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    response_format: Option<Value>,
+) -> Result<ProviderHttpRequest> {
+    if config.provider != "gemini" {
+        bail!("Gemini provider requires provider=gemini");
+    }
+    let api_key = match config.api_key_env.as_deref() {
+        Some(name) => std::env::var(name).map_err(|_| {
+            anyhow::anyhow!("provider API key environment {name:?} is not configured")
+        })?,
+        None => bail!("Gemini provider requires api_key_env"),
+    };
+    let base_url = config
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("https://generativelanguage.googleapis.com/v1beta");
+    let system_messages = messages
+        .iter()
+        .filter(|message| message.role.eq_ignore_ascii_case("system"))
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let contents = messages
+        .iter()
+        .filter(|message| !message.role.eq_ignore_ascii_case("system"))
+        .map(|message| {
+            json!({
+                "role": if message.role.eq_ignore_ascii_case("assistant") { "model" } else { "user" },
+                "parts": [{"text": message.content}],
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut generation_config = json!({"temperature": config.temperature});
+    if let Some(max_output_tokens) = config.max_output_tokens {
+        generation_config["maxOutputTokens"] = json!(max_output_tokens);
+    }
+    if let Some(response_format) = response_format {
+        if response_format.get("type").and_then(Value::as_str) == Some("json_object") {
+            generation_config["responseMimeType"] = json!("application/json");
+        }
+        if response_format.get("type").and_then(Value::as_str) == Some("object") {
+            generation_config["responseMimeType"] = json!("application/json");
+            generation_config["responseSchema"] = response_format.clone();
+        }
+    }
+    let mut body = json!({
+        "contents": contents,
+        "generationConfig": generation_config,
+    });
+    if !system_messages.is_empty() {
+        body["systemInstruction"] = json!({"parts": [{"text": system_messages}]});
+    }
+    let mut headers = BTreeMap::new();
+    headers.insert("Content-Type".to_string(), "application/json".to_string());
+    headers.insert("Accept".to_string(), "application/json".to_string());
+    headers.insert("x-goog-api-key".to_string(), api_key);
+    Ok(ProviderHttpRequest {
+        url: format!(
+            "{}/models/{}:generateContent",
+            base_url.trim_end_matches('/'),
+            config.model
+        ),
+        headers,
+        body,
+        timeout_seconds: config.timeout_seconds,
+    })
+}
+
+fn gemini_content(payload: &Value) -> Result<String> {
+    let content = payload
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("Gemini response is missing candidates[0].content.parts"))?;
+    let mut text = String::new();
+    for part in content {
+        let part_text = part
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Gemini content part is missing text"))?;
+        text.push_str(part_text);
+    }
+    Ok(text)
+}
+
+pub fn invoke_gemini_chat(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    response_format: Option<Value>,
+    transport: &dyn ProviderTransport,
+) -> Result<String> {
+    let request = build_gemini_chat_request(config, messages, response_format)?;
+    retry_provider_request(config, &request, transport, gemini_content)
+}
+
+pub fn invoke_provider_chat(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    response_format: Option<Value>,
+    transport: &dyn ProviderTransport,
+) -> Result<String> {
+    if config.provider == "anthropic" {
+        invoke_anthropic_chat(config, messages, transport)
+    } else if config.provider == "gemini" {
+        invoke_gemini_chat(config, messages, response_format, transport)
+    } else if config.provider == "ollama" {
+        invoke_ollama_chat(config, messages, transport)
+    } else {
+        invoke_openai_compatible_chat(config, messages, response_format, transport)
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -247,6 +690,259 @@ impl WorkflowProviderSettings {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn config() -> ProviderEndpointConfig {
+        serde_json::from_value(json!({
+            "provider": "openai",
+            "model": "test-model",
+            "temperature": 0.2,
+            "base_url": "http://localhost/v1",
+            "api_key_env": "KG_DOC_PARSER_TEST_API_KEY",
+            "max_retries": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_backoff_max_seconds": 0.0
+        }))
+        .unwrap()
+    }
+
+    fn messages() -> Vec<ProviderChatMessage> {
+        vec![ProviderChatMessage {
+            role: "user".to_string(),
+            content: "parse this".to_string(),
+        }]
+    }
+
+    #[test]
+    fn builds_openai_compatible_chat_request() {
+        std::env::set_var("KG_DOC_PARSER_TEST_API_KEY", "secret");
+        let request = build_openai_compatible_chat_request(
+            &config(),
+            &messages(),
+            Some(json!({"type": "json_object"})),
+        )
+        .unwrap();
+        assert_eq!(request.url, "http://localhost/v1/chat/completions");
+        assert_eq!(request.headers["Authorization"], "Bearer secret");
+        assert_eq!(request.body["model"], "test-model");
+        assert_eq!(request.body["messages"][0]["content"], "parse this");
+        assert_eq!(request.body["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn rejects_unsupported_openai_compatible_provider() {
+        let mut invalid = config();
+        invalid.provider = "fake".to_string();
+        assert!(build_openai_compatible_chat_request(&invalid, &messages(), None).is_err());
+    }
+
+    #[test]
+    fn retries_server_errors_and_extracts_chat_content() {
+        std::env::set_var("KG_DOC_PARSER_TEST_API_KEY", "secret");
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let transport = |_request: &ProviderHttpRequest| -> Result<ProviderHttpResponse> {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Ok(ProviderHttpResponse {
+                    status: 500,
+                    body: json!({"error": "temporary"}).to_string(),
+                });
+            }
+            Ok(ProviderHttpResponse {
+                status: 200,
+                body: json!({"choices":[{"message":{"content":"structured result"}}]}).to_string(),
+            })
+        };
+        let content =
+            invoke_openai_compatible_chat(&config(), &messages(), None, &transport).unwrap();
+        assert_eq!(content, "structured result");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    fn anthropic_config() -> ProviderEndpointConfig {
+        serde_json::from_value(json!({
+            "provider": "anthropic",
+            "model": "claude-test",
+            "temperature": 0.2,
+            "base_url": "http://localhost",
+            "api_key_env": "KG_DOC_PARSER_TEST_ANTHROPIC_KEY",
+            "max_output_tokens": 64,
+            "max_retries": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_backoff_max_seconds": 0.0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn builds_anthropic_chat_request_with_system_header_and_max_tokens() {
+        std::env::set_var("KG_DOC_PARSER_TEST_ANTHROPIC_KEY", "anthropic-secret");
+        let request = build_anthropic_chat_request(
+            &anthropic_config(),
+            &[
+                ProviderChatMessage {
+                    role: "system".to_string(),
+                    content: "be precise".to_string(),
+                },
+                ProviderChatMessage {
+                    role: "user".to_string(),
+                    content: "parse this".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(request.url, "http://localhost/messages");
+        assert_eq!(request.headers["x-api-key"], "anthropic-secret");
+        assert_eq!(request.headers["anthropic-version"], "2023-06-01");
+        assert_eq!(request.body["system"], "be precise");
+        assert_eq!(request.body["max_tokens"], 64);
+        assert_eq!(request.body["messages"][0]["role"], "user");
+    }
+
+    #[test]
+    fn invokes_anthropic_blocks_and_retries_server_errors() {
+        std::env::set_var("KG_DOC_PARSER_TEST_ANTHROPIC_KEY", "anthropic-secret");
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let transport = |_request: &ProviderHttpRequest| -> Result<ProviderHttpResponse> {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Ok(ProviderHttpResponse {
+                    status: 503,
+                    body: json!({"error": "temporary"}).to_string(),
+                });
+            }
+            Ok(ProviderHttpResponse {
+                status: 200,
+                body: json!({"content":[{"type":"text","text":"part one"},{"type":"text","text":"part two"}]}).to_string(),
+            })
+        };
+        let content =
+            invoke_provider_chat(&anthropic_config(), &messages(), None, &transport).unwrap();
+        assert_eq!(content, "part one\npart two");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    fn ollama_config() -> ProviderEndpointConfig {
+        serde_json::from_value(json!({
+            "provider": "ollama",
+            "model": "llama-test",
+            "temperature": 0.2,
+            "base_url": "http://localhost:11434",
+            "max_output_tokens": 64,
+            "ollama_num_ctx": 2048,
+            "max_retries": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_backoff_max_seconds": 0.0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn builds_ollama_chat_request_with_options() {
+        let request = build_ollama_chat_request(&ollama_config(), &messages()).unwrap();
+        assert_eq!(request.url, "http://localhost:11434/api/chat");
+        assert_eq!(request.body["model"], "llama-test");
+        assert_eq!(request.body["stream"], false);
+        assert_eq!(request.body["options"]["num_predict"], 64);
+        assert_eq!(request.body["options"]["num_ctx"], 2048);
+        assert_eq!(request.body["options"]["temperature"], 0.2);
+    }
+
+    #[test]
+    fn invokes_ollama_chat_and_retries_server_errors() {
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let transport = |_request: &ProviderHttpRequest| -> Result<ProviderHttpResponse> {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Ok(ProviderHttpResponse {
+                    status: 503,
+                    body: json!({"error": "temporary"}).to_string(),
+                });
+            }
+            Ok(ProviderHttpResponse {
+                status: 200,
+                body: json!({"message": {"role": "assistant", "content": "ollama result"}})
+                    .to_string(),
+            })
+        };
+        let content =
+            invoke_provider_chat(&ollama_config(), &messages(), None, &transport).unwrap();
+        assert_eq!(content, "ollama result");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    fn gemini_config() -> ProviderEndpointConfig {
+        serde_json::from_value(json!({
+            "provider": "gemini",
+            "model": "gemini-test",
+            "temperature": 0.2,
+            "base_url": "http://localhost/v1beta",
+            "api_key_env": "KG_DOC_PARSER_TEST_GEMINI_KEY",
+            "max_output_tokens": 64,
+            "max_retries": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_backoff_max_seconds": 0.0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn builds_gemini_chat_request_with_system_and_json_mode() {
+        std::env::set_var("KG_DOC_PARSER_TEST_GEMINI_KEY", "gemini-secret");
+        let request = build_gemini_chat_request(
+            &gemini_config(),
+            &[
+                ProviderChatMessage {
+                    role: "system".to_string(),
+                    content: "be precise".to_string(),
+                },
+                ProviderChatMessage {
+                    role: "assistant".to_string(),
+                    content: "prior answer".to_string(),
+                },
+                ProviderChatMessage {
+                    role: "user".to_string(),
+                    content: "parse this".to_string(),
+                },
+            ],
+            Some(json!({"type": "json_object"})),
+        )
+        .unwrap();
+        assert_eq!(
+            request.url,
+            "http://localhost/v1beta/models/gemini-test:generateContent"
+        );
+        assert_eq!(request.headers["x-goog-api-key"], "gemini-secret");
+        assert_eq!(
+            request.body["systemInstruction"]["parts"][0]["text"],
+            "be precise"
+        );
+        assert_eq!(request.body["contents"][0]["role"], "model");
+        assert_eq!(request.body["contents"][1]["role"], "user");
+        assert_eq!(
+            request.body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+        assert_eq!(request.body["generationConfig"]["maxOutputTokens"], 64);
+    }
+
+    #[test]
+    fn invokes_gemini_parts_and_retries_server_errors() {
+        std::env::set_var("KG_DOC_PARSER_TEST_GEMINI_KEY", "gemini-secret");
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let transport = |_request: &ProviderHttpRequest| -> Result<ProviderHttpResponse> {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Ok(ProviderHttpResponse {
+                    status: 503,
+                    body: json!({"error": "temporary"}).to_string(),
+                });
+            }
+            Ok(ProviderHttpResponse {
+                status: 200,
+                body: json!({"candidates":[{"content":{"parts":[{"text":"part one"},{"text":"part two"}]}}]}).to_string(),
+            })
+        };
+        let content =
+            invoke_provider_chat(&gemini_config(), &messages(), None, &transport).unwrap();
+        assert_eq!(content, "part onepart two");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn default_settings_validate() {

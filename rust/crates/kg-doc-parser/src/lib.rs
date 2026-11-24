@@ -1,12 +1,15 @@
+pub mod demo_harness;
 pub mod document_grouping;
 pub mod document_models;
 pub mod layerwise_edits;
+pub mod layerwise_llm;
 pub mod layerwise_parser;
 pub mod ocr_artifacts;
 pub mod ocr_normalization;
 pub mod ocr_providers;
 pub mod ocr_quality;
 pub mod ocr_runtime;
+pub mod ocr_state_store;
 pub mod page_index_candidates;
 pub mod page_index_classification;
 pub mod page_index_contracts;

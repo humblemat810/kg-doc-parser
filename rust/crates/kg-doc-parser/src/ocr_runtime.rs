@@ -3,6 +3,8 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
+use crate::document_models::DocumentTree;
+
 pub const OCR_ROOT_STATE_VERSION: &str = "ocr-root-v3";
 pub const OCR_PAGE_STATE_VERSION: &str = "ocr-page-v2";
 
@@ -80,6 +82,18 @@ pub fn page_cursor(state: &Value) -> u64 {
         .get("page_cursor")
         .and_then(Value::as_u64)
         .unwrap_or(0)
+}
+
+pub fn page_workflow_initial_state(
+    source_fingerprint: &str,
+    legacy_dir: &std::path::Path,
+) -> Value {
+    json!({
+        "ocr_page_state_version": OCR_PAGE_STATE_VERSION,
+        "source_fingerprint": source_fingerprint,
+        "legacy_dir": legacy_dir,
+        "page_cursor": 0,
+    })
 }
 
 pub fn resume_identity_value(state: &Value, key: &str) -> Result<ResumeIdentity> {
@@ -469,6 +483,267 @@ pub fn reconcile_page_checkpoint<G: PageArtifactGate>(
     Ok(None)
 }
 
+fn expected_page_numbers(sources: &[PageSourceState]) -> Vec<u64> {
+    sources.iter().map(|source| source.page_number).collect()
+}
+
+fn root_page_checkpoint_incomplete<G: PageArtifactGate>(
+    state: &Value,
+    sources: &[PageSourceState],
+    legacy_dir: &std::path::Path,
+    gate: &G,
+    document_id: &str,
+) -> Result<bool> {
+    let cursor = page_cursor(state);
+    let expected_pages = expected_page_numbers(sources);
+    let legacy_completed = if state.get("completed_pages").is_some() {
+        int_list(state, "completed_pages")?
+            .into_iter()
+            .map(|page| page as u64)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let completed = if legacy_completed.is_empty() {
+        expected_pages
+            .iter()
+            .take(cursor as usize)
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        legacy_completed
+    };
+    let incomplete = cursor != sources.len() as u64 || completed != expected_pages;
+    let checkpoint_broken =
+        reconcile_page_checkpoint(state, Some(sources), legacy_dir, gate, document_id, 0)?
+            .is_some();
+    Ok(incomplete || checkpoint_broken)
+}
+
+pub fn validate_root_page_result<G: PageArtifactGate>(
+    state: &Value,
+    sources: &[PageSourceState],
+    legacy_dir: &std::path::Path,
+    gate: &G,
+    document_id: &str,
+) -> Result<()> {
+    if root_page_checkpoint_incomplete(state, sources, legacy_dir, gate, document_id)? {
+        bail!("OCR root page child completed with an incomplete page checkpoint");
+    }
+    Ok(())
+}
+
+pub fn page_result_needs_recovery<G: PageArtifactGate>(
+    state: &Value,
+    sources: &[PageSourceState],
+    legacy_dir: &std::path::Path,
+    gate: &G,
+    document_id: &str,
+) -> Result<bool> {
+    root_page_checkpoint_incomplete(state, sources, legacy_dir, gate, document_id)
+}
+
+pub fn validate_existing_page_identities(
+    page_states: &std::collections::BTreeMap<u64, Option<String>>,
+    configuration_fingerprints: &[String],
+) -> Result<()> {
+    for (page_number, config_fingerprint) in page_states {
+        let Some(config_fingerprint) = config_fingerprint else {
+            continue;
+        };
+        if configuration_fingerprints.contains(config_fingerprint) {
+            continue;
+        }
+        bail!(
+            "OCR root checkpoint identity mismatch; refusing to mix persisted OCR configuration for page {page_number}"
+        );
+    }
+    Ok(())
+}
+
+pub fn recovery_generation(state: &Value) -> Result<u64> {
+    match state.get("ocr_page_recovery_generation") {
+        None | Some(Value::Null) => Ok(0),
+        Some(value) => {
+            let Some(generation) = value.as_u64() else {
+                bail!("OCR page recovery generation must be a non-negative integer");
+            };
+            Ok(generation)
+        }
+    }
+}
+
+pub fn semantic_parse_generation(recovery_generation: u64) -> String {
+    if recovery_generation == 0 {
+        "semantic-v1".to_string()
+    } else {
+        format!("semantic-recovery-v{recovery_generation}")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvocationLineage {
+    pub workflow_id: String,
+    pub invocation_key: String,
+    pub child_run_id: String,
+}
+
+pub fn expected_invocation_lineages(
+    root_run_id: &str,
+    recovery_generation: u64,
+) -> Vec<InvocationLineage> {
+    let suffix = if recovery_generation == 0 {
+        String::new()
+    } else {
+        format!("|recovery-{recovery_generation}")
+    };
+    let invocation_key = |base: &str| {
+        if recovery_generation == 0 {
+            base.to_string()
+        } else {
+            format!("{base}-recovery-v{recovery_generation}")
+        }
+    };
+    vec![
+        InvocationLineage {
+            workflow_id: "kg_doc_parser.ocr_pages.v1".to_string(),
+            invocation_key: invocation_key("ocr-pages-v1"),
+            child_run_id: format!("{root_run_id}|ocr-pages{suffix}"),
+        },
+        InvocationLineage {
+            workflow_id: "kg_doc_parser.ocr_grouping.v1".to_string(),
+            invocation_key: invocation_key("grouping-v1"),
+            child_run_id: format!("{root_run_id}|grouping{suffix}"),
+        },
+        InvocationLineage {
+            workflow_id: "kg_doc_parser.ingest.v1".to_string(),
+            invocation_key: invocation_key("semantic-v1"),
+            child_run_id: format!("{root_run_id}|semantic{suffix}"),
+        },
+    ]
+}
+
+fn invocation_lineage_key(lineage: &InvocationLineage) -> (String, String, String) {
+    (
+        lineage.workflow_id.clone(),
+        lineage.invocation_key.clone(),
+        lineage.child_run_id.clone(),
+    )
+}
+
+pub fn validate_invocation_lineages(
+    edges: &[Value],
+    root_run_id: &str,
+    recovery_generation: u64,
+) -> Result<()> {
+    let expected = expected_invocation_lineages(root_run_id, recovery_generation);
+    let expected_keys = expected
+        .iter()
+        .map(invocation_lineage_key)
+        .collect::<std::collections::HashSet<_>>();
+    let mut counts: std::collections::HashMap<(String, String, String), usize> =
+        std::collections::HashMap::new();
+    for edge in edges {
+        let Some(metadata) = edge.get("metadata").and_then(Value::as_object) else {
+            continue;
+        };
+        if metadata.get("relation").and_then(Value::as_str) != Some("wf_invoked") {
+            continue;
+        }
+        if metadata.get("parent_run_id").and_then(Value::as_str) != Some(root_run_id) {
+            continue;
+        }
+        let Some(workflow_id) = metadata.get("workflow_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(invocation_key) = metadata.get("invocation_key").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(child_run_id) = metadata.get("child_run_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let key = (
+            workflow_id.to_string(),
+            invocation_key.to_string(),
+            child_run_id.to_string(),
+        );
+        if expected_keys.contains(&key) {
+            *counts.entry(key).or_default() += 1;
+        }
+    }
+    let mut missing = expected_keys
+        .difference(&counts.keys().cloned().collect())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut duplicate = counts
+        .iter()
+        .filter(|(_key, count)| **count != 1)
+        .map(|(key, _count)| key.clone())
+        .collect::<Vec<_>>();
+    missing.sort();
+    duplicate.sort();
+    if !missing.is_empty() || !duplicate.is_empty() {
+        let mut details = Vec::new();
+        if !missing.is_empty() {
+            details.push(format!("missing={missing:?}"));
+        }
+        if !duplicate.is_empty() {
+            details.push(format!("duplicate={duplicate:?}"));
+        }
+        bail!(
+            "OCR root persisted invocation lineage is invalid for {root_run_id:?}: {}",
+            details.join("; ")
+        );
+    }
+    Ok(())
+}
+
+pub fn expected_grouping_frontier(tree: &DocumentTree) -> Result<Vec<String>> {
+    tree.validate()?;
+    let Some(root) = tree.nodes.iter().find(|node| node.node_id == tree.root_id) else {
+        bail!("grouping checkpoint root is missing");
+    };
+    if root.children.is_empty() {
+        Ok(vec![root.node_id.clone()])
+    } else {
+        Ok(root
+            .children
+            .iter()
+            .map(|child| child.node_id.clone())
+            .collect())
+    }
+}
+
+pub fn validated_grouping_checkpoint(
+    tree: &DocumentTree,
+    grouping_policy_version: &str,
+    restored: Option<DocumentTree>,
+    revision: Option<String>,
+    persisted_frontier: Option<Vec<String>>,
+) -> Result<(Option<DocumentTree>, Option<String>)> {
+    let expected_source_fingerprint = tree.source_fingerprint();
+    let Some(restored) = restored else {
+        if revision.is_some() {
+            bail!("grouping checkpoint exists but does not match the current source or policy");
+        }
+        return Ok((None, None));
+    };
+    if restored.source_fingerprint() != expected_source_fingerprint {
+        bail!("grouping checkpoint exists but does not match the current source or policy");
+    }
+    let Some(persisted_frontier) = persisted_frontier else {
+        bail!("grouping checkpoint exists but its frontier is missing or mismatched");
+    };
+    let expected_frontier = expected_grouping_frontier(&restored)?;
+    if persisted_frontier != expected_frontier {
+        bail!("grouping checkpoint frontier does not match the restored tree");
+    }
+    Ok((
+        Some(restored),
+        revision.map(|revision| format!("{grouping_policy_version}:{revision}")),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,5 +854,194 @@ mod tests {
         assert_eq!(repair["raw_pages"], json!([]));
 
         assert!(reconcile_page_checkpoint(&state, None, temp.path(), &gate, "doc", 2).is_err());
+    }
+
+    #[test]
+    fn validates_recovery_generation_and_invocation_lineage() {
+        assert_eq!(recovery_generation(&json!({})).unwrap(), 0);
+        assert_eq!(
+            recovery_generation(&json!({"ocr_page_recovery_generation": 2})).unwrap(),
+            2
+        );
+        assert!(recovery_generation(&json!({"ocr_page_recovery_generation": -1})).is_err());
+        assert_eq!(semantic_parse_generation(0), "semantic-v1");
+        assert_eq!(semantic_parse_generation(2), "semantic-recovery-v2");
+
+        let expected = expected_invocation_lineages("root", 0);
+        let edges = expected
+            .iter()
+            .map(|lineage| {
+                json!({
+                    "metadata": {
+                        "relation": "wf_invoked",
+                        "parent_run_id": "root",
+                        "workflow_id": lineage.workflow_id,
+                        "invocation_key": lineage.invocation_key,
+                        "child_run_id": lineage.child_run_id,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(validate_invocation_lineages(&edges, "root", 0).is_ok());
+
+        let mut incomplete = edges.clone();
+        incomplete.pop();
+        let error = validate_invocation_lineages(&incomplete, "root", 0)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing="));
+
+        let mut duplicate = edges.clone();
+        duplicate.push(edges[0].clone());
+        let error = validate_invocation_lineages(&duplicate, "root", 0)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate="));
+    }
+
+    #[test]
+    fn validates_grouping_checkpoint_frontier() {
+        let tree = DocumentTree {
+            schema_version: "1.0".to_string(),
+            document_id: "doc".to_string(),
+            source_revision: "source".to_string(),
+            tree_revision: 1,
+            root_id: "root".to_string(),
+            source_items: vec![crate::document_models::SourceItem {
+                item_id: "p1".to_string(),
+                kind: "text".to_string(),
+                location: crate::document_models::SourceLocation {
+                    page_index: Some(1),
+                    printed_page_label: None,
+                    bbox: None,
+                    start_seconds: None,
+                    end_seconds: None,
+                    structural_path: None,
+                    accuracy: crate::document_models::SourceAccuracy::Page,
+                },
+                text: Some("Alpha Beta".to_string()),
+                media: None,
+                ocr_metadata: None,
+                annotations: std::collections::BTreeMap::new(),
+            }],
+            nodes: vec![
+                crate::document_models::DocumentNode {
+                    node_id: "root".to_string(),
+                    kind: "document".to_string(),
+                    parts: Vec::new(),
+                    children: vec![
+                        crate::document_models::ChildRef {
+                            node_id: "left".to_string(),
+                            separator_before: String::new(),
+                        },
+                        crate::document_models::ChildRef {
+                            node_id: "right".to_string(),
+                            separator_before: String::new(),
+                        },
+                    ],
+                    summary: None,
+                    annotations: std::collections::BTreeMap::new(),
+                },
+                crate::document_models::DocumentNode {
+                    node_id: "left".to_string(),
+                    kind: "text".to_string(),
+                    parts: vec![crate::document_models::SourceSlice {
+                        item_id: "p1".to_string(),
+                        start: Some(0),
+                        end: Some(5),
+                        separator_before: String::new(),
+                    }],
+                    children: Vec::new(),
+                    summary: None,
+                    annotations: std::collections::BTreeMap::new(),
+                },
+                crate::document_models::DocumentNode {
+                    node_id: "right".to_string(),
+                    kind: "text".to_string(),
+                    parts: vec![crate::document_models::SourceSlice {
+                        item_id: "p1".to_string(),
+                        start: Some(5),
+                        end: Some(10),
+                        separator_before: String::new(),
+                    }],
+                    children: Vec::new(),
+                    summary: None,
+                    annotations: std::collections::BTreeMap::new(),
+                },
+            ],
+            references: Vec::new(),
+        };
+        assert_eq!(
+            expected_grouping_frontier(&tree).unwrap(),
+            vec!["left".to_string(), "right".to_string()]
+        );
+        assert!(validated_grouping_checkpoint(
+            &tree,
+            "grouping-v1",
+            Some(tree.clone()),
+            Some("2".to_string()),
+            Some(vec!["left".to_string(), "right".to_string()])
+        )
+        .is_ok());
+        assert!(validated_grouping_checkpoint(
+            &tree,
+            "grouping-v1",
+            Some(tree.clone()),
+            Some("2".to_string()),
+            Some(vec!["wrong".to_string()])
+        )
+        .is_err());
+        assert!(validated_grouping_checkpoint(
+            &tree,
+            "grouping-v1",
+            None,
+            Some("2".to_string()),
+            None
+        )
+        .is_err());
+        assert!(
+            validated_grouping_checkpoint(&tree, "grouping-v1", None, None, None)
+                .unwrap()
+                .0
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn validates_root_page_result_and_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("page_1.png");
+        std::fs::write(&image, b"page one").unwrap();
+        let artifact = temp.path().join("page_1.json");
+        std::fs::write(&artifact, r#"{"pdf_page_num":1}"#).unwrap();
+        let sources = vec![PageSourceState {
+            page_number: 1,
+            image_path: image.to_string_lossy().to_string(),
+        }];
+        let state = page_workflow_initial_state("source", temp.path());
+        assert_eq!(state["ocr_page_state_version"], OCR_PAGE_STATE_VERSION);
+        assert_eq!(state["page_cursor"], 0);
+
+        let gate = ReadableArtifactGate;
+        assert!(validate_root_page_result(&state, &sources, temp.path(), &gate, "doc").is_err());
+
+        let mut complete = state.clone();
+        complete["page_cursor"] = json!(1);
+        complete["completed_pages"] = json!([1]);
+        assert!(validate_root_page_result(&complete, &sources, temp.path(), &gate, "doc").is_ok());
+        std::fs::remove_file(&artifact).unwrap();
+        assert!(
+            page_result_needs_recovery(&complete, &sources, temp.path(), &gate, "doc").unwrap()
+        );
+    }
+
+    #[test]
+    fn validates_existing_page_identities() {
+        let mut states = std::collections::BTreeMap::new();
+        states.insert(1, Some("cfg-1".to_string()));
+        states.insert(2, None);
+        assert!(validate_existing_page_identities(&states, &["cfg-1".to_string()]).is_ok());
+        states.insert(2, Some("cfg-2".to_string()));
+        assert!(validate_existing_page_identities(&states, &["cfg-1".to_string()]).is_err());
     }
 }

@@ -13,6 +13,8 @@ serde_json.workspace = true
 regex.workspace = true
 sha2.workspace = true
 sha1.workspace = true
+rusqlite = { version = "0.37.0", features = ["bundled"] }
+ureq = { version = "3.5.2", default-features = false, features = ["rustls", "json"] }
 
 [lib]
 name = "kg_doc_parser"
