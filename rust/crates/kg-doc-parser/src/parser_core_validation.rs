@@ -831,6 +831,80 @@ pub fn review_layer(
     Ok((review, updated_session))
 }
 
+pub fn invalid_layer_result(
+    phase: &str,
+    error: &anyhow::Error,
+) -> crate::parser_core::CurrentLayerResult {
+    crate::parser_core::CurrentLayerResult {
+        children: Vec::new(),
+        satisfied: Some(false),
+        review_rounds: 0,
+        atomic_retained: false,
+        atomic_parent_ids: Vec::new(),
+        atomic_content_pointers_by_parent: Map::new(),
+        metadata: {
+            let mut metadata = Map::new();
+            metadata.insert("validation_failure".to_string(), json!(phase));
+            metadata.insert("retryable".to_string(), json!(true));
+            metadata.insert("validation_error".to_string(), json!(error.to_string()));
+            metadata
+        },
+        validation_diagnostics: Vec::new(),
+    }
+}
+
+pub fn propose_layer_breakdown<F>(
+    parse_session: &crate::parser_core::ParseSessionState,
+    current_layer_context: &CurrentLayerContext,
+    propose_layer_fn: F,
+) -> Result<crate::parser_core::CurrentLayerResult>
+where
+    F: FnOnce() -> Result<Value>,
+{
+    if parse_session.mode == "legacy_compat" {
+        return crate::parser_core::legacy_children_for_context(
+            parse_session,
+            current_layer_context,
+        );
+    }
+    let proposed = match propose_layer_fn() {
+        Ok(proposed) => proposed,
+        Err(error) => {
+            return Ok(invalid_layer_result(
+                "proposal",
+                &anyhow::anyhow!("{error}"),
+            ))
+        }
+    };
+    match proposed {
+        Value::Null => Err(anyhow::anyhow!("unsupported proposed layer result")),
+        Value::Object(_) => {
+            serde_json::from_value::<crate::parser_core::CurrentLayerResult>(proposed.clone())
+                .map_err(|error| anyhow::anyhow!("invalid proposed layer result: {error}"))
+        }
+        Value::Array(items) => {
+            let children = items
+                .iter()
+                .map(|item| {
+                    serde_json::from_value::<crate::parser_core::LayerChildCandidate>(item.clone())
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| anyhow::anyhow!("invalid proposed layer child: {error}"))?;
+            Ok(crate::parser_core::CurrentLayerResult {
+                children,
+                satisfied: None,
+                review_rounds: 0,
+                atomic_retained: false,
+                atomic_parent_ids: Vec::new(),
+                atomic_content_pointers_by_parent: Map::new(),
+                metadata: Map::new(),
+                validation_diagnostics: Vec::new(),
+            })
+        }
+        _ => Err(anyhow::anyhow!("unsupported proposed layer result")),
+    }
+}
+
 pub fn dedupe_and_filter_layer(
     current_layer_context: &CurrentLayerContext,
     current_layer_result: &CurrentLayerResult,
@@ -1511,6 +1585,99 @@ mod tests {
             updated_session.last_review["metadata"]["review_skipped"],
             json!(true)
         );
+    }
+
+    #[test]
+    fn coerces_layer_proposals() {
+        let session = crate::parser_core::ParseSessionState {
+            collection_id: "collection".to_string(),
+            root_node_id: "root".to_string(),
+            current_depth: 0,
+            max_depth: 2,
+            allow_review: true,
+            split_strategy: crate::parser_core::SplitStrategy::ExcerptFirst,
+            fallback_split_strategy: crate::parser_core::SplitStrategy::BoundaryFirst,
+            strategy_history: vec![crate::parser_core::SplitStrategy::ExcerptFirst],
+            strategy_switch_count: 0,
+            mode: "workflow_layered".to_string(),
+            layer_attempts: Map::new(),
+            last_review: Map::new(),
+            compat_full_tree: None,
+            metadata: Map::new(),
+        };
+        let context = context(json!([{
+            "source_cluster_id": "p1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Alpha"
+        }]));
+        let object = json!({
+            "children": [{
+                "node_id": "left",
+                "parent_node_id": "parent",
+                "title": "Left",
+                "node_type": "TEXT_FLOW",
+                "total_content_pointers": [{
+                    "source_cluster_id": "p1",
+                    "start_char": 0,
+                    "end_char": 2,
+                    "verbatim_text": "Al"
+                }],
+                "expandable": true,
+                "metadata": {}
+            }],
+            "satisfied": true
+        });
+        let proposed = propose_layer_breakdown(&session, &context, || Ok(object)).unwrap();
+        assert_eq!(proposed.children.len(), 1);
+        assert_eq!(proposed.children[0].node_id, "left");
+        assert_eq!(proposed.satisfied, Some(true));
+
+        let array = json!([{
+            "node_id": "left",
+            "parent_node_id": "parent",
+            "title": "Left",
+            "node_type": "TEXT_FLOW",
+            "total_content_pointers": [{
+                "source_cluster_id": "p1",
+                "start_char": 0,
+                "end_char": 2,
+                "verbatim_text": "Al"
+            }],
+            "expandable": true,
+            "metadata": {}
+        }]);
+        let proposed = propose_layer_breakdown(&session, &context, || Ok(array)).unwrap();
+        assert_eq!(proposed.children.len(), 1);
+        assert_eq!(proposed.children[0].node_id, "left");
+        assert_eq!(proposed.satisfied, None);
+    }
+
+    #[test]
+    fn rejects_unsupported_layer_proposal() {
+        let session = crate::parser_core::ParseSessionState {
+            collection_id: "collection".to_string(),
+            root_node_id: "root".to_string(),
+            current_depth: 0,
+            max_depth: 2,
+            allow_review: true,
+            split_strategy: crate::parser_core::SplitStrategy::ExcerptFirst,
+            fallback_split_strategy: crate::parser_core::SplitStrategy::BoundaryFirst,
+            strategy_history: vec![crate::parser_core::SplitStrategy::ExcerptFirst],
+            strategy_switch_count: 0,
+            mode: "workflow_layered".to_string(),
+            layer_attempts: Map::new(),
+            last_review: Map::new(),
+            compat_full_tree: None,
+            metadata: Map::new(),
+        };
+        let context = context(json!([{
+            "source_cluster_id": "p1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Alpha"
+        }]));
+        assert!(propose_layer_breakdown(&session, &context, || Ok(json!(true))).is_err());
     }
 
     #[test]

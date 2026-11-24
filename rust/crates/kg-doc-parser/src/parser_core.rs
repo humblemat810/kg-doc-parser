@@ -111,10 +111,15 @@ pub struct LayerChildCandidate {
 pub struct CurrentLayerResult {
     pub children: Vec<LayerChildCandidate>,
     pub satisfied: Option<bool>,
+    #[serde(default)]
     pub review_rounds: u64,
+    #[serde(default)]
     pub atomic_retained: bool,
+    #[serde(default)]
     pub atomic_parent_ids: Vec<String>,
+    #[serde(default)]
     pub atomic_content_pointers_by_parent: Map<String, Value>,
+    #[serde(default)]
     pub metadata: Map<String, Value>,
     #[serde(default)]
     pub validation_diagnostics: Vec<Value>,
