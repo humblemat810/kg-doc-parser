@@ -24,3 +24,30 @@ src.zip
 rust/target/
 
 .vscode/launch.json
+
+# Local agent/test scratch artifacts
+.codex/
+$db*
+1.0.*
+dist/
+rust/tests/
+
+# Local pyright/type scans and generated JSON outputs
+.local-typing-tests.txt
+.parser-*.json
+.pyright-*.json
+.scan-parser-current.json
+.typing-seams-current.txt
+.typing-seams-next.txt
+current-parser-*.txt
+current-typing-scan.txt
+parser-ann-after.json
+parser-pyright-current.txt
+*pyright*.json
+test-results-*.txt
+lineage-*-output.txt
+
+# Local benchmark and experiment outputs
+doc/benchmarks/*.json
+doc/ocr_grouping/
+experiments/
