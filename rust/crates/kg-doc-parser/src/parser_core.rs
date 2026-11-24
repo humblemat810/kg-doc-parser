@@ -131,6 +131,132 @@ pub struct SourceCollection {
     pub title: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SourceUnit {
+    pub unit_id: Option<String>,
+    pub cluster_number: Option<u64>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourcePage {
+    pub page_number: u64,
+    pub units: Vec<SourceUnit>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceCollectionWithPages {
+    pub collection_id: String,
+    pub title: String,
+    pub pages: Vec<SourcePage>,
+}
+
+pub fn fallback_parse_semantic_fn(collection: &SourceCollectionWithPages) -> SemanticNode {
+    let mut root = SemanticNode {
+        node_id: None,
+        parent_id: None,
+        node_type: "DOCUMENT_ROOT".to_string(),
+        title: collection.title.clone(),
+        summary: String::new(),
+        total_content_pointers: Vec::new(),
+        aggregate_content_pointers: Vec::new(),
+        child_nodes: Vec::new(),
+        level_from_root: 0,
+        metadata: json!({}),
+    };
+    for page in &collection.pages {
+        let mut page_text_parts = Vec::new();
+        let mut page_node = SemanticNode {
+            node_id: None,
+            parent_id: root.node_id.clone(),
+            node_type: "PAGE".to_string(),
+            title: format!("Page {}", page.page_number),
+            summary: String::new(),
+            total_content_pointers: Vec::new(),
+            aggregate_content_pointers: Vec::new(),
+            child_nodes: Vec::new(),
+            level_from_root: 1,
+            metadata: json!({}),
+        };
+        for unit in &page.units {
+            if unit.text.is_empty() {
+                continue;
+            }
+            let text = unit.text.clone();
+            page_text_parts.push(text.clone());
+            let title = text
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .chars()
+                .take(80)
+                .collect::<String>();
+            let title = if title.is_empty() {
+                format!("Unit {}", unit.cluster_number.unwrap_or(0))
+            } else {
+                title
+            };
+            let source_cluster_id = unit
+                .unit_id
+                .clone()
+                .unwrap_or_else(|| format!("{}|p{}", collection.collection_id, page.page_number));
+            page_node.child_nodes.push(SemanticNode {
+                node_id: None,
+                parent_id: page_node.node_id.clone(),
+                node_type: "TEXT_FLOW".to_string(),
+                title,
+                summary: String::new(),
+                total_content_pointers: vec![HydratedTextPointer {
+                    source_cluster_id,
+                    start_char: 0,
+                    end_char: text.chars().count().saturating_sub(1) as i64,
+                    verbatim_text: text,
+                    start_delimiter: None,
+                    end_delimiter: None,
+                    validation_method: None,
+                }],
+                aggregate_content_pointers: Vec::new(),
+                child_nodes: Vec::new(),
+                level_from_root: 2,
+                metadata: json!({}),
+            });
+        }
+        if page_node.child_nodes.is_empty() {
+            page_node.child_nodes.push(SemanticNode {
+                node_id: None,
+                parent_id: page_node.node_id.clone(),
+                node_type: "TEXT_FLOW".to_string(),
+                title: format!("Page {} Empty", page.page_number),
+                summary: String::new(),
+                total_content_pointers: Vec::new(),
+                aggregate_content_pointers: Vec::new(),
+                child_nodes: Vec::new(),
+                level_from_root: 2,
+                metadata: json!({}),
+            });
+        }
+        if !page_text_parts.is_empty() {
+            let page_text = page_text_parts.join("\n");
+            let source_cluster_id = page
+                .units
+                .first()
+                .and_then(|unit| unit.unit_id.clone())
+                .unwrap_or_else(|| format!("{}|p{}", collection.collection_id, page.page_number));
+            page_node.total_content_pointers = vec![HydratedTextPointer {
+                source_cluster_id,
+                start_char: 0,
+                end_char: page_text.chars().count().saturating_sub(1) as i64,
+                verbatim_text: page_text,
+                start_delimiter: None,
+                end_delimiter: None,
+                validation_method: None,
+            }];
+        }
+        root.child_nodes.push(page_node);
+    }
+    root
+}
 pub fn assert_source_map_matches_session(
     parse_session: &ParseSessionState,
     parser_source_map: &Value,
@@ -1004,6 +1130,52 @@ mod tests {
         assert!(result.children.is_empty());
         assert!(result.atomic_retained);
         assert_eq!(result.atomic_parent_ids, vec!["doc|root"]);
+    }
+
+    #[test]
+    fn builds_fallback_semantic_tree_from_pages() {
+        let collection = SourceCollectionWithPages {
+            collection_id: "doc".to_string(),
+            title: "Document".to_string(),
+            pages: vec![
+                SourcePage {
+                    page_number: 1,
+                    units: vec![
+                        SourceUnit {
+                            unit_id: Some("unit-a".to_string()),
+                            cluster_number: Some(1),
+                            text: "First".to_string(),
+                        },
+                        SourceUnit {
+                            unit_id: None,
+                            cluster_number: None,
+                            text: String::new(),
+                        },
+                    ],
+                },
+                SourcePage {
+                    page_number: 2,
+                    units: vec![SourceUnit {
+                        unit_id: None,
+                        cluster_number: None,
+                        text: String::new(),
+                    }],
+                },
+            ],
+        };
+
+        let root = fallback_parse_semantic_fn(&collection);
+
+        assert_eq!(root.node_type, "DOCUMENT_ROOT");
+        assert_eq!(root.child_nodes.len(), 2);
+        let page = &root.child_nodes[0];
+        assert_eq!(page.node_type, "PAGE");
+        assert_eq!(page.child_nodes.len(), 1);
+        let child = &page.child_nodes[0];
+        assert_eq!(child.node_type, "TEXT_FLOW");
+        assert_eq!(child.total_content_pointers[0].source_cluster_id, "unit-a");
+        assert_eq!(page.total_content_pointers[0].verbatim_text, "First");
+        assert_eq!(root.child_nodes[1].child_nodes[0].title, "Page 2 Empty");
     }
 
     #[test]
