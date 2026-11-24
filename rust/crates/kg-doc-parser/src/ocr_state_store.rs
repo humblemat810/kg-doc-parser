@@ -5,7 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-use crate::document_models::{Summary, SummaryStatus};
+use crate::document_models::{DocumentTree, Summary, SummaryStatus};
 use crate::ocr_artifacts::artifact_schema_error;
 use crate::semantic_indexing::json_compact;
 use std::collections::{BTreeMap, BTreeSet};
@@ -101,6 +101,27 @@ pub struct SummaryAttemptRecord {
     pub last_updated_ts: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct GroupingCheckpointSave<'a> {
+    pub document_id: &'a str,
+    pub tree: &'a DocumentTree,
+    pub grouping_policy_version: &'a str,
+    pub expected_tree_revision: Option<&'a str>,
+    pub require_no_existing_tree: bool,
+    pub last_runtime_step: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupingCheckpointMetadata {
+    pub document_id: String,
+    pub source_fingerprint: String,
+    pub grouping_policy_version: String,
+    pub accepted_page_frontier: Vec<i64>,
+    pub tree_revision: String,
+    pub merge_revision: i64,
+    pub last_runtime_step: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct OcrAttemptRequest {
     pub content_hash: Option<String>,
@@ -186,6 +207,16 @@ fn status_str(status: OcrPageStatus) -> &'static str {
         OcrPageStatus::Completed => "completed",
         OcrPageStatus::Failed => "failed",
     }
+}
+
+fn sha256_hex(contents: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(contents);
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn summary_status_str(status: SummaryStatus) -> &'static str {
@@ -540,6 +571,457 @@ impl OcrWorkflowStateStore {
             Some(value) => bail!("OCR state is_completed must be 0 or 1: {value}"),
             None => false,
         })
+    }
+
+    pub fn save_document_tree(&self, request: &GroupingCheckpointSave) -> Result<String> {
+        request.tree.validate()?;
+        if request.require_no_existing_tree && request.expected_tree_revision.is_some() {
+            bail!("absence and expected revision fences are mutually exclusive");
+        }
+        if request.last_runtime_step.is_empty() {
+            bail!("last_runtime_step must not be empty");
+        }
+        let tree_json = json_compact(&serde_json::to_value(request.tree)?);
+        let tree_revision = sha256_hex(tree_json.as_bytes());
+        let source_fingerprint = request.tree.source_fingerprint();
+        let root = request
+            .tree
+            .nodes
+            .iter()
+            .find(|node| node.node_id == request.tree.root_id)
+            .ok_or_else(|| anyhow::anyhow!("document root is missing"))?;
+        let expected_frontier: Vec<String> = if root.children.is_empty() {
+            vec![root.node_id.clone()]
+        } else {
+            root.children
+                .iter()
+                .map(|child| child.node_id.clone())
+                .collect()
+        };
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current_document: Option<String> = transaction
+            .query_row(
+                "SELECT input_fingerprint FROM document_state WHERE document_id = ?1",
+                [request.document_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(input_fingerprint) = current_document {
+            let expected_source_revision = format!("ocr-v1:{input_fingerprint}");
+            if request.tree.source_revision.starts_with("ocr-v1:")
+                && request.tree.source_revision != expected_source_revision
+            {
+                bail!(
+                    "grouping checkpoint source revision conflict for {:?}: expected {:?}, found {:?}",
+                    request.document_id,
+                    expected_source_revision,
+                    request.tree.source_revision
+                );
+            }
+        }
+        let current: Option<(String, String, String)> = transaction
+            .query_row(
+                r#"
+                SELECT tree_revision, source_fingerprint, grouping_policy_version
+                FROM document_tree_state WHERE document_id = ?1
+                "#,
+                [request.document_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let current_frontier: Option<(String, String, String)> = transaction
+            .query_row(
+                r#"
+                SELECT source_fingerprint, grouping_policy_version, frontier_json
+                FROM grouping_frontier_state WHERE document_id = ?1
+                "#,
+                [request.document_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let current_metadata: Option<(String, String, String, String, i64, String)> = transaction
+            .query_row(
+                r#"
+                SELECT source_fingerprint, grouping_policy_version, accepted_page_frontier_json,
+                       tree_revision, merge_revision, last_runtime_step
+                FROM grouping_checkpoint_metadata WHERE document_id = ?1
+                "#,
+                [request.document_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let mut statement = transaction.prepare(
+            "SELECT page_number FROM page_state WHERE document_id = ?1 AND stage = 'ocr' AND status = 'completed' ORDER BY page_number",
+        )?;
+        let mut rows = statement.query([request.document_id])?;
+        let mut accepted_pages = Vec::new();
+        while let Some(row) = rows.next()? {
+            accepted_pages.push(row.get::<_, i64>(0)?);
+        }
+        drop(rows);
+        drop(statement);
+        let current_revision = current.as_ref().map(|(revision, _, _)| revision.clone());
+        let has_frontier = current_frontier.is_some();
+        let frontier_matches =
+            current_frontier
+                .as_ref()
+                .is_some_and(|(source, policy, payload)| {
+                    source == &source_fingerprint
+                        && policy == request.grouping_policy_version
+                        && serde_json::from_str::<Vec<String>>(payload)
+                            .ok()
+                            .map(|frontier| frontier == expected_frontier)
+                            .unwrap_or(false)
+                });
+        let metadata_matches = current_metadata.as_ref().is_some_and(
+            |(source, policy, payload, revision, merge_revision, last_step)| {
+                source == &source_fingerprint
+                    && policy == request.grouping_policy_version
+                    && revision == &tree_revision
+                    && serde_json::from_str::<Vec<i64>>(payload)
+                        .ok()
+                        .map(|pages| pages == accepted_pages && pages.iter().all(|page| *page >= 1))
+                        .unwrap_or(false)
+                    && *merge_revision >= 0
+                    && !last_step.is_empty()
+            },
+        );
+        if current_revision.as_deref() == Some(tree_revision.as_str()) {
+            if !has_frontier {
+                bail!(
+                    "grouping checkpoint frontier is missing for {:?}",
+                    request.document_id
+                );
+            }
+            if current_metadata.is_none() {
+                bail!(
+                    "grouping checkpoint metadata is missing for {:?}",
+                    request.document_id
+                );
+            }
+            if current.as_ref().is_some_and(|(_, source, policy)| {
+                source == &source_fingerprint && policy == request.grouping_policy_version
+            }) && frontier_matches
+                && metadata_matches
+            {
+                transaction.commit()?;
+                return Ok(tree_revision);
+            }
+            bail!(
+                "idempotent grouping checkpoint replay for {:?} found mismatched companion records",
+                request.document_id
+            );
+        }
+        let merge_revision = match current_metadata.as_ref() {
+            None => 1,
+            Some(metadata) => metadata.4 + 1,
+        };
+        if current_revision.is_none() && (has_frontier || current_metadata.is_some()) {
+            bail!(
+                "grouping checkpoint create conflict for {:?}: found orphaned frontier or metadata without a tree",
+                request.document_id
+            );
+        }
+        if request.require_no_existing_tree
+            && (current_revision.is_some() || has_frontier || current_metadata.is_some())
+        {
+            bail!(
+                "grouping checkpoint create conflict for {:?}: found existing revision {:?}, frontier, or metadata",
+                request.document_id,
+                current_revision
+            );
+        }
+        if let Some(expected) = request.expected_tree_revision {
+            if current_revision.as_deref() != Some(expected) {
+                bail!(
+                    "grouping checkpoint revision conflict for {:?}: expected {:?}, found {:?}",
+                    request.document_id,
+                    expected,
+                    current_revision
+                );
+            }
+        }
+        if current_revision.is_some() && request.expected_tree_revision.is_none() {
+            bail!(
+                "grouping checkpoint update for {:?} requires an expected tree revision",
+                request.document_id
+            );
+        }
+        transaction.execute(
+            r#"
+            INSERT INTO document_tree_state (
+                document_id, tree_revision, source_fingerprint, grouping_policy_version,
+                tree_json, last_updated_ts
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ON CONFLICT(document_id) DO UPDATE SET
+                tree_revision = excluded.tree_revision,
+                source_fingerprint = excluded.source_fingerprint,
+                grouping_policy_version = excluded.grouping_policy_version,
+                tree_json = excluded.tree_json,
+                last_updated_ts = excluded.last_updated_ts
+            "#,
+            rusqlite::params![
+                request.document_id,
+                tree_revision,
+                source_fingerprint,
+                request.grouping_policy_version,
+                tree_json,
+                unix_time(),
+            ],
+        )?;
+        transaction.execute(
+            r#"
+            INSERT INTO grouping_frontier_state (
+                document_id, source_fingerprint, grouping_policy_version, frontier_json,
+                last_updated_ts
+            ) VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(document_id) DO UPDATE SET
+                source_fingerprint = excluded.source_fingerprint,
+                grouping_policy_version = excluded.grouping_policy_version,
+                frontier_json = excluded.frontier_json,
+                last_updated_ts = excluded.last_updated_ts
+            "#,
+            rusqlite::params![
+                request.document_id,
+                source_fingerprint,
+                request.grouping_policy_version,
+                serde_json::to_string(&expected_frontier)?,
+                unix_time(),
+            ],
+        )?;
+        transaction.execute(
+            r#"
+            INSERT INTO grouping_checkpoint_metadata (
+                document_id, source_fingerprint, grouping_policy_version,
+                accepted_page_frontier_json, tree_revision, merge_revision,
+                last_runtime_step, last_updated_ts
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(document_id) DO UPDATE SET
+                source_fingerprint = excluded.source_fingerprint,
+                grouping_policy_version = excluded.grouping_policy_version,
+                accepted_page_frontier_json = excluded.accepted_page_frontier_json,
+                tree_revision = excluded.tree_revision,
+                merge_revision = excluded.merge_revision,
+                last_runtime_step = excluded.last_runtime_step,
+                last_updated_ts = excluded.last_updated_ts
+            "#,
+            rusqlite::params![
+                request.document_id,
+                source_fingerprint,
+                request.grouping_policy_version,
+                serde_json::to_string(&accepted_pages)?,
+                tree_revision,
+                merge_revision,
+                request.last_runtime_step,
+                unix_time(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(tree_revision)
+    }
+
+    pub fn load_grouping_checkpoint_metadata(
+        &self,
+        document_id: &str,
+        source_fingerprint: Option<&str>,
+        grouping_policy_version: Option<&str>,
+    ) -> Result<Option<GroupingCheckpointMetadata>> {
+        let connection = self.connection()?;
+        let Some((
+            stored_source,
+            stored_policy,
+            payload,
+            tree_revision,
+            merge_revision,
+            last_runtime_step,
+        )) = connection
+            .query_row(
+                r#"
+                SELECT source_fingerprint, grouping_policy_version, accepted_page_frontier_json,
+                       tree_revision, merge_revision, last_runtime_step
+                FROM grouping_checkpoint_metadata WHERE document_id = ?1
+                "#,
+                [document_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        if source_fingerprint.is_some_and(|value| value != stored_source)
+            || grouping_policy_version.is_some_and(|value| value != stored_policy)
+        {
+            return Ok(None);
+        }
+        let accepted_pages: Vec<i64> = serde_json::from_str(&payload).map_err(|error| {
+            anyhow::anyhow!("persisted grouping checkpoint page frontier is malformed: {error}")
+        })?;
+        if accepted_pages.iter().any(|page| *page < 1) {
+            bail!("persisted grouping checkpoint page frontier is malformed");
+        }
+        if accepted_pages
+            .windows(2)
+            .any(|window| window[0] >= window[1])
+        {
+            bail!("persisted grouping checkpoint page frontier is not ordered");
+        }
+        Ok(Some(GroupingCheckpointMetadata {
+            document_id: document_id.to_string(),
+            source_fingerprint: stored_source,
+            grouping_policy_version: stored_policy,
+            accepted_page_frontier: accepted_pages,
+            tree_revision,
+            merge_revision,
+            last_runtime_step,
+        }))
+    }
+
+    pub fn document_tree_revision(&self, document_id: &str) -> Result<Option<String>> {
+        let connection = self.connection()?;
+        Ok(connection
+            .query_row(
+                "SELECT tree_revision FROM document_tree_state WHERE document_id = ?1",
+                [document_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?)
+    }
+
+    pub fn load_document_tree(
+        &self,
+        document_id: &str,
+        source_fingerprint: Option<&str>,
+        grouping_policy_version: Option<&str>,
+    ) -> Result<Option<DocumentTree>> {
+        let connection = self.connection()?;
+        let Some((stored_source, stored_policy, tree_json)) = connection
+            .query_row(
+                r#"
+                SELECT source_fingerprint, grouping_policy_version, tree_json
+                FROM document_tree_state WHERE document_id = ?1
+                "#,
+                [document_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        if source_fingerprint.is_some_and(|value| value != stored_source)
+            || grouping_policy_version.is_some_and(|value| value != stored_policy)
+        {
+            return Ok(None);
+        }
+        let Some((frontier_source, frontier_policy, frontier_json)) = connection
+            .query_row(
+                r#"
+                SELECT source_fingerprint, grouping_policy_version, frontier_json
+                FROM grouping_frontier_state WHERE document_id = ?1
+                "#,
+                [document_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            bail!("persisted grouping checkpoint is missing a companion record");
+        };
+        let Some((metadata_source, metadata_policy, accepted_json, metadata_revision, _)) =
+            connection
+                .query_row(
+                    r#"
+                SELECT source_fingerprint, grouping_policy_version, accepted_page_frontier_json,
+                       tree_revision, last_runtime_step
+                FROM grouping_checkpoint_metadata WHERE document_id = ?1
+                "#,
+                    [document_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
+                )
+                .optional()?
+        else {
+            bail!("persisted grouping checkpoint is missing a companion record");
+        };
+        if metadata_revision != sha256_hex(tree_json.as_bytes())
+            || metadata_source != stored_source
+            || metadata_policy != stored_policy
+            || frontier_source != stored_source
+            || frontier_policy != stored_policy
+        {
+            bail!("persisted grouping checkpoint records disagree");
+        }
+        let tree: DocumentTree = serde_json::from_str(&tree_json)?;
+        tree.validate()?;
+        if tree.source_fingerprint() != stored_source {
+            bail!("persisted grouping tree source fingerprint is inconsistent");
+        }
+        let root = tree
+            .nodes
+            .iter()
+            .find(|node| node.node_id == tree.root_id)
+            .ok_or_else(|| anyhow::anyhow!("persisted grouping tree root is missing"))?;
+        let expected_frontier: Vec<String> = if root.children.is_empty() {
+            vec![root.node_id.clone()]
+        } else {
+            root.children
+                .iter()
+                .map(|child| child.node_id.clone())
+                .collect()
+        };
+        let frontier: Vec<String> = serde_json::from_str(&frontier_json)?;
+        if frontier != expected_frontier {
+            bail!("persisted grouping frontier does not match its tree");
+        }
+        let accepted_pages: Vec<i64> = serde_json::from_str(&accepted_json)?;
+        let mut statement = connection.prepare(
+            "SELECT page_number FROM page_state WHERE document_id = ?1 AND stage = 'ocr' AND status = 'completed' ORDER BY page_number",
+        )?;
+        let mut rows = statement.query([document_id])?;
+        let mut completed_pages = Vec::new();
+        while let Some(row) = rows.next()? {
+            completed_pages.push(row.get::<_, i64>(0)?);
+        }
+        if accepted_pages != completed_pages {
+            bail!("persisted grouping accepted-page frontier does not match completed OCR pages");
+        }
+        Ok(Some(tree))
     }
 
     pub fn record_summary_attempt(&self, request: &SummaryAttemptRequest) -> Result<i64> {
@@ -1480,6 +1962,130 @@ mod tests {
                 status: SummaryStatus::Pending,
                 summary: Some(summary),
                 error_message: None,
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn saves_and_loads_grouping_checkpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = OcrWorkflowStateStore::open(&temp.path().join("ocr-state.sqlite")).unwrap();
+        store.ensure_document(&identity("one")).unwrap();
+        store
+            .upsert_page_state(
+                "doc",
+                1,
+                OcrStage::Ocr,
+                1,
+                OcrPageStatus::Completed,
+                Some("hash".to_string()),
+                Some("p1".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let tree = DocumentTree {
+            schema_version: "1.0".to_string(),
+            document_id: "doc".to_string(),
+            source_revision: "ocr-v1:one".to_string(),
+            tree_revision: 1,
+            root_id: "root".to_string(),
+            source_items: vec![crate::document_models::SourceItem {
+                item_id: "item".to_string(),
+                kind: "text".to_string(),
+                location: crate::document_models::SourceLocation {
+                    page_index: Some(1),
+                    printed_page_label: None,
+                    bbox: None,
+                    start_seconds: None,
+                    end_seconds: None,
+                    structural_path: None,
+                    accuracy: crate::document_models::SourceAccuracy::Page,
+                },
+                text: Some("alpha".to_string()),
+                media: None,
+                ocr_metadata: None,
+                annotations: BTreeMap::new(),
+            }],
+            nodes: vec![
+                crate::document_models::DocumentNode {
+                    node_id: "root".to_string(),
+                    kind: "document".to_string(),
+                    parts: Vec::new(),
+                    children: vec![crate::document_models::ChildRef {
+                        node_id: "leaf".to_string(),
+                        separator_before: String::new(),
+                    }],
+                    summary: None,
+                    annotations: BTreeMap::new(),
+                },
+                crate::document_models::DocumentNode {
+                    node_id: "leaf".to_string(),
+                    kind: "paragraph".to_string(),
+                    parts: vec![crate::document_models::SourceSlice {
+                        item_id: "item".to_string(),
+                        start: Some(0),
+                        end: Some(5),
+                        separator_before: String::new(),
+                    }],
+                    children: Vec::new(),
+                    summary: None,
+                    annotations: BTreeMap::new(),
+                },
+            ],
+            references: Vec::new(),
+        };
+        let request = GroupingCheckpointSave {
+            document_id: "doc",
+            tree: &tree,
+            grouping_policy_version: "baseline-v1",
+            expected_tree_revision: None,
+            require_no_existing_tree: false,
+            last_runtime_step: "grouping_checkpoint",
+        };
+        let revision = store.save_document_tree(&request).unwrap();
+        assert_eq!(
+            store.document_tree_revision("doc").unwrap().as_deref(),
+            Some(revision.as_str())
+        );
+        assert_eq!(store.save_document_tree(&request).unwrap(), revision);
+        let loaded = store
+            .load_document_tree("doc", None, Some("baseline-v1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(loaded).unwrap(),
+            serde_json::to_value(&tree).unwrap()
+        );
+        let metadata = store
+            .load_grouping_checkpoint_metadata("doc", None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata.accepted_page_frontier, vec![1]);
+        assert_eq!(metadata.tree_revision, revision);
+        let mut updated_tree = tree.clone();
+        updated_tree.tree_revision = 2;
+        let updated_revision = store
+            .save_document_tree(&GroupingCheckpointSave {
+                document_id: "doc",
+                tree: &updated_tree,
+                grouping_policy_version: "baseline-v1",
+                expected_tree_revision: Some(revision.as_str()),
+                require_no_existing_tree: false,
+                last_runtime_step: "grouping_checkpoint",
+            })
+            .unwrap();
+        assert_ne!(updated_revision, revision);
+        assert!(store
+            .save_document_tree(&GroupingCheckpointSave {
+                document_id: "doc",
+                tree: &tree,
+                grouping_policy_version: "baseline-v1",
+                expected_tree_revision: None,
+                require_no_existing_tree: false,
+                last_runtime_step: "grouping_checkpoint",
             })
             .is_err());
     }
