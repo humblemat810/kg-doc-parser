@@ -724,6 +724,60 @@ fn unused_json() -> Map<String, Value> {
     json!({}).as_object().unwrap().clone()
 }
 
+pub fn dedupe_and_filter_layer(
+    current_layer_context: &CurrentLayerContext,
+    current_layer_result: &CurrentLayerResult,
+) -> CurrentLayerResult {
+    let parent_ids = current_layer_context
+        .parent_node_ids
+        .iter()
+        .collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    let mut filtered = Vec::new();
+    let mut validation_diagnostics = current_layer_result.validation_diagnostics.clone();
+    for child in &current_layer_result.children {
+        if !parent_ids.contains(&&child.parent_node_id) {
+            let diagnostic = LayerValidationDiagnostic {
+                phase: "commit".to_string(),
+                error_type: "foreign_parent".to_string(),
+                message: format!(
+                    "child {:?} references parent {:?} outside the current layer",
+                    child.node_id, child.parent_node_id
+                ),
+                location: vec![child.node_id.clone(), child.parent_node_id.clone()],
+            };
+            let diagnostic = serde_json::to_value(diagnostic).unwrap_or_default();
+            if !validation_diagnostics.contains(&diagnostic) {
+                validation_diagnostics.push(diagnostic);
+            }
+            continue;
+        }
+        let key = (
+            child.parent_node_id.clone(),
+            child.node_type.clone(),
+            child.title.trim().to_lowercase(),
+            child_pointer_fingerprint(child),
+        );
+        if seen.insert(key) {
+            filtered.push(child.clone());
+        }
+    }
+    CurrentLayerResult {
+        children: filtered,
+        satisfied: current_layer_result
+            .satisfied
+            .map(|satisfied| satisfied && validation_diagnostics.is_empty()),
+        review_rounds: current_layer_result.review_rounds,
+        atomic_retained: current_layer_result.atomic_retained,
+        atomic_parent_ids: current_layer_result.atomic_parent_ids.clone(),
+        atomic_content_pointers_by_parent: current_layer_result
+            .atomic_content_pointers_by_parent
+            .clone(),
+        metadata: current_layer_result.metadata.clone(),
+        validation_diagnostics,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -886,6 +940,31 @@ mod tests {
         let invariants = detect_layer_invariants(&context, &unary, None).unwrap();
         assert!(!invariants.satisfied);
         assert!(bail_on_missing_id(&current).is_ok());
+    }
+
+    #[test]
+    fn dedupes_and_filters_layer_for_commit() {
+        let context = context(json!([{
+            "source_cluster_id": "p1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Alpha"
+        }]));
+        let mut current = result(vec![
+            child("left", "parent", vec![pointer("p1", 0, 4, "Alpha")]),
+            child("duplicate", "parent", vec![pointer("p1", 0, 4, "Alpha")]),
+            child("foreign", "other", vec![pointer("p1", 0, 4, "Alpha")]),
+        ]);
+        current.satisfied = Some(true);
+        let filtered = dedupe_and_filter_layer(&context, &current);
+        assert_eq!(filtered.children.len(), 1);
+        assert_eq!(filtered.children[0].node_id, "left");
+        assert_eq!(filtered.validation_diagnostics.len(), 1);
+        assert_eq!(
+            filtered.validation_diagnostics[0]["error_type"],
+            "foreign_parent"
+        );
+        assert_eq!(filtered.satisfied, Some(false));
     }
 
     #[test]
