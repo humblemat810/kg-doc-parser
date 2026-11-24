@@ -2,6 +2,7 @@ pub mod demo_harness;
 pub mod document_grouping;
 pub mod document_models;
 pub mod layerwise_edits;
+pub mod layerwise_llm;
 pub mod layerwise_parser;
 pub mod ocr_artifacts;
 pub mod ocr_normalization;
