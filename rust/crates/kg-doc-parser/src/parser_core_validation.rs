@@ -724,6 +724,113 @@ fn unused_json() -> Map<String, Value> {
     json!({}).as_object().unwrap().clone()
 }
 
+pub fn review_layer(
+    parse_session: &crate::parser_core::ParseSessionState,
+    current_layer_context: &CurrentLayerContext,
+    current_layer_result: &CurrentLayerResult,
+    parser_source_map: Option<&Value>,
+) -> Result<(CurrentLayerReview, crate::parser_core::ParseSessionState)> {
+    let legacy_compat = parse_session.mode == "legacy_compat";
+    let review_skipped = legacy_compat || !parse_session.allow_review;
+    let invariants = detect_layer_invariants(
+        current_layer_context,
+        current_layer_result,
+        parser_source_map,
+    )?;
+    let structural_issues = layer_structural_issues(
+        &structural_context(current_layer_context),
+        current_layer_result,
+    )?;
+    let validation_diagnostics = current_layer_result
+        .validation_diagnostics
+        .iter()
+        .map(|value| serde_json::from_value::<LayerValidationDiagnostic>(value.clone()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| anyhow::anyhow!("validation diagnostics must be typed: {error}"))?;
+    let satisfied =
+        invariants.satisfied && structural_issues.is_empty() && validation_diagnostics.is_empty();
+    let mut updated_result = current_layer_result.clone();
+    updated_result.satisfied = Some(satisfied);
+
+    let mut metadata = Map::new();
+    if review_skipped {
+        metadata.insert("review_skipped".to_string(), json!(true));
+        metadata.insert("deterministic_validation".to_string(), json!(true));
+        if legacy_compat {
+            metadata.insert("legacy_compat".to_string(), json!(true));
+        }
+    }
+
+    let mut review_notes = if legacy_compat {
+        vec!["semantic review skipped for legacy compatibility".to_string()]
+    } else if !parse_session.allow_review {
+        vec!["semantic review disabled".to_string()]
+    } else {
+        Vec::new()
+    };
+    review_notes.extend(invariants.review_notes.iter().take(20).cloned());
+
+    let review = CurrentLayerReview {
+        updated_result,
+        coverage_ok: invariants.coverage_ok,
+        satisfied,
+        strategy_used: current_layer_context.split_strategy,
+        overlap_conflicts: invariants.overlap_conflicts,
+        coverage_gap_notes: invariants.coverage_gaps,
+        duplicate_child_notes: invariants.duplicate_notes,
+        structural_issues,
+        validation_diagnostics,
+        review_notes,
+        metadata,
+        committable_parent_node_ids: if satisfied {
+            current_layer_context.parent_node_ids.clone()
+        } else {
+            Vec::new()
+        },
+        failed_parent_node_ids: if satisfied {
+            Vec::new()
+        } else {
+            current_layer_context.parent_node_ids.clone()
+        },
+    };
+
+    let mut updated_session = parse_session.clone();
+    let frontier_identity = current_layer_context
+        .metadata
+        .get("frontier_identity")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "depth={};parents={}",
+                current_layer_context.depth,
+                current_layer_context.parent_node_ids.join(",")
+            )
+        });
+    updated_session.layer_attempts.insert(
+        frontier_identity.clone(),
+        json!(current_layer_context.retry_count + 1),
+    );
+    updated_session.last_review.insert(
+        "strategy".to_string(),
+        serde_json::to_value(review.strategy_used).unwrap_or_default(),
+    );
+    updated_session
+        .last_review
+        .insert("coverage_ok".to_string(), json!(review.coverage_ok));
+    updated_session
+        .last_review
+        .insert("satisfied".to_string(), json!(review.satisfied));
+    updated_session
+        .last_review
+        .insert("review_notes".to_string(), json!(review.review_notes));
+    updated_session.last_review.insert(
+        "metadata".to_string(),
+        serde_json::to_value(review.metadata.clone()).unwrap_or_default(),
+    );
+    Ok((review, updated_session))
+}
+
 pub fn dedupe_and_filter_layer(
     current_layer_context: &CurrentLayerContext,
     current_layer_result: &CurrentLayerResult,
@@ -1352,6 +1459,58 @@ mod tests {
         let (coverage_ok, notes) = check_layer_coverage(&context, &current, None);
         assert!(!coverage_ok);
         assert_eq!(notes, vec!["prior note"]);
+    }
+
+    #[test]
+    fn reviews_layer_and_updates_session() {
+        let context = context(json!([{
+            "source_cluster_id": "p1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Alpha"
+        }]));
+        let current = result(vec![
+            child("left", "parent", vec![pointer("p1", 0, 1, "Al")]),
+            child("right", "parent", vec![pointer("p1", 2, 4, "pha")]),
+        ]);
+        let session = crate::parser_core::ParseSessionState {
+            collection_id: "collection".to_string(),
+            root_node_id: "root".to_string(),
+            current_depth: 0,
+            max_depth: 2,
+            allow_review: true,
+            split_strategy: crate::parser_core::SplitStrategy::ExcerptFirst,
+            fallback_split_strategy: crate::parser_core::SplitStrategy::BoundaryFirst,
+            strategy_history: vec![crate::parser_core::SplitStrategy::ExcerptFirst],
+            strategy_switch_count: 0,
+            mode: "workflow_layered".to_string(),
+            layer_attempts: Map::new(),
+            last_review: Map::new(),
+            compat_full_tree: None,
+            metadata: Map::new(),
+        };
+        let source_map = json!({"p1": {"text": "Alpha"}});
+        let (review, updated_session) =
+            review_layer(&session, &context, &current, Some(&source_map)).unwrap();
+        assert!(review.satisfied);
+        assert_eq!(review.committable_parent_node_ids, vec!["parent"]);
+        assert_eq!(
+            updated_session.layer_attempts["depth=0;parents=parent"],
+            json!(1)
+        );
+        assert_eq!(updated_session.last_review["satisfied"], json!(true));
+
+        let mut disabled = session;
+        disabled.allow_review = false;
+        let (review, updated_session) =
+            review_layer(&disabled, &context, &current, Some(&source_map)).unwrap();
+        assert!(review.satisfied);
+        assert_eq!(review.review_notes[0], "semantic review disabled");
+        assert_eq!(review.metadata["review_skipped"], json!(true));
+        assert_eq!(
+            updated_session.last_review["metadata"]["review_skipped"],
+            json!(true)
+        );
     }
 
     #[test]
