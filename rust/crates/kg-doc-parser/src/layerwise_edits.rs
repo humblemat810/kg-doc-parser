@@ -596,7 +596,15 @@ pub fn compute_pointer_coverage(
 }
 
 fn pointer_payload(pointer: &HydratedTextPointer) -> Value {
-    serde_json::to_value(pointer).unwrap_or_else(|_| json!({}))
+    json!({
+        "source_cluster_id": pointer.source_cluster_id,
+        "start_char": pointer.start_char,
+        "end_char": pointer.end_char,
+        "verbatim_text": pointer.verbatim_text,
+        "start_delimiter": pointer.start_delimiter,
+        "end_delimiter": pointer.end_delimiter,
+        "validation_method": pointer.validation_method,
+    })
 }
 
 fn pointers_to_spans(
@@ -1125,6 +1133,18 @@ mod tests {
         assert_eq!(payload["nodes"][0]["id"], "root");
         assert_eq!(payload["nodes"][1]["id"], "alpha");
         assert_eq!(payload["nodes"][2]["id"], "gamma");
+        assert_eq!(
+            payload["nodes"][1]["metadata"]["pointers"][0],
+            json!({
+                "source_cluster_id": "p1_c0",
+                "start_char": 0,
+                "end_char": 4,
+                "verbatim_text": "Alpha",
+                "start_delimiter": null,
+                "end_delimiter": null,
+                "validation_method": null,
+            })
+        );
         assert_eq!(
             payload["edges"][0]["id"],
             "9e4c25a7-6fbf-59bc-b508-58b6925c28f4"
