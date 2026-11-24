@@ -778,6 +778,70 @@ pub fn dedupe_and_filter_layer(
     }
 }
 
+pub fn apply_cud_update(
+    _current_layer_result: &crate::parser_core::CurrentLayerResult,
+    current_layer_review: &CurrentLayerReview,
+) -> crate::parser_core::CurrentLayerResult {
+    let mut updated = current_layer_review.updated_result.clone();
+    let mut metadata = updated.metadata.clone();
+    for (key, value) in &current_layer_review.metadata {
+        metadata.insert(key.clone(), value.clone());
+    }
+    metadata.insert(
+        "split_strategy".to_string(),
+        serde_json::to_value(current_layer_review.strategy_used).unwrap_or_default(),
+    );
+    metadata.insert(
+        "layer_coverage_ok".to_string(),
+        serde_json::to_value(current_layer_review.coverage_ok).unwrap_or_default(),
+    );
+    if !current_layer_review.review_notes.is_empty() {
+        metadata.insert(
+            "review_notes".to_string(),
+            serde_json::to_value(current_layer_review.review_notes.clone()).unwrap_or_default(),
+        );
+    }
+    if !current_layer_review.overlap_conflicts.is_empty() {
+        metadata.insert(
+            "overlap_conflicts".to_string(),
+            serde_json::to_value(current_layer_review.overlap_conflicts.clone())
+                .unwrap_or_default(),
+        );
+    }
+    if !current_layer_review.coverage_gap_notes.is_empty() {
+        metadata.insert(
+            "coverage_gap_notes".to_string(),
+            serde_json::to_value(current_layer_review.coverage_gap_notes.clone())
+                .unwrap_or_default(),
+        );
+    }
+    if !current_layer_review.duplicate_child_notes.is_empty() {
+        metadata.insert(
+            "duplicate_child_notes".to_string(),
+            serde_json::to_value(current_layer_review.duplicate_child_notes.clone())
+                .unwrap_or_default(),
+        );
+    }
+    if !current_layer_review.structural_issues.is_empty() {
+        metadata.insert(
+            "structural_issues".to_string(),
+            serde_json::to_value(current_layer_review.structural_issues.clone())
+                .unwrap_or_default(),
+        );
+    }
+    if !current_layer_review.validation_diagnostics.is_empty() {
+        metadata.insert(
+            "validation_diagnostics".to_string(),
+            serde_json::to_value(current_layer_review.validation_diagnostics.clone())
+                .unwrap_or_default(),
+        );
+    }
+    updated.satisfied = Some(current_layer_review.satisfied);
+    updated.review_rounds += 1;
+    updated.metadata = metadata;
+    updated
+}
+
 fn pointer_repair_context(pointer: &HydratedTextPointer, parser_source_map: &Value) -> String {
     let source = parser_source_map.get(&pointer.source_cluster_id);
     let text = source.map(source_map_entry_text).unwrap_or_default();
@@ -1101,6 +1165,48 @@ mod tests {
             "foreign_parent"
         );
         assert_eq!(filtered.satisfied, Some(false));
+    }
+
+    #[test]
+    fn applies_cud_review_update() {
+        let current = result(vec![child(
+            "left",
+            "parent",
+            vec![pointer("p1", 0, 4, "Alpha")],
+        )]);
+        let mut current = current;
+        current.satisfied = Some(false);
+        current.review_rounds = 2;
+        current
+            .metadata
+            .insert("previous".to_string(), json!("value"));
+        let mut review = CurrentLayerReview {
+            updated_result: current.clone(),
+            coverage_ok: true,
+            satisfied: true,
+            strategy_used: crate::parser_core::SplitStrategy::BoundaryFirst,
+            overlap_conflicts: Vec::new(),
+            coverage_gap_notes: Vec::new(),
+            duplicate_child_notes: Vec::new(),
+            structural_issues: Vec::new(),
+            validation_diagnostics: Vec::new(),
+            review_notes: vec!["review passed".to_string()],
+            metadata: Map::new(),
+            committable_parent_node_ids: vec!["parent".to_string()],
+            failed_parent_node_ids: Vec::new(),
+        };
+        review
+            .metadata
+            .insert("review_key".to_string(), json!("review-value"));
+
+        let updated = apply_cud_update(&current, &review);
+        assert_eq!(updated.satisfied, Some(true));
+        assert_eq!(updated.review_rounds, 3);
+        assert_eq!(updated.metadata["previous"], json!("value"));
+        assert_eq!(updated.metadata["review_key"], json!("review-value"));
+        assert_eq!(updated.metadata["split_strategy"], json!("boundary_first"));
+        assert_eq!(updated.metadata["layer_coverage_ok"], json!(true));
+        assert_eq!(updated.metadata["review_notes"], json!(["review passed"]));
     }
 
     #[test]
