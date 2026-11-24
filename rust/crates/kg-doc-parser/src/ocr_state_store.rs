@@ -210,7 +210,7 @@ fn status_str(status: OcrPageStatus) -> &'static str {
     }
 }
 
-fn sha256_hex(contents: &[u8]) -> String {
+pub(crate) fn sha256_hex(contents: &[u8]) -> String {
     let mut digest = Sha256::new();
     digest.update(contents);
     digest

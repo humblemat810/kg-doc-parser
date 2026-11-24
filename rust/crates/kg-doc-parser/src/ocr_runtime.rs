@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 use crate::document_models::DocumentTree;
+use crate::ocr_state_store::{OcrStage, OcrWorkflowStateStore};
 
 pub const OCR_ROOT_STATE_VERSION: &str = "ocr-root-v3";
 pub const OCR_PAGE_STATE_VERSION: &str = "ocr-page-v2";
@@ -561,6 +562,51 @@ pub fn validate_existing_page_identities(
     Ok(())
 }
 
+pub struct RootArtifactRecoveryRequest<'a> {
+    pub state_store: &'a OcrWorkflowStateStore,
+    pub document_id: &'a str,
+    pub sources: &'a [PageSourceState],
+    pub legacy_dir: &'a std::path::Path,
+    pub configuration_fingerprints: &'a [String],
+}
+
+pub fn root_page_artifacts_need_recovery(
+    request: &RootArtifactRecoveryRequest<'_>,
+) -> Result<bool> {
+    let configuration_fingerprints = request
+        .configuration_fingerprints
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    for source in request.sources {
+        let image_digest = Sha256::digest(std::fs::read(&source.image_path)?)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let page_path = request
+            .legacy_dir
+            .join(format!("page_{}.json", source.page_number));
+        request.state_store.reconcile_orphan_artifact(
+            request.document_id,
+            source.page_number as i64,
+            &image_digest,
+            &page_path,
+            &configuration_fingerprints,
+        )?;
+        if !request.state_store.should_skip_page(
+            request.document_id,
+            source.page_number as i64,
+            OcrStage::Ocr,
+            &image_digest,
+            Some(&page_path),
+            &configuration_fingerprints,
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn recovery_generation(state: &Value) -> Result<u64> {
     match state.get("ocr_page_recovery_generation") {
         None | Some(Value::Null) => Ok(0),
@@ -747,6 +793,7 @@ pub fn validated_grouping_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ocr_state_store::{sha256_hex, DocumentIdentity, OcrAttemptRequest};
     use serde_json::json;
 
     #[test]
@@ -854,6 +901,68 @@ mod tests {
         assert_eq!(repair["raw_pages"], json!([]));
 
         assert!(reconcile_page_checkpoint(&state, None, temp.path(), &gate, "doc", 2).is_err());
+    }
+
+    #[test]
+    fn detects_root_artifact_recovery_before_terminal_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let image = temp.path().join("page_1.png");
+        std::fs::write(&image, b"page one").unwrap();
+        let artifact = temp.path().join("page_1.json");
+        let store = OcrWorkflowStateStore::open(&temp.path().join("ocr-state.sqlite")).unwrap();
+        store
+            .ensure_document(&DocumentIdentity {
+                document_id: "doc".to_string(),
+                title: "Doc".to_string(),
+                source_kind: "image".to_string(),
+                input_fingerprint: "source".to_string(),
+                total_pages: 1,
+            })
+            .unwrap();
+        store
+            .record_attempt(
+                "doc",
+                1,
+                OcrStage::Ocr,
+                &OcrAttemptRequest {
+                    content_hash: Some(sha256_hex(&std::fs::read(&image).unwrap())),
+                    model_name: "model".to_string(),
+                    config_fingerprint: Some("config".to_string()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let sources = vec![PageSourceState {
+            page_number: 1,
+            image_path: image.to_string_lossy().to_string(),
+        }];
+        let configuration_fingerprints = vec!["config".to_string()];
+        let request = RootArtifactRecoveryRequest {
+            state_store: &store,
+            document_id: "doc",
+            sources: &sources,
+            legacy_dir: temp.path(),
+            configuration_fingerprints: &configuration_fingerprints,
+        };
+        assert!(root_page_artifacts_need_recovery(&request).unwrap());
+
+        std::fs::write(
+            &artifact,
+            serde_json::json!({
+                "metadata": {
+                    "ocr_json_version": "0.1",
+                    "ocr_model_name": "model",
+                    "source_image_sha256": sha256_hex(&std::fs::read(&image).unwrap()),
+                    "ocr_configuration_fingerprint": "config",
+                },
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [{"text": "page one"}],
+                "non_text_objects": [],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(!root_page_artifacts_need_recovery(&request).unwrap());
     }
 
     #[test]
