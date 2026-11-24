@@ -12,6 +12,7 @@ use kg_doc_parser::runners::run_ocr_batch_workflow;
 use kg_doc_parser::runners::run_ocr_source_workflow;
 use kg_doc_parser::runners::run_page_index_batch_workflow;
 use kg_doc_parser::runners::run_page_index_source_workflow;
+use kg_doc_parser::smoke_assets::generate_ocr_smoke_assets;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -37,7 +38,7 @@ impl kg_doc_parser::runners::OcrRunner for IdentityOcrRunner {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: kg-doc-parser <parse|page-index|page-index-workflow|layerwise-workflow|ocr-workflow> --input <path> [--batch] [--mode snippet|delimiter|markdown|text] [--max-depth <depth>] [--provider fake] [--output <path>] [--output-dir <dir>]");
+    eprintln!("usage: kg-doc-parser <parse|page-index|page-index-workflow|layerwise-workflow|ocr-workflow|ocr-smoke-assets> [--input <path>] [--output <path>] [--output-dir <dir>] [--mode snippet|delimiter|markdown|text] [--max-depth <depth>] [--provider fake] [--batch]");
     std::process::exit(2);
 }
 
@@ -49,6 +50,7 @@ fn main() -> Result<()> {
         && command != "page-index-workflow"
         && command != "layerwise-workflow"
         && command != "ocr-workflow"
+        && command != "ocr-smoke-assets"
         && command != "demo-summary"
     {
         usage();
@@ -138,6 +140,14 @@ fn main() -> Result<()> {
             }
             _ => bail!("unknown argument: {}", arguments[index]),
         }
+    }
+    if command == "ocr-smoke-assets" {
+        let Some(output_dir) = output_dir else {
+            bail!("ocr-smoke-assets requires --output-dir");
+        };
+        let outputs = generate_ocr_smoke_assets(output_dir.as_path())?;
+        println!("{}", serde_json::to_string_pretty(&outputs)?);
+        return Ok(());
     }
     let Some(input) = input else {
         usage();

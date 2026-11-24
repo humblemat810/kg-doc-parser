@@ -28,5 +28,6 @@ pub mod semantic;
 pub mod semantic_graph_import;
 pub mod semantic_indexing;
 pub mod service;
+pub mod smoke_assets;
 pub mod source_text;
 pub mod strategy;
