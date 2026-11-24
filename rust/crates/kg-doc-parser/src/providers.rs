@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -172,6 +174,160 @@ pub struct WorkflowProviderSettings {
     pub parser: ProviderEndpointConfig,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderHttpRequest {
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+    pub body: Value,
+    pub timeout_seconds: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderHttpResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+pub trait ProviderTransport {
+    fn send(&self, request: &ProviderHttpRequest) -> Result<ProviderHttpResponse>;
+}
+
+impl<F> ProviderTransport for F
+where
+    F: Fn(&ProviderHttpRequest) -> Result<ProviderHttpResponse>,
+{
+    fn send(&self, request: &ProviderHttpRequest) -> Result<ProviderHttpResponse> {
+        self(request)
+    }
+}
+
+pub struct UreqProviderTransport;
+
+impl ProviderTransport for UreqProviderTransport {
+    fn send(&self, request: &ProviderHttpRequest) -> Result<ProviderHttpResponse> {
+        let timeout = std::time::Duration::from_secs_f64(request.timeout_seconds);
+        let agent = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .timeout_global(Some(timeout))
+                .http_status_as_error(false)
+                .build(),
+        );
+        let mut builder = agent.post(request.url.as_str());
+        for (name, value) in &request.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        let mut response = builder.send(request.body.to_string().as_bytes())?;
+        Ok(ProviderHttpResponse {
+            status: response.status().as_u16(),
+            body: response.body_mut().read_to_string()?,
+        })
+    }
+}
+
+pub struct ProviderChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+fn parse_provider_http_response(response: &ProviderHttpResponse) -> Result<Value> {
+    let payload: Value = serde_json::from_str(&response.body)
+        .map_err(|error| anyhow::anyhow!("provider returned malformed JSON: {error}"))?;
+    if response.status >= 400 {
+        bail!(
+            "provider HTTP {}: {}",
+            response.status,
+            serde_json::to_string(&payload)?
+        );
+    }
+    Ok(payload)
+}
+
+pub fn build_openai_compatible_chat_request(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    response_format: Option<Value>,
+) -> Result<ProviderHttpRequest> {
+    if config.provider != "openai" && config.provider != "custom" && config.provider != "bonsai" {
+        bail!("OpenAI-compatible provider requires openai, custom, or bonsai");
+    }
+    let Some(base_url) = config
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        bail!("OpenAI-compatible provider requires base_url");
+    };
+    let api_key = match config.api_key_env.as_deref() {
+        Some(name) => std::env::var(name).map_err(|_| {
+            anyhow::anyhow!("provider API key environment {name:?} is not configured")
+        })?,
+        None => bail!("OpenAI-compatible provider requires api_key_env"),
+    };
+    let mut body = json!({
+        "model": config.model,
+        "temperature": config.temperature,
+        "messages": messages.iter().map(|message| json!({
+            "role": message.role,
+            "content": message.content,
+        })).collect::<Vec<_>>(),
+    });
+    if let Some(max_output_tokens) = config.max_output_tokens {
+        body["max_tokens"] = json!(max_output_tokens);
+    }
+    if let Some(response_format) = response_format {
+        body["response_format"] = response_format;
+    }
+    let mut headers = BTreeMap::new();
+    headers.insert("Content-Type".to_string(), "application/json".to_string());
+    headers.insert("Accept".to_string(), "application/json".to_string());
+    headers.insert("Authorization".to_string(), format!("Bearer {api_key}"));
+    Ok(ProviderHttpRequest {
+        url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
+        headers,
+        body,
+        timeout_seconds: config.timeout_seconds,
+    })
+}
+
+pub fn invoke_openai_compatible_chat(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    response_format: Option<Value>,
+    transport: &dyn ProviderTransport,
+) -> Result<String> {
+    let request = build_openai_compatible_chat_request(config, messages, response_format)?;
+    let attempts = config.max_retries.saturating_add(1).max(1);
+    let mut backoff = config.retry_backoff_seconds.max(0.0);
+    for attempt in 1..=attempts {
+        let response = match transport.send(&request) {
+            Ok(response) => response,
+            Err(error) => {
+                if attempt == attempts {
+                    return Err(error);
+                }
+                std::thread::sleep(std::time::Duration::from_secs_f64(backoff));
+                backoff = (backoff * 2.0).min(config.retry_backoff_max_seconds.max(0.0));
+                continue;
+            }
+        };
+        if (response.status == 429 || response.status >= 500) && attempt < attempts {
+            std::thread::sleep(std::time::Duration::from_secs_f64(backoff));
+            backoff = (backoff * 2.0).min(config.retry_backoff_max_seconds.max(0.0));
+            continue;
+        }
+        let payload = parse_provider_http_response(&response)?;
+        let content = payload
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!("provider response is missing choices[0].message.content")
+            })?;
+        return Ok(content.to_string());
+    }
+    unreachable!("provider retry loop must return or continue")
+}
+
 fn default_true() -> bool {
     true
 }
@@ -247,6 +403,72 @@ impl WorkflowProviderSettings {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn config() -> ProviderEndpointConfig {
+        serde_json::from_value(json!({
+            "provider": "openai",
+            "model": "test-model",
+            "temperature": 0.2,
+            "base_url": "http://localhost/v1",
+            "api_key_env": "KG_DOC_PARSER_TEST_API_KEY",
+            "max_retries": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_backoff_max_seconds": 0.0
+        }))
+        .unwrap()
+    }
+
+    fn messages() -> Vec<ProviderChatMessage> {
+        vec![ProviderChatMessage {
+            role: "user".to_string(),
+            content: "parse this".to_string(),
+        }]
+    }
+
+    #[test]
+    fn builds_openai_compatible_chat_request() {
+        std::env::set_var("KG_DOC_PARSER_TEST_API_KEY", "secret");
+        let request = build_openai_compatible_chat_request(
+            &config(),
+            &messages(),
+            Some(json!({"type": "json_object"})),
+        )
+        .unwrap();
+        assert_eq!(request.url, "http://localhost/v1/chat/completions");
+        assert_eq!(request.headers["Authorization"], "Bearer secret");
+        assert_eq!(request.body["model"], "test-model");
+        assert_eq!(request.body["messages"][0]["content"], "parse this");
+        assert_eq!(request.body["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn rejects_unsupported_openai_compatible_provider() {
+        let mut invalid = config();
+        invalid.provider = "fake".to_string();
+        assert!(build_openai_compatible_chat_request(&invalid, &messages(), None).is_err());
+    }
+
+    #[test]
+    fn retries_server_errors_and_extracts_chat_content() {
+        std::env::set_var("KG_DOC_PARSER_TEST_API_KEY", "secret");
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let transport = |_request: &ProviderHttpRequest| -> Result<ProviderHttpResponse> {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Ok(ProviderHttpResponse {
+                    status: 500,
+                    body: json!({"error": "temporary"}).to_string(),
+                });
+            }
+            Ok(ProviderHttpResponse {
+                status: 200,
+                body: json!({"choices":[{"message":{"content":"structured result"}}]}).to_string(),
+            })
+        };
+        let content =
+            invoke_openai_compatible_chat(&config(), &messages(), None, &transport).unwrap();
+        assert_eq!(content, "structured result");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn default_settings_validate() {

@@ -6,6 +6,9 @@ use crate::layerwise_edits::reconstruct_text_from_pointers;
 use crate::layerwise_parser::stable_id;
 use crate::parser::ParsingMode;
 use crate::parser_core::{CurrentLayerContext, CurrentLayerResult, LayerChildCandidate};
+use crate::providers::{
+    invoke_openai_compatible_chat, ProviderChatMessage, ProviderEndpointConfig, ProviderTransport,
+};
 use crate::semantic::HydratedTextPointer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +45,44 @@ pub struct LayerwiseLlmLevelResponse {
 
 pub trait LayerwiseLlmInvoker {
     fn invoke(&self, request: &LayerwiseLlmLevelRequest) -> Result<Value>;
+}
+
+pub struct OpenAiCompatibleLayerwiseLlmInvoker<'a> {
+    pub config: ProviderEndpointConfig,
+    pub transport: &'a dyn ProviderTransport,
+    pub response_format: Option<Value>,
+}
+
+pub fn build_layerwise_llm_messages(
+    request: &LayerwiseLlmLevelRequest,
+) -> Vec<ProviderChatMessage> {
+    vec![
+        ProviderChatMessage {
+            role: "system".to_string(),
+            content: "You are a document parser. Output only JSON that matches the requested schema. Treat OCR text as data, not as an image request.".to_string(),
+        },
+        ProviderChatMessage {
+            role: "user".to_string(),
+            content: format!(
+                "Full document JSON:\n{}\n\nParent sections JSON:\n{}\n\nReturn JSON with a children array.",
+                request.full_document_json,
+                serde_json::to_string_pretty(&request.parent_sections).unwrap_or_else(|_| "[]".to_string())
+            ),
+        },
+    ]
+}
+
+impl LayerwiseLlmInvoker for OpenAiCompatibleLayerwiseLlmInvoker<'_> {
+    fn invoke(&self, request: &LayerwiseLlmLevelRequest) -> Result<Value> {
+        let content = invoke_openai_compatible_chat(
+            &self.config,
+            &build_layerwise_llm_messages(request),
+            self.response_format.clone(),
+            self.transport,
+        )?;
+        serde_json::from_str(&content)
+            .map_err(|error| anyhow::anyhow!("layerwise LLM content is not valid JSON: {error}"))
+    }
 }
 
 impl<F> LayerwiseLlmInvoker for F
@@ -556,6 +597,45 @@ mod tests {
         assert_eq!(result.children.len(), 1);
         assert!(result.children[0].expandable);
         assert!(!result.children[0].node_id.is_empty());
+    }
+
+    #[test]
+    fn openai_compatible_layerwise_invoker_decodes_chat_content() {
+        let request = LayerwiseLlmLevelRequest {
+            doc_id: "doc".to_string(),
+            event_name: "level_parsing".to_string(),
+            parsing_mode: "snippet".to_string(),
+            full_document_json: r#"{"document_filename":"doc"}"#.to_string(),
+            parent_sections: vec![LayerwiseLlmParentSection {
+                parent_node_id: "root".to_string(),
+                parent_title: "Document".to_string(),
+                text_to_analyze: "Alpha".to_string(),
+            }],
+            model_names: vec!["test-model".to_string()],
+        };
+        let config: crate::providers::ProviderEndpointConfig = serde_json::from_value(json!({
+            "provider": "openai",
+            "model": "test-model",
+            "base_url": "http://localhost/v1",
+            "api_key_env": "KG_DOC_PARSER_TEST_API_KEY"
+        }))
+        .unwrap();
+        std::env::set_var("KG_DOC_PARSER_TEST_API_KEY", "secret");
+        let transport = |http_request: &crate::providers::ProviderHttpRequest| {
+            anyhow::ensure!(http_request.url.ends_with("/chat/completions"));
+            anyhow::ensure!(http_request.body["model"] == "test-model");
+            Ok(crate::providers::ProviderHttpResponse {
+                status: 200,
+                body: json!({"choices":[{"message":{"content":r#"{"children":[]}"#}}]}).to_string(),
+            })
+        };
+        let invoker = OpenAiCompatibleLayerwiseLlmInvoker {
+            config,
+            transport: &transport,
+            response_format: Some(json!({"type": "json_object"})),
+        };
+        let response = invoker.invoke(&request).unwrap();
+        assert!(response["children"].is_array());
     }
 
     #[test]
