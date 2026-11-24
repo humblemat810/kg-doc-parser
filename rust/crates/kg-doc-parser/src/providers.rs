@@ -500,6 +500,104 @@ pub fn invoke_ollama_chat(
     retry_provider_request(config, &request, transport, ollama_content)
 }
 
+pub fn build_gemini_chat_request(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    response_format: Option<Value>,
+) -> Result<ProviderHttpRequest> {
+    if config.provider != "gemini" {
+        bail!("Gemini provider requires provider=gemini");
+    }
+    let api_key = match config.api_key_env.as_deref() {
+        Some(name) => std::env::var(name).map_err(|_| {
+            anyhow::anyhow!("provider API key environment {name:?} is not configured")
+        })?,
+        None => bail!("Gemini provider requires api_key_env"),
+    };
+    let base_url = config
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("https://generativelanguage.googleapis.com/v1beta");
+    let system_messages = messages
+        .iter()
+        .filter(|message| message.role.eq_ignore_ascii_case("system"))
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let contents = messages
+        .iter()
+        .filter(|message| !message.role.eq_ignore_ascii_case("system"))
+        .map(|message| {
+            json!({
+                "role": if message.role.eq_ignore_ascii_case("assistant") { "model" } else { "user" },
+                "parts": [{"text": message.content}],
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut generation_config = json!({"temperature": config.temperature});
+    if let Some(max_output_tokens) = config.max_output_tokens {
+        generation_config["maxOutputTokens"] = json!(max_output_tokens);
+    }
+    if let Some(response_format) = response_format {
+        if response_format.get("type").and_then(Value::as_str) == Some("json_object") {
+            generation_config["responseMimeType"] = json!("application/json");
+        }
+        if response_format.get("type").and_then(Value::as_str) == Some("object") {
+            generation_config["responseMimeType"] = json!("application/json");
+            generation_config["responseSchema"] = response_format.clone();
+        }
+    }
+    let mut body = json!({
+        "contents": contents,
+        "generationConfig": generation_config,
+    });
+    if !system_messages.is_empty() {
+        body["systemInstruction"] = json!({"parts": [{"text": system_messages}]});
+    }
+    let mut headers = BTreeMap::new();
+    headers.insert("Content-Type".to_string(), "application/json".to_string());
+    headers.insert("Accept".to_string(), "application/json".to_string());
+    headers.insert("x-goog-api-key".to_string(), api_key);
+    Ok(ProviderHttpRequest {
+        url: format!(
+            "{}/models/{}:generateContent",
+            base_url.trim_end_matches('/'),
+            config.model
+        ),
+        headers,
+        body,
+        timeout_seconds: config.timeout_seconds,
+    })
+}
+
+fn gemini_content(payload: &Value) -> Result<String> {
+    let content = payload
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("Gemini response is missing candidates[0].content.parts"))?;
+    let mut text = String::new();
+    for part in content {
+        let part_text = part
+            .get("text")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Gemini content part is missing text"))?;
+        text.push_str(part_text);
+    }
+    Ok(text)
+}
+
+pub fn invoke_gemini_chat(
+    config: &ProviderEndpointConfig,
+    messages: &[ProviderChatMessage],
+    response_format: Option<Value>,
+    transport: &dyn ProviderTransport,
+) -> Result<String> {
+    let request = build_gemini_chat_request(config, messages, response_format)?;
+    retry_provider_request(config, &request, transport, gemini_content)
+}
+
 pub fn invoke_provider_chat(
     config: &ProviderEndpointConfig,
     messages: &[ProviderChatMessage],
@@ -508,6 +606,8 @@ pub fn invoke_provider_chat(
 ) -> Result<String> {
     if config.provider == "anthropic" {
         invoke_anthropic_chat(config, messages, transport)
+    } else if config.provider == "gemini" {
+        invoke_gemini_chat(config, messages, response_format, transport)
     } else if config.provider == "ollama" {
         invoke_ollama_chat(config, messages, transport)
     } else {
@@ -764,6 +864,83 @@ mod tests {
         let content =
             invoke_provider_chat(&ollama_config(), &messages(), None, &transport).unwrap();
         assert_eq!(content, "ollama result");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    fn gemini_config() -> ProviderEndpointConfig {
+        serde_json::from_value(json!({
+            "provider": "gemini",
+            "model": "gemini-test",
+            "temperature": 0.2,
+            "base_url": "http://localhost/v1beta",
+            "api_key_env": "KG_DOC_PARSER_TEST_GEMINI_KEY",
+            "max_output_tokens": 64,
+            "max_retries": 1,
+            "retry_backoff_seconds": 0.0,
+            "retry_backoff_max_seconds": 0.0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn builds_gemini_chat_request_with_system_and_json_mode() {
+        std::env::set_var("KG_DOC_PARSER_TEST_GEMINI_KEY", "gemini-secret");
+        let request = build_gemini_chat_request(
+            &gemini_config(),
+            &[
+                ProviderChatMessage {
+                    role: "system".to_string(),
+                    content: "be precise".to_string(),
+                },
+                ProviderChatMessage {
+                    role: "assistant".to_string(),
+                    content: "prior answer".to_string(),
+                },
+                ProviderChatMessage {
+                    role: "user".to_string(),
+                    content: "parse this".to_string(),
+                },
+            ],
+            Some(json!({"type": "json_object"})),
+        )
+        .unwrap();
+        assert_eq!(
+            request.url,
+            "http://localhost/v1beta/models/gemini-test:generateContent"
+        );
+        assert_eq!(request.headers["x-goog-api-key"], "gemini-secret");
+        assert_eq!(
+            request.body["systemInstruction"]["parts"][0]["text"],
+            "be precise"
+        );
+        assert_eq!(request.body["contents"][0]["role"], "model");
+        assert_eq!(request.body["contents"][1]["role"], "user");
+        assert_eq!(
+            request.body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+        assert_eq!(request.body["generationConfig"]["maxOutputTokens"], 64);
+    }
+
+    #[test]
+    fn invokes_gemini_parts_and_retries_server_errors() {
+        std::env::set_var("KG_DOC_PARSER_TEST_GEMINI_KEY", "gemini-secret");
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let transport = |_request: &ProviderHttpRequest| -> Result<ProviderHttpResponse> {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return Ok(ProviderHttpResponse {
+                    status: 503,
+                    body: json!({"error": "temporary"}).to_string(),
+                });
+            }
+            Ok(ProviderHttpResponse {
+                status: 200,
+                body: json!({"candidates":[{"content":{"parts":[{"text":"part one"},{"text":"part two"}]}}]}).to_string(),
+            })
+        };
+        let content =
+            invoke_provider_chat(&gemini_config(), &messages(), None, &transport).unwrap();
+        assert_eq!(content, "part onepart two");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
