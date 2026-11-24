@@ -340,6 +340,13 @@ pub fn page_workflow_initial_state(
     })
 }
 
+pub fn checkpoint_repair_cursor(patch: &Value) -> Result<u64> {
+    let Some(cursor) = patch.get("page_cursor").and_then(Value::as_u64) else {
+        bail!("OCR checkpoint repair requires a non-negative page_cursor");
+    };
+    Ok(cursor)
+}
+
 pub fn resume_identity_value(state: &Value, key: &str) -> Result<ResumeIdentity> {
     let Some(value) = state.get(key) else {
         bail!("OCR checkpoint identity field {key:?} is missing");
@@ -1182,6 +1189,17 @@ mod tests {
         assert!(typed_state(&invalid_pages).is_err());
         let invalid_child = json!([]);
         assert!(typed_child_state(&invalid_child, "page child").is_err());
+    }
+
+    #[test]
+    fn reads_checkpoint_repair_cursor() {
+        assert_eq!(
+            checkpoint_repair_cursor(&json!({"page_cursor": 3})).unwrap(),
+            3
+        );
+        assert!(checkpoint_repair_cursor(&json!({"page_cursor": -1})).is_err());
+        assert!(checkpoint_repair_cursor(&json!({"page_cursor": "3"})).is_err());
+        assert!(checkpoint_repair_cursor(&json!({})).is_err());
     }
 
     #[test]
